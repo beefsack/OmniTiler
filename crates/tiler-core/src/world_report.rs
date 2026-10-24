@@ -22,7 +22,7 @@ pub use crate::world_sizing::{
     reply_upper_bound, report_estimate, u64_len, usize_len,
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
 use crate::bounds::{GEOMETRY_BOUND, is_gap, is_opaque_id, valid_carried_rect};
@@ -65,6 +65,9 @@ pub const MAX_WORLD_VIEW_ATTEMPTS: usize = 1024;
 /// Bound on mechanical maximize-clear attempts per report (one latest-wins
 /// row per retained clear operation at most).
 pub const MAX_WORLD_CLEAR_ATTEMPTS: usize = 1024;
+/// Bound on mechanical native creation attempts per report (one latest-wins
+/// row per outstanding creation operation at most).
+pub const MAX_WORLD_CREATION_ATTEMPTS: usize = 256;
 /// Bound on the presentation native order per report (same lifetime
 /// alphabet as windows): the adapter's top-to-bottom stacking snapshot.
 pub const MAX_PRESENTATION_ORDER: usize = 1024;
@@ -700,24 +703,75 @@ pub struct ScreenView {
 /// Otherwise the list is partial and must not create mappings: the core
 /// holds. An absent `NativeObservation` row for a live output never
 /// deletes mappings (no inferred native deletion). Within one output,
-/// `native_order` ids must be unique and `current_native` (when non-empty)
+/// `native_order` ids must be unique and `current_native` (when present)
 /// should name a member of that order; contradictory duplicate rows for the
 /// same output refuse. The same native id string may repeat across
 /// different outputs (KWin global ids): each `(output, native id)` pair
 /// maps independently in separate-view modes; linked views share logical ids
 /// while retaining only the native bindings actually observed on each output.
-/// Empty `current_native` means unknown view, never
-/// proof of absence. In shared (linked-view) mode one native id string
+/// `current_native: None` (wire `null`) means the current surface is not an
+/// ordered desktop (for example a fullscreen Space is showing): the core
+/// retains the logical view while still using the reported order. It is
+/// never adopted and never moves the view. In shared (linked-view) mode one native id string
 /// observed on several outputs maps to a single unified logical id, but a
 /// binding publishes only for outputs that actually observed it. A fresh
 /// shared projection whose first-appearance union would reverse some
 /// output's reported order is ambiguous: the core adopts nothing for it
 /// (no merge policy is selected) and holds the affected rows instead.
+///
+/// Capability-named note: `None` keeps the retained view; only ordered
+/// desktops in `native_order` ever adopt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeObservation {
     pub output: OutputId,
     pub native_order: Vec<String>,
-    pub current_native: String,
+    pub current_native: Option<String>,
+}
+
+/// Neutral host-owned native creation desire (capability-gated): one
+/// core-owned authorization for the adapter to create exactly one native
+/// desktop for one logical workspace, executed at most once per
+/// `operation_id` (replay idempotent). The core mints the id from its own
+/// serial (`op-native-<n>`), never from a command sequence: trailing spare
+/// creations are observation-caused and several outputs/workspaces can share
+/// one command. An unbound logical row without a desire row authorizes
+/// nothing: the adapter never treats it as creation permission.
+/// Capability-named note: core binds, adapter executes once per op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCreationDesire {
+    pub operation_id: String,
+    pub logical_workspace: String,
+    pub target_output: OutputId,
+}
+
+/// One normalized raw native creation attempt: the mechanical facts behind
+/// a single native desktop create call for one outstanding creation
+/// operation. Follows the existing raw-attempt pattern (setter plus
+/// before/after evidence, never a policy conclusion): the adapter writes,
+/// re-reads the native order, and reports; the core owns binding and
+/// settlement. `order_before`/`order_after` are the live native orders
+/// immediately before/after the write; the report `native[]` row is the
+/// fresh readback the core settles against. `created_native` is the neutral
+/// optional host-correlated created native id: when the host can prove which
+/// fresh desktop its create call produced, it names that id here (`None`
+/// when it cannot). A correlated id binds exactly that newly created id
+/// causally at most once, even with racing outside additions; invalid,
+/// reused, or changed receipts hold conservatively. Exact match on operation
+/// id plus logical plus output; `attempt_ms` is the adapter monotonic stamp
+/// for idempotent redelivery.
+/// Capability-named note: core-owned binding, one authorization per op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCreationAttempt {
+    pub operation_id: String,
+    pub logical_workspace: String,
+    pub target_output: OutputId,
+    pub setter: FrameSetter,
+    pub order_before: Vec<String>,
+    pub order_after: Vec<String>,
+    /// Host-correlated created native id (`None` when the host cannot prove
+    /// which fresh desktop its create call produced).
+    pub created_native: Option<String>,
+    pub attempt_ms: u64,
 }
 
 /// Source-output intent resolved before this report changes retained homing.
@@ -1062,6 +1116,12 @@ pub struct WorldReport {
     /// only; the core owns directional clear completion over them plus the
     /// staged observation (see [`crate::world_settle`]).
     pub clear_attempts: Vec<ClearAttempt>,
+    /// Mechanical native creation attempts since the previous report (at most
+    /// one latest-wins entry per outstanding creation operation, bounded by
+    /// [`MAX_WORLD_CREATION_ATTEMPTS`]). Raw setter/before/after facts
+    /// only; the core owns binding and settlement over them plus the fresh
+    /// `native[]` readback. Capability-gated like `native[]`.
+    pub creation_attempts: Vec<NativeCreationAttempt>,
     /// Normalized presentation ingress (stage 5): the genuinely observed
     /// foreground lifetime plus host-scaled style and movement facts. The
     /// core publishes uniform border/underlay/pager presentation in the
@@ -1184,6 +1244,12 @@ pub struct WorldReply {
     /// observation-only holds and on replies with no operation settlement.
     /// Duplicate deliveries repeat the cached reply (and its events).
     pub operation_settled: Vec<OperationEvent>,
+    /// Neutral host-owned native creation desires (capability-gated): one
+    /// entry per outstanding core-owned creation authorization, each
+    /// executed at most once per `operation_id` by the adapter. Empty in
+    /// the native-free default. Capability-named note: explicit desire
+    /// only, never an implicit unbound-row permission.
+    pub native_creations: Vec<NativeCreationDesire>,
     /// Desired cursor-warp point in adapter units (same space as screen
     /// FULL rectangles), `None` when no warp is desired on this report.
     /// Set only when `cursor_warp` is on, the inventory is complete, the
@@ -1542,8 +1608,14 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     for native in &report.native {
         feed(&mut hash, &native.output.0);
         sep(&mut hash);
-        feed(&mut hash, &native.current_native);
-        sep(&mut hash);
+        feed(
+            &mut hash,
+            native.current_native.as_deref().unwrap_or_default(),
+        );
+        // Presence of a current value separates the digest from its
+        // absence: `null` (not an ordered desktop) never aliases a named
+        // desktop.
+        flag(&mut hash, native.current_native.is_some());
         for id in &native.native_order {
             feed(&mut hash, id);
             sep(&mut hash);
@@ -1680,6 +1752,33 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
     }
+    for attempt in &report.creation_attempts {
+        feed(&mut hash, &attempt.operation_id);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.logical_workspace);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.target_output.0);
+        sep(&mut hash);
+        feed(&mut hash, attempt.setter.as_str());
+        sep(&mut hash);
+        for id in &attempt.order_before {
+            feed(&mut hash, id);
+            sep(&mut hash);
+        }
+        feed(&mut hash, "#before-end");
+        sep(&mut hash);
+        for id in &attempt.order_after {
+            feed(&mut hash, id);
+            sep(&mut hash);
+        }
+        feed(
+            &mut hash,
+            attempt.created_native.as_deref().unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(&mut hash, &attempt.attempt_ms.to_string());
+        sep(&mut hash);
+    }
     // Stage-5 presentation ingress: every normalized fact separates the
     // digest (duplicate detection still compares full typed input).
     let ingress = &report.presentation;
@@ -1774,6 +1873,7 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.member_attempts.len() > MAX_WORLD_MEMBER_ATTEMPTS
         || report.view_attempts.len() > MAX_WORLD_VIEW_ATTEMPTS
         || report.clear_attempts.len() > MAX_WORLD_CLEAR_ATTEMPTS
+        || report.creation_attempts.len() > MAX_WORLD_CREATION_ATTEMPTS
     {
         return Some("section-over-cap");
     }
@@ -1797,6 +1897,9 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         }
     }
     if !report.host_owned_workspace_domains && !report.native.is_empty() {
+        return Some("native-without-capability");
+    }
+    if !report.host_owned_workspace_domains && !report.creation_attempts.is_empty() {
         return Some("native-without-capability");
     }
     // Action-context facts are neutral adapter observations: opaque ids
@@ -1971,8 +2074,15 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     {
         let mut seen_native_outputs = BTreeSet::new();
         for native in &report.native {
+            // Strict codec: `current_native` is `Some` (an ordered desktop
+            // id) or `None` (wire `null`, the current surface is not an
+            // ordered desktop). No empty-string or missing tolerance is
+            // invented here; the codec refuses those shapes.
             if !is_opaque_id(&native.output.0)
-                || !native.current_native.is_empty() && !is_opaque_id(&native.current_native)
+                || native
+                    .current_native
+                    .as_deref()
+                    .is_some_and(|current| !is_opaque_id(current))
                 || native.native_order.len() > MAX_NATIVE_PER_OUTPUT
             {
                 return Some("native-invalid");
@@ -2091,6 +2201,87 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             if !seen_clears.insert((attempt.operation_id.clone(), attempt.window.0.clone())) {
                 return Some("duplicate-clear-attempt");
             }
+        }
+    }
+    {
+        // Capability-named note: one execution authorization per op; exact
+        // op-plus-logical-plus-output match, strict order bounds, replay
+        // idempotent by op id. One op naming two triples is contradictory
+        // evidence and refuses outright (never a silent absent-fallback for
+        // the wrong row). Timestamp monotonicity rides the report
+        // `monotonic_ms` pairing at use; the digest covers every stamp.
+        let mut creation_triples: BTreeMap<String, (String, String)> = BTreeMap::new();
+        let mut creation_receipts: BTreeSet<String> = BTreeSet::new();
+        let mut total_creation_ids = 0usize;
+        for attempt in &report.creation_attempts {
+            if !is_opaque_id(&attempt.operation_id)
+                || !is_opaque_id(&attempt.logical_workspace)
+                || !is_opaque_id(&attempt.target_output.0)
+            {
+                return Some("creation-target-invalid");
+            }
+            if let Some(created) = attempt.created_native.as_deref()
+                && !is_opaque_id(created)
+            {
+                return Some("creation-id-invalid");
+            }
+            if attempt.order_before.len() > MAX_NATIVE_PER_OUTPUT
+                || attempt.order_after.len() > MAX_NATIVE_PER_OUTPUT
+            {
+                return Some("creation-order-over-cap");
+            }
+            for id in attempt
+                .order_before
+                .iter()
+                .chain(attempt.order_after.iter())
+            {
+                if !is_opaque_id(id) {
+                    return Some("creation-id-invalid");
+                }
+            }
+            {
+                let mut seen_before = BTreeSet::new();
+                for id in &attempt.order_before {
+                    if !seen_before.insert(id.clone()) {
+                        return Some("duplicate-creation-attempt");
+                    }
+                }
+                let mut seen_after = BTreeSet::new();
+                for id in &attempt.order_after {
+                    if !seen_after.insert(id.clone()) {
+                        return Some("duplicate-creation-attempt");
+                    }
+                }
+            }
+            match creation_triples.insert(
+                attempt.operation_id.clone(),
+                (
+                    attempt.logical_workspace.clone(),
+                    attempt.target_output.0.clone(),
+                ),
+            ) {
+                None => {}
+                Some(prev)
+                    if prev
+                        == (
+                            attempt.logical_workspace.clone(),
+                            attempt.target_output.0.clone(),
+                        ) =>
+                {
+                    return Some("duplicate-creation-attempt");
+                }
+                Some(_) => return Some("creation-triple-mismatch"),
+            }
+            total_creation_ids += attempt.order_before.len() + attempt.order_after.len();
+            if let Some(created) = attempt.created_native.as_deref() {
+                total_creation_ids += 1;
+                if !creation_receipts.insert(created.to_owned()) {
+                    return Some("creation-receipt-reused");
+                }
+            }
+        }
+        if total_creation_ids > MAX_WORLD_NATIVE.saturating_mul(2) {
+            return Some("creation-over-cap");
         }
     }
     // Stage-5 presentation ingress: strict shape, never payload bytes.

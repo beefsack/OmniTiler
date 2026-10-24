@@ -281,8 +281,30 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += command_result_estimate(&reply.command_result);
     bytes += gesture_settled_estimate(&reply.gesture_settled);
     bytes += operation_settled_estimate(&reply.operation_settled);
+    bytes += native_creations_estimate(&reply.native_creations);
     bytes += warp_cursor_estimate(&reply.cursor_warp);
     bytes += presentation_estimate(&reply.presentation);
+    bytes
+}
+
+/// Structural size estimate for the native creation desire section:
+/// `,"nativeCreations":[]` (21) when empty; each desire
+/// `{"op":,"ws":,"out":}` counts its fixed punctuation plus the operation
+/// id, logical id, and output widths.
+#[must_use]
+pub fn native_creations_estimate(creations: &[crate::world_report::NativeCreationDesire]) -> usize {
+    // `,"nativeCreations":[` (20) plus `]` (1) when empty = 21.
+    let mut bytes = 21usize;
+    for (i, creation) in creations.iter().enumerate() {
+        if i > 0 {
+            bytes += 1;
+        }
+        // {"op":,"ws":,"out":} = 22 punctuation.
+        bytes += 22
+            + json_string_len(&creation.operation_id)
+            + json_string_len(&creation.logical_workspace)
+            + json_string_len(&creation.target_output.0);
+    }
     bytes
 }
 
@@ -512,15 +534,16 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // ,"actionCached": (16) = 357, plus ,"actionOutputs":[] (20) = 377,
     // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 415,
     // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 453,
-    // plus ,\"clearAttempts\":[] (18) = 471, plus ,\"gesture\":null (12) =
-    // 483, plus the version digits, plus ,"presentation":{} below. Values
+    // plus ,"clearAttempts":[] (18) = 471, plus ,"creationAttempts":[] (22)
+    // = 493, plus ,"gesture":null (12) = 505, plus the version digits, plus
+    // ,"presentation":{} below. Values
     // counted
     // separately below; nullable command, cursor, cursor-hit, and
     // action-context slots count `null` (4), while the action-output
     // registry counts its brackets plus one comma per entry. The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
-    let mut bytes = 415
+    let mut bytes = 437
         + 36
         + 20
         + gesture_estimate(report)
@@ -620,8 +643,12 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         bytes += json_string_len(&id.0) + 1;
     }
     for native in &report.native {
-        // {"out":S,"order":[S...],"current":S} = 32 fixed plus strings.
-        bytes += 32 + json_string_len(&native.output.0) + json_string_len(&native.current_native);
+        // {"out":S,"order":[S...],"current":S|null} = 32 fixed plus
+        // strings; `null` (4) when the current surface is not an ordered
+        // desktop.
+        bytes += 32
+            + json_string_len(&native.output.0)
+            + native.current_native.as_deref().map_or(4, json_string_len);
         for id in &native.native_order {
             bytes += json_string_len(id) + 1;
         }
@@ -694,6 +721,26 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + 5
             + 5
             + u64_len(attempt.attempt_ms);
+    }
+    for attempt in &report.creation_attempts {
+        // {"op":S,"ws":S,"out":S,"setter":S,"before":[S...],
+        // "after":[S...],"created":S|null,"attemptMs":"u64"} = 85 fixed
+        // (the 74 above plus ,"created": (11)) plus ids, setter token,
+        // order lists, the correlated id (`null` counts 4 when the host
+        // cannot prove which desktop its create call produced), and stamp.
+        bytes += 85
+            + json_string_len(&attempt.operation_id)
+            + json_string_len(&attempt.logical_workspace)
+            + json_string_len(&attempt.target_output.0)
+            + json_string_len(attempt.setter.as_str())
+            + attempt.created_native.as_deref().map_or(4, json_string_len)
+            + u64_len(attempt.attempt_ms);
+        for id in &attempt.order_before {
+            bytes += json_string_len(id) + 1;
+        }
+        for id in &attempt.order_after {
+            bytes += json_string_len(id) + 1;
+        }
     }
     // No restoration ingress exists on the wire: every report is a
     // fresh-observation report and the adapter sends no restoration key.
@@ -1292,6 +1339,8 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     encode_gesture_settled(&mut out, &reply.gesture_settled);
     out.push_str(",\"operationSettled\":");
     encode_operation_settled(&mut out, &reply.operation_settled);
+    out.push_str(",\"nativeCreations\":");
+    encode_native_creations(&mut out, &reply.native_creations);
     out.push_str(",\"warpCursor\":");
     match reply.cursor_warp {
         Some((x, y)) => {
@@ -1303,6 +1352,30 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     encode_presentation(&mut out, &reply.presentation);
     out.push('}');
     out
+}
+
+/// Exact canonical encoding for the native creation desire section: `[]`
+/// when no creation is authorized, else one object per outstanding
+/// authorization with frozen key order (mirrored by
+/// [`native_creations_estimate`] and the protocol codec).
+pub fn encode_native_creations(
+    out: &mut String,
+    creations: &[crate::world_report::NativeCreationDesire],
+) {
+    out.push('[');
+    for (i, creation) in creations.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"op\":");
+        push_json_string(out, &creation.operation_id);
+        out.push_str(",\"ws\":");
+        push_json_string(out, &creation.logical_workspace);
+        out.push_str(",\"out\":");
+        push_json_string(out, &creation.target_output.0);
+        out.push('}');
+    }
+    out.push(']');
 }
 
 /// Exact canonical encoding for the optional gesture-settled section:
@@ -1689,6 +1762,9 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 ///   clear verdict plus one float verdict): 34 punctuation +
 ///   `op-<u64>` (25) + window (130) + outcome (27) + cause (130) = 346,
 ///   rounded to 384 each, doubled to 768 per window.
+/// - native creation desires (at most one per logical workspace): 22
+///   punctuation + `op-native-<n>` (25) + logical (130) + output (130) =
+///   307, rounded to 384 each.
 ///   The 4096 base covers envelope slack and array commas.
 #[must_use]
 pub fn reply_upper_bound(
@@ -1714,4 +1790,5 @@ pub fn reply_upper_bound(
         .saturating_add(96)
         .saturating_add(report_windows.saturating_mul(131))
         .saturating_add(report_windows.saturating_mul(768))
+        .saturating_add(logical_workspaces.saturating_mul(384))
 }

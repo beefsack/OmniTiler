@@ -361,6 +361,7 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
                 clear_attempts: Vec::new(),
+                creation_attempts: Vec::new(),
                 presentation: tiler_core::world_report::PresentationIngress::disabled(),
             }
         };
@@ -512,6 +513,7 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     member_attempts: Vec::new(),
                     view_attempts: Vec::new(),
                     clear_attempts: Vec::new(),
+                    creation_attempts: Vec::new(),
                     presentation: tiler_core::world_report::PresentationIngress::disabled(),
                 }
             };

@@ -2226,7 +2226,7 @@ mod trailing_join_tests {
     use tiler_core::session::DomainKey;
     use tiler_core::size_hints::WindowSizeHints;
     use tiler_core::world_engine::WorldOutcome;
-    use tiler_core::world_report::FrameSetter;
+    use tiler_core::world_report::{FrameSetter, NativeCreationAttempt};
 
     use crate::focus_route::FocusRoute;
     use crate::runtime::{Shared, lock_shared};
@@ -2234,6 +2234,7 @@ mod trailing_join_tests {
     use crate::runtime_types::{
         ClaimedSelect, InputSemanticAction, NativeContext, NativeDomain, ObservedWindow,
     };
+    use crate::topology::workspace_key;
     use crate::workspace_select::{SelectionBackend, SelectionSnapshot};
     use crate::world_runtime::{WorldSession, build_dispatch_report};
     use crate::world_sequencer::ObservationClock;
@@ -2869,14 +2870,20 @@ mod trailing_join_tests {
     /// drain-verified Space reads) and the send lane (member attempt with
     /// the verified arrival Space) with fresh harnesses.
     ///
-    /// The select lane settles on the combined report: the native echo of
-    /// the appended current supersedes the retained view target, so the
+    /// The select lane settles on the combined report: the host-correlated
+    /// creation receipt for the pending core authorization binds the
+    /// appended native to the retained trailing logical, so the native echo
+    /// of the appended current supersedes the retained view target, the
     /// view follows the new native with no retained transfer and the next
-    /// observation-only report stays stable with no replay. The send lane
-    /// holds safely: the appended native has no core mapping yet (the
-    /// empty-creation correlation is parked), so the member attempt stages
-    /// an unknown post and the retained window transfer holds without
-    /// re-actuation until newer input supersedes it. Neither lane invents
+    /// observation-only report stays stable with no replay. The receipt is
+    /// exact (operation plus logical plus output, named created desktop):
+    /// the scripted backend proves the create, and the staged row carries
+    /// that proof here because `build_dispatch_report` still carries no
+    /// creation rows (the Stage3 drain reports them). The send lane settles
+    /// on proven arrival: the correlated receipt binds the appended native
+    /// to the retained target, so the staged arrival homing confirms the
+    /// window transfer with no retained hold and the follow view settles to
+    /// the native echo with no separate flight. Neither lane invents
     /// a binding or a verdict.
     ///
     /// The native proof rows come from the real select/send preparation
@@ -2906,6 +2913,20 @@ mod trailing_join_tests {
                 .clone()
                 .expect("trailing select claim stored");
             let op = claim.operation_id.clone().expect("operation rides");
+            // Stage1b authorization the trailing dispatch minted: the viewed
+            // trailing logical needs a native backing desktop. The combined
+            // report must carry the host-correlated receipt for exactly this
+            // authorization, or the core holds the unmapped append without
+            // adopting it. Read off the public reply surface (never engine
+            // internals): the last dispatch reply publishes the desire.
+            let desire = session
+                .sequencer()
+                .last_reply()
+                .expect("select dispatch replied")
+                .native_creations
+                .into_iter()
+                .find(|desire| desire.target_output == output())
+                .expect("trailing creation desired");
 
             // Real native leg through the injected backend only.
             let mut backend = FakeBackend::new(&[1, 277], 1, &[277]);
@@ -2941,7 +2962,7 @@ mod trailing_join_tests {
             // native ids to logical pre/post (pending shared native attempt
             // schema, stage 1b). Both the known source and the not-yet-
             // adopted append ride `None`, never guessed logical values.
-            let report = build_dispatch_report(
+            let mut report = build_dispatch_report(
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
@@ -2954,6 +2975,28 @@ mod trailing_join_tests {
                 "req-3",
             )
             .expect("nonempty context reports");
+            // Stage1b creation proof for the pending authorization: the
+            // scripted backend created exactly `effect.target` from the
+            // minted before-image to the fresh readback order, staged here
+            // because the adapter drain reports no creation rows yet.
+            report.creation_attempts.push(NativeCreationAttempt {
+                operation_id: desire.operation_id.clone(),
+                logical_workspace: desire.logical_workspace.clone(),
+                target_output: output(),
+                setter: FrameSetter::Accepted,
+                order_before: ctx
+                    .domains
+                    .iter()
+                    .map(|domain| domain.workspace.0.clone())
+                    .collect(),
+                order_after: created
+                    .domains
+                    .iter()
+                    .map(|domain| domain.workspace.0.clone())
+                    .collect(),
+                created_native: Some(workspace_key(effect.target)),
+                attempt_ms: 0,
+            });
             assert_eq!(report.view_attempts.len(), 1, "report carries the attempt");
             assert_eq!(report.view_attempts[0].operation_id, op);
             assert_eq!(
@@ -2977,7 +3020,7 @@ mod trailing_join_tests {
                     .outputs
                     .first()
                     .and_then(|out| out.logical_view.clone()),
-                Some("ws-4".to_owned()),
+                Some("ws-3".to_owned()),
                 "view follows the appended native current"
             );
 
@@ -3006,7 +3049,7 @@ mod trailing_join_tests {
                     .outputs
                     .first()
                     .and_then(|out| out.logical_view.clone()),
-                Some("ws-4".to_owned()),
+                Some("ws-3".to_owned()),
                 "adopted view persists without re-binding"
             );
         }
@@ -3045,6 +3088,28 @@ mod trailing_join_tests {
                 .clone()
                 .expect("trailing send claim stored");
             let op = claim.operation_id.clone().expect("operation rides");
+            // Stage1b authorization the send dispatch minted for its trailing
+            // target: the combined report must carry the host-correlated
+            // receipt, or the core holds the unmapped append without adopting
+            // it and the follow view cannot settle to the echo.
+            let transfer_target = session
+                .engine_mut()
+                .retained_transfers()
+                .into_iter()
+                .find(|target| target.operation_id == op)
+                .expect("send transfer retained")
+                .target_workspace
+                .clone();
+            let desire = session
+                .sequencer()
+                .last_reply()
+                .expect("send dispatch replied")
+                .native_creations
+                .into_iter()
+                .find(|desire| {
+                    desire.target_output == output() && desire.logical_workspace == transfer_target
+                })
+                .expect("send trailing creation desired");
 
             // Real native preparation through the injected backend only.
             let mut backend = FakeBackend::new(&[1, 277], 1, &[277]);
@@ -3081,7 +3146,7 @@ mod trailing_join_tests {
             // One dispatched observation carries the staged row. The
             // appended Space has no core mapping yet, so the verified
             // post reads unknown — the row stages honestly without it.
-            let report = build_dispatch_report(
+            let mut report = build_dispatch_report(
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
@@ -3094,6 +3159,29 @@ mod trailing_join_tests {
                 "req-3",
             )
             .expect("nonempty context reports");
+            // Stage1b creation proof for the send trailing authorization,
+            // staged here because the adapter drain reports no creation rows
+            // yet. The post stages honestly unknown; the bound receipt plus
+            // the staged arrival homing settle the transfer, and the bound
+            // echo settles the follow view with no separate flight.
+            report.creation_attempts.push(NativeCreationAttempt {
+                operation_id: desire.operation_id.clone(),
+                logical_workspace: desire.logical_workspace.clone(),
+                target_output: output(),
+                setter: FrameSetter::Accepted,
+                order_before: ctx
+                    .domains
+                    .iter()
+                    .map(|domain| domain.workspace.0.clone())
+                    .collect(),
+                order_after: created
+                    .domains
+                    .iter()
+                    .map(|domain| domain.workspace.0.clone())
+                    .collect(),
+                created_native: Some(workspace_key(prep.target_sid)),
+                attempt_ms: 0,
+            });
             assert_eq!(
                 report.member_attempts.len(),
                 1,
@@ -3108,18 +3196,19 @@ mod trailing_join_tests {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
-            // The window transfer holds (never a false confirm, never a
-            // blind repeat); the follow view settles to the native echo.
-            // The empty-creation correlation to the retained target is the
-            // parked neutrality concern — no adapter policy invents it.
+            // The window transfer settles on proven arrival: the correlated
+            // receipt binds the appended native to the retained target, and
+            // the staged arrival homing proves the mover there (exact host
+            // proof — never a false confirm, never a blind repeat). The
+            // follow view settles to the native echo with no separate
+            // flight.
             let held: Vec<_> = session
                 .engine_mut()
                 .retained_transfers()
                 .into_iter()
                 .filter(|target| target.operation_id == op)
                 .collect();
-            assert_eq!(held.len(), 1, "window transfer retained");
-            assert!(held[0].held, "held without re-actuation");
+            assert!(held.is_empty(), "window transfer settled on proven arrival");
             assert!(
                 reply
                     .transfers
@@ -3128,7 +3217,7 @@ mod trailing_join_tests {
                 "follow view leaves no separate flight"
             );
 
-            // Next observation: stable hold, nothing replayed, no arrival
+            // Next observation: stable settle, nothing replayed, no arrival
             // fabricated.
             let report = build_dispatch_report(
                 &mut session,
@@ -3155,8 +3244,8 @@ mod trailing_join_tests {
                     .iter()
                     .filter(|target| target.operation_id == op)
                     .count(),
-                1,
-                "hold persists without re-actuation"
+                0,
+                "settle persists without re-actuation"
             );
             let _ = reply;
         }

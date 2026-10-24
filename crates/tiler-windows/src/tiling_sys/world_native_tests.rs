@@ -428,6 +428,7 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         command_result: None,
         gesture_settled: None,
         operation_settled: Vec::new(),
+        native_creations: Vec::new(),
         cursor_warp: None,
         presentation: tiler_core::world_presentation::WorldPresentation::default(),
     }

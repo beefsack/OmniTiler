@@ -137,23 +137,69 @@ missing facts. Shape:
   read output-specific `native_binding` and keep only live native-id/handle
   lookups, never their own native-to-logical table. Tiler-owned domains keep the
   logical receipt route. This amends the earlier macOS receipt assumption.
-- `current_native: Option<String>` is proposed (`current: null` on the wire):
+- `current_native: Option<String>` is delivered (`current: null` on the wire):
   a non-desktop current surface keeps the retained logical view while its desktop
   order is still used. Fullscreen/system surfaces omitted from the order are
   never adopted; unknown membership holds its retained home, never defaults to
-  the current desktop. KDE reports a desktop current id.
+  the current desktop. KDE reports a desktop current id. Missing/empty `current`
+  refuses, rather than meaning `None`. Prefer `native_workspace=None` for a
+  fullscreen Space outside `native_order`, unreadable membership or an all-desktop
+  window with no single membership. An unlisted, unmapped id also yields unknown,
+  never adoption; a still-retained binding can resolve on a partial snapshot
+  until complete removal prunes it.
 - Native order wins after host-owned creation/reorder. Identical spanning lists
   form one logical workspace set: shared mode is fully supported, separate-view
   modes are degraded and require an adapter warning. Missing/partial lists never
   prove deletion; complete vanished ids are removals, never renames. Generations
   re-adopt from fresh observation. Sticky stays float-only over all managed
-  workspaces of its owning output, not all outputs.
-- Stage 1b is an unaccepted draft, not a consumable new API. Its proposed
-  `NativeCreationDesire` / `NativeCreationAttempt` needs stronger correlation:
-  an accepted asynchronous setter and a unique later native-order addition do
-  not prove which operation created that desktop. Hold ambiguous creations,
-  spend each operation at most once, and never infer native arrival from counts.
-  See the [counterexample and next design choice](../changes/kde-world-v2-port.md#stage-1b-creation-correlation-blocker).
+  workspaces of its owning output, not all outputs (`world_directional.rs`,
+  `effective_domain`, lines 86-104): routing changes the view, never the output.
+- `WorldReply.native_creations: Vec<NativeCreationDesire>` (wire
+  `nativeCreations:[{op,ws,out}]`) alone authorizes native creation, at most once
+  per stable operation id. An unbound row is not authorization; an ordinary
+  empty unselected spare requests no creation.
+- `WorldReport.creation_attempts: Vec<NativeCreationAttempt>` (wire
+  `creationAttempts:[{op,ws,out,setter,before,after,created,attemptMs}]`) carries
+  raw execution evidence, not a binding. Rust fields: `operation_id: String`,
+  `logical_workspace: String`, `target_output: OutputId`, `setter: FrameSetter`,
+  `order_before/order_after: Vec<String>`, `created_native: Option<String>`,
+  `attempt_ms: u64`. Wire stamps are decimal strings; `created` is optional
+  (`null`, missing or empty means uncorrelated). Missing attempt array means `[]`.
+- Tentative hybrid correlation: a host-correlated `created` binds exactly that
+  fresh native id once, including raced before/after lists. Without it, one
+  outstanding creation on the output can bind the next single new native id.
+  Several additions or outstanding creations hold `AmbiguousCreation`; no blind
+  re-create. This deliberately accepts an outside-first asynchronous race: the
+  outside singleton binds, and the later requested desktop adopts independently.
+  Setter acceptance alone is not causal evidence. Review after KDE/macOS land.
+- An attempt withdraws execution work; unchanged redelivery is idempotent and
+  changed evidence, refusal or invalid timing holds. A correlated id not yet
+  observed stays pending, never falls back to an unrelated singleton. Only fresh
+  complete native order proves backing. Adapters retain native lookups, not maps.
+- `minimized=true` is not "never move": frame/clear work and ordinary focus/send
+  refuse, and occupancy retains the workspace, but whole-workspace migration,
+  output displacement and in-flight membership transfers can relocate it. Do not
+  claim it implements strict retained-unmanaged Activities/host-hidden semantics.
+  Unknown float-sticky membership can omit its reply row (not a close); unknown
+  newcomers remain unhomed. Strict sticky slot retention is parked, not proven.
+
+Minimized path audit (core behavior preserved, 2026-10-25):
+
+| Path | Existing behavior | Source under `crates/tiler-core/src/` |
+| --- | --- | --- |
+| Frame/maximize clear | No allocation, placement, frame or clear token | `world_publish.rs:736-764,829-888` |
+| Focus-by-id/pager click | Refuses `focus-unknown`; minimized absent from live lookup/snapshot | `world_commands.rs:60-99`, `session/world.rs:727-729` |
+| Direct send/directional move | Refuses unknown/stale subject, no new transfer | `world_sends.rs:201-216`, `world_operations.rs:378-387` |
+| Close-reflow/automatic focus | Excludes minimized candidates | `world_observe.rs:324-339`, `world_model.rs:947-971`, `session/world.rs:1869-1900` |
+| Trailing/native desktop removal | Minimized occupancy retains logical workspace, even if binding disappears | `world_model.rs:36-51`, `world_native.rs:293-308` |
+| Whole-workspace migration/global swap | Includes non-sticky minimized members; can move membership | `world_commands.rs:790-823,1071-1105` |
+| Output removal | Displaced homing follows survivor; can move membership | `world_observe.rs:136-151,489-497,630-638` |
+| Transfer already pending at minimize | Publishes target membership, no geometry/unminimize | `world_publish.rs:743-750,837-855` |
+| Restore | Host-observed restoration reuses stored neighborhood; not a core restore command | `session/world.rs:1498-1575,1871-1877` |
+
+`tests/world_minimized_native_pinning.rs` pins ordinary refusal, close-reflow,
+pager click, occupancy/removal and unknown membership. It does not change the
+relocation paths or establish strict retained-unmanaged semantics.
 
 ### Classification ingress and remote transport rough edge
 
@@ -340,7 +386,7 @@ Native-bound empty desktops retain identity; missing native rows never prove
 removal. Linked views use one compatible logical order; fresh native projections
 whose first-appearance union reverses a display's order hold without adoption
 rather than choosing a new merge policy. General native-order merging and
-correlation of empty native creation to an unbound desired spare remain
+eligible existing-native reuse remain
 [parked neutrality concerns](../changes/kde-world-v2-port.md#decisions-and-core-neutrality-concerns),
 not extra fields or platform-side policy to invent during a port.
 

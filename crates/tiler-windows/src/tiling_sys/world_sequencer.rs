@@ -394,6 +394,7 @@ impl WorldSequencer {
             member_attempts,
             view_attempts,
             clear_attempts,
+            creation_attempts: Vec::new(),
             presentation: captured.presentation.clone(),
         }
     }

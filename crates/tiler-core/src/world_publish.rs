@@ -80,6 +80,34 @@ impl WorldEngine {
         command_result: Option<CommandResult>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> WorldReply {
+        // Command-created logicals land after convergence: mint their
+        // explicit creation desires here (idempotent with the pre-command
+        // ensure) so the same reply authorizes them. Same-reply desires
+        // share the stable per-op identity the next report settles. Then
+        // drop authorizations that no longer need backing (e.g. minted
+        // against a stale view that fresh evidence rehomed): stale state
+        // never recreates. Ambiguous rows persist for their visible hold.
+        if report.host_owned_workspace_domains {
+            if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+                let mut ordered: Vec<String> = report
+                    .screens
+                    .iter()
+                    .map(|screen| screen.output.0.clone())
+                    .collect();
+                ordered.sort();
+                self.ensure_native_creations_shared(report, &ordered);
+            } else {
+                let live: Vec<String> = report
+                    .screens
+                    .iter()
+                    .map(|screen| screen.output.0.clone())
+                    .collect();
+                for output in &live {
+                    self.ensure_native_creations(report, output);
+                }
+            }
+            self.prune_unneeded_creations(report);
+        }
         let staged = self.staged.clone();
         let mut scopes = Vec::with_capacity(staged.domains.len());
         let mut windows = Vec::new();
@@ -874,6 +902,9 @@ impl WorldEngine {
         // unrelated report publishes empty. Duplicates repeat the cached
         // reply.
         let operation_settled = std::mem::take(&mut self.operation_settled);
+        // Capability-named note: explicit creation desires only; the reply
+        // carries one stable op per outstanding authorization.
+        let native_creations = self.native_creation_desires(report);
         WorldReply {
             contract_version: WORLD_CONTRACT_VERSION,
             adapter_incarnation: report.adapter_incarnation.clone(),
@@ -892,6 +923,7 @@ impl WorldEngine {
             command_result,
             gesture_settled,
             operation_settled,
+            native_creations,
             cursor_warp,
             presentation: crate::world_presentation::WorldPresentation::default(),
         }
@@ -1017,10 +1049,14 @@ impl WorldEngine {
                 // An incompatible fresh shared projection holds its
                 // workspace rows through the existing Unreadable lane;
                 // ordinary incomplete screens keep IncompleteInventory.
+                // Capability-named note: ambiguous creations hold as
+                // AmbiguousCreation (producer) and never blind-recreate.
                 let hold = if held {
                     Some(HoldReason::IncompleteInventory)
                 } else if self.native_order_conflict(report) {
                     Some(HoldReason::Unreadable)
+                } else if self.creation_hold_for(report, &output, id) {
+                    Some(HoldReason::AmbiguousCreation)
                 } else {
                     None
                 };

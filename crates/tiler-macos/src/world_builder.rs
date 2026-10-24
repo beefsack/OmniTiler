@@ -62,8 +62,9 @@ use tiler_core::session::DomainKey;
 use tiler_core::size_hints::FixedSizePredicate;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_report::{
-    ClearAttempt, FrameAttempt, HoldReason, MemberAttempt, NativeObservation, ScreenReport,
-    ViewAttempt, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    ClearAttempt, FrameAttempt, HoldReason, MemberAttempt, NativeCreationAttempt,
+    NativeObservation, ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
+    WorldReport,
 };
 
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, collect_window_facts, minimized_fact};
@@ -109,6 +110,8 @@ pub(crate) struct ReportInput<'a> {
     pub view_attempts: &'a [ViewAttempt],
     /// Raw mechanical maximize-clear attempts (latest-wins per operation).
     pub clear_attempts: &'a [ClearAttempt],
+    /// Raw mechanical native creation attempts (latest-wins per operation).
+    pub creation_attempts: &'a [NativeCreationAttempt],
     /// Normalized gesture ingress for one open native move/size gesture
     /// (`None` on observation-only reports).
     pub gesture: Option<GestureIngress>,
@@ -191,6 +194,7 @@ impl<'a> ReportInput<'a> {
             member_attempts: &[],
             view_attempts: &[],
             clear_attempts: &[],
+            creation_attempts: &[],
             gesture: None,
             focused_global,
             complete: true,
@@ -314,9 +318,10 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         .map(|output| NativeObservation {
             output: output.clone(),
             native_order: native_order.get(output).cloned().unwrap_or_default(),
-            // Empty when the native current is a non-user Space (or
-            // unknown): unknown view holds, never proof of absence.
-            current_native: current_native.get(output).cloned().unwrap_or_default(),
+            // None when the native current is a non-user Space (or
+            // unknown): retains the logical view while using the order,
+            // never adopted and never a move.
+            current_native: current_native.get(output).cloned(),
         })
         .collect();
 
@@ -424,6 +429,7 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         member_attempts: input.member_attempts.to_vec(),
         view_attempts: input.view_attempts.to_vec(),
         clear_attempts: input.clear_attempts.to_vec(),
+        creation_attempts: input.creation_attempts.to_vec(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
     }
 }
@@ -622,8 +628,8 @@ mod tests {
             report.native[0].native_order,
             vec!["space-11".to_owned(), "space-12".to_owned()]
         );
-        assert_eq!(report.native[0].current_native, "space-11");
-        assert_eq!(report.native[1].current_native, "space-21");
+        assert_eq!(report.native[0].current_native.as_deref(), Some("space-11"));
+        assert_eq!(report.native[1].current_native.as_deref(), Some("space-21"));
         assert!(report.screens[0].complete);
         assert!(
             report.screens[0].primary,
@@ -804,8 +810,8 @@ mod tests {
             report.native[0].native_order,
             vec!["space-11".to_owned(), "space-12".to_owned()]
         );
-        assert_eq!(report.native[0].current_native, "space-11");
-        assert_eq!(report.native[1].current_native, "space-21");
+        assert_eq!(report.native[0].current_native.as_deref(), Some("space-11"));
+        assert_eq!(report.native[1].current_native.as_deref(), Some("space-21"));
         assert!(report.screens[0].primary, "display order owns primary");
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let reply = accepted(&report, &mut engine);
@@ -1650,8 +1656,8 @@ mod tests {
         );
         assert!(validate_report(&report));
         assert_eq!(
-            report.native[0].current_native, "",
-            "unknown native current reads empty, never guessed"
+            report.native[0].current_native, None,
+            "unknown native current reads null, never guessed"
         );
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let reply = accepted(&report, &mut engine);

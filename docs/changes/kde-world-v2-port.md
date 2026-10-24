@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
-| 1b. Native-only evidence and backing correlation | Uncommitted core/protocol draft; optional native current, native-only host receipts, creation desires/attempts, native order/removal and spanning regressions | Blocked by truthful asynchronous creation/outside-creation indistinguishability; 21 draft tests pass and one new blocking regression fails; not a delivered contract |
+| 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 30 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Parked: paired Rust/JS implementation and canonical v2 fixtures exist, but command wake delivery and native backing/settlement remain unresolved | Partial offline gates below; six KDE integration failures remain, no native or completion claim |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
@@ -128,44 +128,48 @@
   fully supported, separate-view modes degraded with adapter warning. Complete
   vanished ids are removals, never renames; fresh generations re-adopt.
 
-## Stage 1b creation-correlation blocker
+## Stage 1b creation correlation
 
-- Proposed draft types: `NativeCreationDesire { operation_id,
+- Delivered core types: `NativeCreationDesire { operation_id,
   logical_workspace, target_output }` on replies (`nativeCreations`), and
   `NativeCreationAttempt { operation_id, logical_workspace, target_output,
-  setter, order_before, order_after, attempt_ms }` on reports
+  setter, order_before, order_after, created_native: Option<String>, attempt_ms }` on reports
   (`creationAttempts`). `NativeObservation.current_native` becomes
-  `Option<String>` (`current: null`, missing/empty refused). These are not a
-  delivered API; macOS stage 3 must not consume the draft as settled.
-- Draft desires use stable `op-native-<serial>` identities, not command ids;
+  `Option<String>` (`current: null`, missing/empty refused). Attempt wire fields
+  are `op/ws/out/setter/before/after/created/attemptMs`; optional `created` carries
+  host-correlated identity, not a required synchronous handle. Missing/null/empty
+  means uncorrelated. Host consumers must implement the same contract.
+- Desires use stable `op-native-<serial>` identities, not command ids;
   attempts match operation/logical/output, consume once, and withdraw execution
   work after an attempt. Refusal, changed replay, stale/future stamps and
   multiple candidates hold with `AmbiguousCreation`. The ordinary empty spare
   never requests creation. Native order reorders bound logical rows.
-- Blocking counterexample: accept creation for logical L with before=after
+- Counterexample motivating the tentative hybrid rule: accept creation for logical L with before=after
   `[a,b]`; the requested desktop T is asynchronous. A user creates X before T
   appears. Fresh order `[a,b,X]` is identical to the trace where X is the requested
   desktop. The draft binds X to L and retires the operation; it has no causal
   proof. This requires no false adapter evidence: setter acceptance is not
   completion. A later `[a,b,X,T]` cannot repair that already-consumed attribution.
-- Regression `accepted_no_delta_late_singleton_must_not_guess_outside_race` in
-  `crates/tiler-core/tests/world_host_owned_stage1b.rs` fails: three bindings
-  instead of the required two, with X bound to L. The same file's
-  `delayed_no_delta_attempt_settles_on_late_readback` passes but encodes the
-  incompatible unique-delta inference. Neither oracle was weakened.
-- Options: add host-correlated created-id/completion evidence; hold every
-  uncorrelated late addition; or explicitly relax to unique-delta inference.
-  Recommendation: causal evidence where a host can prove it, otherwise safe
-  `AmbiguousCreation` with no re-create. Establish how KDE and macOS provide
-  that evidence before choosing a field or claiming delayed settlement. The
-  draft stays uncommitted; N3/N4 remain unresolved.
+- Tentative user choice 2026-10-25, option C (review after KDE/macOS land):
+  correlated `created` binds exactly that fresh id once, even with raced orders.
+  Otherwise exactly one outstanding creation on that output may bind the next
+  singleton addition. Multiple additions/outstanding creations hold
+  `AmbiguousCreation`, never blindly re-create. Accepted outside-first race:
+  X binds to L, the window lands on a real desktop, and later T adopts as outside
+  creation. This relaxation deliberately is not causal attribution.
+- `accepted_no_delta_late_singleton_binds_uncorrelated_risk` replaces the former
+  no-guess discriminator to pin that explicit trade-off. Causal racing,
+  raced-before, sequential causal operations, late visibility, changed replay,
+  reused id and multi-outstanding tests distinguish the correlated path and its
+  conservative holds. Review caught a stale mint-baseline refusal of valid causal
+  receipts; limiting that check to uncorrelated inference fixes both regressions.
 - Existing-native reuse is separately parked: explicit eligible-unbound
   selection versus fresh creation. Recommendation: fresh creation when no
   proven eligible backing exists, never cannibalize another logical workspace
   or reinterpret vanished-id/new-id counts as a rename. A draft count-only reuse
   branch was removed and a deletion-plus-outside-creation regression pins it.
-- Neutrality: Windows needs no native creation evidence; KDE/macOS need causal
-  asynchronous attribution; GNOME/ChromeOS may offer different native creation
+- Neutrality: Windows needs no native creation evidence; KDE can prove a same-turn
+  delta, macOS can use single-outstanding asynchronous inference, and GNOME/ChromeOS may offer different native creation
   receipts. Do not force synchronous creation, a returned native handle, an
   insertion ordinal, or a Windows-local backing model on all hosts.
 - Sticky semantics are unchanged: float-only over all managed workspaces of the
@@ -212,6 +216,9 @@
 
 ### N3. Empty native creation versus an unbound logical spare (parked)
 
+- Stage 1b resolves explicit fresh creation correlation through desires/attempts;
+  only existing-native reuse eligibility remains parked. The following records
+  the earlier cutover gap; KDE consumption is the next integration check.
 - Current observations do not correlate an occupant-less native creation with
   an already-published unbound logical spare. Stage 1 truthfully adopts a new
   outside native id as a workspace; it does not pretend to prove a requested
@@ -234,6 +241,8 @@
 
 ### N4. Migrated logical workspace without destination backing (parked)
 
+- Stage 1b now authorizes correlated destination creation; native integration
+  remains unaccepted until the KDE consumer and the retained oracles pass.
 - `world_commands.rs::commit_migration` moves the logical id between rings;
   it does not invent a destination native binding. The draft correctly resolves
   transfers through `(output, logical id) -> native_binding` and holds an
@@ -275,6 +284,13 @@
 
 ### Existing deferred product boundaries
 
+- Minimized is not strict retained-unmanaged: migration, output loss and pending
+  transfers can move it. Unknown float-sticky membership also loses its reply
+  row rather than preserving a slot; tiled-sticky becomes a minimized slot.
+  These are parked neutral core representation concerns, not port-side fixes.
+  Options: qualify existing semantics, or review a neutral retained-unmanaged /
+  all-desktop retention contract. Recommendation: preserve core behavior, do not
+  claim the stronger Activities promise, and resolve the contract before use.
 - Activities/multi-desktop: existing tentative default retains inactive-activity
   windows unmanaged with slots held; all-desktop maps to sticky; subsets float
   without rehome. Options: retain this default or propose a native-evidence-backed
@@ -394,7 +410,18 @@
   count drift and macOS dead-code strict-clippy warnings. Some non-native macOS
   tests require a readable macOS version and fail on a non-macOS host. No
   unrelated repair, dependency change or live mutation was attempted.
-- Exact next action: settle the causal creation-evidence/safe-hold contract
-  against the indistinguishable-prefix regression, then finish Stage 1b gates
-  and KDE desire/attempt consumption before rerunning the six migration/lifecycle
-  oracles. Stage 1b and the whole port remain active, not archived or complete.
+- Stage 1b accepted offline evidence (2026-10-25): locked all-target core/protocol/
+  Windows build and strict clippy pass; 2,032 tests pass across 52 suites (30
+  Stage 1b, 16 unknown/minimized, 28 codec). Formatting and whitespace pass.
+  The exact world-acceptance runner passes 6/6 checkpoints; final gates use
+  isolated build artifacts after identifying cross-revision cache reuse.
+  macOS test targets compile; shared 11 and trailing-join 7 tests pass. After
+  integration of the app-hidden amendment, world 52 tests pass.
+  Full macOS library: 1,120 pass; four dock-swipe tests require a readable macOS
+  version and fail identically on the unchanged baseline on a non-macOS host.
+  The trailing-join fixture now supplies exact creation attempts instead of
+  relying on the former uncorrelated outside-adoption path; production macOS
+  creation-attempt consumption remains follow-up work, not delivered here.
+- Exact next action: consume Stage 1b desires/attempts on KDE and rerun the six
+  migration/lifecycle oracles. The whole port remains active, not archived or
+  complete; B1 and later stages are not started by this amendment.

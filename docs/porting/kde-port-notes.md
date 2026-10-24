@@ -166,6 +166,24 @@ fixtures passing through shims.
   `currentDesktopChanged`, `desktopsChanged`) through the
   `workspace-native.ts` per-output capability seam. KWin 6.7+ only
   APIs stay behind that seam, never called directly.
+- Creation correlation at `v6.7.4`: `WorkspaceWrapper::createDesktop` is void but
+  calls `VirtualDesktopManager::createVirtualDesktop` inline
+  (`src/scripting/workspace_wrapper.cpp:295-298`). The manager inserts one fresh
+  UUID desktop into `m_desktops` before returning
+  (`src/virtualdesktops.cpp:448-482`); `workspace.desktops` reads that list directly
+  (`workspace_wrapper.cpp:69-72`, `virtualdesktops.h:312-315`). Read full ids
+  immediately before/after the call in the same JS turn; a unique fresh delta
+  supplies `creationAttempts[].created`. Never use insertion position as identity.
+  Creation silently does nothing at the desktop cap (25); a void return is not
+  success proof. Signals are synchronous (`workspace_wrapper.cpp:42-47`): spend
+  the operation before calling, tolerate reentrant invalidation, and report no
+  correlated id if the actual delta is not a singleton. All outputs project the
+  same global desktop list; only current cursors differ per output.
+- `onAllDesktops` is an empty per-window desktop list (`src/window.h:2120-2123`),
+  not current-desktop membership. Report `nativeWs: null` plus positive sticky
+  proof, never substitute the current desktop. Core unknown-sticky home/slot
+  retention remains a parked concern; this truthful encoding is not proof of
+  complete sticky adoption.
 - Geometry is one coherent KWin-logical space. Document and convert
   fractional KWin rounding (`Math.round`/`Math.trunc` in
   `world-observe.ts`, `world-drag.ts`) and keep it inside the adapter.

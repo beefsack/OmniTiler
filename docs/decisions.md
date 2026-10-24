@@ -39,6 +39,9 @@ Tentative index (user review pending; not approved product rules):
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 - Native adoption count: four native-bound workspaces plus ordinary trailing
   lifecycle ([below](#native-adoption-2026-10-24))
+- Host-owned native-only receipts, optional current, authoritative order and
+  hybrid creation correlation ([below](#native-adoption-2026-10-24)); review
+  after both KDE and macOS changes land
 - KDE broker capture-lifetime reset and sender/generation-bound command transport
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 
@@ -4634,16 +4637,37 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   separate-view modes are degraded and the adapter warns. Ordinary trailing
   lifecycle remains unchanged. Complete vanished ids are removals, never renames;
   a fresh generation re-adopts from observation.
-- **Creation correlation, 2026-10-25:** core owns existing-backing selection or an
-  explicit creation desire; adapters report raw correlated attempts, never bind.
-  Ambiguous execution holds with `AmbiguousCreation`, never blindly recreates.
-  The Stage 1b draft is not accepted: setter acceptance plus a unique later order
-  delta cannot distinguish a late requested creation from a concurrent outside
-  creation. Causal created-id evidence or a safe hold rule remains necessary;
-  [counterexample and options](changes/kde-world-v2-port.md#stage-1b-creation-correlation-blocker).
+- **Tentative hybrid creation correlation (option C), 2026-10-25; review after
+  KDE and macOS changes land:** core issues explicit creation desires and alone
+  binds native backing. An optional host-correlated created native id binds
+  exactly that new id, causally and at most once, even with outside additions.
+  Hosts need not create synchronously or return a handle. Without a correlated
+  id, exactly one outstanding creation on the output may consume the next
+  singleton addition; multiple additions or outstanding creations hold with
+  `AmbiguousCreation`, never blindly re-create. Accepted rare race: outside X
+  appears before asynchronous requested T; X binds to the desired logical row,
+  the window lands on a real desktop, and T is later adopted as ordinary outside
+  creation. This inference is not causal proof. KDE can provide same-turn
+  before/after causal ids; asynchronous hosts can use the single-outstanding
+  rule. [Contract and evidence](changes/kde-world-v2-port.md#stage-1b-creation-correlation).
 - Sticky semantics are unchanged: all managed workspaces of the owning output,
   float-only, positive all-desktop proof; sticky members stay on the source output
   during workspace migration. This does not claim native cross-display behavior.
+- **Parked retained-unmanaged representation, 2026-10-25:** `minimized=true`
+  suppresses geometry and ordinary send/focus, but workspace migration, output
+  removal and an already-pending transfer can relocate it. It therefore does not
+  establish the tentative inactive-Activity promise "never move". Options: accept
+  minimized relocation semantics for host-hidden windows, or add a separately
+  reviewed neutral retained-unmanaged state. Recommendation: keep core behavior,
+  do not claim equivalence, and resolve the product promise before Activities
+  consumption. Host-hidden macOS use needs the same explicit qualification.
+- **Parked unknown sticky membership, 2026-10-25:** native `None` is the truthful
+  encoding for all-desktop membership, but core cannot assign an initial single
+  home from it. A retained float-sticky loses its published exception row on
+  unknown membership; a tiled-sticky retains a minimized slot. Options: retain
+  existing omission semantics, or propose a neutral all-desktop home/retention
+  contract. Recommendation: preserve behavior and establish that contract before
+  claiming all-desktop slot retention; never fabricate current-desktop membership.
 
 ## Port deferred investigations 2026-10-24
 

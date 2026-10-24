@@ -79,6 +79,7 @@ fn test_report() -> WorldReport {
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
     }
 }
@@ -125,7 +126,7 @@ fn digest_covers_every_section() {
     changed.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: vec!["ws".to_owned()],
-        current_native: "ws".to_owned(),
+        current_native: Some("ws".to_owned()),
     });
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
@@ -270,7 +271,7 @@ fn validation_gates_shapes() {
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: Vec::new(),
-        current_native: String::new(),
+        current_native: None,
     });
     assert_eq!(
         validate_report_reason(&bad),
@@ -299,7 +300,7 @@ fn validation_gates_shapes() {
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: vec!["d1".to_owned(), "d1".to_owned()],
-        current_native: "d1".to_owned(),
+        current_native: Some("d1".to_owned()),
     });
     assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
     // Contradictory native rows for the same output refuse.
@@ -307,12 +308,12 @@ fn validation_gates_shapes() {
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: vec!["d1".to_owned()],
-        current_native: String::new(),
+        current_native: None,
     });
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: vec!["d2".to_owned()],
-        current_native: String::new(),
+        current_native: None,
     });
     assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
     // Native on unknown screen refuses.
@@ -320,7 +321,7 @@ fn validation_gates_shapes() {
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: Vec::new(),
-        current_native: String::new(),
+        current_native: None,
     });
     bad.native[0].output = OutputId("nope".to_owned());
     assert_eq!(validate_report_reason(&bad), Some("native-output-unknown"));

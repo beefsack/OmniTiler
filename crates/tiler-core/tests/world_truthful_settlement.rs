@@ -110,6 +110,7 @@ fn report(
         member_attempts,
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
     }
 }
@@ -268,29 +269,60 @@ fn migration_contradictory_receipt_does_not_settle() {
 
 #[test]
 fn host_owned_unknown_holds_exact_settles() {
+    use tiler_core::world_report::NativeObservation;
+    // Host-owned mode is native-only: every step carries ordered-desktop
+    // observations plus per-window native membership. Unknown native
+    // membership holds; the mapped native receipt plus the exact
+    // follow-view echo settles.
+    const NA1: &str = "n-a1";
+    const NA2: &str = "n-a2";
+    const NB1: &str = "n-b1";
+    fn native_rows() -> Vec<NativeObservation> {
+        vec![
+            NativeObservation {
+                output: OutputId("out-a".to_owned()),
+                native_order: vec![NA1.to_owned(), NA2.to_owned()],
+                current_native: Some(NA1.to_owned()),
+            },
+            NativeObservation {
+                output: OutputId("out-b".to_owned()),
+                native_order: vec![NB1.to_owned()],
+                current_native: Some(NB1.to_owned()),
+            },
+        ]
+    }
+    fn hfact(window: &str, output: &str, x: i32, native: Option<&str>) -> WindowFact {
+        let mut f = fact(window, output, x);
+        f.native_workspace = native.map(str::to_owned);
+        f
+    }
+    fn with_native(mut r: WorldReport) -> WorldReport {
+        r.native = native_rows();
+        r
+    }
     // Window send, cross-output, host-owned on.
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
-        &report(
+        &with_native(report(
             1,
             1,
-            vec![fact("win-a", "out-a", 0)],
+            vec![hfact("win-a", "out-a", 0, Some(NA1))],
             vec![],
             None,
             None,
             vec![],
             true,
             true,
-        ),
+        )),
     );
     let view_b = view_of(&first, "out-b").expect("view b");
     accepted(
         &mut engine,
-        &report(
+        &with_native(report(
             2,
             2,
-            vec![fact("win-a", "out-a", 0)],
+            vec![hfact("win-a", "out-a", 0, Some(NA1))],
             vec![],
             Some(11),
             Some(WorldCommand::SendDirectional {
@@ -301,23 +333,23 @@ fn host_owned_unknown_holds_exact_settles() {
             vec![],
             true,
             true,
-        ),
+        )),
     );
     // Raw screen arrival with unknown membership must not settle while
     // host-owned (no translated logical receipt yet).
     let held = accepted(
         &mut engine,
-        &report(
+        &with_native(report(
             3,
             3,
-            vec![fact("win-a", "out-b", 800)],
+            vec![hfact("win-a", "out-b", 800, None)],
             vec![],
             None,
             None,
             vec![],
             true,
             true,
-        ),
+        )),
     );
     assert_eq!(
         held.transfers.len(),
@@ -325,14 +357,15 @@ fn host_owned_unknown_holds_exact_settles() {
         "host-owned raw holds: {:?}",
         held.transfers
     );
-    // Exact logical receipt plus the exact follow-view echo settles: a
+    // Exact native receipt plus the exact follow-view echo settles: a
     // cross-output follow parent never settles on membership alone while
-    // the target view is still stale.
-    let mut exact = fact("win-a", "out-b", 800);
+    // the target view is still stale. The adapter logical receipt is
+    // ignored in host-owned mode (native-only); the native receipt proves.
+    let mut exact = hfact("win-a", "out-b", 800, Some(NB1));
     exact.observed_workspace = Some(view_b.clone());
     let settled = accepted(
         &mut engine,
-        &report(
+        &with_native(report(
             4,
             4,
             vec![exact],
@@ -342,7 +375,7 @@ fn host_owned_unknown_holds_exact_settles() {
             vec![],
             true,
             true,
-        ),
+        )),
     );
     assert!(
         settled.transfers.is_empty(),
@@ -354,25 +387,25 @@ fn host_owned_unknown_holds_exact_settles() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
-        &report(
+        &with_native(report(
             1,
             1,
-            vec![fact("win-a", "out-a", 0)],
+            vec![hfact("win-a", "out-a", 0, Some(NA1))],
             vec![],
             None,
             None,
             vec![],
             true,
             true,
-        ),
+        )),
     );
     let view_a = view_of(&first, "out-a").expect("view a");
     accepted(
         &mut engine,
-        &report(
+        &with_native(report(
             2,
             2,
-            vec![fact("win-a", "out-a", 0)],
+            vec![hfact("win-a", "out-a", 0, Some(NA1))],
             vec![],
             Some(11),
             Some(WorldCommand::MigrateWorkspace {
@@ -383,21 +416,21 @@ fn host_owned_unknown_holds_exact_settles() {
             vec![],
             true,
             true,
-        ),
+        )),
     );
     let held = accepted(
         &mut engine,
-        &report(
+        &with_native(report(
             3,
             3,
-            vec![fact("win-a", "out-b", 800)],
+            vec![hfact("win-a", "out-b", 800, None)],
             vec![],
             None,
             None,
             vec![],
             true,
             true,
-        ),
+        )),
     );
     assert!(
         held.transfers

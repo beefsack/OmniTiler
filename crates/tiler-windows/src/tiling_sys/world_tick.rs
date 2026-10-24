@@ -2122,6 +2122,7 @@ mod apply_diag_tests {
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
+            native_creations: Vec::new(),
             cursor_warp: None,
             presentation: tiler_core::world_presentation::WorldPresentation::default(),
         }
@@ -2192,6 +2193,7 @@ mod apply_diag_tests {
             member_attempts: Vec::new(),
             view_attempts: Vec::new(),
             clear_attempts: Vec::new(),
+            creation_attempts: Vec::new(),
             presentation: tiler_core::world_report::PresentationIngress::disabled(),
         }
     }

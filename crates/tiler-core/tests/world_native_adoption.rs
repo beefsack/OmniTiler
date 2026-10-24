@@ -150,6 +150,7 @@ fn report(
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
         presentation: tiler_core::world_report::PresentationIngress::disabled(),
     }
 }
@@ -168,7 +169,7 @@ fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation 
     NativeObservation {
         output: OutputId(output.to_owned()),
         native_order: order.iter().map(|s| (*s).to_owned()).collect(),
-        current_native: current.to_owned(),
+        current_native: Some(current.to_owned()),
     }
 }
 
@@ -552,8 +553,10 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         scope_authority(&held, "out-a", &bound[N2]),
         Some(ScopeAuthority::Controlled)
     );
-    // Conflicting evidence (native N1, logical receipt naming the known
-    // N2 workspace) keeps the retained home and fences that scope too.
+    // Host-owned mode is native-only: the adapter logical receipt is
+    // never consulted, so a conflicting observed workspace naming the
+    // known N2 workspace loses to the native N1 evidence (native wins,
+    // no fence). Only unknown/unmapped native evidence holds.
     let mut conflict = fact_native("win-a", "out-a", rect(0, 0, 400, 560), Some(N1));
     conflict.observed_workspace = Some(bound[N2].clone());
     let held = accepted(
@@ -578,11 +581,14 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         .iter()
         .find(|row| row.lifetime.0 == "win-a")
         .expect("row");
-    assert_eq!(row.workspace, bound[N1], "conflict keeps retained home");
+    assert_eq!(
+        row.workspace, bound[N1],
+        "native wins over the ignored receipt"
+    );
     assert_eq!(
         scope_authority(&held, "out-a", &bound[N1]),
-        Some(ScopeAuthority::Hold(HoldReason::Unreadable)),
-        "conflict fences, never fights"
+        Some(ScopeAuthority::Controlled),
+        "native-only ignores the conflicting receipt, no fence"
     );
     // Partial report (incomplete inventory) with a new native id creates
     // nothing.

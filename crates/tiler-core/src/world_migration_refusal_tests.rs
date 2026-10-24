@@ -323,6 +323,7 @@ fn report(
         member_attempts,
         view_attempts,
         clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
     }
 }
@@ -846,6 +847,7 @@ fn report_with_screens(
         member_attempts,
         view_attempts,
         clear_attempts: Vec::new(),
+        creation_attempts: Vec::new(),
         presentation: crate::world_report::PresentationIngress::disabled(),
     }
 }

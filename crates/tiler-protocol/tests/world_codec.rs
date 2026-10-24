@@ -159,7 +159,7 @@ fn native_observations_require_the_capability() {
     let report = decode_request(&value.to_string()).expect("host-owned decodes");
     assert!(report.host_owned_workspace_domains);
     assert_eq!(report.native.len(), 1);
-    assert_eq!(report.native[0].current_native, "ws");
+    assert_eq!(report.native[0].current_native.as_deref(), Some("ws"));
     // equalCount is a plain capability flag.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["equalCount"] = serde_json::Value::Bool(true);
@@ -1118,6 +1118,50 @@ fn reply_warp_cursor_matches_core_sizing() {
 }
 
 #[test]
+fn native_current_null_strict_and_creation_attempts_decode() {
+    // Strict codec: `current: null` means not an ordered desktop; empty
+    // strings and missing keys refuse (no compatibility tolerance).
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": null}]);
+    let report = decode_request(&value.to_string()).expect("null current decodes");
+    assert_eq!(report.native[0].current_native, None);
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": ""}]);
+    assert!(decode_request(&value.to_string()).is_err());
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"]}]);
+    assert!(decode_request(&value.to_string()).is_err());
+    // Creation attempts decode tolerantly (missing backfills) and strictly
+    // when present; the estimate bounds the wire.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert!(report.creation_attempts.is_empty());
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["creationAttempts"] = serde_json::json!([{
+        "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
+        "before": ["ws"], "after": ["ws", "ws-new"], "attemptMs": "5",
+    }]);
+    let wire = value.to_string();
+    let report = decode_request(&wire).expect("creation decodes");
+    assert_eq!(report.creation_attempts.len(), 1);
+    assert_eq!(report.creation_attempts[0].operation_id, "op-native-1");
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(estimate >= wire.len());
+    // Without the capability, creation attempts refuse at the core gate.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["creationAttempts"] = serde_json::json!([{
+        "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
+        "before": [], "after": ["ws"], "attemptMs": "5",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("creation refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+}
+
+#[test]
 fn golden_bootstrap_reply_bytes_lock_wire_shape() {
     // The discovery reply is fixed shape: v2, ready false, empty sections.
     let engine = WorldEngine::new("gen-1").expect("generation");
@@ -1128,7 +1172,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         "{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
          \"obs\":\"0\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\
          \"scopes\":[],\"workspaces\":[],\"outputs\":[],\"windows\":[],\
-         \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"warpCursor\":null,\
+         \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\"warpCursor\":null,\
          \"presentation\":{\"foreground\":\"\",\"border\":{\"visible\":false,\"reason\":\"no-target\",\"inner\":null,\"outer\":null},\
          \"underlay\":{\"status\":\"hidden\",\"reason\":\"no-group\",\"baseRev\":null},\"pager\":[]}}"
     );
@@ -1429,4 +1473,75 @@ fn native_ws_estimate_bounds_actual_wire() {
         "estimate {estimate} bounds wire {}",
         wire.len()
     );
+}
+
+#[test]
+fn creation_created_receipt_decodes_tolerantly_and_bounds() {
+    // The correlated receipt is optional: missing, null, and empty all
+    // backfill to uncorrelated, matching adapters predating the field.
+    // A present opaque id decodes; non-id and non-string shapes refuse.
+    let with_created = |created: serde_json::Value| {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["hostOwned"] = serde_json::Value::Bool(true);
+        value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+        let mut attempt = serde_json::json!({
+            "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
+            "before": ["ws"], "after": ["ws"], "attemptMs": "5",
+        });
+        attempt["created"] = created;
+        value["creationAttempts"] = serde_json::json!([attempt]);
+        (value.to_string(), decode_request(&value.to_string()))
+    };
+    let (wire, report) = with_created(serde_json::Value::String("ws-new".to_owned()));
+    let report = report.expect("created decodes");
+    assert_eq!(
+        report.creation_attempts[0].created_native.as_deref(),
+        Some("ws-new")
+    );
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    for absent in [
+        serde_json::Value::Null,
+        serde_json::Value::String(String::new()),
+    ] {
+        let (_, report) = with_created(absent);
+        assert_eq!(
+            report.expect("absent backfills").creation_attempts[0].created_native,
+            None
+        );
+    }
+    // A missing key also backfills: predates-the-field adapters stay valid.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["creationAttempts"] = serde_json::json!([{
+        "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
+        "before": ["ws"], "after": ["ws"], "attemptMs": "5",
+    }]);
+    let report = decode_request(&value.to_string()).expect("missing backfills");
+    assert_eq!(report.creation_attempts[0].created_native, None);
+    // Non-id and non-string receipts refuse with fixed vocabulary.
+    for bad in [
+        serde_json::json!("not an id!"),
+        serde_json::json!(7),
+        serde_json::json!(["ws-new"]),
+    ] {
+        let (wire, _) = with_created(bad);
+        assert!(decode_request(&wire).is_err(), "bad created refuses");
+    }
+    // Unknown receipt fields refuse.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["creationAttempts"] = serde_json::json!([{
+        "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
+        "before": ["ws"], "after": ["ws"], "createdId": "ws-new", "attemptMs": "5",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
+    assert_eq!(error.kind, "unknown-field");
 }

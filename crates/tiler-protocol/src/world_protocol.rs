@@ -47,7 +47,9 @@
 //! views[]: {out, view:""|id} (empty means unknown)
 //! closed[]: [id...] (explicit closes)
 //! native[] (host-owned observations, requires hostOwned): {out, order:[id...],
-//!             current:""|id}
+//!             current:id|null} (strict: null means the current surface is
+//!             not an ordered desktop and retains the logical view; empty
+//!             strings and missing keys refuse)
 //! predicate: "both-axes-fixed"|"either-axis-fixed"
 //! refill: "last-remaining-workspace"|"most-recently-used-workspace"
 //! anchorFallback: "largest-splittable-window"|"closest-splittable-relative"|"no-search"
@@ -98,6 +100,18 @@
 //!   maximize-clear write/proof facts only (immediate pre/post maximized
 //!   states); at most one entry per retained clear operation. The core
 //!   owns directional clear completion.
+//! creationAttempts[] (optional, tolerant: missing backfills []):
+//!   {op, ws, out, setter:accepted|refused|threw,
+//!    before:[id...], after:[id...],
+//!    created:id|null (optional, tolerant: missing/null/empty backfills
+//!    null for adapters predating the correlated receipt),
+//!    attemptMs:"u64"} - mechanical native
+//!   creation write/readback facts only (live native orders immediately
+//!   before/after the create call, plus the host-correlated created native
+//!   id when the host can prove which fresh desktop its create call
+//!   produced); at most one entry per outstanding
+//!   creation operation (requires hostOwned). The core owns binding and
+//!   settlement over the fresh native[] readback.
 //! command.op: focus|send|switch-view|select-workspace|select-numbered|
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|
@@ -123,6 +137,9 @@
 //! original op/window/outcome; a clear continuation means the intent
 //! resumed, never that the final frame arrived; only `float-frame-proven`
 //! means native observation confirmed the float target), plus
+//! `nativeCreations`: [] or one `{"op","ws","out"}` object per outstanding
+//! core-owned native creation authorization (capability-gated, at most once
+//! per op), plus
 //! `warpCursor`: null or the desired `[x,y]` cursor-warp point
 //! (cross-output focus only), plus `presentation`: the uniform
 //! border/underlay/pager presentation (`foreground` token, `border` shape,
@@ -629,15 +646,25 @@ fn decode_native(value: &serde_json::Value) -> Result<NativeObservation> {
         }
         order.push(id.to_owned());
     }
-    // Empty current means unknown; otherwise an opaque id.
-    let current = req_str(map, "current")?;
-    if !current.is_empty() && !is_opaque_id(current) {
-        return Err(unknown_value());
-    }
+    // Strict codec: `current` is a string opaque id or `null`. `null`
+    // means the current surface is not an ordered desktop (retains the
+    // logical view while still using the order). Empty strings and missing
+    // keys refuse: no compatibility tolerance is invented.
+    let current_native = match map.get("current") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(text.clone())
+        }
+        Some(_) => return Err(unknown_value()),
+    };
     Ok(NativeObservation {
         output: OutputId(req_id(map, "out")?),
         native_order: order,
-        current_native: current.to_owned(),
+        current_native,
     })
 }
 
@@ -789,6 +816,53 @@ fn decode_clear_attempt(
         setter: parse_frame_setter(req_str(map, "setter")?)?,
         pre_maximized: opt_bool_or_null(map, "pre")?,
         post_maximized: opt_bool_or_null(map, "post")?,
+        attempt_ms: req_u64_str(map, "attemptMs")?,
+    })
+}
+
+fn decode_creation_attempt(
+    value: &serde_json::Value,
+) -> Result<tiler_core::world_report::NativeCreationAttempt> {
+    let map = as_object(value)?;
+    check_keys_with_optional(
+        map,
+        &["op", "ws", "out", "setter", "before", "after", "attemptMs"],
+        &["created"],
+    )?;
+    let order_list = |key: &str| -> Result<Vec<String>> {
+        let items = map.get(key).ok_or_else(malformed)?;
+        let items = items.as_array().ok_or_else(malformed)?;
+        let mut order = Vec::with_capacity(items.len());
+        for item in items {
+            let id = item.as_str().ok_or_else(malformed)?;
+            if !is_opaque_id(id) {
+                return Err(unknown_value());
+            }
+            order.push(id.to_owned());
+        }
+        Ok(order)
+    };
+    Ok(tiler_core::world_report::NativeCreationAttempt {
+        operation_id: req_id(map, "op")?,
+        logical_workspace: req_id(map, "ws")?,
+        target_output: OutputId(req_id(map, "out")?),
+        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        order_before: order_list("before")?,
+        order_after: order_list("after")?,
+        created_native: match map.get("created") {
+            // Tolerant backfill: adapters predating the correlated receipt
+            // omit it (or send null/empty) and read as uncorrelated.
+            None => None,
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) if text.is_empty() => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(text.clone())
+            }
+            Some(_) => return Err(malformed()),
+        },
         attempt_ms: req_u64_str(map, "attemptMs")?,
     })
 }
@@ -1459,6 +1533,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "memberAttempts",
             "viewAttempts",
             "clearAttempts",
+            "creationAttempts",
             "gestureIngress",
         ],
     )?;
@@ -1542,6 +1617,15 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     if let Some(value) = map.get("clearAttempts") {
         for item in value.as_array().ok_or_else(malformed)? {
             clear_attempts.push(decode_clear_attempt(item)?);
+        }
+    }
+    // Tolerant creation attempts: missing backfills empty. Present entries
+    // carry the exact mechanical shape; unknown fields/values refuse. The
+    // core gate below refuses them without the host-owned capability.
+    let mut creation_attempts = Vec::new();
+    if let Some(value) = map.get("creationAttempts") {
+        for item in value.as_array().ok_or_else(malformed)? {
+            creation_attempts.push(decode_creation_attempt(item)?);
         }
     }
     // Tolerant gesture ingress: missing backfills observation-only (`None`).
@@ -1687,6 +1771,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         member_attempts,
         view_attempts,
         clear_attempts,
+        creation_attempts,
         presentation: decode_presentation(map.get("presentation").ok_or_else(malformed)?)?,
     };
     if let Some(reason) = validate_report_reason(&report) {
@@ -1928,6 +2013,8 @@ pub fn encode_reply(reply: &WorldReply) -> String {
     tiler_core::world_sizing::encode_gesture_settled(&mut out, &reply.gesture_settled);
     out.push_str(",\"operationSettled\":");
     tiler_core::world_sizing::encode_operation_settled(&mut out, &reply.operation_settled);
+    out.push_str(",\"nativeCreations\":");
+    tiler_core::world_sizing::encode_native_creations(&mut out, &reply.native_creations);
     out.push_str(",\"warpCursor\":");
     match reply.cursor_warp {
         Some((x, y)) => {

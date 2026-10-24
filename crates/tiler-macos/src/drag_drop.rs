@@ -1664,7 +1664,7 @@ mod tests {
                 native: vec![NativeObservation {
                     output: OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
-                    current_native: "space-11".to_owned(),
+                    current_native: Some("space-11".to_owned()),
                 }],
                 fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
                 migration_source_refill:
@@ -1690,6 +1690,7 @@ mod tests {
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
                 clear_attempts: Vec::new(),
+                creation_attempts: Vec::new(),
                 presentation: tiler_core::world_report::PresentationIngress::disabled(),
             }
         }

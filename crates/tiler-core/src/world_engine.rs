@@ -294,6 +294,39 @@ pub(crate) struct RetainedClear {
     pub(crate) ambiguous: bool,
 }
 
+/// Retained host-owned native creation: one outstanding core-owned
+/// authorization for the adapter to create exactly one native desktop for
+/// one logical workspace, executed at most once per `operation_id`
+/// (replay idempotent). The op id mints from the core serial
+/// (`op-native-<n>`), never from a command sequence: trailing spare
+/// creations are observation-caused and several outputs/workspaces can share
+/// one command. When the adapter's fresh native order shows the created
+/// desktop late, core binds it to the pending logical (never adopts it as an
+/// outside creation); an ambiguous creation holds as
+/// [`HoldReason::AmbiguousCreation`](crate::world_report::HoldReason) and
+/// never blind-recreates.
+/// Capability-named note: core owns binding and settlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedNativeCreation {
+    pub(crate) operation_id: String,
+    pub(crate) logical_workspace: String,
+    pub(crate) target_output: OutputId,
+    /// Live native order observed when the authorization minted (strict
+    /// attempt matching compares the attempt's `before` against this).
+    pub(crate) order_before: Vec<String>,
+    /// Report clock (`monotonic_ms`) when the authorization minted (`0`
+    /// when unreported): attempts stamped before this never prove the
+    /// creation (stale) and latch ambiguity instead.
+    pub(crate) minted_ms: u64,
+    /// Latest exact-correlated raw creation attempt (op plus logical plus
+    /// output), staged for gap survival like the float/clear pending rows.
+    pub(crate) pending: Option<crate::world_report::NativeCreationAttempt>,
+    /// Latched ambiguity (refused, threw, mismatched, or colliding outside
+    /// creation): publishes `AmbiguousCreation` and never mints a blind
+    /// replacement.
+    pub(crate) ambiguous: bool,
+}
+
 /// Bounded outcome of one [`WorldEngine::handle_report`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldOutcome {
@@ -411,6 +444,17 @@ pub struct WorldEngine {
     /// Pruned with the frame maps.
     pub(crate) learned_mins: BTreeMap<WindowId, crate::world_frames::LearnedMin>,
     pub(crate) creation_counter: u64,
+    /// Core-owned native creation serial: mints `op-native-<n>` creation
+    /// operation ids (never from a command sequence). Monotonic within the
+    /// generation: a fresh backend incarnation (new [`WorldEngine`]) restarts
+    /// it, while an adapter-incarnation reset only clears the retained
+    /// creations and never reuses an id.
+    pub(crate) native_creation_seq: u64,
+    /// Outstanding core-owned native creation authorizations (capability
+    /// only). At most one per unbound logical workspace; stable op id until
+    /// the fresh native readback binds it or ambiguity latches. Reset on
+    /// generation/incarnation. Capability-named note: explicit desire only.
+    pub(crate) retained_creations: Vec<RetainedNativeCreation>,
     pub(crate) last_views: BTreeMap<OutputId, String>,
     /// Core-owned logical workspace rings (D2): per-screen ordered lists of
     /// stable logical workspace ids, retained across reports. Rings converge
@@ -422,8 +466,10 @@ pub struct WorldEngine {
     /// `(output, native desktop id)` to the stable core logical workspace
     /// id adopted for it. Built once per output from the first complete
     /// `native_order` (native order preserved), extended when an outside
-    /// host creates a native desktop (inserted at native-order position),
-    /// never shrunk (absent native rows never delete mappings). Reset on
+    /// host creates a native desktop (inserted at native-order position).
+    /// A complete snapshot (`inventory_complete`, complete screens, and a
+    /// present native row for the output) prunes vanished ids: removal, not
+    /// rename. Partial or absent rows never delete mappings. Reset on
     /// generation/incarnation. Empty in the native-free default.
     pub(crate) native_map: BTreeMap<(String, String), String>,
     /// Core-owned current view per screen: the stable logical workspace id
@@ -659,6 +705,8 @@ impl WorldEngine {
             consumed_frames: BTreeMap::new(),
             learned_mins: BTreeMap::new(),
             creation_counter: 0,
+            native_creation_seq: 0,
+            retained_creations: Vec::new(),
             gesture: None,
             consumed_gesture_seq: 0,
             gesture_terminal: None,
@@ -720,6 +768,7 @@ impl WorldEngine {
             command_result: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
+            native_creations: Vec::new(),
             cursor_warp: None,
             presentation: crate::world_presentation::WorldPresentation::default(),
         }
@@ -741,6 +790,7 @@ impl WorldEngine {
         self.retained.clear();
         self.retained_floats.clear();
         self.retained_clears.clear();
+        self.retained_creations.clear();
         self.frames.clear();
         self.consumed_frames.clear();
         self.learned_mins.clear();
