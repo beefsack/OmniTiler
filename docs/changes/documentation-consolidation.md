@@ -1,0 +1,53 @@
+# Documentation consolidation
+
+## Goal and scope
+
+- Make current product and port status easy to find after the completed
+  [core rearchitecture](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24).
+- Archive completed/superseded backlog and decision history without losing
+  intent; shorten active status narratives and link to evidence records.
+- Review active change records and point-of-use docs for retired ownership,
+  stale contracts, duplication and broken local links.
+- Preserve priorities, parked questions, tentative decisions, specification
+  rows and stable port-guide paths/decision anchors. `docs/principles.md` is
+  unchanged; proposals, if any, are reported separately. No runtime or port work.
+
+## Bounded units
+
+1. Backlog: retain active work, promote delivered core/Windows status, preserve
+   history in a linked archive and keep KDE/macOS ports and deferred reviews.
+2. Decisions: retain current meaning and stable anchors, identify tentative
+   entries, consolidate superseded history with traceable links.
+3. Change records: archive complete/superseded work, retain accurate active
+   scope and remove duplication with point-of-use docs.
+4. Other docs: reconcile current architecture and navigation; mechanically
+   check local paths and fragments across docs and READMEs.
+
+## Acceptance and verification
+
+- Each move preserves history and updates inbound and relative links.
+- Active docs distinguish delivered shared-core/Windows v2 from unported KDE/
+  macOS and their approved remaining core/native work.
+- Deferred native acceptance/separation, cleanup/abstraction, fixture follow-ups
+  and product questions remain visible, without new product choices.
+- Inspect each area diff and verify whitespace and local links; record actual
+  before/after backlog and decision sizes and any unresolved link exceptions.
+
+## Current state
+
+- Core close-out is archived with final fixture-only evidence; the core-only
+  ordered baseline was rerun successfully at 6/6 checkpoints.
+- Baseline sizes before consolidation: backlog 389,728 bytes; decisions
+  331,400 bytes.
+- Backlog unit accepted: active file 162,304 bytes; archived history 270,291
+  bytes. Complete historical bodies retain delivered/superseded work; current
+  entries link to records and reflect the completed core/Windows v2 boundary.
+  Native connector/separation, cleanup/abstraction, fixture follow-ups, KDE/macOS
+  ports and parked questions remain explicit active work. Preservation review
+  found no missing unresolved requirement or tentative/parked item. Tail
+  acceptance inventories remain detailed rather than discarding unique checks.
+- Scoped Markdown path/fragment checking found only existing broken targets;
+  these and archive-local fragment retargeting are carried into the final link
+  cleanup unit. New port and core-closeout links pass; whitespace is clean.
+- Next: decisions consolidation, then active change-record and point-of-use
+  documentation review, followed by the full local-link gate.
