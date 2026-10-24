@@ -712,13 +712,13 @@ in-memory preimage plus a reaper callback is not crash recovery.
   live readiness. Marker helpers
   ([product_hide.rs](../../../crates/tiler-windows/src/product_hide.rs#L36-L54))
   render/parse `watcher-<owner-creation>.ready`; spawn and live-verify in
-  [product_hide.rs](../../../crates/tiler-windows/src/product_hide.rs#L1344-L1415)
+  [product_hide/sys/watcher.rs](../../../crates/tiler-windows/src/product_hide/sys/watcher.rs#L10-L95)
   (same exe/SID/session, creation match, alive check); commit-before-hide
   ledger in [storage.rs](../../../crates/tiler-windows/src/storage.rs#L221-L253)
   with hide/reveal claims in
-  [product_hide.rs](../../../crates/tiler-windows/src/product_hide.rs#L1003-L1081)
+  [product_hide/sys/mod.rs](../../../crates/tiler-windows/src/product_hide/sys/mod.rs#L1371-L1449)
   and
-  [product_hide.rs](../../../crates/tiler-windows/src/product_hide.rs#L1196-L1344).
+  [product_hide/sys/mod.rs](../../../crates/tiler-windows/src/product_hide/sys/mod.rs#L1527-L1605).
   The Windows ledger is geometry-less by design (visibility claims); a Mac
   preimage must additionally be durable and carry geometry plus session and
   lifetime identity (bundle ID / PID / window ID joins are all unstable
@@ -851,14 +851,14 @@ mapping, TCC/native IDs, and the event loop. Own-repo source baseline:
   [contract.rs](../../../crates/tiler-core/src/contract.rs#L302-L746);
   in-tree `tiler-windows` uses only `LifecycleOperation::MoveTiled` and
   `DivergenceKind` in
-  [workspace_owner.rs](../../../crates/tiler-windows/src/workspace_owner.rs#L1596-L2012).
+  [workspace_owner.rs @ df018fbf (retired pre-world-cutover module)](https://github.com/beefsack/OmniTiler/blob/df018fbf/crates/tiler-windows/src/workspace_owner.rs#L1596-L2012).
   Reconcile entry `new` in
   [reconcile.rs](../../../crates/tiler-core/src/reconcile.rs#L298-L298) is
   test-covered policy, not an adapter call. Do not present the contract
   module as the Mac adapter route without a spike proving its use.
 - Closest Windows adapter analogues (intent only, no mechanic reuse):
   `ManagedWorkspaces` membership/hide/focus/cleanup in
-  [workspace.rs](../../../crates/tiler-windows/src/workspace.rs#L95-L389)
+  [workspace.rs @ df018fbf (retired pre-world-cutover module)](https://github.com/beefsack/OmniTiler/blob/df018fbf/crates/tiler-windows/src/workspace.rs#L95-L389)
   (`ensure_output`, `activate`, `select`, `resolve_send`, `assign`,
   `set_hidden`, `focus_target`, `eligible_focus_set`, `plan_cleanup`);
   committed ledger in

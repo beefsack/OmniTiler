@@ -65,7 +65,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   default follows and explicit stay preserves source view/native boundary focus.
   Item 2 implemented offline, native journey pending.
   [Core/protocol](../../../crates/tiler-core/tests/session_send_to_workspace.rs),
-  [adapter fixtures](../../../kwin/tests/workspace-send-follow-stay.test.ts),
+  [adapter fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-follow-stay.test.ts),
   [record](../../changes/archive/kde-workspace-send-follow-stay.md);
   `D(D-dec-cos)` + step-3 `D(D-dec-ww)`.
 - Then Ours Windows: explicit numbered/relative follow/stay delivered,
@@ -362,7 +362,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   floating frames untouched. Default follows with verified arrival/switch/focus
   readback; explicit stay preserves source view/native boundary focus. Item 2
   implemented offline; physical feel/native journey pending.
-  [Fixtures](../../../kwin/tests/workspace-send-follow-stay.test.ts),
+  [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-follow-stay.test.ts),
   [record](../../changes/archive/kde-workspace-send-follow-stay.md); `D(D-dec-ww)`.
 - Then Ours Windows: agent-observed Notepad numbered follow/stay across
   both floating boundaries preserves floating frames, reflows only tiled
@@ -504,7 +504,7 @@ verb inventory); selected intent and doc assertions are never evidence.
   ("worked perfectly"). Individual cases/presets were not specified;
   multi-output/hotplug/preset checks remain pending. Scoped observed-change history in
   [adapter](../../../kwin/src/workspace-native.ts),
-  [fixtures](../../../kwin/tests/workspace-previous-relative.test.ts),
+  [fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-previous-relative.test.ts),
   [record](../../changes/archive/kde-workspace-history-ring.md).
 - Then Ours Windows: WS2 then WS3 via Win+Ctrl+Tab in portable local
   observed-history tests; delivered offline 2026-10-10, base `91db9d2` plus
@@ -731,7 +731,7 @@ verb inventory); selected intent and doc assertions are never evidence.
   Compatible disables our arrows, letters remain. Single-output native journey
   user-confirmed 2026-10-07 ("worked perfectly"); individual edge/>9 cases and
   presets unspecified, multi-output/presets pending. [Adapter](../../../kwin/src/workspace-native.ts),
-  [fixtures](../../../kwin/tests/workspace-previous-relative.test.ts),
+  [fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-previous-relative.test.ts),
   [reconciler](../../../kwin/native-effect/shortcutreconciler.cpp),
   [record](../../changes/archive/kde-workspace-history-ring.md).
 - Then Ours Windows: local Win+Ctrl+H/K/Left/Up previous,
@@ -959,7 +959,7 @@ verb inventory); selected intent and doc assertions are never evidence.
   unbound, keeps WS2 selected and source MRU focus. Admission unchanged.
   Authentic clears stock KWin Window One Desktop arrows; Compatible disables
   our four arrows, keeps letters. Implemented offline, native journey pending.
-  [Fixtures](../../../kwin/tests/workspace-send-follow-stay.test.ts),
+  [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-follow-stay.test.ts),
   [reconciler](../../../kwin/native-effect/shortcutreconciler.cpp),
   [record](../../changes/archive/kde-workspace-send-follow-stay.md).
 - Then Ours Windows: relative follow/stay uses the scoped ordinal ring,
@@ -1086,7 +1086,7 @@ outcomes stay TBD.
   `S(S-pan-ws)`.
 - Then Ours KDE: local/global-unique L WS1 then WS2, R unchanged;
   shared WS2 then WS3. Implemented offline, native journey TBD; item 1.2.
-  [Fixtures](../../../kwin/tests/workspace-previous-relative.test.ts).
+  [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-previous-relative.test.ts).
 - Then Ours Windows: per-output pure isolation tested offline 2026-10-10
   (base `91db9d2` plus [record](../../changes/archive/windows-workspace-history-ring.md));
   local single-display runtime wired. Shared-core local/global-unique isolation
@@ -1151,7 +1151,7 @@ outcomes stay TBD.
 - Then Ours KDE: removal clears previous E; no-op until next
   recorded change, no recreation/reinterpretation. Surviving empty E stays
   valid. Implemented offline, native journey TBD; item 1.3.
-  [Fixtures](../../../kwin/tests/workspace-previous-relative.test.ts).
+  [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-previous-relative.test.ts).
 - Then Ours Windows: surviving empty previous stays valid; actual cleanup
   of a previously visited intermediate empty clears the stable ID, no
   recreation/reinterpretation. Portable lifecycle regression passed
@@ -1251,7 +1251,7 @@ outcomes stay TBD.
   toggle is a no-op. Reconnect never consults/restores history; any observed
   workspace change records normally; R's disconnected history is discarded.
   Implemented offline, native journey TBD (1.5).
-  [Fixtures](../../../kwin/tests/workspace-previous-relative.test.ts).
+  [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-previous-relative.test.ts).
 - Then Ours Windows: same selected 1.5 history/scope rule and conditional
   second toggle; pure disconnect/reconnect invalidation tested offline
   2026-10-10, base `91db9d2` plus
@@ -1260,7 +1260,7 @@ outcomes stay TBD.
   foreground-removal drives the production branch and verifies observation,
   return-scope invalidation and conditional no-op; local body unchanged,
   shared no-displacement discriminator separately covered
-  ([tests](../../../crates/tiler-windows/src/tiling_sys_scope_hotplug_tests.rs),
+  ([tests @ d102f436](https://github.com/beefsack/OmniTiler/blob/d102f436/crates/tiler-windows/src/tiling_sys/tests_scope_hotplug.rs),
   [record](../../changes/archive/windows-workspace-scope-hotplug.md)). Physical
   native journey and unsupported outcomes stay TBD.
 - Variant hook: provisional/TBD (R-WS-08 hotplug history).
@@ -1345,7 +1345,7 @@ outcomes stay TBD.
 - Then Ours KDE: selected B fills existing E; normal lifecycle supplies
   next empty; source A survives. Follow goes with B, stay preserves source
   view with focused-removal MRU. Implemented offline (item 2.2), native journey
-  pending. Ring/spare and send-flight [fixtures](../../../kwin/tests/workspace-send-follow-stay.test.ts).
+  pending. Ring/spare and send-flight [fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-follow-stay.test.ts).
 - Then Ours Windows: ring/spare/follow/stay implemented; native CLI relative
   next from ordinal 10 fills the existing spare, supplies a next spare and
   follows mover (sole-source variant), agent-observed 2026-10-11, base
@@ -1408,7 +1408,7 @@ outcomes stay TBD.
 - Then Ours KDE: selected previous wraps to pre-transfer E, fills it;
   normal lifecycle supplies next empty. Follow with B, stay on WS1 with A.
   Implemented offline; item 2.2, native journey pending.
-  [Fixtures](../../../kwin/tests/workspace-send-follow-stay.test.ts).
+  [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-follow-stay.test.ts).
 - Then Ours Windows: first relative previous stay fills pre-transfer trailing
   E, retains source MRU survivor and supplies next spare, agent-observed
   via CLI 2026-10-11, base `553c65b` plus
@@ -1508,7 +1508,7 @@ outcomes stay TBD.
   setter); native focus and exact source retention/removal remain TBD.
   Implemented offline (item 2.2); native journey pending.
   [Core](../../../crates/tiler-core/tests/session_send_to_workspace.rs),
-  [ring/flight fixtures](../../../kwin/tests/workspace-send-follow-stay.test.ts).
+  [ring/flight fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-follow-stay.test.ts).
 - Then Ours Windows: target/spare/follow/stay implemented. Agent-observed
   sole-source next follow fills spare; sole-source stay keeps source view
   with null focus/no setter (native focus may fall to existing terminal,

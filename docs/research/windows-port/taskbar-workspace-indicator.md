@@ -10,10 +10,10 @@ implementation blocker; child-parenting failures themselves remain unexplained.
 
 - Tray policy/glyph/menu: [crates/tiler-windows/src/tray.rs](../../../crates/tiler-windows/src/tray.rs)
   (portable, unsafe-forbidden; 32x32 BGRA glyph; scoped toggle requests).
-- Native tray effects: [crates/tiler-windows/src/tray_sys.rs](../../../crates/tiler-windows/src/tray_sys.rs)
+- Native tray effects: [crates/tiler-windows/src/tray_sys/mod.rs](../../../crates/tiler-windows/src/tray_sys/mod.rs)
   (Shell_NotifyIconW, stable GUID, hidden callback HWND, TaskbarCreated
   recovery, change-gated sync).
-- Workspace model: [crates/tiler-windows/src/workspace.rs](../../../crates/tiler-windows/src/workspace.rs)
+- Workspace model: [crates/tiler-windows/src/workspace.rs @ d102f436 (retired pre-world-cutover module)](https://github.com/beefsack/OmniTiler/blob/d102f436/crates/tiler-windows/src/workspace.rs)
   (outputs/membership/active snapshots; no urgency field).
 - Dependency surface: [crates/tiler-windows/Cargo.toml](../../../crates/tiler-windows/Cargo.toml)
   (windows-sys 0.61 incl. Shell/Gdi/HiDpi).

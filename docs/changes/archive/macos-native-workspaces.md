@@ -38,7 +38,7 @@ unresolved. No workspace MVP was enabled.** This is a blocked capability verdict
 not proof of universal SIP-on impossibility. The preview remains current-Space
 tiling; native Spaces and tier 2 remain selected.
 
-Canonical [per-route evidence and continuation](../../research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16):
+Canonical [per-route evidence and continuation](../../research/macos-port/native-spaces-routes.md#live-verdict--2026-10-16):
 MC AX create 448 ms, settled selection approximately 628–660 ms, remove 515 ms;
 direct SLS dispatched once with no effect through delayed readback; bridge
 dispatcher absent/class present; compat exact-tag restoration blocked;

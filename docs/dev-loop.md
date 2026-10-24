@@ -8,7 +8,14 @@ dispatches on `XDG_CURRENT_DESKTOP`: KDE runs `dev-kde`, GNOME reports
 unsupported, anything else fails with the detected value. Windows runs the
 native dev session (`just stop` recovers via the current payload pointer;
 `just lifecycle-smoke [trace]` is the previous non-tiling loop; `just tile`
-still requires explicit `--user-start`). macOS reports unsupported.
+still requires explicit `--user-start`). macOS builds the signed development
+bundle and launches its existing preview via `scripts/macos-dev.sh`;
+`just dev-stop` uses its exact-owner stop path.
+
+Current-source status: shared core and Windows use v2. The KDE/macOS recipes
+remain present, but their consumers need the [v2 ports](porting/world-adapter-guide.md)
+before current-core build/runtime acceptance. The platform workflow and earlier
+native evidence below are not a claim that those ports are complete.
 
 ## Windows
 

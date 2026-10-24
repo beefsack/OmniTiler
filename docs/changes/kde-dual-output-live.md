@@ -1,5 +1,12 @@
 # KDE dual-output live testing and fixes
 
+Status 2026-10-24: this is pre-v2 KDE acceptance history, including retired
+Plan-route citations and the later v1 world-route continuation. Shared core
+and Windows have completed v2; KDE has not. Rebase remaining native/physical
+checks onto the [KDE port contract](../porting/kde-port-notes.md), not the old
+API and aligned-grid implementation descriptions below. Parked product
+questions and unverified cases remain open; no earlier pass proves the v2 port.
+
 ## Goal and acceptance
 
 - Verify native two-output behavior with mixed scales and vertically offset
@@ -36,7 +43,7 @@
   overlay and at-most-once adapter fences are unchanged. Independent review
   accepts the correction; no new product decision was selected.
 - RED/GREEN and current producer-shaped regressions:
-  [world send focus](../../crates/tiler-core/tests/world_output_send_stay_focus.rs).
+  [world send focus @ d102f436](https://github.com/beefsack/OmniTiler/blob/d102f436/crates/tiler-core/tests/world_output_send_stay_focus.rs).
   Eight tests include aligned replicated inventory, global focus repeated in
   both shown domains, competing MRU survivors in both directions, follow,
   settled/duplicate/unrelated-focus quietness, emptied source and refusals.
@@ -93,7 +100,7 @@
 - Deferred trailing-send correction: two producer-shaped regressions fail before
   the fix and pass after. Binding arrival emits original-operation focus once:
   follow mover, stay source MRU survivor, emptied source no fallback. Three
-  [regressions](../../crates/tiler-core/tests/world_pending_send_focus.rs) pass;
+  [regressions @ d102f436](https://github.com/beefsack/OmniTiler/blob/d102f436/crates/tiler-core/tests/world_pending_send_focus.rs) pass;
   independent review accepts identity, ordering and freshness. Native repeat is
   pending. Capacity-float R4 remains parked after two fixtures failed to reach
   its fallback; no unproven focus policy was implemented.

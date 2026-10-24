@@ -1,5 +1,9 @@
 # Installation (tentative 0.1 offline preparation)
 
+The packaging evidence below predates the completed core/Windows v2 boundary.
+KDE's current consumers still require the [v2 port](porting/kde-port-notes.md);
+this record does not claim current-source KDE build or runtime acceptance.
+
 Status: packaging recipes exist but no OBS account, project, token, or
 published repository exists. Container builds completed for the recipes
 (evidence below); OBS source-handoff automation remains blocked, and

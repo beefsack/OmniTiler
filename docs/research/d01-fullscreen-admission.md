@@ -135,11 +135,11 @@
   selects observed tiled focus if valid, otherwise retained focus/MRU. Thus
   observed B normally yields B, observed C yields C. Fullscreen/maximized B
   retains its tile slot.
-- [Geometry guards, plan-adapter.ts:9775-9791](../../kwin/src/plan-adapter.ts#L9775-L9791)
-  skip B's fullscreen/maximized geometry. [Focus application:9947-10007](../../kwin/src/plan-adapter.ts#L9947-L10007)
+- [Geometry guards, plan-adapter.ts:9775-9791 @ 480df29e](https://github.com/beefsack/OmniTiler/blob/480df29e/kwin/src/plan-adapter.ts#L9775-L9791)
+  skip B's fullscreen/maximized geometry. [Focus application:9947-10007 @ 480df29e](https://github.com/beefsack/OmniTiler/blob/480df29e/kwin/src/plan-adapter.ts#L9947-L10007)
   skips background/toggle-float and reconcile-over-floating/sticky, but has
   no fullscreen-specific fence. It only calls `setActive` if live active
-  identity differs from the reply target. [Entry setter:4938-4941](../../kwin/src/plan-adapter-entry.ts#L4938-L4941)
+  identity differs from the reply target. [Entry setter:4938-4941 @ 480df29e](https://github.com/beefsack/OmniTiler/blob/480df29e/kwin/src/plan-adapter-entry.ts#L4938-L4941)
   assigns `workspace.activeWindow`.
 - Stable cases normally cause **no focus write**: native kept B -> plan B;
   native activated C -> plan C. A stale/divergent reply or focus change during

@@ -277,7 +277,7 @@ shell visual was observed for any option.
 
 Gaming note (all options): no game or anti-cheat testing was performed for any
 option. Public-API use is not a compatibility guarantee. See also the
-[Gaming coexistence record](../changes/windows-gaming-coexistence.md).
+[Gaming coexistence record](../../changes/windows-gaming-coexistence.md).
 
 ## Reference-tier comparison
 

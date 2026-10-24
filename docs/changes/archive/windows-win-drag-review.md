@@ -274,8 +274,8 @@ The remaining sections preserve the pre-decision analysis, not current requireme
 [settings]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/settings.rs
 [owner-tests]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/tests_windrag.rs
 [mask-tests]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/snapkey/tests_windrag_mask.rs
-[kde-entry]: ../../../kwin/src/plan-adapter-entry.ts
-[kde-adapter]: ../../../kwin/src/plan-adapter.ts
+[kde-entry]: https://github.com/beefsack/OmniTiler/blob/9fa32420/kwin/src/plan-adapter-entry.ts
+[kde-adapter]: https://github.com/beefsack/OmniTiler/blob/9fa32420/kwin/src/plan-adapter.ts
 [reference]: ../../spec/reference-outcomes/mouse.md#r-drag-07-dragged-frame-vs-retained-allocation
 [macos]: ../../decisions.md#scope-and-platform-goals
 [delivery]: windows-mouse-drag.md

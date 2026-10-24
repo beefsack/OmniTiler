@@ -416,8 +416,8 @@ rectangles where geometry is load-bearing.
   direction/reference/focus/domain guards. Unconfirmed clear refuses/logs
   without a structural move or delayed retry. Eligible maximized floats
   continue into their ordinary half-snap after clear; fullscreen precedence
-  unchanged. [Production-entry real-Engine discriminator](../../../kwin/tests/g06-g37-entry-discrimination.test.ts),
-  [race/refusal fixtures](../../../kwin/tests/plan-maximized-focus-move.test.ts).
+  unchanged. [Production-entry real-Engine discriminator @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/g06-g37-entry-discrimination.test.ts),
+  [race/refusal fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/plan-maximized-focus-move.test.ts).
   Native timing/visuals remain TBD.
 - Then Ours Windows: G-06 delivered offline 2026-10-12, base `e506350`:
   focus keeps maximized B; move clears once under fresh lifetime/fullscreen/
@@ -529,8 +529,8 @@ rectangles where geometry is load-bearing.
   maximized tiled movers pass the same-/cross-output send observers and
   flag-stable arrival fences, native membership/output transfer leaves
   maximize untouched, and geometry skips the overlay. Follow/stay keep
-  their established view/focus rules. [Real-Planner follow and native-mock stay fixtures](../../../kwin/tests/workspace-send-maximized-carry.test.ts),
-  [cross-output carry/race fixtures](../../../kwin/tests/output-send.test.ts).
+  their established view/focus rules. [Real-Planner follow and native-mock stay fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-maximized-carry.test.ts),
+  [cross-output carry/race fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/output-send.test.ts).
   Actual native maximize preservation on arrival, source reflow and later
   restore into the target slot remain user-owned checks.
   NORMATIVE KDE fullscreen carry D28 (b) User 2026-10-12

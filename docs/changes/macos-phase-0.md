@@ -5,7 +5,7 @@
 **Selection and Space lifecycle work; ordinary-window transfer is unresolved.
 The native workspace MVP remains blocked, without a SIP-causation or universal
 impossibility verdict.** Native Spaces and tier-2 policy remain selected.
-The [per-route verdict](../research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16)
+The [per-route verdict](../research/macos-port/native-spaces-routes.md#live-verdict--2026-10-16)
 supersedes the historical mutation/permission blockers below; the
 [change record](archive/macos-native-workspaces.md) contains the delivered probe
 scope, verification and outstanding prerequisites.

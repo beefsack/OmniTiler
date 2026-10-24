@@ -311,7 +311,7 @@ installed by a future helper must still be checked.
   [default panel layout](https://raw.githubusercontent.com/KDE/plasma-desktop/v6.7.4/layout-templates/org.kde.plasma.desktop.defaultPanel/contents/layout.js),
   and [KWin Overview](https://github.com/KDE/kwin/tree/v6.7.4/src/plugins/overview).
 - Project static source, [`workspace-native.ts`](../../kwin/src/workspace-native.ts)
-  and [`plan-adapter-entry.ts`](../../kwin/src/plan-adapter-entry.ts) - selected
+  and [`plan-adapter-entry.ts` @ ae30b867](https://github.com/beefsack/OmniTiler/blob/ae30b867/kwin/src/plan-adapter-entry.ts) - selected
   workspace mapping, numbered routes, and absence of a widget-facing contract.
 - [Cross-platform feasibility](cross-platform-support/feasibility.md) - public
   workspace, settings, packaging, and managed-workspace limits for Windows,

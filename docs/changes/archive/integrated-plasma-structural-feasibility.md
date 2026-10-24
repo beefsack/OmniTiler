@@ -20,7 +20,7 @@ authority.
   `upstream KWin source at pinned commit 8438567a` matched revision-pinned GitHub raw SHA-256 values.
   Older line references remain historical, not citations to the newer pin.
 - Offline reads only. No live action, diagnostic, harness run or residue work.
-  [Attempt-01 artifacts](integrated-plasma-structural-feasibility/results/) are
+  Attempt-01 artifacts (never retained in-repo; no `results/` directory exists under `docs/changes/archive/integrated-plasma-structural-feasibility/`) are
   inadmissible to any verdict; the
   [staged protocol](../../research/integrated-plasma-structural-feasibility/proof-protocol.md)
   is unexecuted design, not safety or acceptance evidence.

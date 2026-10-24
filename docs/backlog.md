@@ -1057,7 +1057,7 @@ decisions of 2026-09-24 are under
   OS disabled the tap under a stall without a timeout notification; health-check
   re-enable recovered (accepted tentatively). Carbon physical delivery failed
   (diagnostic-only). All three manual native Space-transfer routes moved an
-  ordinary window ([results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16)).
+  ordinary window ([results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check--2026-10-16)).
   **Next, in order (user-reviewed 2026-10-17):**
   1. **Done 2026-10-17:** user-assisted synthetic-drag discriminator
      ([results](changes/macos-managed-workspaces.md#user-assisted-discriminator-results-2026-10-17)).
@@ -1159,7 +1159,7 @@ decisions of 2026-09-24 are under
   ([evidence](changes/archive/macos-consume-first-input.md)); active border
   ([evidence](changes/macos-active-border.md)); menu-bar workspace indicator
   (user quick check passed).
-  Native-Space capability comparison ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
+  Native-Space capability comparison ([verdict](research/macos-port/native-spaces-routes.md#live-verdict--2026-10-16),
   [record](changes/archive/macos-native-workspaces.md)): MC AX create/select/remove
    and gesture select work on owned fixtures; direct SLS window move dispatched
    without effect; the old unmangled bridged lookup missed the dispatcher

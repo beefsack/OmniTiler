@@ -5,7 +5,7 @@ tier 2, SIP enabled, no scripting addition (SA) or Dock injection; macOS 15
 floor. **Native window moves are not established impossible:** yabai 7.1.25
 claims SIP-on recovery, with a reported bridged-operation success on Tahoe.
 Enumeration/membership and bounded mutations now have
-[owned-fixture evidence][phase0]. The [live verdict below](#live-verdict-2026-10-16)
+[owned-fixture evidence][phase0]. The [live verdict below](#live-verdict--2026-10-16)
 established selection and lifecycle routes, but not ordinary-window transfer
 at that checkpoint. Subsequent managed drag-send acceptance is recorded in the
 [managed-workspace checkpoints](../../changes/macos-managed-workspaces.md).

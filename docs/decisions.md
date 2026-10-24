@@ -228,7 +228,7 @@ platform API behavior.
     impossibility. Public AppKit self-join is an owned-helper recovery fixture,
     not foreign-window authority. Removal checks user-window emptiness with
     narrowly evidenced compositor/chrome exclusions; unknown ownership blocks.
-    [Verdict and exact continuation](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16).
+    [Verdict and exact continuation](research/macos-port/native-spaces-routes.md#live-verdict--2026-10-16).
   - **Distribution: both DMG and Homebrew.** Release signing/notarization and
     updates retain their separately recorded open questions.
   - **Start with native macOS fullscreen**, revisiting only if it causes
@@ -396,7 +396,7 @@ platform API behavior.
     switches back afterward, with visible transition cost to be judged in
     dogfooding. Supersedes the 2026-10-16 tentative capability boundary above
     for route selection; tier 2/SIP-enabled policy unchanged.
-     [Manual route results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16).
+     [Manual route results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check--2026-10-16).
    - **User-approved 2026-10-16 (auxiliary workspace modifier):** where
      KDE/Windows use Meta+Ctrl / Win+Ctrl, default macOS Meta=Ctrl uses
      Ctrl+Cmd: previous-workspace Ctrl+Cmd+Tab, relative select
@@ -1706,7 +1706,7 @@ platform API behavior.
 - Item 4, R-LAY-01:
     - 4.1: Meta+O / Win+O (COSMIC parity). No stock KDE holder found in
       `kglobalshortcutsrc`; Windows Win+O is OS orientation lock
-      (`crates/tiler-windows/src/settings.rs:983`). Authentic takes over;
+      (`crates/tiler-windows/src/settings/catalog.rs:1114`). Authentic takes over;
       Compatible disables our Windows binding.
     - 4.2: toggle the immediate parent group, including root, preserving
       child order, shares and focus. Lone root leaf is a no-op. No saved

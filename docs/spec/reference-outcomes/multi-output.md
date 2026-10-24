@@ -260,7 +260,7 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
   Current world-route native callbacks pass both directions: follow focuses A,
   stay focuses the source peer with unchanged views and quiet later observations.
   The discarded Engine focus result was corrected with
-  [producer-shaped regressions](../../../crates/tiler-core/tests/world_output_send_stay_focus.rs);
+  [producer-shaped regressions @ d102f436](https://github.com/beefsack/OmniTiler/blob/d102f436/crates/tiler-core/tests/world_output_send_stay_focus.rs);
   [native evidence and remaining physical/floating gates](../../changes/kde-dual-output-live.md#current-continuation-2026-10-19).
 - Then Ours Windows: distinct output send delivered offline `fda618f`,
   2026-10-14 ([record](../../changes/archive/windows-explicit-output-send.md)).

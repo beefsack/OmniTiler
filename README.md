@@ -2,6 +2,18 @@
 
 Guarded Custom Tile automation for KWin.
 
+## Current platform status
+
+- Shared core and Windows have completed the v2 world-model rearchitecture;
+  [close-out evidence and remaining acceptance gaps](docs/changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24).
+- KDE and macOS consumers remain unported to v2. Their earlier setup and native
+  evidence below do not establish compatibility with the current core. Start
+  their separate ports from the [adapter guide](docs/porting/world-adapter-guide.md),
+  [KDE notes](docs/porting/kde-port-notes.md) and
+  [macOS notes](docs/porting/macos-port-notes.md).
+- [Documentation index](docs/README.md), [active work](docs/backlog.md),
+  [current decisions](docs/decisions.md).
+
 ## Licensing
 
 Project default is MIT (copyright Michael Alexander): root `LICENSE` and
@@ -176,8 +188,9 @@ recipes from `just/`. `just dev [verbose|trace]` is the foreground dev
 session on each desktop: Linux KDE runs `dev-kde` (GNOME reports
 unsupported), Windows runs the native tile loop with Explorer launch and
 verified stop/restore (`just stop` recovers via the current pointer;
-`just lifecycle-smoke [trace]` is the non-tiling loop), macOS reports
-unsupported. See `docs/dev-loop.md`.
+`just lifecycle-smoke [trace]` is the non-tiling loop), macOS builds the
+signed development bundle and launches its existing preview route (not yet
+ported to v2). See [development loop](docs/dev-loop.md).
 
 ### Prerequisites
 

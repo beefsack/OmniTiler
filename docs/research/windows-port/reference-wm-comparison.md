@@ -111,7 +111,7 @@ Ours citations are local links labeled `file:lines @ a20e8e8`.
   not universal proof).
 - Ours: fresh `WM_GETMINMAXINFO` track validation and outer-to-visible mapping
   via frame insets; invalid maps to unknown, never zero:
-  [tiling.rs:81-116 @ a20e8e8](../../../crates/tiler-windows/src/tiling.rs).
+  [tiling.rs:81-116 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/tiling.rs).
   Queries budget 10ms each/40ms per operation:
   [minimum-size record:53-57 @ a20e8e8](../../changes/archive/windows-minimum-size-hints.md).
 - Gap/runtime unknown: relative clamping vs declared-minima behavior untested side by side.
@@ -157,7 +157,7 @@ Ours citations are local links labeled `file:lines @ a20e8e8`.
   not the selected Windows 11 Pro; enabling it is a machine feature requiring restart
   ([overview](https://learn.microsoft.com/en-us/windows/configuration/keyboard-filter/),
   [custom keys](https://learn.microsoft.com/en-us/windows/configuration/keyboard-filter/wekf-customkey)).
-- Ours: LL install ([snapkey.rs:2876-2906 @ a20e8e8](../../../crates/tiler-windows/src/snapkey.rs)), minimal callback ([snapkey.rs:2303-2327 @ a20e8e8](../../../crates/tiler-windows/src/snapkey.rs)), E8 mask pair + `VK_MASK` ([snapkey.rs:2778-2806 @ a20e8e8](../../../crates/tiler-windows/src/snapkey.rs), [snapkey.rs:65-96 @ a20e8e8](../../../crates/tiler-windows/src/snapkey.rs)). Observed leak: consumed marked Win+F11 still raised the Xbox prompt ([decisions.md:177-184 @ a20e8e8](../../../docs/decisions.md), [backlog.md:103-126 @ a20e8e8](../../../docs/backlog.md)).
+- Ours: LL install ([snapkey.rs:2876-2906 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/snapkey.rs)), minimal callback ([snapkey.rs:2303-2327 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/snapkey.rs)), E8 mask pair + `VK_MASK` ([snapkey.rs:2778-2806 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/snapkey.rs), [snapkey.rs:65-96 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/snapkey.rs)). Observed leak: consumed marked Win+F11 still raised the Xbox prompt ([decisions.md:177-184 @ a20e8e8](../../../docs/decisions.md), [backlog.md:103-126 @ a20e8e8](../../../docs/backlog.md)).
 - Gap/runtime unknown: no working official-API Win+G/Win+F11 suppression is established in any ref (absence-of-technique, not proof none exists). All OS-setting probes stay parked pending the user, not a top next action.
 - Recommendation: keep parked; document the leak. Neither LL consumption nor
   E8 masking supplies new suppression evidence; bindings/settings remain user choices.
@@ -192,7 +192,7 @@ Ours citations are local links labeled `file:lines @ a20e8e8`.
   [bar.rs#477-493](https://github.com/LGUG2Z/komorebi/blob/e0709f02bfae4e503bf4640f58ee75ecbbfdbb97/komorebi-bar/src/bar.rs#L477-L493),
   [main.rs#234-305](https://github.com/LGUG2Z/komorebi/blob/e0709f02bfae4e503bf4640f58ee75ecbbfdbb97/komorebi-bar/src/main.rs#L234-L305).
 - Ours: PMv2 + all-monitor enumeration already exist, device-keyed domains with
-  whole-workspace displacement/return [tiling_sys.rs:172-267,9949-10167 @ a20e8e8](../../../crates/tiler-windows/src/tiling_sys.rs).
+  whole-workspace displacement/return [tiling_sys.rs:172-267,9949-10167 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/tiling_sys.rs).
   Per-target DPI border scaling [active_border.rs:129-163 @ a20e8e8](../../../crates/tiler-windows/src/active_border.rs).
 - Gap/runtime unknown: our physical acceptance is single-monitor; parity 9 and
   mixed-DPI acceptance belong to the other Windows test system. Legacy `display-0`
@@ -232,7 +232,7 @@ Ours citations are local links labeled `file:lines @ a20e8e8`.
   Seelen documents silent TOPMOST-pending failure; transient `AttachThreadInput`
   borrow around `SetWindowPos`, still `NOACTIVATE`:
   [mod.rs#424-459](https://github.com/eythaann/Seelen-UI/blob/56c1d75dae814bd5c3d03d5eea3d6f0428b02db1/src/background/windows_api/mod.rs#L424-L459).
-- Ours: E8 `SendInput` last-input prime with no Alt ([tiling_sys.rs:4355-4404 @ a20e8e8](../../../crates/tiler-windows/src/tiling_sys.rs)); one bounded attach + single `SetForegroundWindow` with immediate detach, exact readback, pumped settle ([tiling_sys.rs:4532-4620 @ a20e8e8](../../../crates/tiler-windows/src/tiling_sys.rs)).
+- Ours: E8 `SendInput` last-input prime with no Alt ([tiling_sys.rs:4355-4404 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/tiling_sys.rs)); one bounded attach + single `SetForegroundWindow` with immediate detach, exact readback, pumped settle ([tiling_sys.rs:4532-4620 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/tiling_sys.rs)).
 - Gap/runtime unknown: relative miss rates untested.
 - Recommendation: keep ours; measure any focus misses before changing the ladder.
   Do not adopt komorebi's session-wide timeout mutation.
@@ -255,7 +255,7 @@ Ours citations are local links labeled `file:lines @ a20e8e8`.
   Seelen disables per-window transitions:
   [mod.rs#828-832](https://github.com/eythaann/Seelen-UI/blob/56c1d75dae814bd5c3d03d5eea3d6f0428b02db1/src/background/windows_api/mod.rs#L828-L832),
   with a ShowWindow-vs-Async deadlock note.
-- Ours: no animation API; Snap prevention via `SPI_GET/SETWINARRANGING` ledger; hook callback bounded; 8 dispatches/tick ([snapkey.rs:65-96 @ a20e8e8](../../../crates/tiler-windows/src/snapkey.rs), [snapkey.rs:2303-2327 @ a20e8e8](../../../crates/tiler-windows/src/snapkey.rs)).
+- Ours: no animation API; Snap prevention via `SPI_GET/SETWINARRANGING` ledger; hook callback bounded; 8 dispatches/tick ([snapkey.rs:65-96 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/snapkey.rs), [snapkey.rs:2303-2327 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/snapkey.rs)).
 - Gap/runtime unknown: no frame-time numbers on any side; no performance superiority claims.
 - Recommendation: keep immediate moves; investigate per-window transitions only
   for measured residue, with recovery preimages (S).
@@ -328,7 +328,7 @@ Ours citations are local links labeled `file:lines @ a20e8e8`.
   Whim bar is a WinUI/XAML plugin from template config (existence only).
 - Ours: no presenter; `workspace_event` vocabulary unconsumed;
   item 10 mechanism unselected:
-  [workspace.rs:600-620 @ a20e8e8](../../../crates/tiler-windows/src/workspace.rs).
+  [workspace.rs:600-620 @ a20e8e8](https://github.com/beefsack/OmniTiler/blob/a20e8e8/crates/tiler-windows/src/workspace.rs).
 - Gap/runtime unknown: strip vs grid vs BYO-UI fit for KDE parity untested.
 - Recommendation: design + prototype from komorebi-bar strip +
   workarea-offset and Seelen grid click/names when scoping 10 (M).

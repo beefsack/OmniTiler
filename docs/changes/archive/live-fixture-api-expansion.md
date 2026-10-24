@@ -52,7 +52,7 @@
   default/no-action values; macOS attention-clear remains a documented winit no-op.
 - Safe common APIs and cfg-gated X11 extensions only; no dependencies changed.
   Full selected/skipped API inventory and native-platform follow-ups are in the
-  [README](../../../crates/tiler-live-fixture/README.md#additional-window-controls).
+  [README](../../../crates/tiler-live-fixture/README.md#api-sweep-exclusions-and-platform-follow-ups-unchanged).
 - `send --compact` removes optional null snapshot fields only. `--wait-ms` plus
   `--expect` subscribes before requests, reads one baseline, then consumes events
   until latest observed predicates match or one monotonic deadline expires.

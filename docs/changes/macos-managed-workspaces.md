@@ -1890,7 +1890,7 @@ Do not repeat the blocked automated fixture unchanged. First resolve its
 frame/protected-stability diagnostic gaps and arrange a provably clear
 owned-helper grab point, or use a short user-run physical discriminator instead
 of further automated tuning. The existing
-[manual transfer check](../research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16)
+[manual transfer check](../research/macos-port/native-spaces-routes.md#user-manual-transfer-check--2026-10-16)
 already establishes the ordinary physical route; it does not prove synthetic
 delivery.
 

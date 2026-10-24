@@ -1336,7 +1336,7 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
   | 9 | Fullscreen send R-MAX-09 (Windows carry; NOT the parity-queue multi-output foundation) | Depends on handoff item 2 follow/stay wiring only; same-output workspace carry, no cross-output claim. |
   | 10 | Float/half-snap parity (a) R-FLT-07..11 | Windows delivered offline; ordinary focus/half-snaps physically user-accepted 2026-10-12, scoped single-output normal owner Notepad/Paint. Tie/sticky/clamp/preset/fixed/game/DPI pending; cross-output item 5. [Record](changes/archive/windows-floating-directional-navigation.md). |
   | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Windows delivered offline; ordinary retile/restore and both-values born Paint launch physically user-accepted 2026-10-12, scoped single output. Tray focus observation only; hidden/session/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-floating-retile-overlay.md). |
-  | 12 | Non-local workspace modes parity (d) | Offline-complete 2026-10-15: stages A/B/C deliver scope policy/settings, owner selection/send/history/swap/trailing and mode-aware hotplug. Locked gates 2,095 passed / 1 ignored, including 17 new topology tests; single-output native select/previous/relative/send regression passed in all modes with clean stop/settings restore. Physical two-output journeys user-owned in [pending checks](#multi-output-setup); shared choices remain tentative ([final record](changes/archive/windows-workspace-scope-hotplug.md)). |
+  | 12 | Non-local workspace modes parity (d) | Offline-complete 2026-10-15: stages A/B/C deliver scope policy/settings, owner selection/send/history/swap/trailing and mode-aware hotplug. Locked gates 2,095 passed / 1 ignored, including 17 new topology tests; single-output native select/previous/relative/send regression passed in all modes with clean stop/settings restore. Physical two-output journeys user-owned in [pending checks](backlog.md#multi-output-setup); shared choices remain tentative ([final record](changes/archive/windows-workspace-scope-hotplug.md)). |
   | 13 | Q2 fixed-size float admission R-SPC-04 | Windows delivered offline 2026-10-11, prerequisite a41fcb5 plus runtime delivery: max-track observation, predicate/schema/UI, D1-D8 lifetime/origin and fixed-origin D7 markers. Native/game acceptance pending; fixed-override maximize route tentative. [Record](changes/archive/windows-fixed-size-admission.md). |
   | 14 | Q4 whole-workspace migration R-WS-12 | Windows local adapter including D8 carry and item-16 largest-edge selection delivered offline 2026-10-14; 1,950 native MSVC tests pass, one ignored ([record](changes/archive/windows-workspace-output-migration.md)). Core/KDE already delivered offline. Physical two-output journeys pending; item 12 remains the non-local-mode dependency. |
   | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | Windows delivered offline; ordinary scoped native clear/observe/fresh admission and focus agent-observed 2026-10-12. Physical B9/fixed marker/restart/failure/game/DPI pending; independent of Q3 retile. [Record](changes/archive/windows-maximized-intentional-unfloat.md). |
@@ -1500,7 +1500,7 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
       `validatePreviousEntries`; `handleTopologySignal` :921 observes hotplug.
       Catalog :152-222; native compiled holder identities at
       `kwin/native-effect/shortcutreconciler.h:55-62`.
-      [Offline fixtures](../kwin/tests/workspace-previous-relative.test.ts),
+      [Offline fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-previous-relative.test.ts),
       [delivery/live status](changes/archive/kde-workspace-history-ring.md).
 
     #### Item 1 catalog, conflicts and acceptance
@@ -1652,7 +1652,7 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
       `transferResolvedWorkspace` (floating boundary); `kwin/src/workspace-send-adapter.ts:1309`
       `requestSend`, :2635 `followOnce`, :2915 `confirmStayOnce` (fresh arrival,
       pinned source visibility and exact MRU/null focus, no desktop switch).
-      [Fixtures](../kwin/tests/workspace-send-follow-stay.test.ts),
+      [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/workspace-send-follow-stay.test.ts),
       [record](changes/archive/kde-workspace-send-follow-stay.md).
 
     #### Item 2 binding and acceptance checklist
@@ -1890,7 +1890,7 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
        `isToggleOrientationDetail`, :7014 orientation reply validation.
        `kwin/src/plan-adapter-entry.ts:449-456` catalog; native key constant
        `kwin/native-effect/shortcutreconciler.h:126`.
-       [Fixtures](../kwin/tests/plan-toggle-orientation.test.ts),
+       [Fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/plan-toggle-orientation.test.ts),
        [record](changes/archive/parent-orientation-toggle.md).
      - Binding id `toggle-orientation`, default Win+O, unshifted. Add
        `ToggleKind::Orientation` at `src/settings.rs:523` with token/Shift
@@ -2035,8 +2035,8 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
        source visibility is a separate fence. Both views/modes/gaps/window
        sets and exact lifetime must still match before EACH membership,
        geometry and focus write; partial arrival cannot masquerade as success.
-       [Engine fixtures](../kwin/tests/output-send-engine-fixture.test.ts),
-       [adapter fixtures](../kwin/tests/output-send.test.ts),
+       [Engine fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/output-send-engine-fixture.test.ts),
+       [adapter fixtures @ b7a9843](https://github.com/beefsack/OmniTiler/blob/b7a9843/kwin/tests/output-send.test.ts),
        [record](changes/archive/four-direction-output-transfer.md).
 
      #### Item 5 bindings, exact native additions and acceptance
@@ -2280,7 +2280,7 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
     [decisions](decisions.md#pointer-drag-and-drop)): a Meta/Win client move
     drag focuses the dragged window at press on both platforms. Windows
     changes from activate-on-drop; KDE timing needs a live check ([pending
-    live checks](#pending-live-checks)).
+    live checks](backlog.md#pending-live-checks)).
 
     #### Item 7 behavior and reference seams
 
@@ -2813,7 +2813,7 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
     with verified clean stop and saved-settings restoration
     ([final record](changes/archive/windows-workspace-scope-hotplug.md)).
     Item 12 is offline-complete; physical R-WS-17/multi-output acceptance stays
-    user-owned in [pending checks](#multi-output-setup), unsupported outcomes TBD.
+    user-owned in [pending checks](backlog.md#multi-output-setup), unsupported outcomes TBD.
     Shared startup anchor is tentative pending the two-output discriminator.
     Prerequisites (handoff items 1/2, multi-output foundation, explicit output
     sends and local whole-workspace migration) delivered.
@@ -2897,7 +2897,7 @@ Superseded as planning detail, retained as delivery evidence. Native acceptance 
     - [x] Windows-only offline: owner selection/foreground/CLI producers and
       mode-aware simulated hotplug; single-output native CLI regression passes.
     - [ ] Windows-only physical: hotplug, multi-output and keyboard journeys on
-      a multi-output setup, listed in [pending checks](#multi-output-setup).
+      a multi-output setup, listed in [pending checks](backlog.md#multi-output-setup).
     - User journey: two-output L/R with WS1/WS2 on L; L WS1->WS2, change
       R, focus L, previous twice (local: WS1 then WS2; R unchanged);
       shared mode WS1->WS2->WS3 then previous twice (WS2 then WS3);

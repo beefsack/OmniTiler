@@ -334,7 +334,7 @@ All fresh variants below reset the client and WM state independently.
   otherwise identical F floats. Switching back leaves F floating; explicit
   user tile overrides still win for the live client. This setting-change
   leg has no reference-WM outcome claim. Delivered offline 2026-10-08;
-  [shared Q2 fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs),
+  [shared Q2 fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs),
   [KDE predicate fixtures](../../../kwin/tests/fixed-size-predicate.test.ts),
   [D1 record](../../changes/archive/admission-and-move-settings.md). Native TBD.
 - Then Ours Windows: both variants tile under `both-axes-fixed` and float
@@ -415,7 +415,7 @@ All fresh variants below reset the client and WM state independently.
 - Then Ours KDE: missing/full-zero/sentinel do not auto-float; zero is unset
   per axis, so equal (640,0)/(0,480) tiles under `both-axes-fixed` and floats
   under `either-axis-fixed` via its genuinely fixed nonzero axis.
-  G-05 delivered offline 2026-10-10; [shared predicate fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs),
+  G-05 delivered offline 2026-10-10; [shared predicate fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs),
   [KDE predicate fixtures](../../../kwin/tests/fixed-size-predicate.test.ts),
   [world classification](../../../kwin/tests/world-bytes.test.ts).
   Both orientations/modes classify per the retained predicate; native representation remains TBD.
@@ -497,7 +497,7 @@ All fresh variants below reset the client and WM state independently.
   projection/clamp continues (NORMATIVE D2); react to self-resize to avoid
   gaps/overlaps, no new hint-signal work. Implemented offline
   2026-10-08 under the shared admission policy
-  ([shared Q2 fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs));
+  ([shared Q2 fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs));
   native exact frames/focus TBD.
 - Then Ours Windows: retained tiles remain tiled after becoming fixed;
   automatic fixed floats remain floating after losing hints. Current min/max
@@ -559,7 +559,7 @@ All fresh variants below reset the client and WM state independently.
   sticky Meta+G; ordinary observation does not re-float it. Exact-ref
   suppression survives omitted/scoped/released observations; new refs
   classify again (NORMATIVE D3, no setting). Implemented offline 2026-10-08
-  ([shared Q2 fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs)).
+  ([shared Q2 fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs)).
   D7 now restores matched fixed-window tile overrides across owner restart
   ([world entry restart fixtures](../../../kwin/tests/world-entry.test.ts)); no positions persist.
   Physical hide/show/domain reassignment TBD.
@@ -650,7 +650,7 @@ All fresh variants below reset the client and WM state independently.
   Non-fixed Q3 is unchanged. D6 workspace enable while maximized keeps a
   fixed automatic float slotless; native unmaximize stays floating.
   Explicit user tile overrides retain Q3 R-MAX-03's reserved-slot route.
-  Implemented offline 2026-10-08 ([shared Q2 fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs));
+  Implemented offline 2026-10-08 ([shared Q2 fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs));
   [D5/D6 record](../../changes/archive/fixed-size-exit-and-enable.md). Native TBD.
 - Then Ours Windows: fixed birth keeps a slotless floating base beneath
   maximize under both `core.born_maximized` values; unmaximize stays floating.
@@ -774,7 +774,7 @@ All fresh variants below reset the client and WM state independently.
   uses current hints/predicate, so the discriminator floats on first exit;
   later exits retain that float even after hint loss (D2), never re-admit.
   Implemented offline 2026-10-09
-  ([shared Q2 fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs),
+  ([shared Q2 fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs),
   [world born-maximized fixtures](../../../kwin/tests/world-born-maximized.test.ts)),
   [record](../../changes/archive/fixed-size-exit-and-enable.md); native game/restore journey TBD.
 - Then Ours Windows: first born-fullscreen exit uses current hints/predicate:
@@ -879,7 +879,7 @@ All fresh variants below reset the client and WM state independently.
   records; the variants respectively float, tile, retain the explicit tile,
   and retain slotless float under maximize and after unmaximize.
   Implemented offline 2026-10-09 (historical entry fixtures removed
-  with the legacy route); [shared Q2 fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs)
+  with the legacy route); [shared Q2 fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs)
   and the archive record stand; world-route enable re-verification and
   native release/placement TBD.
   [record](../../changes/archive/fixed-size-exit-and-enable.md).
@@ -1006,7 +1006,7 @@ All fresh variants below reset the client and WM state independently.
   same intentional-float store, recompute fallback if missing/degraded/unmatched
   (NORMATIVE D7, User 2026-10-08; persistence delivered offline 2026-10-09).
   Startup classification implemented offline 2026-10-08
-  ([shared Q2 fixtures](../../../crates/tiler-core/tests/fixed_size_admission.rs),
+  ([shared Q2 fixtures](../../../crates/tiler-core/src/fixed_size_admission_tests.rs),
   [world entry restart fixtures](../../../kwin/tests/world-entry.test.ts)).
   [D7 fixtures](../../../kwin/tests/world-entry.test.ts)
   prove settled float and tile-override survival across restart with held

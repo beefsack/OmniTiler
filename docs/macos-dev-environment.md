@@ -117,8 +117,10 @@ mise exec -- rustup which cargo
   verify `mise exec -- just --version`. The root `justfile` is the cross-OS
   entry point (per-OS imports; only the current OS recipes load); macOS
   recipes live in `just/macos.just`: `preflight`, `build`, `test`, `clippy`,
-  `fmt`, `app <identity>`, and `verify`; `dev` remains a fail-closed stub
-  until the full-solution loop exists.
+  `fmt`, `app <identity>`, and `verify`. `dev` builds the signed development
+  bundle and launches the existing preview; `dev-stop` stops its exact owner.
+  These recipes do not establish v2 compatibility: the macOS consumer still
+  needs its [world-contract port](porting/macos-port-notes.md).
 - **V: S14:** Homebrew is optional, never forced. Default prefix on
   Apple Silicon is `/opt/homebrew`; follow its homepage post-install
   shellenv directions for zsh.
@@ -128,12 +130,17 @@ mise exec -- rustup which cargo
 ### 4. Prove the portable offline Cargo baseline (allowlist only)
 
 **R:** `Cargo.toml` workspace members are `tiler-core`,
-`tiler-protocol`, `omnitiler`, `tiler-kwin-effect-ffi`, and
-`tiler-windows`, and `tiler-macos`. The portable crates plus macOS probe
+`tiler-protocol`, `omnitiler`, `tiler-kwin-effect-ffi`, `tiler-windows`,
+`tiler-macos`, `tiler-kde-settings-exporter` and `tiler-live-fixture`.
+The portable crates plus macOS probe
 below are the Mac baseline. `omnitiler` is the Linux/KDE service (rustix plus
 zbus/D-Bus integration), not a supported Mac target; `tiler-windows`
 is the Windows adapter. This is a supported-gate boundary, not a claim
 that every excluded crate necessarily fails to compile on macOS.
+
+The commands below define the intended macOS gate after its v2 port, not a
+current passing result. Earlier native evidence predates the core boundary
+replacement; retain it as history and rerun affected acceptance after porting.
 
 ```zsh
 mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos

@@ -351,7 +351,7 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
   from current object arguments. The native tree requests Qt6/KF6 and KWin
   6 internal APIs; newer Rust or an ECM bundle cannot port those interfaces.
   Sources: [5.27 wrapper](https://github.com/KDE/kwin/blob/Plasma/5.27/src/scripting/workspace_wrapper.h),
-  [current startup window-list gate](../../../kwin/src/plan-adapter-entry.ts),
+  [current startup window-list gate @ f7c9f024](https://github.com/beefsack/OmniTiler/blob/f7c9f024/kwin/src/plan-adapter-entry.ts),
   [native dependencies](../../../kwin/native-effect/CMakeLists.txt).
 
 ### Release-pocket Ubuntu build proof
@@ -441,7 +441,7 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
   [commit `eded5996`](https://github.com/KDE/kwin/commit/eded5996), but the
   product does not currently call that API; it must not inflate the floor.
 - Concrete current-source chain:
-  - [`observeNative`](../../../kwin/src/plan-adapter-entry.ts) reads
+  - [`observeNative` @ f7c9f024](https://github.com/beefsack/OmniTiler/blob/f7c9f024/kwin/src/plan-adapter-entry.ts) reads
     `currentDesktopForScreen` at lines 2856-2859 and returns null if absent.
     `observeHiddenDomains` returns an empty list at lines 2231-2234.
     Neither gate branches on workspace mode.

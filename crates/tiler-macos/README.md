@@ -3,6 +3,11 @@
 Port contract: [macOS port notes](../../docs/porting/macos-port-notes.md)
 and the generic [world-adapter guide](../../docs/porting/world-adapter-guide.md).
 
+Status 2026-10-24: the macOS consumer is not ported to the completed shared-core
+v2 contract. The preview, API descriptions and native evidence below describe
+the earlier implementation, not current-core build or runtime acceptance.
+Replace the legacy route using the port notes; retain its native safety gates.
+
 Tier 2 (public + scoped private APIs, SIP left enabled). Apple Silicon only;
 minimum macOS 15. All Rust; `unsafe` exists
 only in `src/ffi.rs` (single dedicated module); every other module carries
@@ -406,7 +411,7 @@ the public `NSWorkspace` Mission Control close semantics were observed per
 run only — other apps and releases are not proven; no SIP rejection is
 asserted without live evidence; no product-workspace claim and no universal
 native window-move failure claim is made. Canonical live verdict:
-[docs/research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16](../../docs/research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16)
+[docs/research/macos-port/native-spaces-routes.md#live-verdict--2026-10-16](../../docs/research/macos-port/native-spaces-routes.md#live-verdict--2026-10-16)
 plus the [Phase 0 record](../../docs/changes/macos-phase-0.md). This unit
 is offline verification only — no new live numbers.
 
