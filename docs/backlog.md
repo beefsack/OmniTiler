@@ -355,15 +355,15 @@ decisions of 2026-09-24 are under
 - P1 | Windows: adopt full world-state core replies | Superseded as an
   implementation route by the [core world-model rearchitecture](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24):
   stages 2a/2b accepted 2026-10-22 (logical workspace authority, sole Windows
-  world owner), closed 2026-10-24; W2a gated diagnostics remain evidence only,
-  not positive migration or T2 parity acceptance. Windows is dogfood-ready at
+  world owner), closed 2026-10-24; W2a gated diagnostics were evidence only and are
+  superseded by the delivered mapping authority and T2 refusal below. Windows is dogfood-ready at
   the bounded acceptance level. Remaining native gaps per the close-out:
   MRU occupied-source-refill staging, global-unique/shared mode checks,
   tile-override restart staging and user-owned physical shortcut/drag/game
   acceptance. The legacy domain API stays compiling, not behaviorally migrated.
-  Constructor prerequisite delivered `086f9d8c`. [Slices and evidence](changes/windows-full-world-state-replies.md).
+  Constructor prerequisite delivered `086f9d8c`. [Slices and evidence](changes/archive/windows-full-world-state-replies.md).
 - P1 | Core + Windows: world migration authority and T2 crossing refusal |
-  Assessed 2026-10-20 ([record](changes/windows-full-world-state-replies.md)):
+  Assessed 2026-10-20 ([record](changes/archive/windows-full-world-state-replies.md)):
   (1) the proposed default-off migration-only authority capability was NOT
   approved in that form: whole-workspace migration is a [core-owned mapping
   change](decisions.md#core-owned-world-model) actuated by the adapter. The
@@ -372,12 +372,13 @@ decisions of 2026-09-24 are under
   bypass must be aligned with the contract by the KDE port
   ([guide](porting/world-adapter-guide.md)). The parked KDE
   global-native-inventory migration-confirmation mismatch stays parked.
-  (2) T2 crossing refusal: adapter-only staged-clone refusal proven offline for
-  directional output-send/R4 (User 2026-10-20 accepted direction; test-only, not
-  wired, not runtime acceptance); explicit-target sends keep
-  `cross-domain-mismatch`. Each fix lands as one change across shared core and
-  the Windows adapter, validated live on a two-output Windows host during
-  implementation. Parked until that session; user 2026-10-19.
+  (2) T2 crossing refusal: delivered in the v2 world route - staged-clone refusal
+  preserves unchanged source Engine and membership on unsupported directional
+  output-send/R4 crossings, fixture-accepted with the core close-out
+  ([closeout](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)).
+  Explicit-target sends keep the parked `cross-domain-mismatch` contract gap.
+  Physical two-output refusal validation remains unrun. Each fix lands as one
+  change across shared core and the Windows adapter.
   **Caveat (user 2026-10-19): be extremely careful to avoid platform-specific
   logic in core.** For each blocker, first assess whether a small, simple,
   sensible alternative without core changes exists (adapter-side or
@@ -837,7 +838,7 @@ decisions of 2026-09-24 are under
   Remaining: core `engine.rs`/`session.rs` large inline test modules as
   extraction candidates; shared crates and KDE files split with their work
   streams. ([split map](research/windows-port/tiling-sys-split-map.md),
-  [phase 2](changes/windows-tiling-sys-split-phase2.md)).
+  [phase 2](changes/archive/windows-tiling-sys-split-phase2.md)).
 - P2 | Windows shortcut-dialog presentation review | Delivered and scripted-live
   verified 2026-10-17 (conflict preview, Apply/Revert dialogs, discard
   protection, preview-time stale refusal; 2,458/0/1 gates). User 2026-10-17 keeps

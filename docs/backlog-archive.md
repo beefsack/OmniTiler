@@ -147,7 +147,7 @@ Superseded implementation route; stages 2a/2b of the rearchitecture replaced it.
   Real W1 FULL reports with empty adjacency now produce direction-only core
   migration/refill, but target authority holds and no native attempt occurs.
   W2 acceptance remains blocked on shared migration authority and pre-commit
-  T2 capacity-float crossing refusal; [proposals and exact next action](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals).
+  T2 capacity-float crossing refusal; [proposals and exact next action](changes/archive/windows-full-world-state-replies.md#w2b-cross-stream-proposals).
   No Windows adjacency mapping, shared semantic edits or runtime cutover.
   Shared topology prerequisite delivered offline in
   [core/KDE](changes/archive/shared-core-owned-output-topology.md) (`f9bd2df1`).
@@ -167,7 +167,7 @@ Superseded implementation route; stages 2a/2b of the rearchitecture replaced it.
   The legacy domain API remains compiling, not behaviorally migrated.
   User accepted constructor prerequisite 2026-10-18 (T1):
   additive core configuration preserves existing defaults and Windows send/
-  maximized policies without wire changes. [Slices and evidence](changes/windows-full-world-state-replies.md);
+  maximized policies without wire changes. [Slices and evidence](changes/archive/windows-full-world-state-replies.md);
   constructor prerequisite delivered in `0869f08c` and replacement W1 capture/
   sequencing in `c73e4cc7` (CI green). Historical W2 prototype remains on
   `wip/windows-world-diff`; its former native-gate failures no longer reproduce
@@ -180,7 +180,7 @@ Superseded implementation route; stages 2a/2b of the rearchitecture replaced it.
 Condensed; the parked session gate, the user 2026-10-19 core caveat and the parked KDE mismatch remain active in the backlog.
 
 - P1 | Core + Windows: world migration authority and T2 crossing refusal |
-  Assessed 2026-10-20 ([record](changes/windows-full-world-state-replies.md)):
+  Assessed 2026-10-20 ([record](changes/archive/windows-full-world-state-replies.md)):
   (1) User 2026-10-20 did not approve the proposed default-off, migration-only
   authority capability in that form: whole-workspace migration is a
   [core-owned mapping change](decisions.md#core-owned-world-model) actuated by
@@ -191,7 +191,7 @@ Condensed; the parked session gate, the user 2026-10-19 core caveat and the park
   sends keep `cross-domain-mismatch`. One change across shared core and the Windows adapter, delivered on a
   two-output Windows host so the theory is validated and tested live during
   implementation. Unblocks W2 above (proposals 1 and 2 in
-  [W2b cross-stream proposals](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals)).
+  [W2b cross-stream proposals](changes/archive/windows-full-world-state-replies.md#w2b-cross-stream-proposals)).
   **Caveat (user 2026-10-19): be extremely careful to avoid platform-specific
   logic in core.** For each blocker, first assess whether a small, simple,
   sensible alternative without core changes exists (adapter-side or
@@ -668,7 +668,7 @@ Completed Windows split evidence; shared/KDE remainder stays active.
   above still split with their work streams; no further plan.
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
-   [phase 2](changes/windows-tiling-sys-split-phase2.md),
+   [phase 2](changes/archive/windows-tiling-sys-split-phase2.md),
    [owner/snapkey record](changes/archive/windows-owner-snapkey-split.md),
    [remaining-split record](changes/archive/windows-remaining-module-split.md),
    [tail-split record](changes/archive/windows-module-size-tail.md)).

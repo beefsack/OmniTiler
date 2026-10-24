@@ -60,5 +60,18 @@
   current. Independent re-review accepted all corrections without a new product
   decision. Scoped link checks add no failures; the existing triage fragment is
   carried to final cleanup. Whitespace passes.
-- Next: active change-record and point-of-use documentation review, followed
-  by the full local-link gate.
+- Change-record unit accepted: archived the completed Windows tiling-system
+  split, historical Windows phase-1 path, superseded Windows full-world
+  adoption plan and historical cross-output directional delivery. Relative and
+  inbound links were retargeted. Other active records retain concrete native,
+  physical, investigation or port follow-ups; existing archived macOS milestone
+  stubs now point to the current port contract.
+- Active dual-output/checklist/backlog status now reflects delivered v2
+  migration/cutover and targeting/settings. T2 refusal remains offline evidence,
+  not an invented native/physical pass; the remaining manual matrix is explicit.
+  Retired-route research/implementation notes are marked historical and point to
+  current world-route contracts. No accepted product meaning changed.
+- Full Markdown path/fragment checking found the same preexisting failures
+  before and after these moves; no new broken target was introduced. Whitespace
+  passes. Next: point-of-use docs/navigation and full link repair, including
+  validating the checker's treatment of inline code and source line anchors.

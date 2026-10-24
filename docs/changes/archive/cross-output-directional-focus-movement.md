@@ -1,5 +1,8 @@
 # Cross-Output Directional Focus And Movement
 
+- Status: historical delivery, archived 2026-10-24. The DescribePlan/adapter
+  route below is removed; current production uses the world route per the
+  [core closeout](core-world-model-rearchitecture.md#closing-outcome-2026-10-24).
 - Historical delivery: DescribePlan and adapter transaction details below refer
   to the removed KDE domain route. Current production uses complete world
   reports, direction commands and observation convergence without ack/verify.

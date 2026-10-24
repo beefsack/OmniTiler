@@ -10,4 +10,5 @@ and dependency license/notice gates also pass in CI. Live capability acceptance
 continues separately in [Phase 0](macos-phase-0.md).
 
 The completed goal, approach, review evidence and limits are in the
-[archived change record](archive/macos-phase-1-skeleton.md).
+[archived change record](archive/macos-phase-1-skeleton.md). Current port
+contract: [macOS port notes](../porting/macos-port-notes.md).

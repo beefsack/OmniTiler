@@ -1,5 +1,11 @@
 # Windows Phase 1 implementation
 
+- Status: historical v1 record, archived 2026-10-24. Milestones and diagnostics
+  below describe the superseded pre-Engine owner/lifecycle path, not current
+  proof. Current Windows v2 contract: [world adapter
+  guide](../../porting/world-adapter-guide.md) and [core
+  closeout](core-world-model-rearchitecture.md#closing-outcome-2026-10-24).
+
 - Goal: native owner/stop/restore and owned-window recovery, followed by physical
   Win+Arrow evidence before Engine-driven geometry.
 - Milestone 1: `f767de8`, native ledger model/storage, Windows and Linux CI green.

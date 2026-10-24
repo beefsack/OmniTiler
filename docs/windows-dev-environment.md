@@ -20,7 +20,7 @@
   on owned test windows (initial proof may be bounded to one display),
   then physical Win+Arrow proof. Native dev/stop, exact-owner emergency
   exit and independent owned-window restore must be proven on the host before
-  broader use (see the [active record](changes/windows-phase1-implementation.md));
+  broader use (see the [historical record](changes/archive/windows-phase1-implementation.md));
   input proof remains pending.
   This runbook grants no live-testing authority.
 
@@ -44,7 +44,7 @@
 | Credentials | **Settled (user 2026-09-30):** HTTPS + GCM. | Done; do not copy credentials into the runbook. |
 | CLI scope | **Settled (user 2026-09-30; shell/toolchain updated 2026-10-10):** Git, rg, PS7, rustup, VS 2026 toolchain + SDK, just, jq, yq, gh. No Coreutils; qsv skipped. Root `mise.toml` manages Rust (via rustup), rg, just, jq, yq, gh; Git and the shell/toolchain prerequisites stay manual (see §§1, 4 below for routes and validation). | Done. |
 | opencode configuration | **Settled (user 2026-09-30):** opencode via winget; transfer the known-working config without an explicit shell path. Smoke-test the transferred configuration before work. | Follow the §6 smoke test. Stop/report incompatibility rather than silently changing configuration. |
-| Isolation | **Settled (user 2026-09-30):** Sandbox for Phase 4 clean runtime plus Win+L guest-only policy; Phase 1-3 live proof is physical-desktop owned windows first. Historical 2026-09-30 preflight state is in the [Phase 1 note](changes/windows-phase1-implementation.md). Never host policy writes. | Physical first under the live protocol. Sandbox only for Phase 4 clean runtime and guest-only Win+L; if unavailable, defer those; no policy experiments on the daily-use system. |
+| Isolation | **Settled (user 2026-09-30):** Sandbox for Phase 4 clean runtime plus Win+L guest-only policy; Phase 1-3 live proof is physical-desktop owned windows first. Historical 2026-09-30 preflight state is in the [Phase 1 note](changes/archive/windows-phase1-implementation.md). Never host policy writes. | Physical first under the live protocol. Sandbox only for Phase 4 clean runtime and guest-only Win+L; if unavailable, defer those; no policy experiments on the daily-use system. |
 
 ### Line-ending contract
 
@@ -495,7 +495,7 @@ git status --short
 - [ ] Git settings/origins, LF checkout/attributes, `core.longpaths`, short
   paths, clean status and `git diff --check`; no mass conversion.
 - [ ] Host OS/boot arrangement recorded; do not change the host boot arrangement.
-- [ ] Sandbox availability confirmed before Phase 4 + Win+L guest-only work; the historical 2026-09-30 preflight state is in the [Phase 1 note](changes/windows-phase1-implementation.md), not current proof.
+- [ ] Sandbox availability confirmed before Phase 4 + Win+L guest-only work; the historical 2026-09-30 preflight state is in the [Phase 1 note](changes/archive/windows-phase1-implementation.md), not current proof.
 - [ ] Host display topology recorded (see top of this doc); initial owned-window proof may be bounded to one display; multi-monitor acceptance needs a multi-monitor Windows setup. Physical input/display/game acceptance remains pending.
 - [ ] Clean-runtime and independent recovery evidence obtained when a runnable
   Windows spike exists; static CRT/OS imports are supporting, not proof.

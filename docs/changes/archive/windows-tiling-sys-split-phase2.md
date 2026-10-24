@@ -1,8 +1,13 @@
 # Windows tiling-system split, phase 2
 
+- Status: complete, archived 2026-10-24. All map orders 14-30, both approved
+  helper extractions and the scope/test renames are done; see Completion below.
+  Broader cross-platform module-size work remains in
+  [backlog](../../backlog.md).
+
 ## Goal and scope
 
-Continue the [split map](../research/windows-port/tiling-sys-split-map.md)
+Continue the [split map](../../research/windows-port/tiling-sys-split-map.md)
 after phase 1: subdivide the D23 tests and extract production responsibilities
 in orders 14-30. Preserve behavior, test names and public entrypoint paths.
 Use whole-item moves, necessary visibility/imports/module declarations and

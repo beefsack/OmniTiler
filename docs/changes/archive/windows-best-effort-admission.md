@@ -10,7 +10,7 @@
 - Dependency audit: the existing Engine path supports partial seed rosters,
   capacity exceptions, newest-first repair, overlap and `MoveToFloat` replies.
   Session diagnostics expose committed capacity identities. The parked
-  [world-state migration](../windows-full-world-state-replies.md) is not required.
+  [world-state migration](windows-full-world-state-replies.md) is not required.
 - Windows-only adapter changes; no shared semantics, KDE/macOS changes,
   dependencies, new polling or recovery ownership. Preserve games, overlays,
   lifetime fencing, D16/D23 and the recovery ledger.

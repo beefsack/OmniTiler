@@ -1,21 +1,46 @@
 # Windows Dual-Output Live Fixes
 
+## Current status (2026-10-24)
+
+- All four reported implementation defects are delivered: cross-output
+  transfer (DPI/cross-DPI corrections with agent and user-physical
+  confirmation), secondary pager (exact-anchor resolver with native smoke and
+  restart correction), workspace-command routing and fresh-window admission.
+  The interim foreground-first route and HWND-only admission prototypes below
+  are historical; current routing uses the configured core cursor/focus policy.
+- Cursor-first targeting (user-accepted 2026-10-20) is core-delivered: the
+  [core closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
+  retains one `WorldEngine` owning cursor-first placement/switching. The
+  "not implemented / awaits cursor-first" language below is historical
+  2026-10-20. Windows settings, persistence and live application of the
+  three-way placement are also delivered; user dogfood recheck remains.
+- W2M-03/W2M-12 world-route contracts are delivered: migration has native
+  fixture acceptance and T2 unchanged-source refusal has offline regression
+  coverage. The "blocked" language below is historical. The remaining
+  two-output physical matrix is unrun; see the [two-monitor
+  checklist](windows-physical-checklist.md#two-monitor-pc). Parked product
+  questions remain: undecided empty-workspace focus, edge-nearest versus MRU
+  focus, and the other parked rows linked below.
+
 ## Goal and scope
 
 Fix the reported cross-output transfer, secondary pager, workspace-command
 routing and fresh-window admission defects, then advance the Windows
 [two-monitor checklist](windows-physical-checklist.md#two-monitor-pc).
 Windows adapter changes only; no new platform-specific core policy. W2M-03
-and W2M-12 remain blocked on their existing world-route contracts.
+and W2M-12 were blocked on world-route contracts at the time; those contracts
+are delivered per the [core closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24) (see Current status above).
 
 ## Acceptance and approach
 
 - Diagnose each reported failure from supplied traces and current source.
 - Keep exact transfer/lifetime/visibility fences; do not accept a materially
   wrong allocation as a successful cross-output arrival.
-- Retain interim foreground-first workspace-command routing (`1e7bfaf4`).
-  Admission awaits implementation of the user-accepted 2026-10-20
-  configurable cursor-first defaults below. Preserve cold-start per-output placement.
+- Historical 2026-10-20 approach: interim foreground-first workspace-command
+  routing (`1e7bfaf4`) was retained while admission awaited cursor-first
+  settings. Core and Windows settings adoption are now delivered (see Current
+  status).
+  Cold-start per-output placement preserved.
 - Support secondary pager strips with exact tray/clock exclusion geometry or
   the narrowly recognized no-notification-area hierarchy described below;
   refuse unreadable and unknown layouts.
@@ -23,7 +48,7 @@ and W2M-12 remain blocked on their existing world-route contracts.
   format and strict clippy gates, and distinguish agent-driven observations
   from pending physical keyboard/display checks.
 
-## Current evidence
+## Historical evidence (2026-10-20)
 
 - Workspace commands preferred a still-present last-switch cache over native
   focus. Foreground-first resolution passes offline tests and an agent-driven
@@ -44,7 +69,7 @@ and W2M-12 remain blocked on their existing world-route contracts.
   focused interval did not reliably update retention. Further verification
   also exposed DPI-virtualized monitor bounds in the external harness. Both
   admission prototypes are parked outside the checkout; neither is shipped.
-  Admission now awaits the accepted cursor-first settings; a later fixture
+  Admission then awaited the accepted cursor-first settings (now core-delivered; see Current status); a later fixture
   must use physical monitor bounds and correlate genuine focus/retention.
 - Reported transfer trace shows size scaling near the monitor DPI ratio and
   subsequent reverse scaling. Exact arrival verification correctly refused
@@ -466,8 +491,9 @@ complete checklist row is closed by these bounded legs.
 4. Manual checks: re-establish a stable foreground/input/owner fixture, then run W2M-08,
    W2M-04, W2M-07 and dual-hidden W2M-10. Keep physical-only, fixture-dependent
    and explicitly blocked legs parked without inferred passes.
-5. Implement the accepted cross-platform output-targeting settings on Windows
-   first to unblock defect 4 admission; no implementation is recorded here.
+5. User dogfood recheck of defect 4 under the delivered configurable output
+   targeting. Core and Windows implementation and both-output fixture acceptance
+   are recorded in the [stage 2c outcome](archive/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22).
 
 ## Decisions and limits
 
@@ -479,12 +505,14 @@ complete checklist row is closed by these bounded legs.
   an option. New-window placement selects COSMIC (default: cursor output,
   split its last-focused window), Hyprland (cursor output, cursor-closest
   window), or i3/sway (focused output, its last-focused window). Workspace
-  sends act on the focused window's output regardless of cursor. Not implemented
-  on any platform; interim foreground-first commands (`1e7bfaf4`) stay for now.
+  sends act on the focused window's output regardless of cursor. Historical
+  2026-10-20: interim foreground-first commands (`1e7bfaf4`) remained pending
+  adoption. Core/Windows targeting and settings are now delivered (see above).
   Tentative (user review pending): the three-way placement setting subsumes
   the launch half of workspace-switch targeting. Send relative-target scope
   and focus-follows-cursor/cursor-warp defaults are recorded in the linked
-  decisions; they are not implemented here.
+  decisions; core/Windows adoption is delivered, with native FFC hover-follow
+  still unverified and default off.
 - User dogfood 2026-10-20 reports cross-output window moves working well.
   Cross-output focus instead chose W3 from `O1=W1`, `O2=H[W2 W3]` on Win+Right;
   the user expected edge-nearest W2, not destination MRU. Record this as the

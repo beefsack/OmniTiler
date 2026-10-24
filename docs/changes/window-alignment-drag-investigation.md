@@ -1,5 +1,13 @@
 # Window Alignment Drag Investigation
 
+- Status: historical pre-v2 evidence. The `PlanAdapter`/DescribePlan
+  mechanism below refers to removed modules; production uses the world route
+  and world-drag per the [core
+  closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
+  and [world adapter guide](../porting/world-adapter-guide.md). The
+  on-device oracle-delivery residual below remains open; this is not the
+  current contract.
+
 ## Finding
 
 - Firefox accepts full-height admission and restart restoration; Ghostty's

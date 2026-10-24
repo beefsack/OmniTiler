@@ -124,7 +124,7 @@
 
 ## Required follow-ups
 
-- Windows: resume the [W2 capture/diff handover](../windows-full-world-state-replies.md#blocker-preservation-and-exact-next-action).
+- Windows: resume the [W2 capture/diff handover](windows-full-world-state-replies.md#blocker-preservation-and-exact-next-action).
   Use real W1 FULL reports with empty adjacency to prove migration/refill,
   feedback and re-observation. Do not add Windows adjacency code. Reconcile the
   preserved prototype's native gate failures before W2 acceptance; runtime W3

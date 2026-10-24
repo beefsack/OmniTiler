@@ -805,7 +805,7 @@ platform API behavior.
   not runtime acceptance. The staged entry remains test-only and unwired;
   migration is to be reworked under the [core-owned world model direction](#core-owned-world-model),
   not the proposed narrow migration-authority capability. No core change is delivered.
-  [Offline proof and limits](changes/windows-full-world-state-replies.md#t2-offline-staged-transaction-2026-10-20).
+  [Offline proof and limits](changes/archive/windows-full-world-state-replies.md#t2-offline-staged-transaction-2026-10-20).
 
 ## Project Name
 
@@ -2612,7 +2612,7 @@ platform API behavior.
   is not approved in that form; rework migration under this ownership model,
   coordinated with the boundary inventory. T2's accepted adapter-only
   staged-clone refusal direction is unchanged.
-  [W2b record](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals).
+  [W2b record](changes/archive/windows-full-world-state-replies.md#w2b-cross-stream-proposals).
 - <a id="core-platform-boundary"></a> User approved 2026-10-20, under
   [Layering](principles.md#layering): the top-level core/platform split is set.
   Core model: screens including geometry/work areas; workspaces always as a
@@ -2929,7 +2929,7 @@ platform API behavior.
   focus gates. Fixed-size admission remains enabled in both profiles. No wire
   policy fields, KDE/macOS behavior change or world-adoption acceptance is
   implied. Delivered in `0869f08c`;
-  [constructor evidence](changes/windows-full-world-state-replies.md#constructor-prerequisite-and-accepted-selection).
+  [constructor evidence](changes/archive/windows-full-world-state-replies.md#constructor-prerequisite-and-accepted-selection).
 - User direction 2026-10-18: core must own monitor topology, retaining FULL
   monitor positions in world state and deriving output adjacency itself.
   Adapters supply geometry in complete world reports, including initialization

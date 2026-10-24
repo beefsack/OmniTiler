@@ -2,6 +2,10 @@
 
 - Status: proposal ready for cross-stream review, 2026-10-17. Documentation
   only; implementation and native acceptance remain pending.
+- Carrier note: KWin carrier line references below name removed
+  `kwin/src/plan-adapter*.ts` modules; the review must re-base carriers onto
+  the world-route modules per the [world adapter
+  guide](../porting/world-adapter-guide.md).
 - Approved behavior, not reopened: [D23 option B](../research/d23-minimized-rehome.md)
   and [13f option A](../research/fixed-override-born-maximized.md), recorded in
   [window-state decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen)

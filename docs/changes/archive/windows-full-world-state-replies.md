@@ -1,9 +1,16 @@
 # Windows full world-state reply adoption
 
+- Status: superseded, archived 2026-10-24. The W1/W2/W2a/W2b/T2 staged work
+  below is the historical adoption path; the completed [core world-model
+  rearchitecture](core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
+  is the accepted implementation and preserves the T2 staged-transaction
+  semantics unless a later boundary supersedes them. Current port contract:
+  [world adapter guide](../../porting/world-adapter-guide.md).
+
 ## Goal and status
 
 - W2a delivered as a reviewed, gated offline diagnostic increment, 2026-10-18.
-  Core-owned [FULL topology](archive/shared-core-owned-output-topology.md)
+  Core-owned [FULL topology](shared-core-owned-output-topology.md)
   (`f9bd2df1`) unblocked prototype reconciliation: Windows reports FULL monitor
   rectangles and empty adjacency, and sends directional intent only. No Windows
   target selection or adjacency mapping was added.
@@ -16,7 +23,7 @@
 - Goal: complete observed-world reports and host diffs against one full reply;
   move workspace lifecycle, scope, history and mapping policy into the retained
   in-process world state.
-- Contract: [full-state D1-D5 and capacity B](archive/core-full-state-replies.md).
+- Contract: [full-state D1-D5 and capacity B](core-full-state-replies.md).
   Reference adapters: `kwin/src/world-*` and
   `crates/omnitiler/src/world_service.rs`.
 - Preserve recovery ledger, native window properties, lifetime/gesture fences,
@@ -24,7 +31,7 @@
   No new native capabilities, settings, polling or process boundary.
 - Shared-core/protocol behavior changes beyond the selected additive
   construction API are outside this change. Coordinate
-  with [D23/13f delivery](shared-core-d23-rehome-and-13f-maximize-base.md),
+  with [D23/13f delivery](../shared-core-d23-rehome-and-13f-maximize-base.md),
   consuming its approved additions rather than implementing a competing rule.
 
 ## Constructor prerequisite and accepted selection
@@ -43,7 +50,7 @@
   `Session::fixed_send_admission` otherwise refuses automatic-origin floats.
   Windows' approved 2026-10-16 D16 extension explicitly permits these sends;
   KDE/macOS behavior was deliberately unchanged
-  ([decision](../decisions.md#workspaces)).
+  ([decision](../../decisions.md#workspaces)).
 - Maximized-policy parity also needs an explicit configuration route rather
   than assuming Linux's constructor policy is interchangeable. Windows'
   legacy event stamps leave maximized/sticky flags adapter-owned, whereas a
@@ -69,7 +76,7 @@
   WorldEngineConfig) -> Option<Self>` accepts exactly `fixed_send_admission`
   and `maximized_focus_fence`. `Default` remains `false`/`true`; Windows uses
   `true`/`false`. Fixed-size admission stays enabled in both profiles.
-  Delivered in `0869f08c`; [accepted architecture decision](../decisions.md#engine-architecture-and-convergence).
+  Delivered in `0869f08c`; [accepted architecture decision](../../decisions.md#engine-architecture-and-convergence).
 - No KDE, macOS or wire/protocol changes in the constructor prerequisite.
   Their existing constructor calls and behavior remain unchanged. No D23/13f
   changes included. W2a now proves the Windows profile against a separately
@@ -251,7 +258,7 @@
     User direction 2026-10-18 supersedes adapter mapping: shared core must
     retain FULL monitor positions and derive targets. Windows supplies its
     existing FULL topology geometry, not KDE heuristics or a Windows map;
-    [proposal](archive/shared-core-owned-output-topology.md).
+    [proposal](shared-core-owned-output-topology.md).
 - W2-W4, runtime/live adoption and physical/two-output acceptance remain pending.
   The backlog item remains unimplemented until cutover and acceptance.
 
@@ -323,7 +330,7 @@
 - User direction 2026-10-18 supersedes the earlier native-to-world mapping
   options: keep adoption parked until core owns monitor topology and derives
   adjacency from reported FULL rectangles. Windows will not implement an
-  adjacency mapping. [Cross-stream proposal](archive/shared-core-owned-output-topology.md)
+  adjacency mapping. [Cross-stream proposal](shared-core-owned-output-topology.md)
   separates current world/legacy selection rules and their explicit review.
   After shared delivery, prove actual migration/refill capture, feedback and
   re-observation with empty adapter adjacency before accepting W2. The working
@@ -408,7 +415,7 @@
   jobs green. The first-attempt macOS queue-test nondeterminism remains a
   separate residual risk, not a Windows regression or a repaired macOS test.
 - Reconciled the evidence update over concurrent
-  [split-edge selection delivery](archive/world-split-edge-selection.md) through
+  [split-edge selection delivery](world-split-edge-selection.md) through
   `5a084477`. Repeated four-package locked build/test, strict all-target clippy,
   formatting and whitespace gates pass: **2,852 passed, 0 failed, 1 ignored
   across 71 suites**. All 55 W2 fixtures still pass; neither parked diagnostic
@@ -424,7 +431,7 @@
 
 - **User direction 2026-10-20:** the narrow default-off migration-authority
   capability below is not approved in that form. Under the
-  [core-owned world model](../decisions.md#core-owned-world-model), a
+  [core-owned world model](../../decisions.md#core-owned-world-model), a
   whole-workspace migration changes core's workspace-to-output mapping and the
   adapter actuates that new world state. Rework the contract with the
   core/platform boundary inventory and discussion before planning. T2's
@@ -458,7 +465,7 @@
    prohibits functional branching. No new protocol/feedback vocabulary or
    adapter capacity policy was introduced here.
 
-- Minimal [action-sequence discriminators](../spec/reference-outcomes.md#windows-world-adoption-authority-discriminators)
+- Minimal [action-sequence discriminators](../../spec/reference-outcomes.md#windows-world-adoption-authority-discriminators)
   preserve the two gaps; unsupported native outcomes remain TBD.
 - Exact next action: inventory platform-owned policy as input to the
   core/platform boundary discussion, then rework migration around core-owned
@@ -477,7 +484,7 @@
   the T2 adapter-only direction is **User 2026-10-20 accepted**.
   These supersede the assumption above that both blockers require
   core additions. No runtime or core behavior changed; W2/W3 remain blocked.
-  Apply [Layering](../principles.md#layering): prefer a sensible adapter
+  Apply [Layering](../../principles.md#layering): prefer a sensible adapter
   alternative before adding generic, default-off core support.
 - Fetched history through `0f76c595`: the intervening change concerns macOS
   native-Space selection, not these migration/topology paths.
@@ -547,7 +554,7 @@
   construction defaults retain their current publication/settlement behavior.
 - **KDE implication:** align `kwin/src/world-apply.ts` 3b to scope plus member
   authority; stop treating `result.members` as a Hold bypass. Independently,
-  the [parked global-native-inventory mismatch](archive/world-split-edge-selection.md#parked-limitation-and-native-acceptance)
+  the [parked global-native-inventory mismatch](world-split-edge-selection.md#parked-limitation-and-native-acceptance)
   makes source-native absence impossible on the replicated ring. Keep scoped
   inventory confirmation for disjoint sets; use truthful per-output logical
   binding/member/both-view proof for aligned sets. Never filter a global
@@ -618,7 +625,7 @@
   Migration requires rework under the core-owned mapping direction above. No core,
   protocol, runtime-owner or native behavior change; W2/W3 remain unaccepted.
 - `WorldSequencer::deliver_production` is now called by the incomplete
-  [world-owner cutover](archive/core-world-model-rearchitecture.md#stage-2b-partial-implementation-checkpoint-2026-10-21),
+  [world-owner cutover](core-world-model-rearchitecture.md#stage-2b-partial-implementation-checkpoint-2026-10-21),
   not an accepted native runtime. The `#[cfg(test)]` `deliver_staged` is a
   thin branch-indicator wrapper over it, never a second staging route. A
   fresh candidate evaluates the exact report once, then adopts a supported

@@ -17,7 +17,7 @@ supersedes historical pending-stage and readiness statements below.
   KDE/macOS porting is outside this implementation; their compilation is not
   a constraint on the new boundary.
 - This is the implementation successor to the W2/W3 plan in
-  [Windows full-world adoption](../windows-full-world-state-replies.md), not
+  [Windows full-world adoption](windows-full-world-state-replies.md), not
   acceptance of its parked diagnostics or authority shortcuts.
 
 ## Inventory and core destinations

@@ -200,7 +200,7 @@
 [scope]: ../decisions.md#scope-and-platform-goals
 [triage]: ../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2
 [backlog]: ../backlog.md
-[world]: windows-full-world-state-replies.md
+[world]: archive/windows-full-world-state-replies.md
 [admissionlive]: windows-best-effort-admission-live.md
 [gaming]: windows-gaming-coexistence.md
 [pagerevents]: archive/windows-pager-event-coverage.md

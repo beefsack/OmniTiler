@@ -1,5 +1,11 @@
 # Group Underlay Move Trigger
 
+- Status: A/B delivered; adapter-wiring citations below refer to the removed
+  `kwin/src/plan-adapter-entry.ts` module. The trigger policy persists in
+  shared core and the effect FFI consumed via the world route; see the [core
+  closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
+  and [world adapter guide](../porting/world-adapter-guide.md).
+
 ## Goal And User Decisions
 
 - User decision 2026-09-30: show the group underlay for window movement through

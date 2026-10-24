@@ -1,5 +1,12 @@
 # Reliability Condition Investigation
 
+- Status: historical pre-v2 evidence. The Plan-route file citations below
+  refer to removed `kwin/src/plan-adapter*.ts` modules; production uses the
+  world route per the [core
+  closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
+  and [world adapter guide](../porting/world-adapter-guide.md). The
+  per-slice live gates below remain pending; this is not the current contract.
+
 ## Scope
 
 - Static diagnosis of the five reliability conditions in `VISION.md:30-48`.

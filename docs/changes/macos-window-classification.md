@@ -12,4 +12,5 @@ Offline tests, strict clippy and formatting pass; all eight hosted
 Native fact acquisition and live capability acceptance remain later Phase 1 work.
 
 Scope, pinned reference comparison, decisions and evidence are in the
-[archived change record](archive/macos-window-classification.md).
+[archived change record](archive/macos-window-classification.md). Current port
+contract: [macOS port notes](../porting/macos-port-notes.md).
