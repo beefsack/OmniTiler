@@ -72,8 +72,11 @@ missing facts. Shape:
   logical id (facade readback or mechanical application receipt),
   never authority by itself. Host-native membership is translated by
   the port into this logical receipt; there is no host-native
-  per-window field in the default contract. `None` means unknown, never
-  proof of absence.
+  per-window field in the default contract. This is insufficient for fresh
+  host-owned adoption before logical ids exist: that approved implementation
+  needs separate capability-gated native membership evidence, not adapter-minted
+  logical ids. No such field is shipped yet. `None` means unknown, never proof
+  of absence.
 - Capability opt-ins (off by default, never platform-name checks in
   core): `host_owned_workspace_domains` carries `native[]`
   (`NativeObservation`: observed native order plus current native view
@@ -290,6 +293,14 @@ The discriminator is four occupied native desktops, fresh generation, four
 logical workspaces with membership preserved and no workspace moves. Native
 outcome remains TBD. See [decision](../decisions.md#native-adoption-2026-10-24).
 
+The implementation is currently [parked on lifecycle composition](../changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle):
+existing core policy appends a trailing spare after an occupied final workspace.
+Four native-bound workspaces plus that spare and exactly four total workspace
+rows are different assertions; no lifecycle exception or reinterpretation is
+selected. Native inventory scope/completeness also needs explicit treatment
+before currently inert observations become load-bearing; do not infer native
+removal from an absent row.
+
 ### Coordinates and safety
 
 - One coherent adapter coordinate space per report (screens FULL,
@@ -298,9 +309,11 @@ outcome remains TBD. See [decision](../decisions.md#native-adoption-2026-10-24).
   native conversion when actuating/rendering. Never mix client, outer
   and visible-frame spaces; join them explicitly per platform.
 - Size hints are client sizes; convert to decorated frames with the
-  platform's own frame facts (KWin `clientGeometry`), never with
-  another platform's compensation. Learned minima ride the shared
-  clamp/suppression lane: the shipped Windows fix (`01a73798`) prefers
+  platform's own frame facts (KWin window `clientGeometry` versus
+  `frameGeometry`), never with another platform's compensation. KDE still
+  needs this window-client capture; its current `readClientArea` instead
+  reads `workspace.clientArea`, the desktop work area. Learned minima ride the
+  shared clamp/suppression lane: the shipped Windows fix (`01a73798`) prefers
   a later staged frame over the immediate readback (exact immediate
   target plus eligible later same-origin growth learns minima; the
   producer reports prior attempts then fresh facts), and later facts

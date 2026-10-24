@@ -3,6 +3,11 @@
 How the KDE adapter moves to the strict v2 contract in
 [world-adapter-guide](world-adapter-guide.md). Status below is
 implemented vs approved-not-implemented vs open as of `01a73798`.
+Rechecked at `a0f54105`: the v1/service/presentation gaps below remain.
+The staged implementation and parked boundaries are tracked in
+[KDE world-v2 port](../changes/kde-world-v2-port.md). Stage 0 is complete;
+stage 1 adoption is parked on four-total versus existing trailing lifecycle,
+not delivered. Later stages have not started.
 
 KWin source is read from the local sibling clone at the documented
 `v6.7.4` pin; port work must not web-fetch KWin sources. Mechanical
@@ -118,9 +123,16 @@ fixtures passing through shims.
   as the API ceiling. Neither the JS nor the effect side has a warp
   API: cursor-warp is unsupported on KDE. Never claim an applied
   `cursor_warp`.
-- Frame reads use `frameGeometry`; client sizes use `clientGeometry`
-  (see `world-observe.ts` `readRect`/`readClientArea`). Writes go
-  through the guarded `frameGeometry` setter (`world-native.ts`).
+- Current frame reads use `frameGeometry` (`world-observe.ts::readRect`);
+  writes use the guarded `frameGeometry` setter (`world-native.ts`).
+  `readClientArea` calls `workspace.clientArea(MaximizeArea, output, desktop)`
+  for the work area, not a window's client rectangle. The port must add
+  read-only window `clientGeometry` capture for client-size hint conversion
+  (`src/window.h` Q_PROPERTY at the pin); the current adapter does not read it.
+- The declaration header cites 6.7.5 while these source checks pin 6.7.4.
+  Comparing `src/window.h` and the workspace wrapper header/implementation
+  between those tags confirms the relied-on scripting APIs are unchanged;
+  this is not a reason to change the documented pin.
 - Desktop select/transfer uses the declared wrappers
   (`currentDesktopForScreen`, `setCurrentDesktopForScreen`,
   `sendClientToScreen`, `createDesktop`/`removeDesktop`,
@@ -186,6 +198,15 @@ fixtures passing through shims.
 - Four occupied native desktops on a fresh core mean four logical
   workspaces with the same members and no workspace-move
   discriminator; the native result stays TBD until KDE-tested.
+- Implementation intake gap: `WindowFact.observed_workspace` is a logical
+  receipt, so it cannot identify native membership before core ids exist.
+  Adoption needs capability-gated per-window native evidence, separate from
+  logical receipts. Current `native[]` has no native-list completeness field;
+  duplicate/absent rows need explicit handling before they become load-bearing.
+- Count ambiguity: existing core lifecycle appends a spare after four occupied
+  workspaces. Whether four-to-four means four total or four native-bound plus
+  that spare is [parked](../changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle);
+  no lifecycle exception is implicitly approved by this implementation plan.
 
 ## Build, check and gate commands
 

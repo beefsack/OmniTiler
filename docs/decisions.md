@@ -35,6 +35,8 @@ Tentative index (user review pending; not approved product rules):
   heuristic ([below](#engine-architecture-and-convergence))
 - KDE world placement traces ([below](#observability))
 - Activities defaults ([below](#port-deferred-investigations-2026-10-24))
+- KDE v2 stage sequencing and broker capture transport
+  ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 
 ## KDE rapid directional input
 
@@ -4598,6 +4600,11 @@ User-approved 2026-10-24, approved core change not yet implemented:
 - Current `native[]` rows that do not bootstrap rings or publish
   `native_binding` are the implementation gap, not an uncertain
   product choice.
+- Implementation boundary identified 2026-10-24: existing trailing policy
+  appends after an occupied final workspace. Four-total versus four native-bound
+  plus the ordinary spare is parked for clarification; no lifecycle exception
+  or changed adoption rule has been selected. The approved adoption remains
+  unimplemented; [plan and evidence](changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle).
 
 ## Port deferred investigations 2026-10-24
 
