@@ -126,6 +126,31 @@ missing facts. Shape:
   clock (never wall-clock), one sample per report, seating retry
   backoff together with per-attempt stamps.
 
+### Host-owned adoption amendment (tentative, 2026-10-25)
+
+- Host-owned adapters supply only native membership (`nativeWs`) and native
+  desktop order/current. Core derives logical member/view receipts; adapters
+  read output-specific `native_binding` and keep only live native-id/handle
+  lookups, never their own native-to-logical table. Tiler-owned domains keep the
+  logical receipt route. This amends the earlier macOS receipt assumption.
+- `current_native: Option<String>` is proposed (`current: null` on the wire):
+  a non-desktop current surface keeps the retained logical view while its desktop
+  order is still used. Fullscreen/system surfaces omitted from the order are
+  never adopted; unknown membership holds its retained home, never defaults to
+  the current desktop. KDE reports a desktop current id.
+- Native order wins after host-owned creation/reorder. Identical spanning lists
+  form one logical workspace set: shared mode is fully supported, separate-view
+  modes are degraded and require an adapter warning. Missing/partial lists never
+  prove deletion; complete vanished ids are removals, never renames. Generations
+  re-adopt from fresh observation. Sticky stays float-only over all managed
+  workspaces of its owning output, not all outputs.
+- Stage 1b is an unaccepted draft, not a consumable new API. Its proposed
+  `NativeCreationDesire` / `NativeCreationAttempt` needs stronger correlation:
+  an accepted asynchronous setter and a unique later native-order addition do
+  not prove which operation created that desktop. Hold ambiguous creations,
+  spend each operation at most once, and never infer native arrival from counts.
+  See the [counterexample and next design choice](../changes/kde-world-v2-port.md#stage-1b-creation-correlation-blocker).
+
 ### Classification ingress and remote transport rough edge
 
 The shared policy entry points also include

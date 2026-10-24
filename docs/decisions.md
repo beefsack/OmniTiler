@@ -4611,6 +4611,32 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   issuing no launch moves; the existing ordinary trailing-spare lifecycle
   follows unchanged. This preserves core behavior without a host-owned
   lifecycle exception. [Implementation and evidence](changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle).
+- **Tentative amendment, 2026-10-25:** host-owned adapters report native evidence
+  only: per-window `nativeWs` and per-display desktop order/current. Core alone
+  translates native ids, derives member/view receipts and publishes
+  output-specific `native_binding`. Adapters retain only live native-id/handle
+  lookups, not a native-to-logical table. This supersedes the earlier macOS
+  logical-receipt assumption; tiler-owned domains (Windows) keep logical receipts.
+- **Tentative, 2026-10-25:** `NativeObservation.current_native` becomes optional;
+  `None` means a non-desktop surface, never a workspace. Keep the retained logical
+  view while using the desktop order. Only ordered desktop ids are adopted;
+  unknown/fullscreen membership retains home without geometry writes.
+- **Tentative, 2026-10-25:** observed native order is authoritative in host-owned
+  domains, including after creation/reorder. Identical spanning projections form
+  one logical set, not per-output duplicates: shared mode is fully supported;
+  separate-view modes are degraded and the adapter warns. Ordinary trailing
+  lifecycle remains unchanged. Complete vanished ids are removals, never renames;
+  a fresh generation re-adopts from observation.
+- **Creation correlation, 2026-10-25:** core owns existing-backing selection or an
+  explicit creation desire; adapters report raw correlated attempts, never bind.
+  Ambiguous execution holds with `AmbiguousCreation`, never blindly recreates.
+  The Stage 1b draft is not accepted: setter acceptance plus a unique later order
+  delta cannot distinguish a late requested creation from a concurrent outside
+  creation. Causal created-id evidence or a safe hold rule remains necessary;
+  [counterexample and options](changes/kde-world-v2-port.md#stage-1b-creation-correlation-blocker).
+- Sticky semantics are unchanged: all managed workspaces of the owning output,
+  float-only, positive all-desktop proof; sticky members stay on the source output
+  during workspace migration. This does not claim native cross-display behavior.
 
 ## Port deferred investigations 2026-10-24
 

@@ -30,6 +30,7 @@
 | --- | --- | --- |
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
+| 1b. Native-only evidence and backing correlation | Uncommitted core/protocol draft; optional native current, native-only host receipts, creation desires/attempts, native order/removal and spanning regressions | Blocked by truthful asynchronous creation/outside-creation indistinguishability; 21 draft tests pass and one new blocking regression fails; not a delivered contract |
 | 2. Broker and strict v2 cutover | Parked: paired Rust/JS implementation and canonical v2 fixtures exist, but command wake delivery and native backing/settlement remain unresolved | Partial offline gates below; six KDE integration failures remain, no native or completion claim |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
@@ -115,6 +116,61 @@
   serving generation. Terminal collection is redeliverable without replaying
   native effects. A new bus connection cannot collect an old sender's results;
   stable reconnect claims would need a separately reviewed ownership mechanism.
+- Host-owned adoption revision (tentative, 2026-10-25): adapters report only
+  `nativeWs` and per-display native desktop order/current; core derives logical
+  member/view receipts and owns binding. Tiler-owned Windows keeps logical
+  receipts. Adapters keep live native-id/handle lookups, not a binding table.
+- Optional native current (tentative): `None` means a non-desktop current surface;
+  retain logical view while using order. Adopt only ordered desktops, hold
+  unknown membership, and preserve fullscreen home/no-write safety.
+- Native order is authoritative (tentative), with no insertion-position
+  assumption. Identical spanning projections form one logical set; shared is
+  fully supported, separate-view modes degraded with adapter warning. Complete
+  vanished ids are removals, never renames; fresh generations re-adopt.
+
+## Stage 1b creation-correlation blocker
+
+- Proposed draft types: `NativeCreationDesire { operation_id,
+  logical_workspace, target_output }` on replies (`nativeCreations`), and
+  `NativeCreationAttempt { operation_id, logical_workspace, target_output,
+  setter, order_before, order_after, attempt_ms }` on reports
+  (`creationAttempts`). `NativeObservation.current_native` becomes
+  `Option<String>` (`current: null`, missing/empty refused). These are not a
+  delivered API; macOS stage 3 must not consume the draft as settled.
+- Draft desires use stable `op-native-<serial>` identities, not command ids;
+  attempts match operation/logical/output, consume once, and withdraw execution
+  work after an attempt. Refusal, changed replay, stale/future stamps and
+  multiple candidates hold with `AmbiguousCreation`. The ordinary empty spare
+  never requests creation. Native order reorders bound logical rows.
+- Blocking counterexample: accept creation for logical L with before=after
+  `[a,b]`; the requested desktop T is asynchronous. A user creates X before T
+  appears. Fresh order `[a,b,X]` is identical to the trace where X is the requested
+  desktop. The draft binds X to L and retires the operation; it has no causal
+  proof. This requires no false adapter evidence: setter acceptance is not
+  completion. A later `[a,b,X,T]` cannot repair that already-consumed attribution.
+- Regression `accepted_no_delta_late_singleton_must_not_guess_outside_race` in
+  `crates/tiler-core/tests/world_host_owned_stage1b.rs` fails: three bindings
+  instead of the required two, with X bound to L. The same file's
+  `delayed_no_delta_attempt_settles_on_late_readback` passes but encodes the
+  incompatible unique-delta inference. Neither oracle was weakened.
+- Options: add host-correlated created-id/completion evidence; hold every
+  uncorrelated late addition; or explicitly relax to unique-delta inference.
+  Recommendation: causal evidence where a host can prove it, otherwise safe
+  `AmbiguousCreation` with no re-create. Establish how KDE and macOS provide
+  that evidence before choosing a field or claiming delayed settlement. The
+  draft stays uncommitted; N3/N4 remain unresolved.
+- Existing-native reuse is separately parked: explicit eligible-unbound
+  selection versus fresh creation. Recommendation: fresh creation when no
+  proven eligible backing exists, never cannibalize another logical workspace
+  or reinterpret vanished-id/new-id counts as a rename. A draft count-only reuse
+  branch was removed and a deletion-plus-outside-creation regression pins it.
+- Neutrality: Windows needs no native creation evidence; KDE/macOS need causal
+  asynchronous attribution; GNOME/ChromeOS may offer different native creation
+  receipts. Do not force synchronous creation, a returned native handle, an
+  insertion ordinal, or a Windows-local backing model on all hosts.
+- Sticky semantics are unchanged: float-only over all managed workspaces of the
+  owning output; migration leaves sticky members on the source. Native
+  all-desktop scope still requires positive host proof.
 
 ## Decisions and core-neutrality concerns
 
@@ -199,10 +255,21 @@
   KWin JS `callDBus` has no signal-subscription primitive. An external queued
   command waits for a subsequent native-event capture. This is not accepted
   command responsiveness or a completed broker cutover.
-- Options: a narrow native event bridge, an outstanding asynchronous wait route
-  with proven bus timeout/reconnect behavior, or defer external command clients.
-  Recommendation: prove the smallest event-driven transport before selecting
-  one; do not add idle polling or describe a signal emission as delivery.
+- Tentative direction (2026-10-25): one long-held asynchronous `callDBus` wait
+  request completed by the service when work is available, re-armed on reply.
+  Any timeout re-arm must name a verified host-limit deadline, not idle polling.
+  Implementation belongs to the next package.
+- Pinned KWin `v6.7.4`, `src/scripting/scripting.cpp:301-376`: `callDBus`
+  uses nonblocking `sessionBus().asyncCall(message)` with no timeout argument;
+  its pending-call watcher belongs to the script. Only successful replies call
+  JS; errors/timeouts merely log and return. Script teardown destroys the
+  watcher, so callback-only timeout recovery is not available. The signature
+  (`src/scripting/scripting.h:115-125`) exposes no timeout option.
+- Event-driven waiting is mechanically plausible, but not proven end-to-end.
+  Qt's effective default timeout value remains unverified; do not invent a
+  deadline. Next-package feasibility must establish that bound, normal service
+  deadline replies, no-callback error recovery and reload/dead-waiter cleanup
+  without periodic polling. No core hook or dependency change is implied.
 - This is host transport, not a core policy hook. Other remote hosts must be
   able to use their own event delivery without a KWin-shaped core abstraction.
 
@@ -312,3 +379,22 @@
   live hide/reveal acceptance is claimed. Next: resolve event-driven command
   delivery and N3/N4 backing correlation, finish truthful raw attempts, then
   rerun the complete KDE gate without weakening the six integration oracles.
+- Stage 2 partial delivery `0f3c92b5` includes the strict paired cutover and
+  preserved six red oracles. Rebased over the four macOS updates; fresh offline
+  `omnitiler` 192 tests, JS typecheck/build, workspace fmt/whitespace and world
+  acceptance 6/6 pass; KDE remains 688/694 passed. No native acceptance.
+- Stage 1b draft gates before the final counterexample: locked core/protocol/
+  Windows build, 2,006 all-target tests across 51 suites, strict all-target
+  clippy, workspace fmt/whitespace and world acceptance 6/6 pass. macOS test
+  targets compile after mechanical constructor updates; related world tests pass.
+  The new blocking counterexample then reports 21 passed / 1 failed in the
+  focused Stage 1b suite. These green gates do not override its semantic failure;
+  no Stage 1b core commit or KDE creation-consumer change was made.
+- Broader incoming-tree checks also exposed unrelated settings-export catalog
+  count drift and macOS dead-code strict-clippy warnings. Some non-native macOS
+  tests require a readable macOS version and fail on a non-macOS host. No
+  unrelated repair, dependency change or live mutation was attempted.
+- Exact next action: settle the causal creation-evidence/safe-hold contract
+  against the indistinguishable-prefix regression, then finish Stage 1b gates
+  and KDE desire/attempt consumption before rerunning the six migration/lifecycle
+  oracles. Stage 1b and the whole port remain active, not archived or complete.
