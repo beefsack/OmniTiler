@@ -4,6 +4,38 @@ Active, user-approved choices are recorded here. Explicitly flagged tentative
 clauses are pending user review, not user-approved current rules.
 Historical implementation detail is recoverable in Git history.
 
+Status 2026-10-24: shared core + Windows world-model rearchitecture (v2) is
+complete, with final native missing proofs accepted
+([closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)).
+KDE/macOS remain unported: [adapter guide](porting/world-adapter-guide.md),
+[KDE notes](porting/kde-port-notes.md),
+[macOS notes](porting/macos-port-notes.md).
+Superseded excerpts moved out on 2026-10-24 live in
+[decisions-archive.md](decisions-archive.md); the archive is historical, not
+current product policy.
+
+Tentative index (user review pending; not approved product rules):
+- KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
+- macOS preview entry point ([below](#development-entry-point))
+- macOS adapter defaults, focus oracle, observation recovery, scoped input
+  eligibility (partially superseded), preview input route, preview
+  configuration, tap recovery ([below](#scope-and-platform-goals))
+- macOS preview presets and native shortcut ownership
+  ([below](#shortcuts-conflicts-and-presets))
+- Aligned migration D5 source refill and empty-cell spare rules
+  ([below](#workspaces))
+- Later keep-below handling and unload-restoration question;
+  Windows D3/D4/Q3 interim until shared 13f delivery
+  ([below](#fixed-size-admission))
+- Compatible resize preset scope and test-needed resize control
+  ([below](#shortcuts-conflicts-and-presets))
+- Three-way placement subsuming launch targeting
+  ([below](#placement-minimums-and-startup-adoption))
+- Dev-only exact-owner migrate-workspace control and learned-minimum growth
+  heuristic ([below](#engine-architecture-and-convergence))
+- KDE world placement traces ([below](#observability))
+- Activities defaults ([below](#port-deferred-investigations-2026-10-24))
+
 ## KDE rapid directional input
 
 - **Tentative (user review pending), 2026-10-19:** production KDE tiled
@@ -650,10 +682,8 @@ platform API behavior.
   response and physical-input/preview/game acceptance remain pending. See the
   [idle record](changes/archive/windows-owner-event-idle.md).
 - User 2026-10-18 selected a controlled native-event coverage probe before 0.1,
-  replacing visible-pager 2 s recovery only if coverage proved complete. Probe
-  completed with completeness unproven: the tested topmost burial emitted a
-  desktop-parent reorder outside current subscriptions, not OS silence; broader
-  visibility/reorder, self-feedback and shell/display coverage remain unproven.
+  replacing visible-pager 2 s recovery only if coverage proved complete
+  (probe narrative in [archive](decisions-archive.md#4-completed-owner-idle-coverage-probe-historical)).
   User 2026-10-19 (option A) amends decision 5 of 2026-10-18: keep the
   visible-pager 2 s topmost-recovery timer for 0.1. Defer untested coverage
   legs until post-0.1; replace the timer only if events prove complete.
@@ -725,14 +755,19 @@ platform API behavior.
 
 ## Windows Multi-Output Foundation
 
-- User 2026-10-14 approved as delivered: cross-output keyboard moves and
-  native title-bar releases plan on a candidate Engine (Win+drag removed
-  2026-10-18). Retained Engine state
-  and workspace membership publish only after fresh topology, geometry
-  readback and arrival verification; empty-destination drops also require
-  source reflow verification. Refusal retains original logical membership.
-  Native writes are not atomic: partial physical changes converge through
-  subsequent observation, without replaying the refused transfer.
+- User 2026-10-14 approved as delivered (historical transaction, pre-v2):
+  cross-output keyboard moves and native title-bar releases planned on a
+  candidate Engine (Win+drag removed 2026-10-18). Retained Engine state and
+  workspace membership published only after fresh topology, geometry readback
+  and arrival verification; empty-destination drops also required source
+  reflow verification. Refusal retained original logical membership. Native
+  writes are not atomic: partial physical changes converge through subsequent
+  observation, without replaying the refused transfer.
+- Current v2 (Windows, 2026-10-24): core publishes the desired logical mapping
+  and actionable destination slot before arrival; settlement still requires
+  observed arrival receipts (readback, affinity, membership, view/refill), and
+  a desired slot or setter success never proves arrival
+  ([stage 3a](changes/archive/core-world-model-rearchitecture.md#stage-3a-accepted-outcome-2026-10-22)).
 - User 2026-10-14 approved as delivered: a verified transfer stands if subsequent
   foreground actuation fails; report the focus failure without claiming
   successful follow-focus. No workspace switch or visibility hide accompanies
@@ -1232,8 +1267,13 @@ platform API behavior.
   when space runs out" remains separate work, grounded in R-MIN-04/R-INS-09.
 - Core plus KDE delivered offline 2026-10-17
   ([contract, evidence and live checks](changes/archive/core-full-state-replies.md)).
-  Windows/macOS behavioral adoption remains separate; their transitional
-  domain API remains available.
+  Windows completed world (v2) adoption 2026-10-24: the sole `WorldOwner`
+  world route replaced ManagedWorkspaces and the direct-Engine owner, and the
+  public per-domain `CoreEvent`/`CoreReply` interfaces are removed
+  ([closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)).
+  macOS behavioral adoption remains separate port work
+  ([macOS notes](porting/macos-port-notes.md)). Historical transitional-API
+  wording is archived ([archive](decisions-archive.md#1a-transitional-domain-api-workspaces-moved-2026-10-24)).
 
 - User 2026-10-15 approved: Windows item 12
   stores `core.workspace.mode` in additive settings schema v1, using KDE's
@@ -1399,9 +1439,10 @@ platform API behavior.
   [workspace vocabulary 2026-10-24](#workspace-vocabulary-2026-10-24).
   A saved KDE `global-unique` mode no longer falls back to
   `per-output-local`.
-- Historical KDE selector restriction, superseded by the 2026-10-24 support
-    for both separate-view modes: `workspaceMode` exposed only
-    `per-output-local` and `shared`. The session-local
+- KDE workspace rules (only the mode-exposure restriction is superseded
+    2026-10-24 by both-separate-view support; the rules below stay active):
+    `workspaceMode` exposed only `per-output-local` and `shared`
+    (superseded restriction). The session-local
     mapping is never the native COSMIC workspace-set mapping. Adopted
     preexisting desktops are managed, never disposed on teardown. The minimum
     is two workspaces in total, including a trailing empty, not two plus a
@@ -1431,32 +1472,13 @@ platform API behavior.
     still records observed hotplug changes per 1.5). Session-local scope, no
     restart-persistent mapping or return guarantee.
 - Historical KDE per-output-local startup conversion (2026-10-18),
-  **superseded by aligned startup adoption**. The ownership/splitting and
-  startup-primary rules below no longer apply to KDE aligned mode; exact
-  creation attribution and friendly-name non-identity still apply:
-  - A native desktop initially shown on multiple outputs has one owner: the
-    startup primary. Every other showing output receives its own fresh backing
-    desktop; its non-sticky windows on the shared desktop change membership
-    without changing output or floating/fullscreen/maximized state. Minimized
-    non-sticky windows convert without being restored; sticky windows, including
-    minimized sticky windows, are exempt.
-  - A different pre-existing native current on a secondary output belongs to
-    that output. One ring per native desktop; visible-current evidence is not
-    additional ownership. Core owns conversion and mapping policy; KDE executes
-    membership/view changes only after fresh backing attribution. Incomplete or
-    unreadable startup reports do not establish ownership or authorize conversion.
-  - Create desktops with the unique logical token for exact-name attribution,
-    then rename only the proven bound native to a friendly KDE-style name.
-    Tentative presentation: `Desktop N`, using the one-based native position at
-    proof time. Names need not remain unique after retirement/reordering and are
-    never identities; retained native-ID proof survives rename.
-  - Implementation uses the reported startup-primary fact (KDE currently mirrors
-    `activeScreen`, falling back to output order), latched by the first complete
-    conversion report. Physical-primary versus focused-output startup semantics
-    remain a separate discriminator, not a change to the topology carrier.
-  - Delivered with native KWin 6.7.5 shared/distinct-current, state-preservation,
-    independent switching, two-way output-send and normal controller-restart
-    evidence. [Outcome](changes/archive/kde-startup-desktop-ownership.md).
+  **superseded by aligned startup adoption** (full text in
+  [archive](decisions-archive.md#3b-old-per-output-local-startup-conversion)):
+  one owner per multi-shown native desktop with fresh backing desktops
+  elsewhere; per-output current ownership; unique-logical-token creation
+  attribution with friendly rename (never identity); startup-primary latch;
+  KWin 6.7.5 delivery evidence
+  ([outcome](changes/archive/kde-startup-desktop-ownership.md)).
 - KDE: tray writes only `defaultTiled` and requests KWin reconfigure; only a
   running KWin reread/snapshot confirms it. Per-workspace overrides are
   session-only and reset on script reload; shared mode toggles the backing
@@ -2855,16 +2877,14 @@ platform API behavior.
   transition is optional later only for a demonstrated need. Desired output
   is not a restorable snapshot of trees, shares, MRU or minimized history.
 - Every accepted full observation publishes one globally monotonic world
-  revision while independent domain sessions/revisions remain independent.
-  Reports include screen topology, settings, hidden and minimized lifetimes,
-  explicit closes, unreadable holds and actuation
+  revision. Reports include screen topology, settings, hidden and minimized
+  lifetimes, explicit closes, unreadable holds and actuation
   feedback. Replies include complete workspace/output/window desires,
   per-property authority, retained targets, correlated operation results and
   one-shot effects. Held or untouched scope omission authorizes no write or
   retirement. Under the approved logical authority above, observed logical
   membership/view receipts replace required logical/native bindings; host
-  backing remains optional observation. Optional future presentation state
-  remains unimplemented.
+  backing remains optional observation.
 - Discovery binds authenticated KWin-owner/adapter identity to a fresh core
   generation and returns not-ready with no applicable state. A complete report
   precedes ready application. Process restart, Engine replacement and poison
@@ -2888,14 +2908,19 @@ platform API behavior.
 - Delivered offline 2026-10-17
   ([evidence](changes/archive/core-full-state-replies.md)). These choices
   supersede older no-world-sequence, KDE `DescribePlan` and 1 MiB/64 KiB
-  boundary decisions for the migrated KDE path. The portable per-domain core
-  interface remains transitional for Windows/macOS, not a KDE fallback.
+  boundary decisions for the migrated KDE path. The v2 contract keeps these
+  invariants on the strict v2 wire with no compatibility route
+  ([closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24));
+  KDE/macOS move per their port notes.
 - User direction 2026-10-18: remove unshipped legacy routes aggressively before
   0.1. KDE's plan/workspace-send adapters and DescribePlan transport are removed;
   production uses only DiscoverWorld/DescribeWorld plus float-intent persistence.
   Group highlighting forwards world active-group results to the existing native
-  effect endpoint. Portable per-domain core APIs remain until Windows/macOS
-  complete world adoption. [Removal evidence](changes/kde-legacy-route-removal.md).
+  effect endpoint. Portable per-domain core APIs are removed
+  (Windows adoption complete 2026-10-24); KDE keeps its route only until its
+  v2 port, which moves group rendering to uniform wire presentation
+  ([KDE notes](porting/kde-port-notes.md)).
+  [Removal evidence](changes/kde-legacy-route-removal.md).
 - User accepted 2026-10-18 (T1): additive
   `WorldEngine::new_with_config(&str, WorldEngineConfig) -> Option<Self>`
   configures `fixed_send_admission` and `maximized_focus_fence` at construction.
@@ -2908,8 +2933,8 @@ platform API behavior.
 - User direction 2026-10-18: core must own monitor topology, retaining FULL
   monitor positions in world state and deriving output adjacency itself.
   Adapters supply geometry in complete world reports, including initialization
-  and updates. Windows full-world adoption stays parked pending this shared
-  delivery; Windows will not build its own adjacency mapping. Selection-policy
+  and updates. Delivered for shared core + Windows 2026-10-24; Windows builds
+  no adjacency mapping of its own. Selection-policy
   alignment is not silently decided by ownership extraction.
   [Offline delivery and open questions](changes/archive/shared-core-owned-output-topology.md).
 
@@ -3251,17 +3276,18 @@ platform API behavior.
   logical pixels matches the KDE settings range. CLI mirrors only enable,
   colour and extension: `--no-group-underlay`, `--group-underlay-color #aarrggbb`,
   `--group-underlay-extension N`. No foreign-window attributes are changed.
-- Query the focused tiled window's immediate-parent group through Engine
-  `ActiveGroup` and the shared resolver/description, using the actual eligible
-  managed foreground. Render the union of Engine-projected source rectangles,
+- The focused tiled window's immediate-parent group comes from the uniform
+  wire-presentation result (stage 5; the old `ActiveGroup` query path is
+  deleted, full historical wording in
+  [archive](decisions-archive.md#2a-windows-activegroup-group-underlay-query-moved-2026-10-24)).
+  Render the union of core-published source rectangles,
   expanded by gap, border width and resolved extension, even while the live
   dragged frame moves. Hide unavailable/root-leaf/floating, minimised, maximised
   and fullscreen subjects. Existing pending/drag-residue gates fail closed;
   Win32 interactive movement pauses reconciliation without adding core residue.
-  Dogfood correction delivered offline 2026-10-11: ActiveGroup uses the same
+  Dogfood correction delivered offline 2026-10-11: group shapes use the same
   minimum-hint projector as ordinary plans; Windows carries retained advisory
-  hints only, never native/client rectangles. Existing hintless callers and
-  wire schema are preserved. Native nested-layout check pending
+  hints only, never native/client rectangles. Native nested-layout check pending
   ([record](changes/archive/windows-group-underlay-geometry.md)).
 - Anchor beneath the lowest visible, nonminimised/noncloaked managed member and
   the visible active-border surface, matching KDE underlay Z=-2 versus border
@@ -3310,6 +3336,9 @@ platform API behavior.
   window's edge (accepted); no custom scene/rendering mechanism is selected.
   Endpoint registration failure retries on window-activation and reconfigure
   events with no timer or polling; partial rollbacks only what was acquired.
+  KDE runs this route until its v2 port; v2 core removed the active-group
+  query, so the port moves this rendering to uniform wire presentation
+  ([KDE notes](porting/kde-port-notes.md)).
 - Grouping here means nested split-tree structure and placement. Tabs,
   stacked/shared groups, and compositor group behavior are excluded.
 - User decision 2026-10-07 (R-GRP-03): tabbed stacks leave deferral and become
@@ -4512,11 +4541,12 @@ platform API behavior.
   exact target placement. Tier 1 COSMIC, Hyprland, i3 and sway all cross to the
   adjacent output with the mover followed/focused; this delivers that cleanly
   rather than through recovery. [Evidence](changes/kde-dual-output-live.md#rightward-r4-defect-correction-and-re-verification).
-- The portable world Engine owns independent per-domain Sessions, outer gaps,
-  seeding, and relocation behind
-  typed events and replies. Do not merge per-domain revisions, fingerprints,
-  divergence, or node identities into one permanent Session.
-  Send/R4 assemble a transient canonical pair only for the synchronous planned-topology commit; no workspace/R4 pending pair state remains.
+- The public portable per-domain ownership/session-query API is removed
+  (Windows adoption complete 2026-10-24; historical wording in
+  [archive](decisions-archive.md#1c-portable-per-domain-sessions-ownership-moved-2026-10-24)).
+  Internal Engine/Session per-logical-workspace layout projections remain core
+  machinery inside the one retained `WorldEngine`, not a second adapter-facing
+  owner. No workspace/R4 pending pair state remains.
 - A KWin fork or patch is rejected. The project must operate within existing
   KDE/Plasma/KWin. The Rust-engine/direct-geometry direction above is the
   selected replacement architecture; the bounded adapter remains active only

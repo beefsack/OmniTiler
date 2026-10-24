@@ -49,5 +49,16 @@
 - Scoped Markdown path/fragment checking found only existing broken targets;
   these and archive-local fragment retargeting are carried into the final link
   cleanup unit. New port and core-closeout links pass; whitespace is clean.
-- Next: decisions consolidation, then active change-record and point-of-use
-  documentation review, followed by the full local-link gate.
+- Decisions unit accepted: current file 332,893 bytes; superseded excerpts
+  9,302 bytes in `docs/decisions-archive.md`. A short tentative-decision index
+  improves navigation; required decision anchors remain stable. The current
+  file retains durable hotplug, native-renderer and fencing/budget invariants
+  rather than shrinking them into misleading historical summaries.
+- Semantic review corrected overbroad draft supersession: core desires publish
+  before native arrival, internal layout sessions remain, KDE's renderer bridge
+  remains live pending its port, and active hotplug and no-replay rules remain
+  current. Independent re-review accepted all corrections without a new product
+  decision. Scoped link checks add no failures; the existing triage fragment is
+  carried to final cleanup. Whitespace passes.
+- Next: active change-record and point-of-use documentation review, followed
+  by the full local-link gate.
