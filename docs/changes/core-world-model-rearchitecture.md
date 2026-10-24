@@ -2830,3 +2830,36 @@ of cursor-first fresh placement or the entire rearchitecture.
   Final KDE/macOS port notes, final-artifact both-output matrix (including the
   migration log-count flake retry) and readiness summary are still pending.
   No new product decision was made; Windows remains not dogfood-ready.
+
+## Completion scope and dogfood convergence correction (2026-10-24)
+
+- The native half of the shared acceptance connector is deferred to the later
+  separation review. The accepted core-only ordered baseline stays; its logical
+  receipts do not prove native hide/reveal. Before a native driver is accepted,
+  its checker must reject missing readback, pending operations, omitted/fenced
+  evidence, coverage defects and skipped intermediate hide/reveal. The three
+  rejected approaches above are not accepted evidence.
+- Dogfood log: a newly admitted browser window joined a densely tiled workspace;
+  two windows repeatedly received controlled geometry writes with identical
+  target and immediate readback. No held authority or DPI transition explained
+  the repeated writes. Incoming observed frames are not logged, so delayed
+  application size restoration is inferred, not directly proven by this log.
+- Found and corrected a core evidence-precedence defect: immediate exact
+  readback cleared suppression even when the next report's later observed frame
+  still differed. The later readable fact now owns the suppression pair;
+  accepted readable dispatch plus stable mismatch suppresses unchanged pairs.
+  Exact immediate arrival followed by eligible same-origin growth also feeds
+  the existing tentative learned-minimum heuristic. There is no new timer,
+  retry cap, adapter policy or application-specific branch.
+- Independent review checked Windows capture/apply ordering and added dense
+  tiling, impossible-fit, inverse-arrival and clock/DPI regressions. Feasible
+  growth converges; an impossible fit retains stable allocation and clamp Hold
+  instead of repeating writes. The initial async-learning regression failed
+  before the fix and passes afterward. Learned minima remain tentative: an
+  external enlargement race is indistinguishable at this seam.
+- Locked build and all-target tests, strict all-target clippy, workspace fmt
+  and whitespace pass for core/protocol/Windows/fixture. Five new tests pass;
+  core library: **839 passed**. No native clamp reproduction is claimed: the
+  Windows fixture exposes track hints, not programmatic or delayed application
+  clamps. The production-shaped core regressions are the clamp evidence;
+  final-artifact fixture regression remains below the completion boundary.

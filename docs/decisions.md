@@ -2739,13 +2739,18 @@ platform API behavior.
   No new adapter contract or native policy owner is introduced.
   **Tentative heuristic, pending dogfooding:** accepted, time-stamped growth at
   the requested origin can establish an axis minimum only when neither axis
-  shrinks, current readable facts corroborate immediate readback, the tiled
+  shrinks, current readable facts corroborate immediate readback (or follow an
+  exact immediate target arrival with later same-origin growth), the tiled
   scope is controlled and no DPI transition is known. Unknown DPI is not proof
   of a transition; absent timing never learns. A racing external enlargement
   is not distinguishable from an application clamp at this seam: later eligible
   smaller observations disprove that axis, while fresh failed/ambiguous or
   undercutting writes cannot supply that counter-proof. Consumed attempts do
   not block fresh counter-evidence. Pair suppression remains independent.
+  Dogfood correction, 2026-10-24: later readable report facts own the frame
+  suppression pair over immediate post-write readback. An exact immediate
+  readback never clears a later stable mismatch; infeasible learned floors
+  retain proportional allocation and suppress an unchanged clamped pair.
   [Acceptance and live limits](changes/core-world-model-rearchitecture.md#stage-3b1-accepted-outcome-2026-10-22).
 - Explicit float-placement completion, 2026-10-22: core consumes raw frame
   attempts correlated by operation id, lifetime and target, including the

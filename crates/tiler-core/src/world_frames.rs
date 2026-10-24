@@ -10,7 +10,8 @@
 //! Two suppression lanes plus one persistent floor, all keyed by exact
 //! window lifetime:
 //!
-//! - `clamp`: an accepted setter whose stable readback still mismatches.
+//! - `clamp`: an accepted setter with readable proof whose later observation
+//!   still mismatches.
 //!   The identical `(desired, observed)` pair suppresses until either side
 //!   genuinely changes.
 //! - `transient`: a refused/throwing setter (or an unreadable proof).
@@ -95,12 +96,16 @@ impl FrameMemory {
     }
 }
 
-/// Resolve the observed key for one attempt: the immediate readback where
-/// readable, else the current staged fact. `None` means unreadable
+/// Resolve the observed key for one attempt: the current staged fact where
+/// readable, else the immediate readback. The staged fact is the later
+/// stable observation (taken after the previous write had time to settle),
+/// while the readback is the synchronous post-write proof; when they
+/// disagree the stable fact owns the pair, so a premature exact readback
+/// never clears a still-mismatched window. `None` means unreadable
 /// evidence: the core records nothing for the attempt.
 #[must_use]
 pub(crate) fn attempt_observed(attempt: &FrameAttempt, fact: Option<Rect>) -> Option<Rect> {
-    attempt.readback.or(fact)
+    fact.or(attempt.readback)
 }
 
 /// Fold one mechanical frame attempt into retained memory. Returns the new
@@ -115,8 +120,10 @@ pub(crate) fn attempt_observed(attempt: &FrameAttempt, fact: Option<Rect>) -> Op
 ///   changes nothing, so a lost acknowledgement never renews backoff;
 /// - an accepted setter with a changed DPI basis records nothing
 ///   (invalidated placement retries under fresh state);
-/// - an accepted setter with an immediately readable mismatch pins the
-///   clamp lane; an accepted setter with unreadable post-write proof is a
+/// - an accepted setter with readable post-write proof and a stable
+///   mismatch pins the clamp lane (synchronous readback mismatch, or an
+///   exact synchronous readback with a later stable staged fact holding a
+///   larger size); an accepted setter with unreadable post-write proof is a
 ///   transient like any refused/throwing setter (keyed on the staged
 ///   fact), never a permanent clamp;
 /// - a refused/throwing setter (or an unreadable proof) advances the
@@ -154,15 +161,17 @@ pub(crate) fn consume_attempt(
     {
         return existing;
     }
-    // Only an immediately readable mismatch pins the clamp lane. Without a
-    // post-write proof the attempt cannot distinguish an app-held size
-    // from a setter that never landed, so it rides the transient lane
-    // even when the setter reported success.
-    let readable_mismatch = attempt
-        .readback
-        .is_some_and(|readback| readback != attempt.target);
+    // A readable post-write proof plus a stable mismatch pins the clamp
+    // lane. The proof shows the write dispatched; the staged fact (preferred
+    // above) is the later stable size, covering both the synchronous shape
+    // (readback already mismatched) and the async shape (exact synchronous
+    // readback, stable fact drifted larger). Without a post-write proof the
+    // attempt cannot distinguish an app-held size from a setter that never
+    // landed, so it rides the transient lane even when the setter reported
+    // success.
+    let proven_dispatch = attempt.readback.is_some();
     match attempt.setter {
-        FrameSetter::Accepted if readable_mismatch => Some(FrameMemory {
+        FrameSetter::Accepted if proven_dispatch => Some(FrameMemory {
             desired: attempt.target,
             observed,
             failures: existing.as_ref().map_or(
@@ -330,8 +339,11 @@ impl WorldEngine {
 
     /// True when one frame attempt proves a learned minimum: fresh accepted
     /// write with a freshness stamp, stable DPI, staged fact corroborating
-    /// the readback, same origin, no shrinking axis, at least one growing
-    /// axis, eligible row, and no declared-maximum contradiction. Stale
+    /// the dispatch, same origin, no shrinking axis, at least one growing
+    /// axis, eligible row, and no declared-maximum contradiction. Corroboration
+    /// is either the stable synchronous shape (staged fact matches readback)
+    /// or the async shape (readback proves the write landed at target while
+    /// the later staged fact holds the larger stable size). Stale
     /// redeliveries never reach here (skipped first, like suppression).
     /// No just-learned protection needed: counter-evidence runs first
     /// against the prior floor, and learning then takes the per-axis
@@ -349,11 +361,20 @@ impl WorldEngine {
             return None;
         }
         let rect = self.eligible_fact(report, &attempt.window)?;
-        if rect != *readback {
+        // Stable corroboration: the staged fact matches the readback
+        // (synchronous clamp), or the readback proves the write landed at
+        // target and the later staged fact is the stable size (async clamp
+        // settles after the synchronous proof). Anything else is not fresh
+        // proof of an app-held size.
+        let stable = if rect == *readback {
+            readback
+        } else if *readback == attempt.target {
+            &rect
+        } else {
             return None;
-        }
+        };
         let fact = self.staged.facts.get(&attempt.window)?;
-        let (mut grow_w, mut grow_h) = learnable_growth(&attempt.target, readback);
+        let (mut grow_w, mut grow_h) = learnable_growth(&attempt.target, stable);
         if grow_w.is_none() && grow_h.is_none() {
             return None;
         }
@@ -517,10 +538,12 @@ impl WorldEngine {
             }
             // Learned minima ride the same fresh-evidence gate but persist:
             // only stable readable accepted growth at the requested origin
-            // learns. Counter-evidence already ran above, against the prior
+            // learns (synchronous shape, or async shape where the readback
+            // proves dispatch at target and the later fact holds the size).
+            // Counter-evidence already ran above, against the prior
             // floor and watermark.
             if let Some(readback) = attempt.readback
-                && fact_rect == Some(readback)
+                && fact_rect.is_some()
                 && let Some(growth) = self.learnable_attempt(report, attempt, &readback)
             {
                 self.retain_learned(&attempt.window, growth);

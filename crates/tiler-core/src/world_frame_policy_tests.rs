@@ -1354,6 +1354,363 @@ fn learned_growth_changes_target_layout_and_converges() {
 }
 
 #[test]
+fn learned_async_clamp_with_exact_readback_still_converges() {
+    // Production shape from dogfooding: a small tiled window (heavily tiled
+    // workspace) reports an exact synchronous readback, then settles
+    // asynchronously at a larger stable size. The staged fact is the later
+    // stable observation and must own completion/suppression, not the
+    // premature readback; the stable growth still proves a floor.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 120,
+        h: baseline.h,
+    };
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(baseline),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    // The premature exact readback must not clear suppression: the stable
+    // staged fact still mismatches, so the pair suppresses.
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
+    let next = frame_row(&second, "w1").effective_frame.expect("tiled");
+    assert!(
+        next.w >= grown.w,
+        "learned bound grows target {baseline:?} -> {next:?} covering {grown:?}"
+    );
+    // Eventual no-rewrites: observing the grown target exactly clears
+    // suppression while the learned floor persists.
+    let converged_w2 = frame_row(&second, "w2").effective_frame.expect("tiled");
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(next)), fact("w2", Some(converged_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&third, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(engine.frames.is_empty());
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
+}
+
+#[test]
+fn learned_async_clamp_heavy_layout_converges_without_rewrites() {
+    // Heavily tiled production shape (ten managed windows in the dogfood
+    // log, six tiled on one output with small tiles): the async clamp still
+    // learns the floor and the next layout stops rewriting.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let facts: Vec<WindowFact> = (1..=6)
+        .map(|i| fact(&format!("w{i}"), Some(rect(0, 0, 40, 90))))
+        .collect();
+    let first = accepted(&mut engine, &report(1, facts, vec![], vec![], 0, true));
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    assert!(
+        baseline.w < 400 && baseline.h < 560,
+        "heavy layout tiles small: {baseline:?}"
+    );
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 60,
+        h: baseline.h,
+    };
+    let second_facts: Vec<WindowFact> = (1..=6)
+        .map(|i| {
+            let name = format!("w{i}");
+            let frame = if name == "w1" {
+                Some(grown)
+            } else {
+                frame_row(&first, &name).effective_frame
+            };
+            fact(&name, frame)
+        })
+        .collect();
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            second_facts,
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(baseline),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
+    let next = frame_row(&second, "w1").effective_frame.expect("tiled");
+    assert!(
+        next.w >= grown.w,
+        "heavy layout grows target {baseline:?} -> {next:?} covering {grown:?}"
+    );
+    let third_facts: Vec<WindowFact> = (1..=6)
+        .map(|i| {
+            let name = format!("w{i}");
+            fact(&name, frame_row(&second, &name).effective_frame)
+        })
+        .collect();
+    let third = accepted(
+        &mut engine,
+        &report(3, third_facts, vec![], vec![], 2000, true),
+    );
+    assert_eq!(
+        frame_row(&third, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(engine.frames.is_empty());
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
+}
+
+#[test]
+fn learned_async_overconstrained_pair_holds_stable_without_rewrites() {
+    // Impossible fit: both windows prove floors whose sum overflows the
+    // 800-wide work area. The allocator keeps proportional targets and the
+    // stable mismatched pair suppresses instead of rewriting forever.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown1 = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 120,
+        h: baseline.h,
+    };
+    let grown2 = Rect {
+        x: baseline_w2.x,
+        y: baseline_w2.y,
+        w: baseline_w2.w + 120,
+        h: baseline_w2.h,
+    };
+    assert!(
+        grown1.w + grown2.w > 800,
+        "floors overflow the work area: {} + {}",
+        grown1.w,
+        grown2.w
+    );
+    // Exact synchronous readbacks with later stable larger facts on both.
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown1)), fact("w2", Some(grown2))],
+            vec![],
+            vec![
+                attempt("w1", baseline, FrameSetter::Accepted, Some(baseline), 1000),
+                attempt(
+                    "w2",
+                    baseline_w2,
+                    FrameSetter::Accepted,
+                    Some(baseline_w2),
+                    1000,
+                ),
+            ],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown1.w), None));
+    assert_eq!(learned_of(&engine, "w2"), (Some(grown2.w), None));
+    // Re-observe the same stable facts with no new attempts: the identical
+    // pairs suppress (Hold), so the adapter skips rewrites.
+    let target1 = frame_row(&second, "w1").effective_frame.expect("tiled");
+    let target2 = frame_row(&second, "w2").effective_frame.expect("tiled");
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(grown1)), fact("w2", Some(grown2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    // Targets are stable across the suppressed reply: no layout churn.
+    assert_eq!(
+        frame_row(&third, "w1").effective_frame.expect("tiled"),
+        target1
+    );
+    assert_eq!(
+        frame_row(&third, "w2").effective_frame.expect("tiled"),
+        target2
+    );
+    for window in ["w1", "w2"] {
+        assert_eq!(
+            frame_row(&third, window).frame_authority,
+            ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+            "{window} holds its stable overconstrained pair"
+        );
+    }
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown1.w), None));
+    assert_eq!(learned_of(&engine, "w2"), (Some(grown2.w), None));
+}
+
+#[test]
+fn inverse_fact_at_target_with_mismatched_readback_clears_without_learning() {
+    // Inverse shape: the later staged fact already sits at target while the
+    // synchronous readback holds a larger size (transient overshoot that
+    // settled). The stable fact owns completion: no clamp, no floor.
+    let desired = rect(0, 0, 800, 600);
+    let overshoot = rect(0, 0, 920, 600);
+    assert!(
+        consume_attempt(
+            None,
+            &attempt("w1", desired, FrameSetter::Accepted, Some(overshoot), 100),
+            Some(desired),
+        )
+        .is_none()
+    );
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let overshoot = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 120,
+        h: baseline.h,
+    };
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(baseline)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(overshoot),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    assert_eq!(
+        frame_row(&second, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(engine.frames.is_empty());
+}
+
+#[test]
+fn async_clockless_or_dpi_changed_never_learns() {
+    // Freshness gate: the async shape still needs a freshness stamp and a
+    // stable DPI basis, or the stable size proves nothing portable.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 120,
+        h: baseline.h,
+    };
+    // Clockless exact readback plus larger stable fact: suppression may pin
+    // the pair, but no floor learns without an ordering claim.
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(baseline),
+                0,
+            )],
+            0,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    // Same async shape across a DPI change: neither learns nor clamps.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 120,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![FrameAttempt {
+                window: WindowId("w1".to_owned()),
+                target: baseline,
+                setter: FrameSetter::Accepted,
+                readback: Some(baseline),
+                dpi_before: Some(96),
+                dpi_after: Some(120),
+                attempt_ms: 1000,
+                operation_id: None,
+                prewrite: None,
+            }],
+            1000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    assert!(engine.frames.is_empty());
+}
+
+#[test]
 fn learned_single_axis_only_pins_grown_axis() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
