@@ -95,6 +95,7 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
     }
     validate_border(&settings.core.border)?;
     validate_underlay(&settings.core.underlay)?;
+    validate_pager_highlight(&settings.core.pager_highlight)?;
     validate_bindings(settings)?;
     Ok(())
 }
@@ -112,6 +113,14 @@ fn validate_border(style: &BorderSettings) -> Result<(), SettingsError> {
     }
     if crate::active_border::parse_color(&style.color).is_err() {
         return Err(invalid("border.color needs #rrggbb"));
+    }
+    Ok(())
+}
+
+fn validate_pager_highlight(style: &PagerHighlightSettings) -> Result<(), SettingsError> {
+    let invalid = |reason: &str| SettingsError::Invalid(reason.to_owned());
+    if crate::active_border::parse_color(&style.color).is_err() {
+        return Err(invalid("pager_highlight.color needs #rrggbb"));
     }
     Ok(())
 }

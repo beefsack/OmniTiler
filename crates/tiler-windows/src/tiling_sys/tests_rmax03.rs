@@ -103,6 +103,7 @@ pub(super) fn test_state() -> TileLoop {
         suspend_started: None,
         restore_wake: None,
         border: crate::active_border::ActiveBorderOptions::default(),
+        pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
         border_overlay: crate::active_border_sys::BorderOverlay::default(),
         border_last: None,
         accent_seen: 0,

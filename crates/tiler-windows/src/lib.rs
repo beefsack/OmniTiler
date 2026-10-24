@@ -19,6 +19,7 @@ pub mod mouse_snap;
 pub mod native;
 pub mod native_guards;
 pub mod pager;
+pub mod pager_highlight;
 pub mod pager_icons;
 #[cfg(windows)]
 pub mod pager_icons_sys;

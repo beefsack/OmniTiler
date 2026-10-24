@@ -233,6 +233,31 @@ fn overconstrained_effective_keeps_origin_and_raises_to_minimum() {
 }
 
 #[test]
+fn tile_parse_keeps_saved_pager_highlight_and_cli_border_leaves_it() {
+    // Restart parity: the saved highlight base rides into the parsed
+    // options verbatim (no CLI flag exists for it), and an explicit
+    // ring-color switch never touches it.
+    let mut base = super::tile_options_defaults();
+    base.pager_highlight = crate::pager_highlight::PagerHighlightStyle {
+        color: (0xff, 0x3b, 0x30),
+        use_theme: false,
+    };
+    let args = [
+        "--user-start".to_owned(),
+        "--active-border-color".to_owned(),
+        "#111111".to_owned(),
+    ];
+    let (mut options, overrides) =
+        super::parse_tile_args_from_with_overrides(&args, &base).expect("parses");
+    assert_eq!(options.pager_highlight.color, (0xff, 0x3b, 0x30));
+    assert!(!options.pager_highlight.use_theme);
+    assert_eq!(options.border.style.color, (0x11, 0x11, 0x11));
+    super::apply_cli_overrides(&mut options, &overrides);
+    assert_eq!(options.pager_highlight.color, (0xff, 0x3b, 0x30));
+    assert!(!options.pager_highlight.use_theme);
+}
+
+#[test]
 fn dpi_transition_reouter_corrects_under_fresh_frame() {
     // Producer-shaped: the tick9 write aimed outer [3,8,2554,1369] at the
     // intended [8,8,2544,1364] under 96-DPI insets [5,0,5,5], then DPI

@@ -534,16 +534,31 @@ pub(super) fn sync_taskbar_pager(
     // lifetimes back to member keys (a mechanical race may lag membership)
     // and lays out; it never sorts, renumbers, or filters content. No reply
     // yet (startup) renders no workspaces.
-    let screens: Vec<tiler_core::world_presentation::PagerScreen> = state
+    let (screens, foreground): (Vec<tiler_core::world_presentation::PagerScreen>, String) = state
         .world
         .last_reply()
-        .map(|reply| reply.presentation.pager.clone())
+        .map(|reply| {
+            (
+                reply.presentation.pager.clone(),
+                reply.presentation.foreground.clone(),
+            )
+        })
         .unwrap_or_default();
     let key_of: HashMap<String, crate::native_guards::WindowKey> = state
         .member_tokens
         .iter()
         .map(|(key, token)| (token.clone(), key.clone()))
         .collect();
+    // Shared owner resolve (first consumer to observe a moved version runs
+    // the single WinRT resolve; the border already resolved above on turns
+    // it painted, so this is usually a cache hit): the strips paint the
+    // same snapshot the border used, with no second native call. The
+    // focused miniature resolves its independent highlight colour from the
+    // loop's pager-highlight style plus that same snapshot (see
+    // `crate::pager_highlight::effective_color`), never the ring and never
+    // the pager cell fill.
+    let accent = super::accent_owner::refresh_shared_accent(state);
+    let focused_highlight = crate::pager_highlight::effective_color(&state.pager_highlight, accent);
     for (geo_index, bar_index) in match_bars_to_outputs(&geos, &bars) {
         let area = &areas[geo_index];
         let bar: TaskbarFacts = bars[bar_index];
@@ -566,9 +581,16 @@ pub(super) fn sync_taskbar_pager(
                             .windows
                             .iter()
                             .filter_map(|window| {
-                                key_of
-                                    .get(window.window.0.as_str())
-                                    .map(|key| (key.clone(), window.frame))
+                                key_of.get(window.window.0.as_str()).map(|key| {
+                                    crate::pager::PagerContentMiniature {
+                                        key: key.clone(),
+                                        rect: window.frame,
+                                        focused: crate::pager::pager_window_focused(
+                                            window.window.0.as_str(),
+                                            &foreground,
+                                        ),
+                                    }
+                                })
                             })
                             .collect(),
                     })
@@ -581,6 +603,7 @@ pub(super) fn sync_taskbar_pager(
             &area.device,
             area.full,
             &bar,
+            focused_highlight,
         ) {
             Ok(pager) => {
                 state.pager_refusals.remove(&area.device);
@@ -627,11 +650,6 @@ pub(super) fn sync_taskbar_pager(
     // Queue lookups only for served miniatures that can actually draw an
     // icon: artwork nobody can see is never loaded.
     request_drawable_icons(state, &pagers, now);
-    // Shared owner resolve (first consumer to observe a moved version runs
-    // the single WinRT resolve; the border already resolved above on turns
-    // it painted, so this is usually a cache hit): the strips paint the
-    // same snapshot the border used, with no second native call.
-    let accent = super::accent_owner::refresh_shared_accent(state);
     if let Some(overlays) = state.pager_overlays.as_mut() {
         let taskbar_visible = state.pager_primary.as_ref().map(|bar| bar.visible);
         overlays.sync(&pagers, now, state.trace, accent, taskbar_visible);
@@ -1705,11 +1723,17 @@ mod pager_host_tests {
         use std::collections::HashMap;
         // Uniform reply content (stage 5): the adapter only maps opaque
         // lifetimes back to member keys and lays out, never sorts or filters.
-        let screens: Vec<tiler_core::world_presentation::PagerScreen> = state
-            .world
-            .last_reply()
-            .map(|reply| reply.presentation.pager.clone())
-            .unwrap_or_default();
+        let (screens, foreground): (Vec<tiler_core::world_presentation::PagerScreen>, String) =
+            state
+                .world
+                .last_reply()
+                .map(|reply| {
+                    (
+                        reply.presentation.pager.clone(),
+                        reply.presentation.foreground.clone(),
+                    )
+                })
+                .unwrap_or_default();
         let wire = state.wire_of(output).expect("device mapped");
         let screen = screens
             .iter()
@@ -1731,9 +1755,16 @@ mod pager_host_tests {
                     .windows
                     .iter()
                     .filter_map(|window| {
-                        key_of
-                            .get(window.window.0.as_str())
-                            .map(|key| ((*key).clone(), window.frame))
+                        key_of.get(window.window.0.as_str()).map(|key| {
+                            crate::pager::PagerContentMiniature {
+                                key: (*key).clone(),
+                                rect: window.frame,
+                                focused: crate::pager::pager_window_focused(
+                                    window.window.0.as_str(),
+                                    &foreground,
+                                ),
+                            }
+                        })
                     })
                     .collect(),
             })
@@ -1744,6 +1775,13 @@ mod pager_host_tests {
             output,
             pager_full(),
             &pager_bar(),
+            // Same resolution as production (highlight style plus the
+            // shared snapshot, no new query): the test seam holds no live
+            // broadcast, so this reads the retained cache verbatim.
+            crate::pager_highlight::effective_color(
+                &state.pager_highlight,
+                state.accent_shared.get(),
+            ),
         )
         .expect("pager anchors on the bottom-docked bar")
     }

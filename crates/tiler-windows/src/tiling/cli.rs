@@ -80,6 +80,7 @@ pub struct TileOptions {
     pub allow_win_l: bool,
     pub no_mouse_snap_prevention: bool,
     pub border: crate::active_border::ActiveBorderOptions,
+    pub pager_highlight: crate::pager_highlight::PagerHighlightStyle,
     pub underlay: crate::group_underlay::GroupUnderlayOptions,
     /// Live inner gap (KDE 0..64, default 8). Saved settings supply the base;
     /// `--inner-gap` overrides explicitly.
@@ -200,6 +201,7 @@ pub fn tile_options_defaults() -> TileOptions {
         allow_win_l: false,
         no_mouse_snap_prevention: false,
         border: crate::active_border::ActiveBorderOptions::default(),
+        pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
         underlay: crate::group_underlay::GroupUnderlayOptions::default(),
         inner_gap: INNER_GAP,
         outer_gap: OUTER_GAP,
@@ -316,6 +318,7 @@ pub fn parse_tile_args_from_with_overrides(
     let mut scope_exes: Vec<String> = defaults.scope_exes.clone();
     let mut scope_hosts: Vec<ScopeHostChild> = defaults.scope_hosts.clone();
     let mut border = defaults.border;
+    let pager_highlight = defaults.pager_highlight;
     let mut underlay = defaults.underlay;
     let mut inner_gap = defaults.inner_gap;
     let mut outer_gap = defaults.outer_gap;
@@ -470,6 +473,7 @@ pub fn parse_tile_args_from_with_overrides(
             allow_win_l,
             no_mouse_snap_prevention,
             border,
+            pager_highlight,
             underlay,
             inner_gap,
             outer_gap,

@@ -51,6 +51,7 @@ pub fn cmd_tile_proof(options: &TileProofOptions, raw_argv: &[String]) -> Result
                 scope: Vec::new(),
                 scope_hosts: Vec::new(),
                 border,
+                pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
                 underlay,
             },
         )
@@ -112,6 +113,7 @@ pub fn cmd_shortcut_proof(
                 scope: Vec::new(),
                 scope_hosts: Vec::new(),
                 border,
+                pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
                 underlay,
             },
         )
@@ -171,6 +173,7 @@ pub fn cmd_workspace_proof(
                 scope: Vec::new(),
                 scope_hosts: Vec::new(),
                 border,
+                pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
                 underlay,
             },
         )

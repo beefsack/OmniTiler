@@ -456,8 +456,8 @@ pub const WORKSPACE_MODE_OPTIONS: [EnumOption; 3] = [
     },
     EnumOption {
         token: workspace_scope::WORKSPACE_MODE_TOKENS[2],
-        label: "Shared",
-        tip: "One set shown across all outputs",
+        label: "Workspaces span displays",
+        tip: "All displays show and switch the same workspace together",
     },
 ];
 
@@ -522,7 +522,7 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         id: FIELD_WORKSPACE_MODE,
         section: SECTION_WORKSPACES,
         label: "Workspace scope mode",
-        help: "Per-output local sets, global-unique sets with cross-output swap, or one shared set.",
+        help: "Displays have separate workspaces (per-output local or global unique), or workspaces span displays and switch together.",
         field_type: FieldType::Enum,
         default: SettingValue::Text(workspace_scope::WORKSPACE_MODE_TOKENS[0]),
         min_int: None,

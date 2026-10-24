@@ -44,7 +44,7 @@ fn windows_sections_point_at_known_tabs() {
 
 #[test]
 fn every_scalar_field_renders_exactly_once() {
-    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 27);
+    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 29);
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for id in ALL_CONTROL_IDS {
         if let Some(field) = control_field(*id) {
@@ -223,6 +223,8 @@ fn control_tabs_derive_from_sections_not_parallel_lists() {
     assert_eq!(control_tab(ID_GAMING_RECHECK), Some(TAB_SHORTCUTS));
     assert_eq!(control_tab(ID_MOUSE_SNAP), Some(TAB_DESKTOP));
     assert_eq!(control_tab(ID_TASKBAR_PAGER), Some(TAB_DESKTOP));
+    assert_eq!(control_tab(ID_PAGER_HIGHLIGHT_THEME), Some(TAB_DESKTOP));
+    assert_eq!(control_tab(ID_PAGER_HIGHLIGHT_COLOR), Some(TAB_DESKTOP));
     assert_eq!(control_tab(ID_APPLY), None);
     assert_eq!(control_tab(ID_TABS), None);
     assert_eq!(control_tab(9999), None);

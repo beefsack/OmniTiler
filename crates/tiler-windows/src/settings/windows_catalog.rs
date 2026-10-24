@@ -81,6 +81,10 @@ pub const WINDOWS_FIELD_TAKEOVER: &str = "keyboard.takeover";
 pub const WINDOWS_FIELD_ALLOW_WIN_L: &str = "keyboard.allow-win-l";
 pub const WINDOWS_FIELD_SNAP_PREVENTION: &str = "mouse.snap-prevention";
 pub const WINDOWS_FIELD_TASKBAR_PAGER: &str = "desktop.taskbar-pager";
+/// Pager focused-miniature highlight colour (independent of the ring).
+pub const WINDOWS_FIELD_PAGER_HIGHLIGHT_COLOR: &str = "desktop.pager-highlight-color";
+/// Pager highlight system-accent switch (default on, like the ring theme).
+pub const WINDOWS_FIELD_PAGER_HIGHLIGHT_USE_THEME: &str = "desktop.pager-highlight-use-theme";
 
 /// Windows-only field descriptors (bool scalars reusing the generic catalog
 /// types; no platform policy in core).
@@ -143,6 +147,40 @@ pub const WINDOWS_ONLY_FIELDS: &[FieldDef] = &[
         help: "Per-output workspace strip overlaid in the taskbar.",
         field_type: tiler_core::settings_catalog::FieldType::Bool,
         default: SettingValue::Bool(true),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &[],
+        timing: Timing::Live,
+        timing_help: "Live edits hot-apply on the next owner pump.",
+        capabilities: WINDOWS_ONLY_CAPS,
+        bounds_reason: "Boolean field; no numeric bound.",
+    },
+    FieldDef {
+        id: WINDOWS_FIELD_PAGER_HIGHLIGHT_COLOR,
+        section: SECTION_DESKTOP_PAGER,
+        label: "Pager active window highlight color",
+        help: "Configured color as #rrggbb; wins when theming is off or the system accent is unavailable.",
+        field_type: tiler_core::settings_catalog::FieldType::ColorRgb,
+        default: SettingValue::Text(super::DEFAULT_PAGER_HIGHLIGHT_COLOR_HEX),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &[],
+        timing: Timing::Live,
+        timing_help: "Live edits hot-apply on the next owner pump.",
+        capabilities: WINDOWS_ONLY_CAPS,
+        bounds_reason: "Fixed #rrggbb grammar; malformed colors refuse instead of guessing.",
+    },
+    FieldDef {
+        id: WINDOWS_FIELD_PAGER_HIGHLIGHT_USE_THEME,
+        section: SECTION_DESKTOP_PAGER,
+        label: "Use system accent for pager highlight",
+        help: "Follow the live system accent with the configured color as fallback.",
+        field_type: tiler_core::settings_catalog::FieldType::Bool,
+        default: SettingValue::Bool(super::DEFAULT_PAGER_HIGHLIGHT_USE_THEME),
         min_int: None,
         max_int: None,
         min_float: None,
@@ -288,6 +326,14 @@ pub const WINDOWS_FIELD_MAPPINGS: &[FieldStorageMap] = &[
         field: WINDOWS_FIELD_TASKBAR_PAGER,
         storage_key: "core.taskbar_pager",
     },
+    FieldStorageMap {
+        field: WINDOWS_FIELD_PAGER_HIGHLIGHT_COLOR,
+        storage_key: "core.pager_highlight.color",
+    },
+    FieldStorageMap {
+        field: WINDOWS_FIELD_PAGER_HIGHLIGHT_USE_THEME,
+        storage_key: "core.pager_highlight.use_theme",
+    },
 ];
 
 /// Explicit native action panels. Metadata only: no generic setter may
@@ -395,6 +441,12 @@ pub fn windows_field_value(settings: &Settings, field: &str) -> Option<WindowsVa
         "keyboard.allow-win-l" => Some(WindowsValue::Bool(settings.core.keyboard.allow_win_l)),
         "mouse.snap-prevention" => Some(WindowsValue::Bool(settings.core.mouse.snap_prevention)),
         "desktop.taskbar-pager" => Some(WindowsValue::Bool(settings.core.taskbar_pager)),
+        "desktop.pager-highlight-color" => Some(WindowsValue::Text(
+            settings.core.pager_highlight.color.clone(),
+        )),
+        "desktop.pager-highlight-use-theme" => {
+            Some(WindowsValue::Bool(settings.core.pager_highlight.use_theme))
+        }
         _ => None,
     }
 }
@@ -454,6 +506,12 @@ fn apply_typed(settings: &mut Settings, field: &str, value: &WindowsValue) -> Re
             settings.core.mouse.snap_prevention = *got;
         }
         ("desktop.taskbar-pager", WindowsValue::Bool(got)) => settings.core.taskbar_pager = *got,
+        ("desktop.pager-highlight-color", WindowsValue::Text(got)) => {
+            settings.core.pager_highlight.color = got.clone();
+        }
+        ("desktop.pager-highlight-use-theme", WindowsValue::Bool(got)) => {
+            settings.core.pager_highlight.use_theme = *got;
+        }
         ("move.same-axis", WindowsValue::Text(got)) => settings.core.same_axis_move = got.clone(),
         ("admission.born-maximized", WindowsValue::Text(got)) => {
             settings.core.born_maximized = got.clone();
@@ -572,13 +630,15 @@ mod tests {
             "keyboard.allow-win-l" => WindowsValue::Bool(true),
             "mouse.snap-prevention" => WindowsValue::Bool(false),
             "desktop.taskbar-pager" => WindowsValue::Bool(false),
+            "desktop.pager-highlight-color" => WindowsValue::Text("#ffffff".to_owned()),
+            "desktop.pager-highlight-use-theme" => WindowsValue::Bool(false),
             _ => panic!("no non-default for {field}"),
         }
     }
 
     #[test]
     fn every_scalar_field_mapped_exactly_once() {
-        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 27);
+        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 29);
         let mut fields = BTreeSet::new();
         let mut keys = BTreeSet::new();
         for entry in WINDOWS_FIELD_MAPPINGS {
@@ -752,6 +812,18 @@ mod tests {
         );
         settings.core.border.color = "#ffff".to_owned();
         assert!(validate_settings(&settings).is_err());
+        settings.core.border.color = "#2a82da".to_owned();
+        assert!(
+            stage_windows_field_value(
+                &mut settings,
+                "desktop.pager-highlight-color",
+                &WindowsValue::Text("#ffff".to_owned())
+            )
+            .is_err()
+        );
+        settings.core.pager_highlight.color = "#ffff".to_owned();
+        assert!(validate_settings(&settings).is_err());
+        settings.core.pager_highlight.color = "#2a82da".to_owned();
         assert!(validate_settings(&Settings::default()).is_ok());
     }
 
@@ -840,7 +912,7 @@ mod tests {
                 field.id
             );
         }
-        assert_eq!(WINDOWS_ONLY_FIELDS.len(), 4);
+        assert_eq!(WINDOWS_ONLY_FIELDS.len(), 6);
     }
 
     #[test]

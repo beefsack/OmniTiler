@@ -10,7 +10,8 @@ use windows_sys::Win32::Graphics::Gdi::HFONT;
 
 use super::{
     DynError, ID_BIND_CHORD, ID_BORDER_COLOR, ID_BORDER_GAP, ID_BORDER_RADIUS, ID_BORDER_WIDTH,
-    ID_INNER_GAP, ID_OUTER_GAP, ID_UNDERLAY_COLOR, ID_UNDERLAY_EXTENSION, err,
+    ID_INNER_GAP, ID_OUTER_GAP, ID_PAGER_HIGHLIGHT_COLOR, ID_UNDERLAY_COLOR, ID_UNDERLAY_EXTENSION,
+    err,
 };
 
 pub(crate) use crate::ffi::settings_controls::{checked, enable, get_text, set_checked, set_text};
@@ -71,6 +72,7 @@ pub(crate) fn edit_limit(id: u32) -> Option<usize> {
     match id {
         ID_INNER_GAP | ID_OUTER_GAP => Some(2),
         ID_BORDER_COLOR => Some(7),
+        ID_PAGER_HIGHLIGHT_COLOR => Some(7),
         ID_BORDER_WIDTH | ID_BORDER_GAP | ID_BORDER_RADIUS => Some(5),
         ID_UNDERLAY_COLOR => Some(9),
         ID_UNDERLAY_EXTENSION => Some(5),

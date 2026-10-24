@@ -2863,3 +2863,38 @@ of cursor-first fresh placement or the entire rearchitecture.
   Windows fixture exposes track hints, not programmatic or delayed application
   clamps. The production-shaped core regressions are the clamp evidence;
   final-artifact fixture regression remains below the completion boundary.
+
+## Dogfood pager focus styling (2026-10-24)
+
+- Windows styles the accepted reply's foreground miniature with a full-strength
+  highlight border and dimmer fill; unfocused windows retain their gray pair.
+  Focus and highlight changes invalidate both presentation hash and native frame
+  cache. No core behavior, wire field or focus-policy route was added.
+- User-approved independent host colors: the existing border already defaults
+  to system accent. New `core.pager_highlight.color`/`use_theme` settings default
+  to system accent and support an independent override through the existing
+  Windows color/theme controls, validation, persistence and live-apply path.
+  Pager active workspace cell styling is unchanged. A border-only override
+  never changes miniature highlight. Point-of-use contract: `pager_highlight.rs`.
+- Independent review caught and fixed startup parsing that otherwise discarded
+  the saved highlight override. Regressions cover default/backfill, validation,
+  persistence, independent colors, UI layout, parser inheritance and repaint.
+  Final locked all-target core/protocol/Windows/fixture tests: **2,732 passed,
+  zero failed, one ignored across 50 suites** (Windows library: 957 passed).
+  Locked build, strict all-target clippy, fmt and whitespace pass.
+- Final hash-paired fixture screenshots on both outputs show default highlight
+  border RGB `(76,74,72)` with dim fill `(30,30,29)`, independent of the purple
+  border override; explicit highlight RGB `(255,59,48)` with fill `(102,24,19)`.
+  Unfocused miniature fill/border remain `(168,168,168)`/`(215,215,215)` and
+  the active workspace cell retains system accent. Hot-apply and persisted
+  override restart pass. The pixel analyzer uses actual output membership,
+  not projections of nonmember windows. Debug, staged and launched SHA-256:
+  `abacbf6ee06dd3bb48e60ec86c9b57f602b7602b5f76470bfacfb80b87d08250`.
+- Exact-owner stop/restore and owned fixture shutdown left no owned processes,
+  overlays, ledger or control residue. Settings bytes, SPI/taskbar state and
+  protected-window geometry matched preimages; cursor positioning in the final
+  leg was restored and verified. Earlier read-only checks saw outside cursor
+  movement and transient invisible-window churn; no stale restore was attempted.
+- The Windows Settings selector now says "Workspaces span displays" and explains
+  linked switching, retaining the stored `shared` token and behavior. Existing
+  label tests are updated. The shared portable catalog remains its text source.

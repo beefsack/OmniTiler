@@ -34,6 +34,7 @@ pub fn cmd_tile(
     let scope = options.scope_exes.clone();
     let scope_hosts = options.scope_hosts.clone();
     let border = options.border;
+    let pager_highlight = options.pager_highlight;
     let underlay = options.underlay;
     let inner_gap = options.inner_gap;
     let outer_gap = options.outer_gap;
@@ -68,6 +69,7 @@ pub fn cmd_tile(
                 scope,
                 scope_hosts,
                 border,
+                pager_highlight,
                 underlay,
             },
         )

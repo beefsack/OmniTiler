@@ -31,9 +31,10 @@ use super::{
     ID_DEFAULT_FLOATING, ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER,
     ID_FOCUS_FOLLOWS, ID_INNER_GAP, ID_KEYBOARD_TAKEOVER, ID_MIGRATION_REFILL_LAST,
     ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT, ID_NO_SPACE_OVERLAP, ID_OUTER_GAP,
-    ID_PLACE_CURSOR_CLOSEST, ID_PLACE_CURSOR_MRU, ID_PLACE_FOCUSED_MRU, ID_SAME_AXIS_GROUP,
-    ID_SAME_AXIS_SWAP, ID_SWITCH_CURSOR, ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR,
-    ID_UNDERLAY_ENABLED, ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
+    ID_PAGER_HIGHLIGHT_COLOR, ID_PAGER_HIGHLIGHT_THEME, ID_PLACE_CURSOR_CLOSEST,
+    ID_PLACE_CURSOR_MRU, ID_PLACE_FOCUSED_MRU, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP,
+    ID_SWITCH_CURSOR, ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED,
+    ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
     ID_WORKSPACE_MODE_SHARED,
 };
 
@@ -65,6 +66,14 @@ pub(super) fn refresh_all(app: &mut App) {
     set_checked(app.ctl(ID_DEFAULT_TILED), core.workspace.default_tiled);
     set_checked(app.ctl(ID_DEFAULT_FLOATING), !core.workspace.default_tiled);
     set_checked(app.ctl(ID_TASKBAR_PAGER), core.taskbar_pager);
+    set_checked(
+        app.ctl(ID_PAGER_HIGHLIGHT_THEME),
+        core.pager_highlight.use_theme,
+    );
+    set_text(
+        app.ctl(ID_PAGER_HIGHLIGHT_COLOR),
+        &core.pager_highlight.color,
+    );
     // R-MOV-03 two-choice control: functional labels only; the WM
     // reference lives in the native radio tooltips, not in visible text.
     let swap = same_axis_swap_selected(&app.work);
@@ -213,6 +222,10 @@ pub(super) fn collect_draft(app: &mut App) -> Result<Settings, String> {
     // Taskbar pager opt-out (default on): the checkbox stages the bool
     // directly; hot-applies on the next owner pump.
     draft.core.taskbar_pager = checked(app.ctl(ID_TASKBAR_PAGER));
+    draft.core.pager_highlight.use_theme = checked(app.ctl(ID_PAGER_HIGHLIGHT_THEME));
+    draft.core.pager_highlight.color = get_text(app.ctl(ID_PAGER_HIGHLIGHT_COLOR))
+        .trim()
+        .to_owned();
     // R-MOV-03: the swap radio stages the exact swap token, otherwise the
     // exact group token; only these two values can reach validation.
     apply_same_axis_selection(&mut draft, checked(app.ctl(ID_SAME_AXIS_SWAP)));

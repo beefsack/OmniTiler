@@ -352,6 +352,7 @@ pub(super) struct TileRun {
     /// Proof runs always pass empty.
     pub(super) scope_hosts: Vec<ScopeHostChild>,
     pub(super) border: ActiveBorderOptions,
+    pub(super) pager_highlight: crate::pager_highlight::PagerHighlightStyle,
     pub(super) underlay: GroupUnderlayOptions,
 }
 
@@ -440,6 +441,11 @@ pub(super) fn apply_live_settings(
     if base.border != state.border {
         state.border = base.border;
         lanes.push("border");
+        changed = true;
+    }
+    if base.pager_highlight != state.pager_highlight {
+        state.pager_highlight = base.pager_highlight;
+        lanes.push("pager-highlight");
         changed = true;
     }
     if base.underlay != state.underlay {

@@ -127,13 +127,15 @@ fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
 }
 
-/// One miniature slot: its rect plus optional precomputed icon blit. The
-/// icon destination rect is computed by the caller (the canonical
-/// miniature/icon sizing stays with portable policy); paint blits blindly.
+/// One miniature slot: its rect, whether it is the reply's foreground
+/// (focused) window, plus optional precomputed icon blit. The icon
+/// destination rect is computed by the caller (the canonical miniature/icon
+/// sizing stays with portable policy); paint blits blindly.
 /// Artwork is shared (`Arc`), never re-buffered across the boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MiniSlot {
     pub rect: Rect,
+    pub focused: bool,
     pub icon: Option<IconBlit>,
 }
 
@@ -147,8 +149,11 @@ pub struct IconBlit {
 /// One window's painted frame: workspace ids in cell order, the output key,
 /// per-cell rects with the core-provided 1-based workspace ordinal each
 /// number painter formats, the active index, the resolved active-cell fill
-/// (live accent or the `#2a82da` fallback, decided by the host), and
-/// per-cell miniature slots.
+/// (live accent or the `#2a82da` fallback, decided by the host), the
+/// independent highlight colour (loop's pager-highlight style plus the
+/// shared accent snapshot), and
+/// per-cell miniature slots (focused slots paint with the highlight-colour
+/// border over its dimmer fill; unfocused slots keep the plain gray pair).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagerFrame {
     pub ids: Vec<String>,
@@ -156,6 +161,7 @@ pub struct PagerFrame {
     pub cells: Vec<PagerCellFrame>,
     pub active: usize,
     pub active_fill: (u8, u8, u8),
+    pub focused_highlight: (u8, u8, u8),
     pub minis: Vec<Vec<MiniSlot>>,
 }
 
@@ -584,6 +590,8 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
             }
         }
         // Miniature lighter window rectangles plus owned artwork blits.
+        // The focused miniature carries the highlight-colour border over its
+        // dimmer fill; unfocused miniatures keep the plain gray pair.
         for slot in frame.minis.get(index).cloned().unwrap_or_default() {
             let mini = slot.rect;
             let local_mini = RECT {
@@ -592,14 +600,31 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
                 right: mini.x - origin_x + mini.w,
                 bottom: mini.y - cell.rect.y + mini.h,
             };
-            let fill = unsafe { CreateSolidBrush(rgb(168, 168, 168)) };
+            let (fr, fg, fb) = if slot.focused {
+                crate::pager::pager_dim_accent(frame.focused_highlight)
+            } else {
+                (168, 168, 168)
+            };
+            let fill =
+                unsafe { CreateSolidBrush(rgb(u32::from(fr), u32::from(fg), u32::from(fb))) };
             if !fill.is_null() {
                 unsafe {
                     FillRect(hdc, &local_mini, fill);
                     DeleteObject(fill as _);
                 }
             }
-            let pen = unsafe { CreatePen(PS_SOLID, 1, rgb(215, 215, 215)) };
+            let (br, bg, bb) = if slot.focused {
+                frame.focused_highlight
+            } else {
+                (215, 215, 215)
+            };
+            let pen = unsafe {
+                CreatePen(
+                    PS_SOLID,
+                    1,
+                    rgb(u32::from(br), u32::from(bg), u32::from(bb)),
+                )
+            };
             if !pen.is_null() {
                 unsafe {
                     let old = SelectObject(hdc, pen as _);
@@ -1184,6 +1209,7 @@ mod tests {
             ],
             active: 0,
             active_fill: (42, 130, 218),
+            focused_highlight: (0xbd, 0x93, 0xf9),
             minis: vec![Vec::new(), Vec::new()],
         }
     }
@@ -1252,6 +1278,7 @@ mod tests {
             cells: Vec::new(),
             active: 0,
             active_fill: (42, 130, 218),
+            focused_highlight: (0xbd, 0x93, 0xf9),
             minis: Vec::new(),
         };
         assert!(hit_test(&empty, 0, 0).is_none());
@@ -1286,6 +1313,7 @@ mod tests {
             ],
             active: 1,
             active_fill: (42, 130, 218),
+            focused_highlight: (0xbd, 0x93, 0xf9),
             minis: vec![Vec::new(), Vec::new()],
         };
         let first = hit_test(&frame, 5, 5).expect("first cell");
@@ -1324,6 +1352,7 @@ mod tests {
             }],
             active: 0,
             active_fill: (42, 130, 218),
+            focused_highlight: (0xbd, 0x93, 0xf9),
             minis: vec![vec![MiniSlot {
                 rect: Rect {
                     x: 1,
@@ -1331,6 +1360,7 @@ mod tests {
                     w: 10,
                     h: 10,
                 },
+                focused: false,
                 icon: Some(IconBlit {
                     image: Arc::clone(&image),
                     dest: Rect {

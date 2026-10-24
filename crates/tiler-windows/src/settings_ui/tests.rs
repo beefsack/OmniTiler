@@ -439,8 +439,8 @@ fn workspace_mode_options_carry_functional_labels() {
             ),
             (
                 WORKSPACE_MODE_SHARED,
-                "Shared",
-                "One set shown across all outputs"
+                "Workspaces span displays",
+                "All displays show and switch the same workspace together"
             ),
         ]
     );

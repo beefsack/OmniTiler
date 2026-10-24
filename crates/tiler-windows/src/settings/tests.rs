@@ -13,6 +13,8 @@ fn defaults_match_kde_parity() {
     assert_eq!(settings.core.border.radius, 6.0);
     assert_eq!(settings.core.border.color, "#2a82da");
     assert!(settings.core.border.use_theme);
+    assert_eq!(settings.core.pager_highlight.color, "#2a82da");
+    assert!(settings.core.pager_highlight.use_theme);
     assert!(settings.core.underlay.enabled);
     assert_eq!(settings.core.underlay.color, "#662a82da");
     assert_eq!(settings.core.underlay.extension, -1.0);
@@ -97,6 +99,37 @@ fn taskbar_pager_defaults_on_backfills_and_persists_opt_out() {
     assert!(!settings.core.taskbar_pager);
     assert!(validate_settings(&settings).is_ok());
     assert!(!crate::pager::pager_enabled(&settings));
+    let round_tripped: Settings =
+        serde_json::from_str(&serde_json::to_string(&settings).expect("serializes"))
+            .expect("round-trips");
+    assert_eq!(round_tripped, settings);
+}
+
+#[test]
+fn pager_highlight_defaults_to_accent_backfills_and_persists_override() {
+    // Additive schema-v1 fields: older files without the keys deserialize
+    // to the accent default and validate; an explicit override round-trips
+    // (persistence) with its own switch.
+    assert_eq!(Settings::default().core.pager_highlight.color, "#2a82da");
+    assert!(Settings::default().core.pager_highlight.use_theme);
+    let settings: Settings =
+        serde_json::from_str(r#"{"v":1,"core":{}}"#).expect("missing keys parse");
+    assert_eq!(settings.core.pager_highlight.color, "#2a82da");
+    assert!(settings.core.pager_highlight.use_theme);
+    assert!(validate_settings(&settings).is_ok());
+    let doc = serde_json::json!({
+        "v": SETTINGS_SCHEMA_VERSION,
+        "revision": 1,
+        "core": {"pager_highlight": {"color": "#bd93f9", "use_theme": false}},
+        "bindings": {}
+    });
+    let settings: Settings = serde_json::from_value(doc).expect("explicit override deserializes");
+    assert_eq!(settings.core.pager_highlight.color, "#bd93f9");
+    assert!(!settings.core.pager_highlight.use_theme);
+    assert!(validate_settings(&settings).is_ok());
+    let options = tile_options_from_settings(&settings);
+    assert_eq!(options.pager_highlight.color, (0xbd, 0x93, 0xf9));
+    assert!(!options.pager_highlight.use_theme);
     let round_tripped: Settings =
         serde_json::from_str(&serde_json::to_string(&settings).expect("serializes"))
             .expect("round-trips");
@@ -565,8 +598,8 @@ fn workspace_mode_options_carry_functional_labels_and_scope_notes() {
             ),
             (
                 WORKSPACE_MODE_SHARED,
-                "Shared",
-                "One set shown across all outputs"
+                "Workspaces span displays",
+                "All displays show and switch the same workspace together"
             ),
         ]
     );
@@ -1018,6 +1051,45 @@ fn validation_rejects_bad_core_values() {
     settings.core.border.color = "#ffff".to_owned();
     assert!(validate_settings(&settings).is_err());
     settings.core.border.color = "#2a82da".to_owned();
+    settings.core.pager_highlight.color = "#ffff".to_owned();
+    assert!(validate_settings(&settings).is_err());
+    settings.core.pager_highlight.color = "#bd93f9".to_owned();
+    assert!(validate_settings(&settings).is_ok());
+    settings.core.pager_highlight.color = "#2a82da".to_owned();
+    assert!(validate_settings(&settings).is_ok());
+    // Independence: the highlight and the ring resolve separately from
+    // their own switches plus the same snapshot.
+    let accent = crate::active_border::SystemAccent {
+        color: (0x4c, 0x4a, 0x48),
+        alpha: 0xE3,
+    };
+    settings.core.border.color = "#111111".to_owned();
+    settings.core.border.use_theme = false;
+    settings.core.pager_highlight.color = "#bd93f9".to_owned();
+    settings.core.pager_highlight.use_theme = false;
+    let options = tile_options_from_settings(&settings);
+    assert_eq!(
+        crate::active_border::effective_color(&options.border.style, Some(accent)),
+        (0x11, 0x11, 0x11)
+    );
+    assert_eq!(
+        crate::pager_highlight::effective_color(&options.pager_highlight, Some(accent)),
+        (0xbd, 0x93, 0xf9)
+    );
+    // Both default to the system accent when theming is on.
+    settings.core.border.use_theme = true;
+    settings.core.pager_highlight.use_theme = true;
+    let options = tile_options_from_settings(&settings);
+    assert_eq!(
+        crate::active_border::effective_color(&options.border.style, Some(accent)),
+        (0x4c, 0x4a, 0x48)
+    );
+    assert_eq!(
+        crate::pager_highlight::effective_color(&options.pager_highlight, Some(accent)),
+        (0x4c, 0x4a, 0x48)
+    );
+    settings.core.border.color = "#2a82da".to_owned();
+    settings.core.pager_highlight.color = "#2a82da".to_owned();
     settings.core.underlay.color = "#808080".to_owned();
     assert!(validate_settings(&settings).is_err());
     settings.core.underlay.color = "#40808080".to_owned();

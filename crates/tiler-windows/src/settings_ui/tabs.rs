@@ -27,12 +27,12 @@ use super::{
     ID_FOCUS_FOLLOWS, ID_GAMING_OPEN_APP, ID_GAMING_OPEN_GAMEBAR, ID_GAMING_OPEN_XBOX,
     ID_GAMING_RECHECK, ID_INNER_GAP, ID_KEYBOARD_TAKEOVER, ID_LOCK_WARNING,
     ID_MIGRATION_REFILL_LAST, ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT,
-    ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_PLACE_CURSOR_CLOSEST, ID_PLACE_CURSOR_MRU,
-    ID_PLACE_FOCUSED_MRU, ID_PRESET_AUTHENTIC, ID_PRESET_COMPATIBLE, ID_PRESET_EXPLAIN,
-    ID_REBIND_NOTE, ID_REVERT, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP, ID_SNAP_MEANING, ID_STATUS,
-    ID_SWITCH_CURSOR, ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED,
-    ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
-    ID_WORKSPACE_MODE_SHARED,
+    ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_PAGER_HIGHLIGHT_COLOR, ID_PAGER_HIGHLIGHT_THEME,
+    ID_PLACE_CURSOR_CLOSEST, ID_PLACE_CURSOR_MRU, ID_PLACE_FOCUSED_MRU, ID_PRESET_AUTHENTIC,
+    ID_PRESET_COMPATIBLE, ID_PRESET_EXPLAIN, ID_REBIND_NOTE, ID_REVERT, ID_SAME_AXIS_GROUP,
+    ID_SAME_AXIS_SWAP, ID_SNAP_MEANING, ID_STATUS, ID_SWITCH_CURSOR, ID_SWITCH_FOCUSED,
+    ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED, ID_UNDERLAY_EXTENSION,
+    ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL, ID_WORKSPACE_MODE_SHARED,
 };
 use super::{ID_TAB_BADGE, ID_TABS};
 
@@ -199,6 +199,8 @@ pub const fn control_field(id: u32) -> Option<&'static str> {
         ID_ALLOW_WIN_L => Some("keyboard.allow-win-l"),
         ID_MOUSE_SNAP => Some("mouse.snap-prevention"),
         ID_TASKBAR_PAGER => Some("desktop.taskbar-pager"),
+        ID_PAGER_HIGHLIGHT_THEME => Some("desktop.pager-highlight-use-theme"),
+        ID_PAGER_HIGHLIGHT_COLOR => Some("desktop.pager-highlight-color"),
         _ => None,
     }
 }
@@ -243,7 +245,7 @@ pub const fn control_rect(id: u32) -> Option<(i32, i32, i32, i32)> {
         ID_DEFAULT_FLOATING => Some((460, 66, 140, 24)),
         ID_WORKSPACE_MODE_LOCAL => Some((310, 100, 170, 24)),
         ID_WORKSPACE_MODE_GLOBAL => Some((490, 100, 160, 24)),
-        ID_WORKSPACE_MODE_SHARED => Some((660, 100, 100, 24)),
+        ID_WORKSPACE_MODE_SHARED => Some((660, 100, 220, 24)),
         ID_SAME_AXIS_GROUP => Some((28, 202, 200, 24)),
         ID_SAME_AXIS_SWAP => Some((238, 202, 200, 24)),
         ID_BORN_MAX_TILE => Some((28, 250, 200, 24)),
@@ -302,6 +304,8 @@ pub const fn control_rect(id: u32) -> Option<(i32, i32, i32, i32)> {
         ID_MOUSE_SNAP => Some((28, 66, 560, 20)),
         ID_SNAP_MEANING => Some((28, 90, 856, 44)),
         ID_TASKBAR_PAGER => Some((28, 234, 560, 20)),
+        ID_PAGER_HIGHLIGHT_THEME => Some((28, 258, 560, 20)),
+        ID_PAGER_HIGHLIGHT_COLOR => Some((298, 282, 120, 22)),
         _ => None,
     }
 }
@@ -333,15 +337,22 @@ pub const fn control_class(id: u32) -> Option<&'static str> {
         | ID_BORDER_WIDTH
         | ID_BORDER_GAP
         | ID_BORDER_RADIUS
+        | ID_PAGER_HIGHLIGHT_COLOR
         | ID_UNDERLAY_COLOR
         | ID_UNDERLAY_EXTENSION
         | ID_BIND_CHORD => Some("EDIT"),
         ID_PRESET_EXPLAIN | ID_REBIND_NOTE | ID_BINDING_INFO => Some("EDIT"),
         ID_BINDING_LIST => Some("LISTBOX"),
-        ID_BORDER_ENABLED | ID_BORDER_THEME | ID_UNDERLAY_ENABLED | ID_KEYBOARD_TAKEOVER
-        | ID_ALLOW_WIN_L | ID_MOUSE_SNAP | ID_TASKBAR_PAGER | ID_FOCUS_FOLLOWS | ID_CURSOR_WARP => {
-            Some("BUTTON")
-        }
+        ID_BORDER_ENABLED
+        | ID_BORDER_THEME
+        | ID_UNDERLAY_ENABLED
+        | ID_KEYBOARD_TAKEOVER
+        | ID_ALLOW_WIN_L
+        | ID_MOUSE_SNAP
+        | ID_TASKBAR_PAGER
+        | ID_PAGER_HIGHLIGHT_THEME
+        | ID_FOCUS_FOLLOWS
+        | ID_CURSOR_WARP => Some("BUTTON"),
         ID_DEFAULT_TILED
         | ID_DEFAULT_FLOATING
         | ID_SAME_AXIS_GROUP
@@ -460,7 +471,7 @@ pub const GROUPS: &[(GroupKey, i32, i32, i32, i32)] = &[
         56,
     ),
     (GroupKey::Panel("native.snap-policy"), 18, 44, 886, 160),
-    (GroupKey::Section("desktop.pager"), 18, 212, 886, 90),
+    (GroupKey::Section("desktop.pager"), 18, 212, 886, 150),
 ];
 
 /// Tab index for one group key, derived through the same section tables
@@ -536,16 +547,20 @@ pub const LABEL_RECTS: &[(usize, i32, i32, i32, i32)] = &[
     (TAB_APPEARANCE, 598, 90, 150, 20),
     (TAB_APPEARANCE, 598, 114, 150, 20),
     (TAB_APPEARANCE, 598, 138, 296, 60),
-    // Desktop: snap timing note plus pager help.
+    // Desktop: snap timing note, pager help, plus pager highlight buddy.
     (TAB_DESKTOP, 28, 138, 856, 50),
-    (TAB_DESKTOP, 28, 258, 856, 30),
+    (TAB_DESKTOP, 28, 308, 856, 30),
     // Shortcuts: rebind-chord buddy label, ahead of its editor.
     (TAB_SHORTCUTS, 558, 330, 150, 16),
+    (TAB_DESKTOP, 28, 282, 260, 24),
 ];
 
 /// Label index of the rebind-chord buddy label (no catalog field; the
 /// editor carries the pending chord, so the label is native wording).
 pub const LABEL_CHORD: usize = 19;
+
+/// Index of the pager highlight colour buddy label.
+pub const LABEL_PAGER_HIGHLIGHT_COLOR: usize = 20;
 
 /// Catalog field behind a label-static index above.
 const LABEL_FIELDS: &[&str] = &[
@@ -569,6 +584,7 @@ const LABEL_FIELDS: &[&str] = &[
     "mouse.snap-prevention",
     "desktop.taskbar-pager",
     "",
+    "desktop.pager-highlight-color",
 ];
 
 /// Win32 class for one label index: the two long workspace notes scroll
@@ -592,6 +608,7 @@ pub const BUDDY_LABELS: &[(u32, usize)] = &[
     (ID_BORDER_RADIUS, 12),
     (ID_UNDERLAY_COLOR, 14),
     (ID_UNDERLAY_EXTENSION, 15),
+    (ID_PAGER_HIGHLIGHT_COLOR, LABEL_PAGER_HIGHLIGHT_COLOR),
     (ID_BIND_CHORD, LABEL_CHORD),
 ];
 
@@ -693,7 +710,7 @@ pub fn label_text(index: usize) -> String {
         4..=8 => def.timing_help.to_owned(),
         9..=12 => format!("{}:", def.label),
         13 => "Configured colour wins when theme is off or no accent.".to_owned(),
-        14 | 15 => format!("{}:", def.label),
+        14 | 15 | LABEL_PAGER_HIGHLIGHT_COLOR => format!("{}:", def.label),
         16 => "-1 follows the border width.".to_owned(),
         17 => def.timing_help.to_owned(),
         18 => def.help.to_owned(),
@@ -1104,6 +1121,8 @@ pub const ALL_CONTROL_IDS: &[u32] = &[
     ID_WORKSPACE_MODE_GLOBAL,
     ID_WORKSPACE_MODE_SHARED,
     ID_TASKBAR_PAGER,
+    ID_PAGER_HIGHLIGHT_THEME,
+    ID_PAGER_HIGHLIGHT_COLOR,
     ID_GAMING_OPEN_XBOX,
     ID_GAMING_OPEN_GAMEBAR,
     ID_GAMING_OPEN_APP,

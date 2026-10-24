@@ -28,6 +28,7 @@ pub(super) fn run_tile_loop(
         mut scope,
         mut scope_hosts,
         mut border,
+        mut pager_highlight,
         mut underlay,
     } = run;
     // Prevention needs an active loop: proof never arms it, and the guarded
@@ -64,6 +65,7 @@ pub(super) fn run_tile_loop(
         scope = resolved.options.scope_exes.clone();
         scope_hosts = resolved.options.scope_hosts.clone();
         border = resolved.options.border;
+        pager_highlight = resolved.options.pager_highlight;
         underlay = resolved.options.underlay;
     }
     // Proof audit starts before any geometry: raw received argv (elements
@@ -245,6 +247,7 @@ pub(super) fn run_tile_loop(
         suspend_started: None,
         restore_wake: None,
         border,
+        pager_highlight,
         border_overlay: BorderOverlay::default(),
         border_last: None,
         accent_seen: 0,

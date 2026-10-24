@@ -628,6 +628,10 @@ struct TileLoop {
     /// off flag). The border never takes geometry writes: it only reads the
     /// foreground target's fresh frame and paints the process-owned overlay.
     border: ActiveBorderOptions,
+    /// Independent pager focused-miniature highlight for this run (default
+    /// system accent with the configured fallback). Live file edits adopt
+    /// through the settings lane; proof owners keep the default.
+    pager_highlight: crate::pager_highlight::PagerHighlightStyle,
     /// Process-owned border overlay plus the last logged border signature
     /// (visibility/rect/style/target/colour/source) for change-only logging.
     border_overlay: BorderOverlay,

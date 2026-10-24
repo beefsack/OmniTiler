@@ -45,6 +45,12 @@ pub const DEFAULT_UNDERLAY_COLOR_HEX: &str = catalog::DEFAULT_CATALOG_UNDERLAY_C
 pub const DEFAULT_UNDERLAY_EXTENSION: f64 = catalog::DEFAULT_CATALOG_UNDERLAY_EXTENSION;
 pub const MAX_UNDERLAY_EXTENSION: f64 = catalog::MAX_CATALOG_UNDERLAY_EXTENSION;
 
+/// Pager active-window highlight defaults: independent of the ring, same
+/// mechanism (system accent by default with the configured `#2a82da`
+/// fallback). Windows-only host styling; no core presentation change.
+pub const DEFAULT_PAGER_HIGHLIGHT_COLOR_HEX: &str = "#2a82da";
+pub const DEFAULT_PAGER_HIGHLIGHT_USE_THEME: bool = true;
+
 fn default_revision() -> u64 {
     1
 }
@@ -543,6 +549,11 @@ pub struct CoreSettings {
     /// surfaces the opt-out and live edits hot-apply.
     #[serde(default = "default_taskbar_pager")]
     pub taskbar_pager: bool,
+    /// Pager focused-miniature highlight (Windows-only host styling).
+    /// Additive schema-v1 field: missing backfills to the accent default;
+    /// independent of `border` (no shared token, no shim).
+    #[serde(default)]
+    pub pager_highlight: PagerHighlightSettings,
 }
 
 fn default_inner_gap() -> i32 {
@@ -574,6 +585,7 @@ impl Default for CoreSettings {
             mouse: MouseSettings::default(),
             workspace: WorkspaceSettings::default(),
             taskbar_pager: default_taskbar_pager(),
+            pager_highlight: PagerHighlightSettings::default(),
         }
     }
 }
@@ -730,6 +742,35 @@ impl Default for BorderSettings {
             radius: DEFAULT_BORDER_RADIUS,
             color: DEFAULT_BORDER_COLOR_HEX.to_owned(),
             use_theme: DEFAULT_BORDER_USE_THEME,
+        }
+    }
+}
+
+/// Pager active-window highlight settings. Colour is `#rrggbb`;
+/// `use_theme` selects the live system accent with the configured colour
+/// as fallback. Same grammar and mechanism as the ring colour, independent
+/// stored tokens (`core.pager_highlight.*`, never `core.border.*`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PagerHighlightSettings {
+    #[serde(default = "default_pager_highlight_color")]
+    pub color: String,
+    #[serde(default = "default_pager_highlight_theme")]
+    pub use_theme: bool,
+}
+
+fn default_pager_highlight_color() -> String {
+    DEFAULT_PAGER_HIGHLIGHT_COLOR_HEX.to_owned()
+}
+
+fn default_pager_highlight_theme() -> bool {
+    DEFAULT_PAGER_HIGHLIGHT_USE_THEME
+}
+
+impl Default for PagerHighlightSettings {
+    fn default() -> Self {
+        Self {
+            color: DEFAULT_PAGER_HIGHLIGHT_COLOR_HEX.to_owned(),
+            use_theme: DEFAULT_PAGER_HIGHLIGHT_USE_THEME,
         }
     }
 }

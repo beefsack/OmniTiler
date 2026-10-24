@@ -129,6 +129,9 @@ pub const ID_PLACE_FOCUSED_MRU: u32 = 161;
 /// warp. Same output-targeting group, switch row.
 pub const ID_FOCUS_FOLLOWS: u32 = 162;
 pub const ID_CURSOR_WARP: u32 = 163;
+/// Pager highlight controls: system-accent switch plus explicit colour.
+pub const ID_PAGER_HIGHLIGHT_THEME: u32 = 164;
+pub const ID_PAGER_HIGHLIGHT_COLOR: u32 = 165;
 
 pub(crate) const GAMING_TIMER_ID: usize = 1;
 pub(crate) const GAMING_TIMER_MS: u32 = 1000;
@@ -269,6 +272,7 @@ fn on_command(app: &mut App, id: u32, notify: u32) -> bool {
             ID_INNER_GAP
             | ID_OUTER_GAP
             | ID_BORDER_COLOR
+            | ID_PAGER_HIGHLIGHT_COLOR
             | ID_BORDER_WIDTH
             | ID_BORDER_GAP
             | ID_BORDER_RADIUS
@@ -318,6 +322,7 @@ fn on_command(app: &mut App, id: u32, notify: u32) -> bool {
         | ID_ALLOW_WIN_L
         | ID_MOUSE_SNAP
         | ID_TASKBAR_PAGER
+        | ID_PAGER_HIGHLIGHT_THEME
         | ID_DEFAULT_TILED
         | ID_DEFAULT_FLOATING
         | ID_SAME_AXIS_GROUP
@@ -547,8 +552,14 @@ pub fn cmd_settings() -> Result<String, DynError> {
             | ID_WORKSPACE_MODE_SHARED => {
                 return radio | tab;
             }
-            ID_BORDER_ENABLED | ID_BORDER_THEME | ID_UNDERLAY_ENABLED | ID_KEYBOARD_TAKEOVER
-            | ID_ALLOW_WIN_L | ID_MOUSE_SNAP | ID_TASKBAR_PAGER => return check | tab,
+            ID_BORDER_ENABLED
+            | ID_BORDER_THEME
+            | ID_UNDERLAY_ENABLED
+            | ID_KEYBOARD_TAKEOVER
+            | ID_ALLOW_WIN_L
+            | ID_MOUSE_SNAP
+            | ID_TASKBAR_PAGER
+            | ID_PAGER_HIGHLIGHT_THEME => return check | tab,
             ID_BINDING_LIST => return list_style | tab,
             ID_BINDING_INFO | ID_PRESET_EXPLAIN | ID_REBIND_NOTE => return info_style,
             ID_TAB_BADGE | ID_STATUS | ID_SNAP_MEANING | ID_LOCK_WARNING => return label,

@@ -198,6 +198,7 @@ fn pager_frame(pager: &OutputPager, active_fill: (u8, u8, u8)) -> PagerFrame {
             .collect(),
         active: pager.active_index,
         active_fill,
+        focused_highlight: pager.focused_highlight,
         minis: pager
             .cells
             .iter()
@@ -205,8 +206,10 @@ fn pager_frame(pager: &OutputPager, active_fill: (u8, u8, u8)) -> PagerFrame {
                 cell.minis
                     .iter()
                     .zip(cell.mini_icons.iter())
-                    .map(|(mini, icon)| MiniSlot {
+                    .zip(cell.mini_focused.iter())
+                    .map(|((mini, icon), focused)| MiniSlot {
                         rect: *mini,
+                        focused: *focused,
                         icon: icon.as_ref().and_then(|image| {
                             icon_rect_for_mini(*mini, pager.dpi).map(|dest| IconBlit {
                                 image: Arc::clone(image),
@@ -221,19 +224,24 @@ fn pager_frame(pager: &OutputPager, active_fill: (u8, u8, u8)) -> PagerFrame {
 }
 
 /// Same field set the native store compared before: workspace ids, output,
-/// cell rects and core ordinals, active index, miniatures, and artwork
+/// cell rects and core ordinals, active index, miniatures, per-miniature
+/// focus, the independent highlight colour, and artwork
 /// (`Arc` equality short-circuits on pointer identity, so steady-state
 /// artwork costs one pointer compare per miniature, not a byte walk).
-/// Ordinal changes repaint because the painter formats the stored ordinal.
+/// Ordinal changes repaint because the painter formats the stored ordinal;
+/// focus changes repaint because the painter styles the focused miniature;
+/// highlight-colour changes repaint because the miniature border repaints.
 fn frames_equal(a: &OutputPager, b: &OutputPager) -> bool {
     a.ids == b.ids
         && a.output == b.output
         && a.active_index == b.active_index
+        && a.focused_highlight == b.focused_highlight
         && a.cells.len() == b.cells.len()
         && a.cells.iter().zip(b.cells.iter()).all(|(x, y)| {
             x.rect == y.rect
                 && x.ordinal == y.ordinal
                 && x.minis == y.minis
+                && x.mini_focused == y.mini_focused
                 && x.mini_icons == y.mini_icons
         })
 }
@@ -828,11 +836,13 @@ mod tests {
                     active: index == active,
                     ordinal: index as u32 + 1,
                     minis: Vec::new(),
+                    mini_focused: Vec::new(),
                     mini_keys: Vec::new(),
                     mini_icons: Vec::new(),
                 })
                 .collect(),
             active_index: active,
+            focused_highlight: (0xbd, 0x93, 0xf9),
             dpi: 96,
         }
     }
@@ -874,6 +884,7 @@ mod tests {
         let image = Arc::new(IconImage::new(32, 32, vec![4; 32 * 32 * 4]));
         let mut iconic = base.clone();
         iconic.cells[0].mini_icons.push(Some(Arc::clone(&image)));
+        iconic.cells[0].mini_focused.push(false);
         iconic.cells[0].minis.push(Rect {
             x: 1,
             y: 1,
@@ -890,12 +901,60 @@ mod tests {
     }
 
     #[test]
+    fn frame_gate_compares_miniature_focus() {
+        use crate::pager::PagerContentMiniature;
+        let miniature = PagerContentMiniature {
+            key: WindowKey {
+                hwnd: 9,
+                pid: 7,
+                creation: "c1".to_owned(),
+            },
+            rect: Rect {
+                x: 1,
+                y: 1,
+                w: 10,
+                h: 10,
+            },
+            focused: false,
+        };
+        let frame_of = |focused: bool| {
+            let mut pager = pager_fixture(&["ws-a"], 0);
+            pager.cells[0].minis.push(miniature.rect);
+            pager.cells[0].mini_focused.push(focused);
+            pager.cells[0].mini_keys.push(miniature.key.clone());
+            pager.cells[0].mini_icons.push(None);
+            pager
+        };
+        let plain = frame_of(false);
+        assert!(frames_equal(&plain, &frame_of(false)));
+        // Identical geometry with a moved focus gates a repaint, and the
+        // native frame carries the flag plus the independent highlight
+        // colour the painter styles.
+        let focused = frame_of(true);
+        assert!(!frames_equal(&plain, &focused));
+        let native = pager_frame(&focused, (0xaa, 0xbb, 0xcc));
+        assert!(native.minis[0][0].focused);
+        assert_eq!(native.focused_highlight, (0xbd, 0x93, 0xf9));
+        assert_eq!(
+            crate::pager::pager_dim_accent(native.focused_highlight),
+            (76, 59, 100)
+        );
+        assert!(!pager_frame(&plain, (0xaa, 0xbb, 0xcc)).minis[0][0].focused);
+        // A highlight-colour change with identical geometry also gates: the
+        // miniature border repaints even when the cell accent is steady.
+        let mut rehighlighted = focused.clone();
+        rehighlighted.focused_highlight = (0x4c, 0x4a, 0x48);
+        assert!(!frames_equal(&focused, &rehighlighted));
+    }
+
+    #[test]
     fn native_frame_shares_artwork_without_copying() {
         // `pager_frame` hands the worker `Arc` straight through: the
         // pointer the painter blits is the cache's own allocation.
         let image = Arc::new(IconImage::new(32, 32, vec![4; 32 * 32 * 4]));
         let mut pager = pager_fixture(&["ws-a"], 0);
         pager.cells[0].mini_icons.push(Some(Arc::clone(&image)));
+        pager.cells[0].mini_focused.push(false);
         pager.cells[0].minis.push(Rect {
             x: 1,
             y: 1,

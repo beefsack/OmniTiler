@@ -5,7 +5,10 @@
 //! small strip docked inside that output's taskbar, left of the tray clock
 //! area: the active cell carries the accent, empty cells stay darker, and each
 //! cell carries miniature lighter window rectangles scaled from the real
-//! workspace rectangles plus a light 1px border. Clicking a cell selects that
+//! workspace rectangles plus a light 1px border. The focused window's
+//! miniature carries its independent pager highlight colour (full-strength
+//! border over a dimmer fill of the same); unfocused miniatures stay plain
+//! gray. Clicking a cell selects that
 //! exact workspace through the existing `workspace_do_select` resolver.
 //!
 //! This module holds only portable geometry, safety policy, and the
@@ -113,6 +116,25 @@ pub fn pager_active_fill(accent: Option<SystemAccent>) -> (u8, u8, u8) {
     } else {
         DEFAULT_COLOR_RGB
     }
+}
+
+/// Dimmer accent for the focused miniature fill: the opaque-surface analogue
+/// of the group-underlay `0x66`-alpha accent fill (see
+/// [`crate::group_underlay`]): each accent channel premultiplied at `0x66`,
+/// so the focused fill reads accent-tinted but dimmer than the full-accent
+/// border beside it. Unfocused miniatures keep their plain gray.
+#[must_use]
+pub fn pager_dim_accent((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+    const ALPHA: u16 = 0x66;
+    let dim = |c: u8| ((u16::from(c) * ALPHA + 127) / 255) as u8;
+    (dim(r), dim(g), dim(b))
+}
+
+/// Whether one pager window token is the reply's tick-time foreground token:
+/// empty foreground focuses nothing, never a guess.
+#[must_use]
+pub fn pager_window_focused(window_token: &str, foreground_token: &str) -> bool {
+    !foreground_token.is_empty() && window_token == foreground_token
 }
 
 /// Portable mirror of one monitor's geometry for pager layout.
@@ -337,15 +359,18 @@ impl PagerRefusal {
 }
 
 /// One painted cell: its rect, active flag, 1-based ordinal, the window
-/// miniatures already scaled into cell coordinates, and per-miniature icon
-/// state parallel to `minis`: the full window identity plus optional owned
-/// artwork. Missing artwork is `None` and leaves the rectangle unchanged.
+/// miniatures already scaled into cell coordinates, per-miniature focus
+/// (parallel to `minis`: true only for the reply's foreground window), and
+/// per-miniature icon state parallel to `minis`: the full window identity
+/// plus optional owned artwork. Missing artwork is `None` and leaves the
+/// rectangle unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagerCell {
     pub rect: Rect,
     pub active: bool,
     pub ordinal: u32,
     pub minis: Vec<Rect>,
+    pub mini_focused: Vec<bool>,
     pub mini_keys: Vec<crate::native_guards::WindowKey>,
     pub mini_icons: Vec<Option<std::sync::Arc<crate::pager_icons::IconImage>>>,
 }
@@ -362,6 +387,11 @@ pub struct OutputPager {
     pub active_index: usize,
     /// Taskbar DPI the frame was laid out for (font + geometry).
     pub dpi: u32,
+    /// Independent highlight colour the focused miniatures paint
+    /// (loop's pager-highlight style plus the shared accent snapshot):
+    /// full-strength on the miniature border, dimmed for the miniature
+    /// fill. Cells keep the pager accent.
+    pub focused_highlight: (u8, u8, u8),
 }
 
 /// Strip layout for one output on a bottom-docked horizontal taskbar.
@@ -535,20 +565,34 @@ fn overlap_area(a: Rect, b: Rect) -> i64 {
 /// One workspace's pre-ordered pager content: the core content decision for
 /// one ring slot — the stable id, its 1-based core ordinal, whether it is
 /// the core current view, plus its windows in paint order (bottom first,
-/// topmost last) with resolved miniature source rectangles. The core owns
+/// topmost last) with resolved miniature source rectangles and the
+/// reply-foreground focus bit each. The core owns
 /// order, ordinal, and currency; this only lays out and scales, never sorts,
 /// renumbers, or filters content.
 pub struct PagerContentWorkspace {
     pub id: String,
     pub ordinal: u32,
     pub current: bool,
-    pub windows: Vec<(crate::native_guards::WindowKey, Rect)>,
+    pub windows: Vec<PagerContentMiniature>,
+}
+
+/// One content miniature: the member key, its resolved source rectangle,
+/// and whether it is the reply's foreground (focused) window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PagerContentMiniature {
+    pub key: crate::native_guards::WindowKey,
+    pub rect: Rect,
+    pub focused: bool,
 }
 
 /// Build one output's pager frame from core-ordered content: the core logical
 /// ring in order with its current view marked, plus the per-workspace paint
 /// lists. Ordinals and the active cell ride the core values verbatim; the
 /// renderer may format a provided ordinal numerically as host styling.
+/// `focused_highlight` is the resolved independent highlight colour (loop's
+/// pager-highlight style plus the shared accent snapshot); it rides the
+/// frame so a highlight-colour change repaints even when every cell is
+/// identical.
 /// Presentation only; the core remains the sole authority.
 pub fn build_output_pager_from_content(
     content: &[PagerContentWorkspace],
@@ -556,6 +600,7 @@ pub fn build_output_pager_from_content(
     output: &str,
     monitor_full: Rect,
     taskbar: &TaskbarFacts,
+    focused_highlight: (u8, u8, u8),
 ) -> Result<OutputPager, PagerRefusal> {
     let ids: Vec<String> = content.iter().map(|row| row.id.clone()).collect();
     let strip = strip_for_taskbar(monitor_full, taskbar, ids.len())?;
@@ -567,18 +612,21 @@ pub fn build_output_pager_from_content(
     let mut cells = Vec::with_capacity(ids.len());
     for (index, cell_rect) in cell_rects.into_iter().enumerate() {
         let mut minis = Vec::new();
+        let mut mini_focused = Vec::new();
         let mut mini_keys = Vec::new();
         let mut mini_icons = Vec::new();
-        for (key, rect) in &content[index].windows {
-            minis.push(miniature(cell_rect, monitor_full, *rect, taskbar.dpi));
-            mini_icons.push(icons.get(key).cloned());
-            mini_keys.push(key.clone());
+        for entry in &content[index].windows {
+            minis.push(miniature(cell_rect, monitor_full, entry.rect, taskbar.dpi));
+            mini_focused.push(entry.focused);
+            mini_icons.push(icons.get(&entry.key).cloned());
+            mini_keys.push(entry.key.clone());
         }
         cells.push(PagerCell {
             rect: cell_rect,
             active: content[index].current,
             ordinal: content[index].ordinal,
             minis,
+            mini_focused,
             mini_keys,
             mini_icons,
         });
@@ -590,6 +638,7 @@ pub fn build_output_pager_from_content(
         cells,
         active_index,
         dpi: taskbar.dpi,
+        focused_highlight,
     })
 }
 
@@ -617,6 +666,11 @@ pub fn snapshot_hash(pagers: &[OutputPager]) -> u64 {
         mix(pager.strip.w as u64);
         mix(pager.strip.h as u64);
         mix(pager.dpi as u64);
+        // A highlight-colour change with identical geometry still repaints:
+        // the focused miniature carries the highlight colour.
+        mix(u64::from(pager.focused_highlight.0));
+        mix(u64::from(pager.focused_highlight.1));
+        mix(u64::from(pager.focused_highlight.2));
         mix(pager.active_index as u64);
         for cell in &pager.cells {
             mix(cell.rect.x as u64);
@@ -628,6 +682,11 @@ pub fn snapshot_hash(pagers: &[OutputPager]) -> u64 {
                 mix(mini.y as u64);
                 mix(mini.w as u64);
                 mix(mini.h as u64);
+            }
+            // A focus move with identical geometry still repaints: the
+            // focused miniature carries accent styling.
+            for focused in &cell.mini_focused {
+                mix(*focused as u64);
             }
             // Window identity per miniature (full key, never HWND alone) plus
             // artwork presence: icon arrival/refresh repaints without moving
@@ -727,6 +786,13 @@ mod tests {
             autohide: false,
             dpi: PAGER_BASE_DPI,
         }
+    }
+
+    /// Independent highlight colour for frame tests: the dogfood purple
+    /// `#bd93f9`, deliberately different from every pager accent in these
+    /// tests so a fill/border mix-up fails loudly.
+    fn focused_highlight() -> (u8, u8, u8) {
+        (0xbd, 0x93, 0xf9)
     }
 
     #[test]
@@ -921,6 +987,7 @@ mod tests {
             "mon-a",
             new_full,
             &bar,
+            focused_highlight(),
         )
         .expect("frames fresh");
         assert_eq!(frame.dpi, 144);
@@ -941,6 +1008,7 @@ mod tests {
                 "mon-a",
                 full(),
                 &bar,
+                focused_highlight(),
             )
             .expect_err("autohide never frames"),
             PagerRefusal::TaskbarAutohide
@@ -1072,6 +1140,7 @@ mod tests {
                 "mon-b",
                 secondary_full(),
                 bar,
+                focused_highlight(),
             )
         };
         let pager = frame_for(&secondary_bar_right_anchored()).expect("secondary frames");
@@ -1798,6 +1867,7 @@ mod tests {
                 "mon-a",
                 full(),
                 &bottom_bar(),
+                focused_highlight(),
             )
             .expect("fits")
         };
@@ -1833,6 +1903,7 @@ mod tests {
                 "mon-a",
                 full(),
                 &bar,
+                focused_highlight(),
             )
             .expect("fits")
         };
@@ -1881,15 +1952,16 @@ mod tests {
         // crowding only adds miniatures, never changes the cell layout.
         let mut windows = Vec::new();
         for n in 0..24u64 {
-            windows.push((
-                content_key(100 + n, &format!("c{n}")),
-                Rect {
+            windows.push(PagerContentMiniature {
+                key: content_key(100 + n, &format!("c{n}")),
+                rect: Rect {
                     x: 0,
                     y: 0,
                     w: 480,
                     h: 270,
                 },
-            ));
+                focused: false,
+            });
         }
         let mut content = content_rows(&ring_ids(), "ws-1");
         content[0].windows = windows;
@@ -1899,6 +1971,7 @@ mod tests {
             "mon-a",
             full(),
             &bottom_bar(),
+            focused_highlight(),
         )
         .expect("fits");
         // All 24 members render miniatures: ordinary crowding only adds
@@ -1910,6 +1983,7 @@ mod tests {
         for cell in &pager.cells {
             assert_eq!(cell.mini_keys.len(), cell.minis.len());
             assert_eq!(cell.mini_icons.len(), cell.minis.len());
+            assert_eq!(cell.mini_focused.len(), cell.minis.len());
             assert!(cell.mini_icons.iter().all(Option::is_none));
         }
     }
@@ -1927,9 +2001,20 @@ mod tests {
         };
         let content_of = |artwork: &HashMap<crate::native_guards::WindowKey, Arc<IconImage>>| {
             let mut content = content_rows(&ring_ids(), "ws-1");
-            content[0].windows = vec![(key.clone(), slot)];
-            build_output_pager_from_content(&content, artwork, "mon-a", full(), &bottom_bar())
-                .expect("fits")
+            content[0].windows = vec![PagerContentMiniature {
+                key: key.clone(),
+                rect: slot,
+                focused: false,
+            }];
+            build_output_pager_from_content(
+                &content,
+                artwork,
+                "mon-a",
+                full(),
+                &bottom_bar(),
+                focused_highlight(),
+            )
+            .expect("fits")
         };
         let plain = content_of(&HashMap::new());
         let mut artwork = HashMap::new();
@@ -1992,9 +2077,21 @@ mod tests {
         let bottom = content_key(30, "stack-bottom");
         let mut content = content_rows(&ring_ids(), "ws-1");
         content[0].windows = vec![
-            (bottom.clone(), stack_frame(0, 540)),
-            (middle.clone(), stack_frame(960, 0)),
-            (top.clone(), stack_frame(0, 0)),
+            PagerContentMiniature {
+                key: bottom.clone(),
+                rect: stack_frame(0, 540),
+                focused: false,
+            },
+            PagerContentMiniature {
+                key: middle.clone(),
+                rect: stack_frame(960, 0),
+                focused: false,
+            },
+            PagerContentMiniature {
+                key: top.clone(),
+                rect: stack_frame(0, 0),
+                focused: true,
+            },
         ];
         let pager = build_output_pager_from_content(
             &content,
@@ -2002,6 +2099,7 @@ mod tests {
             "mon-a",
             full(),
             &bottom_bar(),
+            focused_highlight(),
         )
         .expect("fits");
         assert_eq!(
@@ -2029,9 +2127,21 @@ mod tests {
         let tiled = stack_key(60, "overlay-tiled");
         let mut content = content_rows(&ring_ids(), "ws-1");
         content[0].windows = vec![
-            (plain.clone(), stack_frame(0, 0)),
-            (tiled.clone(), stack_frame(960, 540)),
-            (overlay.clone(), full()),
+            PagerContentMiniature {
+                key: plain.clone(),
+                rect: stack_frame(0, 0),
+                focused: false,
+            },
+            PagerContentMiniature {
+                key: tiled.clone(),
+                rect: stack_frame(960, 540),
+                focused: false,
+            },
+            PagerContentMiniature {
+                key: overlay.clone(),
+                rect: full(),
+                focused: false,
+            },
         ];
         let pager = build_output_pager_from_content(
             &content,
@@ -2039,6 +2149,7 @@ mod tests {
             "mon-a",
             full(),
             &bottom_bar(),
+            focused_highlight(),
         )
         .expect("fits");
         assert_eq!(pager.cells[0].mini_keys, vec![plain, tiled, overlay]);
@@ -2064,14 +2175,147 @@ mod tests {
                 windows: Vec::new(),
             },
         ];
-        let pager =
-            build_output_pager_from_content(&rows, &HashMap::new(), "mon-a", full(), &bottom_bar())
-                .expect("fits");
+        let pager = build_output_pager_from_content(
+            &rows,
+            &HashMap::new(),
+            "mon-a",
+            full(),
+            &bottom_bar(),
+            focused_highlight(),
+        )
+        .expect("fits");
         assert_eq!(pager.ids, vec!["ws-a".to_owned(), "ws-b".to_owned()]);
         assert_eq!(pager.cells[0].ordinal, 7);
         assert_eq!(pager.cells[1].ordinal, 3);
         assert!(!pager.cells[0].active);
         assert!(pager.cells[1].active);
         assert_eq!(pager.active_index, 1);
+    }
+
+    #[test]
+    fn dim_accent_is_premultiplied_at_underlay_alpha() {
+        // Opaque-surface analogue of the `#66`-alpha underlay fill: the
+        // long-standing `#2a82da` fallback dims to the same premultiplied
+        // channels the underlay raster proves (`[0x57, 0x34, 0x11, 0x66]`
+        // BGRA in `group_underlay`).
+        assert_eq!(pager_dim_accent((0x2a, 0x82, 0xda)), (0x11, 0x34, 0x57));
+        assert_eq!(pager_dim_accent((0xff, 0xff, 0xff)), (0x66, 0x66, 0x66));
+        assert_eq!(pager_dim_accent((0x00, 0x00, 0x00)), (0x00, 0x00, 0x00));
+    }
+
+    #[test]
+    fn foreground_token_marks_exactly_one_focus() {
+        assert!(pager_window_focused("tok-a", "tok-a"));
+        assert!(!pager_window_focused("tok-b", "tok-a"));
+        // Empty foreground focuses nothing: an unmanaged or departed
+        // foreground never guesses a miniature.
+        assert!(!pager_window_focused("tok-a", ""));
+        assert!(!pager_window_focused("", ""));
+    }
+
+    #[test]
+    fn focused_miniature_follows_highlight_resolution_not_pager_fill() {
+        use crate::active_border::SystemAccent;
+        use crate::pager_highlight::{PagerHighlightStyle, effective_color};
+        // Dogfood settings: configured purple highlight, theme off, live
+        // system accent different. The highlight resolves to the configured
+        // colour while the pager cell keeps the system accent: the miniature
+        // must carry the highlight colour, never the cell fill, and never
+        // the ring colour (independent setting).
+        let highlight = PagerHighlightStyle {
+            color: (0xbd, 0x93, 0xf9),
+            use_theme: false,
+        };
+        let ring = crate::active_border::ActiveBorderStyle {
+            color: (0x11, 0x22, 0x33),
+            use_theme: false,
+            ..crate::active_border::ActiveBorderStyle::default()
+        };
+        let accent = SystemAccent {
+            color: (0x4c, 0x4a, 0x48),
+            alpha: 0xE3,
+        };
+        assert_eq!(
+            effective_color(&highlight, Some(accent)),
+            (0xbd, 0x93, 0xf9)
+        );
+        assert_eq!(
+            crate::active_border::effective_color(&ring, Some(accent)),
+            (0x11, 0x22, 0x33),
+            "ring stays independent of the highlight"
+        );
+        assert_eq!(
+            pager_active_fill(Some(accent)),
+            (0x4c, 0x4a, 0x48),
+            "cell fill stays on the system accent"
+        );
+        assert_eq!(pager_dim_accent((0xbd, 0x93, 0xf9)), (76, 59, 100));
+        // Themed highlight resolves to the accent the cell also uses: the
+        // helper still takes its own switch, it just coincides.
+        let themed = PagerHighlightStyle {
+            use_theme: true,
+            ..highlight
+        };
+        assert_eq!(effective_color(&themed, Some(accent)), (0x4c, 0x4a, 0x48));
+        // The frame carries the highlight colour, and a highlight-colour
+        // change with identical geometry still repaints.
+        let frame_of = |highlight: (u8, u8, u8)| {
+            build_output_pager_from_content(
+                &content_rows(&ring_ids(), "ws-1"),
+                &HashMap::new(),
+                "mon-a",
+                full(),
+                &bottom_bar(),
+                highlight,
+            )
+            .expect("fits")
+        };
+        let purple = frame_of((0xbd, 0x93, 0xf9));
+        assert_eq!(purple.focused_highlight, (0xbd, 0x93, 0xf9));
+        let accented = frame_of((0x4c, 0x4a, 0x48));
+        assert_ne!(
+            snapshot_hash(&[purple]),
+            snapshot_hash(&[accented]),
+            "highlight-colour change must repaint"
+        );
+    }
+
+    #[test]
+    fn focused_flag_rides_into_cells_and_repaints() {
+        let key = || content_key(21, "focus-1");
+        let slot = Rect {
+            x: 0,
+            y: 0,
+            w: 960,
+            h: 540,
+        };
+        let frame_of = |focused: bool| {
+            let mut content = content_rows(&ring_ids(), "ws-1");
+            content[0].windows = vec![PagerContentMiniature {
+                key: key(),
+                rect: slot,
+                focused,
+            }];
+            build_output_pager_from_content(
+                &content,
+                &HashMap::new(),
+                "mon-a",
+                full(),
+                &bottom_bar(),
+                focused_highlight(),
+            )
+            .expect("fits")
+        };
+        let plain = frame_of(false);
+        assert_eq!(plain.cells[0].mini_focused, vec![false]);
+        let focused = frame_of(true);
+        assert_eq!(focused.cells[0].mini_focused, vec![true]);
+        // Identical geometry with a moved focus still repaints.
+        assert_eq!(plain.cells[0].minis, focused.cells[0].minis);
+        assert_ne!(
+            snapshot_hash(&[plain]),
+            snapshot_hash(&[focused]),
+            "focus move must repaint"
+        );
     }
 }
