@@ -94,6 +94,10 @@ with the fixture-first rules and the signed bundle in
 - Interim tentative Cmd+H behavior treats app-hidden windows as gone; before a
   final choice compare local yabai/AeroSpace/Amethyst and core minimized
   handling. No new hidden-state core type or SafetyFacts renaming selected.
+  The [stage-2 evidence](../changes/macos-world-v2-port.md#stage-2-hideunhide-evidence-2026-10-25)
+  now compares those sources and omission/minimized world reports. The tested
+  geometry agrees, but hide-then-terminate lacks explicit-close plumbing under
+  interim A. Final A/B/C choice remains pending; no core state was added.
 - Fullscreen/system Spaces are omitted from desktop `native_order`; fullscreen
   windows report their flag with no observed-workspace receipt, and logical
   views are empty while fullscreen is current. Sticky requires positive

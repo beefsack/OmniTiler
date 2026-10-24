@@ -2,7 +2,8 @@
 
 ## Goal and status
 
-- Stage 0 reviewed; stage 1 complete offline. Stage 0 evidence is from `a0f54105`
+- Stage 0 reviewed; stage 1 complete offline; stage 2 has begun with hide/unhide
+  evidence, awaiting the final A/B/C product choice. Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
 - Replace the retired macOS contract, not wrap it. One `WorldEngine` owns policy;
@@ -287,6 +288,75 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   gesture into the next gesture; native capture release is fail-closed today,
   but missing-terminal core cleanup has not been established by the current tests.
 
+## Stage-2 hide/unhide evidence (2026-10-25)
+
+- Stage 1 landed as `d7a87d82`. Interim app-hidden A is unchanged; this checkpoint
+  adds evidence tests only. Other stage-2 policy removal, fractional-readback /
+  cross-display tests and orphaned-gesture terminal coverage are not complete.
+- Reference sources were read in local clones at the pins in
+  [prior art](../research/macos-port/prior-art.md); links below cite those
+  same blobs, not the moving branch heads.
+
+| Source | Hide/unhide behavior shown by source |
+| --- | --- |
+| yabai `dd845723416f5fe92af49fad5ebab00369e07edd` | [event_loop.c:432-540](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/event_loop.c#L432-L540): hide removes managed tree nodes and reflows; unhide re-adds eligible windows with chained insertion points. No saved hide slot in these handlers; not equivalent to core slot restoration |
+| AeroSpace `74a1bf17e82d70e0a21945ba04bb4f590bf19f83` | [normalizeLayoutReason.swift:24-71](https://github.com/nikitabobko/AeroSpace/blob/74a1bf17e82d70e0a21945ba04bb4f590bf19f83/Sources/AppBundle/normalizeLayoutReason.swift#L24-L71): native app-hide is separate from minimize/fullscreen and moves windows to a workspace hidden-app container; unhide re-layouts prior tiled windows, not a saved tree-slot restore |
+| Amethyst `5cfe2fe12b1a933139010da5760aaa7e44033e9b` | [WindowManager.swift:159-184](https://github.com/ianyh/Amethyst/blob/5cfe2fe12b1a933139010da5760aaa7e44033e9b/Amethyst/Managers/WindowManager.swift#L159-L184), [Windows.swift:44-55,170-187](https://github.com/ianyh/Amethyst/blob/5cfe2fe12b1a933139010da5760aaa7e44033e9b/Amethyst/Managers/Windows.swift#L170-L187): hide deactivates a PID; tracked windows remain but active layouts filter them. Unhide refreshes windows and reactivates the PID |
+
+### Executed A/B discriminator
+
+- Added five tests in existing `world_builder.rs` and `world_runtime_tests.rs`,
+  with the hidden window and survivor in separate apps. Current world engines
+  consume the real builder reports and native adoption facts, not private core
+  sessions. Test names:
+  `app_hide_omission_vs_explicit_minimized_report_shapes`,
+  `hidden_omission_vs_flagged_minimized_geometry_parity`,
+  `directional_focus_sourced_at_hidden_window_is_fenced`,
+  `hidden_app_exclusion_creates_no_minimized_record_and_prunes_homing`, and
+  `hidden_then_terminate_produces_no_explicit_close`.
+- A (omission) and B (explicit minimized fact) produce matching hidden desired
+  rows, survivor allocations and exact pre-hide return allocations in this
+  sequence. Neither produces a focus effect for the hidden/returning window.
+  This does not prove all A/B reply semantics equivalent.
+- A `WorldCommand::Focus` sourced at the hidden window refuses with
+  `focus-unknown`, with unchanged revision, under both producer shapes. This is
+  a directional-source fence, not a direct-target focus/unminimize command test.
+  No native unhide/restore effect was observed in the tested sequence.
+- Source explanation: `world_observe.rs:290-317` excludes minimized facts from
+  ordinary engine windows; `session/world.rs:1278-1308` stores a D23 slot when a
+  known tiled window goes missing; `session/world.rs:1869-1876` keeps restore
+  from taking session focus. Complete absent facts and explicit minimized facts
+  differ in membership bookkeeping (`world_members.rs:212-236`), so a general
+  equivalence claim would be unsupported.
+- Proven adapter gap: HiddenApp creates no minimized record and scoped-member
+  refresh prunes its native homing. `terminate_close_map` then emits no explicit
+  close for that hidden window. The minimized path retains enough identity/home
+  to emit the close. A lingering core D23 slot is a source-derived risk, not an
+  executed leak result; no lifecycle fix was made in this evidence checkpoint.
+- Recommendation for the final product choice: B is the smallest explicit
+  retained-lifetime representation using the current contract and existing
+  minimized-close plumbing. It would truthfully document the core flag's broader
+  host-hidden use instead of introducing C. A remains viable if close/lifetime
+  proof is retained separately. C adds a new core state without a demonstrated
+  need from this comparison. None is newly selected here; interim A remains.
+- Verification: full macOS tests PASS (1,274 tests, 0 failed), strict all-target
+  macOS clippy PASS, workspace fmt PASS and diff whitespace check PASS. No
+  runtime source or core behavior changed in this evidence checkpoint.
+
+### Coordinate and sticky source findings
+
+- Both references write size-position-size to handle native screen-area
+  constraints: [yabai window_manager.c:741-760](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c#L741-L760)
+  and [AeroSpace MacApp.swift:411-419](https://github.com/nikitabobko/AeroSpace/blob/74a1bf17e82d70e0a21945ba04bb4f590bf19f83/Sources/AppBundle/tree/MacApp.swift#L411-L419).
+  This supports the existing adapter sequence; it is not a reproduced clamp or
+  evidence requiring a coordinate-basis token. Fractional/cross-display fake
+  tests are still due.
+- Core sticky handling is home-output scoped (`world_directional.rs:86-104`);
+  yabai's `window.c:843-855` uses multi-Space membership without proving that
+  macOS All Desktops is per-display. Source evidence does not establish the
+  two-display native scope. Keep sticky=false without positive all-Spaces proof;
+  do not widen core scope or infer native behavior. Native scope remains TBD.
+
 ## Stage-0 verification
 
 All Cargo commands below were run with `mise exec --` at `a0f54105`.
@@ -326,6 +396,6 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: stage-2 policy/fact ownership and the reviewed
-  hide/unhide, sticky-scope and coordinate evidence/tests. Keep any new core
-  proposal separate.
+- Remaining exact next step: choose final app-hidden A/B/C using the stage-2
+  evidence; then finish stage-2 policy ownership and coordinate/gesture tests.
+  Keep any new core proposal separate.

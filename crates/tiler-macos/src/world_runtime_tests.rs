@@ -604,3 +604,87 @@ fn raw_attempt_staging_drops_unknown_operations_without_evidence() {
         "unknown operations stage no raw evidence"
     );
 }
+
+fn retained_with_known_domain(pid: u32, wid: u32) -> (RetainedCore, DomainKey) {
+    let key = domain_key();
+    let mut retained = retained_with_window(pid, wid, &key);
+    retained.known_domains.insert(
+        key.clone(),
+        tiler_core::session::OutputDomain {
+            id: key.output.clone(),
+            workspace: key.workspace.clone(),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 1440,
+                h: 900,
+            },
+            gap: PHASE1_GAP,
+            adjacent: BTreeMap::new(),
+        },
+    );
+    (retained, key)
+}
+
+fn hidden_app_snapshot(wid: u32) -> ScopedBackendSnapshot {
+    use crate::classifier::ExcludeReason;
+    use crate::runtime_types::ExcludedOmission;
+    ScopedBackendSnapshot {
+        windows: Vec::new(),
+        focused_wid: None,
+        focus_cg_owned: false,
+        focus_evidence: None,
+        sys_focus: None,
+        global_focus: None,
+        meta: Vec::new(),
+        excluded: 1,
+        excluded_reasons: vec![ExcludedOmission {
+            wid,
+            reason: ExcludeReason::HiddenApp,
+        }],
+        revision: 3,
+    }
+}
+
+/// Current adapter A behavior: a HiddenApp exclusion mints no minimized
+/// record and the hidden window keeps no retained homing. This pins the
+/// actual omit-path plumbing; it selects no product behavior.
+#[test]
+fn hidden_app_exclusion_creates_no_minimized_record_and_prunes_homing() {
+    use crate::runtime_core::note_scoped_members;
+    let (mut retained, _) = retained_with_known_domain(1001, 7);
+    // App hide: the window leaves scoped membership.
+    note_scoped_members(&mut retained, 1001, &BTreeMap::new());
+    assert!(
+        !retained.window_domains.contains_key("1001_7"),
+        "hidden window keeps no retained homing"
+    );
+    refresh_minimized(&mut retained, 1001, &hidden_app_snapshot(7));
+    assert!(
+        minimized_entries(&retained).is_empty(),
+        "HiddenApp exclusion mints no minimized record"
+    );
+}
+
+/// Proven adapter gap (no core change): after a hide, PID terminate
+/// produces no explicit close for the hidden window - no live homing
+/// (pruned at hide) and no minimized record (never minted). The minimized
+/// path does ride an explicit close (covered by
+/// `minimized_close_in_app_and_at_terminate_ride_explicit_closes`); the
+/// hidden path does not. Whether the core-side D23 slot minted at
+/// hide-omission convergence lingers past this point is source-derived
+/// (`Session::converge_observation` mints on omission,
+/// `Engine::forget_minimized_slot` only on explicit close), not executed
+/// here: no leak is claimed, only the missing close is proven.
+#[test]
+fn hidden_then_terminate_produces_no_explicit_close() {
+    use crate::runtime_core::note_scoped_members;
+    let (mut retained, _) = retained_with_known_domain(1001, 7);
+    note_scoped_members(&mut retained, 1001, &BTreeMap::new());
+    refresh_minimized(&mut retained, 1001, &hidden_app_snapshot(7));
+    let map = terminate_close_map(&retained, 1001, &[]);
+    assert!(
+        map.values().flatten().all(|id| id.0 != "1001_7"),
+        "expected no explicit close for the hidden window, got {map:?}"
+    );
+}

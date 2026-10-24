@@ -1680,4 +1680,400 @@ mod tests {
         assert!(validate_report(&report));
         assert!(report.windows.is_empty() && report.screens.is_empty());
     }
+
+    /// Hide-producer shapes with realistic separate apps (Cmd+H hides the
+    /// whole app, so the survivor rides a different PID): omission
+    /// (interim A) carries no row for the hidden window; an explicit
+    /// minimized record (B) carries a frameless `minimized: true` row homed
+    /// through its native Space. Both validate. Which shape the adapter
+    /// uses is undecided; this pins the wire difference only.
+    #[test]
+    fn app_hide_omission_vs_explicit_minimized_report_shapes() {
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let (_, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let members = BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 10, 10, 800, 600))])]);
+        // A: omission under complete inventory.
+        let mut auto_asserted = BTreeSet::new();
+        let omitted = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&omitted));
+        assert!(
+            omitted.windows.iter().all(|w| w.window.0 != "1001_7"),
+            "omission carries no row for the hidden window"
+        );
+        // B: explicit minimized record for the same absent window.
+        let minimized = vec![MinimizedRecord {
+            window: WindowId("1001_7".to_owned()),
+            output: d1.output.clone(),
+            workspace: d1.workspace.clone(),
+            sticky: false,
+        }];
+        let mut auto_asserted = BTreeSet::new();
+        let flagged = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minimized,
+            "",
+            2,
+            2,
+        );
+        assert!(validate_report(&flagged));
+        let row = flagged
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_7")
+            .expect("explicit minimized row");
+        assert!(row.minimized, "flagged row marks minimized");
+        assert!(row.rect.is_none(), "flagged row carries no frame");
+    }
+
+    /// A-vs-B hide geometry in this sequence: omission and flagged-minimized
+    /// converge to the same survivor allocation, publish matching minimized
+    /// hold rows for the hidden window, and restore the same pre-hide
+    /// allocation on return, with no focus effect on the hidden/returning
+    /// window. Only these compared properties are established; other reply
+    /// semantics are untested.
+    #[test]
+    fn hidden_omission_vs_flagged_minimized_geometry_parity() {
+        use tiler_core::world_report::EffectKind;
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let memory = empty_memory();
+        let (_, closed, unreadable) = empty_maps();
+        // Separate apps: Cmd+H hides pid 1001, pid 1002 survives.
+        let full = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001, observed(7, 10, 35, 700, 800)),
+                (1002, observed(8, 720, 35, 700, 800)),
+            ],
+        )]);
+        let hidden_members =
+            BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 720, 35, 700, 800))])]);
+        let minimized = vec![MinimizedRecord {
+            window: WindowId("1001_7".to_owned()),
+            output: d1.output.clone(),
+            workspace: d1.workspace.clone(),
+            sticky: false,
+        }];
+        let alloc = |reply: &tiler_core::world_report::WorldReply, id: &str| {
+            reply
+                .windows
+                .iter()
+                .find(|w| w.lifetime.0 == id)
+                .expect("tiled row")
+                .allocation
+        };
+        let no_focus_for = |reply: &tiler_core::world_report::WorldReply| {
+            reply
+                .effects
+                .iter()
+                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7"))
+        };
+        // Bootstrap both engines identically.
+        let mut omit_engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut flag_engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut auto_asserted = BTreeSet::new();
+        let first = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_7",
+            1,
+            1,
+        );
+        assert!(validate_report(&first));
+        let r1 = accepted(&first, &mut omit_engine);
+        let mut auto_asserted = BTreeSet::new();
+        let first = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_7",
+            1,
+            1,
+        );
+        accepted(&first, &mut flag_engine);
+        let a1 = alloc(&r1, "1001_7");
+        // Hide: omission on one engine, flagged row on the other.
+        let mut auto_asserted = BTreeSet::new();
+        let hide_omit = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1002_8",
+            2,
+            2,
+        );
+        assert!(validate_report(&hide_omit));
+        let r2_omit = accepted(&hide_omit, &mut omit_engine);
+        let mut auto_asserted = BTreeSet::new();
+        let hide_flag = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minimized,
+            "1002_8",
+            2,
+            2,
+        );
+        assert!(validate_report(&hide_flag));
+        let r2_flag = accepted(&hide_flag, &mut flag_engine);
+        // The compared rows match in this sequence: omission converges into
+        // the D23 slot and the sweep publishes it as a minimized hold, like
+        // the flagged fact. Other reply semantics are untested.
+        let row_omit = r2_omit
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_7")
+            .expect("omission path publishes a minimized hold row");
+        let row_flag = r2_flag
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_7")
+            .expect("flagged path publishes an explicit minimized row");
+        assert!(
+            row_omit.allocation.is_none() && row_flag.allocation.is_none(),
+            "hidden rows carry no allocation on either path"
+        );
+        assert_eq!(
+            row_omit, row_flag,
+            "compared hidden desired rows match across A/B hide paths"
+        );
+        assert_eq!(
+            alloc(&r2_omit, "1002_8"),
+            alloc(&r2_flag, "1002_8"),
+            "survivor allocation matches across A/B hide paths"
+        );
+        assert!(
+            no_focus_for(&r2_omit),
+            "no focus effect on the omitted window"
+        );
+        assert!(
+            no_focus_for(&r2_flag),
+            "no focus effect on the flagged window"
+        );
+        // Return on both paths: same restored allocation, still no focus.
+        let mut auto_asserted = BTreeSet::new();
+        let back = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1002_8",
+            3,
+            3,
+        );
+        assert!(validate_report(&back));
+        let r3_omit = accepted(&back, &mut omit_engine);
+        let mut auto_asserted = BTreeSet::new();
+        let back = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1002_8",
+            3,
+            3,
+        );
+        let r3_flag = accepted(&back, &mut flag_engine);
+        assert_eq!(
+            alloc(&r3_omit, "1001_7"),
+            a1,
+            "omission path restores the exact pre-hide allocation"
+        );
+        assert_eq!(
+            alloc(&r3_flag, "1001_7"),
+            a1,
+            "flagged path restores the same pre-hide allocation"
+        );
+        assert!(
+            no_focus_for(&r3_omit),
+            "restore mints no focus (host owns it)"
+        );
+        assert!(
+            no_focus_for(&r3_flag),
+            "restore mints no focus (host owns it)"
+        );
+    }
+
+    /// A directional focus sourced at a hidden window is fenced: the engine
+    /// refuses with `focus-unknown`, converging nothing. `WorldCommand::Focus
+    /// { window, direction }` names the directional SOURCE, not a focus
+    /// target, so this says nothing about focusing AT a hidden window
+    /// (target-focus unminimize semantics are untested). Exercised for both
+    /// the omission (A) and flagged-minimized (B) hide observations with
+    /// separate surviving-app PIDs.
+    #[test]
+    fn directional_focus_sourced_at_hidden_window_is_fenced() {
+        use tiler_core::world_report::WorldCommand;
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let memory = empty_memory();
+        let (_, closed, unreadable) = empty_maps();
+        // Separate apps: Cmd+H hides pid 1001, pid 1002 survives.
+        let full = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001, observed(7, 10, 35, 700, 800)),
+                (1002, observed(8, 720, 35, 700, 800)),
+            ],
+        )]);
+        let hidden_members =
+            BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 720, 35, 700, 800))])]);
+        let minimized = vec![MinimizedRecord {
+            window: WindowId("1001_7".to_owned()),
+            output: d1.output.clone(),
+            workspace: d1.workspace.clone(),
+            sticky: false,
+        }];
+        let mut omit_engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut flag_engine = WorldEngine::new(GENERATION).expect("valid generation");
+        // Bootstrap both engines identically, then hide: omission on one,
+        // flagged record on the other.
+        let mut auto_asserted = BTreeSet::new();
+        let first = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_7",
+            1,
+            1,
+        );
+        accepted(&first, &mut omit_engine);
+        let mut auto_asserted = BTreeSet::new();
+        let first = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_7",
+            1,
+            1,
+        );
+        accepted(&first, &mut flag_engine);
+        let mut auto_asserted = BTreeSet::new();
+        let hide_omit = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1002_8",
+            2,
+            2,
+        );
+        accepted(&hide_omit, &mut omit_engine);
+        let mut auto_asserted = BTreeSet::new();
+        let hide_flag = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minimized,
+            "1002_8",
+            2,
+            2,
+        );
+        accepted(&hide_flag, &mut flag_engine);
+        // Same hide observations plus a directional focus sourced at the
+        // hidden window. Both must refuse exactly as `focus-unknown` with
+        // no convergence; no Accepted-without-effects fallback is allowed.
+        for (hide, minimized_rows, engine) in [
+            (&hidden_members, &[][..], &mut omit_engine),
+            (&hidden_members, &minimized[..], &mut flag_engine),
+        ] {
+            let mut auto_asserted = BTreeSet::new();
+            let owned_id = "req-3".to_owned();
+            let mut input = ReportInput::new(
+                OWNER,
+                INCARNATION,
+                GENERATION,
+                &ctx,
+                3,
+                3,
+                &owned_id,
+                hide,
+                &memory,
+                &mut auto_asserted,
+                &closed,
+                &unreadable,
+                minimized_rows,
+                "1002_8",
+                false,
+            );
+            input.command_seq = Some(3);
+            input.command = Some(WorldCommand::Focus {
+                window: WindowId("1001_7".to_owned()),
+                direction: "left".to_owned(),
+            });
+            let report = build_report(&mut input);
+            assert!(validate_report(&report));
+            let revision_before = engine.state_revision();
+            match engine.handle_report(&report) {
+                WorldOutcome::Rejected { kind, message } => {
+                    assert_eq!(
+                        kind, "focus-unknown",
+                        "directional focus from a hidden window refuses as focus-unknown, got {kind} {message}"
+                    );
+                    assert_eq!(
+                        engine.state_revision(),
+                        revision_before,
+                        "refused directional focus converges nothing"
+                    );
+                }
+                other => panic!(
+                    "directional focus sourced at a hidden window must refuse focus-unknown, got {other:?}"
+                ),
+            }
+        }
+    }
 }
