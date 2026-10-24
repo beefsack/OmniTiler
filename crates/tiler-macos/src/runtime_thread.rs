@@ -2936,10 +2936,11 @@ mod trailing_join_tests {
             );
             let created = settled_ctx();
 
-            // One dispatched observation carries the staged row with the
-            // native reads translated through the last applied reply: the
-            // known source maps to its logical id, the not-yet-adopted
-            // append stays unknown (never guessed).
+            // One dispatched observation carries the staged row with
+            // native reads as absence: host-owned facts never translate
+            // native ids to logical pre/post (pending shared native attempt
+            // schema, stage 1b). Both the known source and the not-yet-
+            // adopted append ride `None`, never guessed logical values.
             let report = build_dispatch_report(
                 &mut session,
                 &retained,
@@ -2956,9 +2957,8 @@ mod trailing_join_tests {
             assert_eq!(report.view_attempts.len(), 1, "report carries the attempt");
             assert_eq!(report.view_attempts[0].operation_id, op);
             assert_eq!(
-                report.view_attempts[0].pre,
-                Some("ws-1".to_owned()),
-                "known source Space translates through the live reply"
+                report.view_attempts[0].pre, None,
+                "known source Space rides as absence, never translated"
             );
             assert_eq!(
                 report.view_attempts[0].post, None,

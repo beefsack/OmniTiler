@@ -33,9 +33,9 @@ with the fixture-first rules and the signed bundle in
   selection/send/trailing and drag policy to core. AX/CG/Space facts,
   coordinate/lifetime mechanics stay native. Core publishes native-to-logical
   bindings in replies; macOS uses live lookups, never a durable mapping table.
-  Translate observed Space membership and view facts into
-  logical receipts (`observed_workspace`, exact-logical-id views),
-  never desired-state echoes. Opt into equal counts only if the host
+  Publish observed Space membership as `native_workspace` (`nativeWs`), not
+  logical `observed_workspace` or view receipts; core alone translates it and
+  derives logical membership/views. Opt into equal counts only if the host
   requires it.
 - Report inability through truthful feedback (refusal, unknown,
   hold): never fabricate backing, arrival or capability.
@@ -49,7 +49,8 @@ with the fixture-first rules and the signed bundle in
   complete-reread backstop repair missed notifications.
 - Space facts: per-display native order and current Space ride
   `native[]` under `host_owned_workspace_domains`; per-window Space
-  membership rides `observed_workspace`. The product send route (named
+  membership rides `native_workspace`; logical receipts are for tiler-owned
+  domains only. The product send route (named
   window identity, dual hit-test point proof, posted Desktop-N chord,
   exact membership/current readback) keeps its existing proof gates;
   only the policy and settlement vocabulary move to core.
@@ -91,17 +92,22 @@ with the fixture-first rules and the signed bundle in
   stages and offline translation/executor/readback tests proceed. Core owns
   native bindings and creation correlation; hosts execute desires with raw
   attempts. Removal remains eligibility plus fresh native checks.
-- Interim tentative Cmd+H behavior treats app-hidden windows as gone; before a
-  final choice compare local yabai/AeroSpace/Amethyst and core minimized
-  handling. No new hidden-state core type or SafetyFacts renaming selected.
+- User decision 2026-10-25: Cmd+H uses option B, explicit minimized facts with
+  lifetime/close retention. Diagnostics keep the actual hidden/minimized cause.
+  The shared minimized-comment clarification is deferred pending agreement with
+  KDE's inactive-Activity representation; this adapter mapping stays reversible.
   The [stage-2 evidence](../changes/macos-world-v2-port.md#stage-2-hideunhide-evidence-2026-10-25)
   now compares those sources and omission/minimized world reports. The tested
   geometry agrees, but hide-then-terminate lacks explicit-close plumbing under
-  interim A. Final A/B/C choice remains pending; no core state was added.
+  the superseded omission path. B repairs that gap; no core state is added.
 - Fullscreen/system Spaces are omitted from desktop `native_order`; fullscreen
-  windows report their flag with no observed-workspace receipt, and logical
-  views are empty while fullscreen is current. Sticky requires positive
+  windows report their flag with no logical receipts. Tentatively fullscreen,
+  sticky/all-Spaces and unreadable membership use `native_workspace=None`;
+  shared discriminator tests must confirm this. Sticky requires positive
   all-Spaces proof; per-display scope still needs checking.
+- KDE stage 1b owns creation-attempt correlation, optional native current and
+  authoritative native order. Do not invent these shapes in macOS before they
+  land; independent native select/send/remove/readback tests can proceed.
 - Activities default stays tentative pending KDE evidence (see
   [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):
   inactive-activity windows stay retained unmanaged (never tile, move,

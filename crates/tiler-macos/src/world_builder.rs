@@ -35,8 +35,11 @@
 //!   private engine-boundary access.
 //! - Minimized lifetimes are explicit [`WindowFact`](tiler_core::world_report::WindowFact)
 //!   rows (`minimized: true`, no frame) homed through their native Space,
-//!   never silent absence or inferred close. App-hidden windows are omitted
-//!   (interim A, legacy parity); transition-partial inventory never reads
+//!   never silent absence or inferred close. App-hidden (Cmd+H) windows
+//!   report through the same retained minimized path (option B, reversible
+//!   adapter mapping): the fact carries no cause, the true HiddenApp vs
+//!   Minimized cause stays in diagnostics via `ExcludeReason::log_token`.
+//!   Transition-partial inventory never reads
 //!   as closes: unreadable domains omit their members and fence their
 //!   screen plus the whole report incomplete.
 //! - Overlap precedence is closed > minimized > live: explicit closes always
@@ -1934,21 +1937,230 @@ mod tests {
         );
     }
 
-    /// A directional focus sourced at a hidden window is fenced: the engine
-    /// refuses with `focus-unknown`, converging nothing. `WorldCommand::Focus
-    /// { window, direction }` names the directional SOURCE, not a focus
-    /// target, so this says nothing about focusing AT a hidden window
-    /// (target-focus unminimize semantics are untested). Exercised for both
-    /// the omission (A) and flagged-minimized (B) hide observations with
-    /// separate surviving-app PIDs.
+    /// Option B production path (fake-native, real builder plus real
+    /// engine): hide window `1001_7` in appA while `1002_8` survives in
+    /// appB. The minimized record is minted through the real retained
+    /// path (`refresh_minimized` over a `HiddenApp` exclusion), then the
+    /// builder reports it. The hidden row is frameless, homed through its
+    /// native Space, and holds `Minimized` core-side with no focus effect;
+    /// the survivor keeps tiling and no logical receipts leak.
     #[test]
-    fn directional_focus_sourced_at_hidden_window_is_fenced() {
-        use tiler_core::world_report::WorldCommand;
+    fn hidden_app_production_path_reports_retained_minimized_fact() {
+        use crate::runtime_core::{RetainedApp, RetainedCore, note_scoped_members};
+        use crate::runtime_types::{ExcludedOmission, ScopedBackendSnapshot};
+        use crate::world_runtime::{minimized_entries, refresh_minimized, terminate_close_map};
+        use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
         let memory = empty_memory();
         let (_, closed, unreadable) = empty_maps();
-        // Separate apps: Cmd+H hides pid 1001, pid 1002 survives.
+        let mut retained = RetainedCore::default();
+        retained.apps.insert(
+            1001,
+            RetainedApp {
+                generation: 1,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: vec![observed(7, 10, 35, 700, 800)],
+                focused_wid: None,
+            },
+        );
+        retained.apps.insert(
+            1002,
+            RetainedApp {
+                generation: 1,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: vec![observed(8, 720, 35, 700, 800)],
+                focused_wid: None,
+            },
+        );
+        retained
+            .window_domains
+            .insert("1001_7".to_owned(), d1.clone());
+        retained
+            .window_domains
+            .insert("1002_8".to_owned(), d1.clone());
+        for domain in &ctx.domains {
+            retained.known_domains.insert(
+                tiler_core::session::DomainKey {
+                    output: domain.output.clone(),
+                    workspace: domain.workspace.clone(),
+                },
+                tiler_core::session::OutputDomain {
+                    id: domain.output.clone(),
+                    workspace: domain.workspace.clone(),
+                    bounds: domain.bounds,
+                    gap: 0,
+                    adjacent: std::collections::BTreeMap::new(),
+                },
+            );
+        }
+        let full = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001, observed(7, 10, 35, 700, 800)),
+                (1002, observed(8, 720, 35, 700, 800)),
+            ],
+        )]);
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut auto_asserted = BTreeSet::new();
+        let first = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_7",
+            1,
+            1,
+        );
+        assert!(validate_report(&first));
+        accepted(&first, &mut engine);
+        let hide_snapshot = ScopedBackendSnapshot {
+            windows: Vec::new(),
+            focused_wid: None,
+            focus_cg_owned: false,
+            focus_evidence: None,
+            sys_focus: None,
+            global_focus: None,
+            meta: Vec::new(),
+            excluded: 1,
+            excluded_reasons: vec![ExcludedOmission {
+                wid: 7,
+                reason: crate::classifier::ExcludeReason::HiddenApp,
+            }],
+            revision: 3,
+        };
+        refresh_minimized(&mut retained, 1001, &hide_snapshot);
+        note_scoped_members(&mut retained, 1001, &BTreeMap::new());
+        let minted = minimized_entries(&retained);
+        assert_eq!(minted.len(), 1, "HiddenApp mints one minimized record");
+        assert_eq!(minted[0].window.0, "1001_7");
+        let hidden_members =
+            BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 720, 35, 700, 800))])]);
+        let mut auto_asserted = BTreeSet::new();
+        let hide = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minted,
+            "1002_8",
+            2,
+            2,
+        );
+        assert!(validate_report(&hide));
+        let row = hide
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_7")
+            .expect("hidden row");
+        assert!(
+            row.minimized && row.rect.is_none(),
+            "frameless minimized fact"
+        );
+        assert_eq!(row.native_workspace.as_deref(), Some("space-11"));
+        assert!(row.observed_workspace.is_none(), "no logical receipt");
+        assert!(hide.views.is_empty(), "no logical view receipts");
+        assert!(!hide.native.is_empty(), "native order/current rides");
+        let reply = accepted(&hide, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_7")
+            .expect("held row");
+        assert_eq!(
+            desired.frame_authority,
+            ScopeAuthority::Hold(HoldReason::Minimized)
+        );
+        assert!(desired.allocation.is_none() && desired.effective_frame.is_none());
+        assert!(
+            reply
+                .effects
+                .iter()
+                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+            "hide mints no focus for the hidden lifetime"
+        );
+        assert!(
+            reply.windows.iter().any(|w| w.lifetime.0 == "1002_8"),
+            "survivor keeps tiling"
+        );
+        let mut auto_asserted = BTreeSet::new();
+        let back = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1002_8",
+            3,
+            3,
+        );
+        let back_reply = accepted(&back, &mut engine);
+        assert!(
+            back_reply
+                .effects
+                .iter()
+                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+            "restore mints no focus (host owns it)"
+        );
+        let map = terminate_close_map(&retained, 1001, &[]);
+        assert_eq!(
+            map.get(&d1),
+            Some(&vec![WindowId("1001_7".to_owned())]),
+            "hidden terminate closes explicitly"
+        );
+        let mut closed_map: BTreeMap<tiler_core::session::DomainKey, Vec<WindowId>> =
+            BTreeMap::new();
+        closed_map.insert(d1.clone(), vec![WindowId("1001_7".to_owned())]);
+        let mut auto_asserted = BTreeSet::new();
+        let gone = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed_map,
+            &unreadable,
+            &[],
+            "1002_8",
+            4,
+            4,
+        );
+        assert!(validate_report(&gone));
+        assert!(
+            gone.windows.iter().all(|w| w.window.0 != "1001_7"),
+            "closed rides no fact"
+        );
+        let gone_reply = accepted(&gone, &mut engine);
+        assert!(
+            gone_reply.windows.iter().all(|w| w.lifetime.0 != "1001_7"),
+            "explicit close authorizes no desired row, no resurrection"
+        );
+    }
+
+    /// Direct-target focus seam proof (option B): the public direct-target
+    /// command is `WorldCommand::Focus { window, direction }`
+    /// (`crates/tiler-core/src/world_commands.rs:69-99` checks the window
+    /// is known then mints `explicit_focus` targeting that same window;
+    /// `WorldCommand::Operation(CoreCommand::Focus { .. })` with a local
+    /// route is the sibling ticket accepted by `dispatch_focus_effects` in
+    /// `crates/tiler-macos/src/world_dispatch.rs:1377-1380`). Targeting the
+    /// minimized-reported hidden lifetime must refuse `focus-unknown` with
+    /// no revision and no effect, and the minimized hold survives.
+    #[test]
+    fn direct_target_focus_at_hidden_minimized_refuses_without_effect() {
+        use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let memory = empty_memory();
+        let (_, closed, unreadable) = empty_maps();
         let full = BTreeMap::from([(
             d1.clone(),
             vec![
@@ -1964,10 +2176,7 @@ mod tests {
             workspace: d1.workspace.clone(),
             sticky: false,
         }];
-        let mut omit_engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let mut flag_engine = WorldEngine::new(GENERATION).expect("valid generation");
-        // Bootstrap both engines identically, then hide: omission on one,
-        // flagged record on the other.
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
@@ -1981,37 +2190,9 @@ mod tests {
             1,
             1,
         );
-        accepted(&first, &mut omit_engine);
+        accepted(&first, &mut engine);
         let mut auto_asserted = BTreeSet::new();
-        let first = assemble(
-            &ctx,
-            &full,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "1001_7",
-            1,
-            1,
-        );
-        accepted(&first, &mut flag_engine);
-        let mut auto_asserted = BTreeSet::new();
-        let hide_omit = assemble(
-            &ctx,
-            &hidden_members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "1002_8",
-            2,
-            2,
-        );
-        accepted(&hide_omit, &mut omit_engine);
-        let mut auto_asserted = BTreeSet::new();
-        let hide_flag = assemble(
+        let hide = assemble(
             &ctx,
             &hidden_members,
             &memory,
@@ -2023,57 +2204,353 @@ mod tests {
             2,
             2,
         );
-        accepted(&hide_flag, &mut flag_engine);
-        // Same hide observations plus a directional focus sourced at the
-        // hidden window. Both must refuse exactly as `focus-unknown` with
-        // no convergence; no Accepted-without-effects fallback is allowed.
-        for (hide, minimized_rows, engine) in [
-            (&hidden_members, &[][..], &mut omit_engine),
-            (&hidden_members, &minimized[..], &mut flag_engine),
+        accepted(&hide, &mut engine);
+        let mut auto_asserted = BTreeSet::new();
+        let owned_id = "req-3".to_owned();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            3,
+            3,
+            &owned_id,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minimized,
+            "1002_8",
+            false,
+        );
+        input.command_seq = Some(3);
+        input.command = Some(WorldCommand::Focus {
+            window: WindowId("1001_7".to_owned()),
+            direction: "left".to_owned(),
+        });
+        let report = build_report(&mut input);
+        assert!(validate_report(&report));
+        let revision_before = engine.state_revision();
+        match engine.handle_report(&report) {
+            WorldOutcome::Rejected { kind, .. } => {
+                assert_eq!(kind, "focus-unknown");
+                assert_eq!(engine.state_revision(), revision_before);
+            }
+            other => panic!("direct-target focus at hidden must refuse, got {other:?}"),
+        }
+        let mut auto_asserted = BTreeSet::new();
+        let still = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minimized,
+            "1002_8",
+            4,
+            4,
+        );
+        let reply = accepted(&still, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_7")
+            .expect("hold survives");
+        assert_eq!(
+            desired.frame_authority,
+            ScopeAuthority::Hold(HoldReason::Minimized)
+        );
+        assert!(
+            reply
+                .effects
+                .iter()
+                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+            "no focus effect for the hidden lifetime"
+        );
+    }
+
+    /// Directional-source seam proof (option B): `WorldCommand::FocusDirectional
+    /// { window, direction }` names the focus SOURCE
+    /// (`crates/tiler-core/src/world_operations.rs:359-422` resolves the
+    /// neighbor from the source row; unknown sources yield `NoEffect`,
+    /// never an explicit focus). Sourced at the minimized-reported hidden
+    /// lifetime it must mint no focus effect and never restore geometry.
+    #[test]
+    fn directional_source_focus_from_hidden_mints_no_effect() {
+        use tiler_core::world_report::EffectKind;
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let memory = empty_memory();
+        let (_, closed, unreadable) = empty_maps();
+        let full = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001, observed(7, 10, 35, 700, 800)),
+                (1002, observed(8, 720, 35, 700, 800)),
+            ],
+        )]);
+        let hidden_members =
+            BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 720, 35, 700, 800))])]);
+        let minimized = vec![MinimizedRecord {
+            window: WindowId("1001_7".to_owned()),
+            output: d1.output.clone(),
+            workspace: d1.workspace.clone(),
+            sticky: false,
+        }];
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut auto_asserted = BTreeSet::new();
+        let first = assemble(
+            &ctx,
+            &full,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_7",
+            1,
+            1,
+        );
+        accepted(&first, &mut engine);
+        let mut auto_asserted = BTreeSet::new();
+        let hide = assemble(
+            &ctx,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minimized,
+            "1002_8",
+            2,
+            2,
+        );
+        accepted(&hide, &mut engine);
+        let mut auto_asserted = BTreeSet::new();
+        let owned_id = "req-3".to_owned();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            3,
+            3,
+            &owned_id,
+            &hidden_members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &minimized,
+            "1002_8",
+            false,
+        );
+        input.command_seq = Some(3);
+        input.command = Some(WorldCommand::FocusDirectional {
+            window: WindowId("1001_7".to_owned()),
+            direction: "right".to_owned(),
+        });
+        let report = build_report(&mut input);
+        assert!(validate_report(&report));
+        match engine.handle_report(&report) {
+            WorldOutcome::Accepted(reply) => {
+                assert!(
+                    reply
+                        .effects
+                        .iter()
+                        .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+                    "directional source at hidden mints no focus for it"
+                );
+                assert!(
+                    reply
+                        .windows
+                        .iter()
+                        .find(|w| w.lifetime.0 == "1001_7")
+                        .is_none_or(|w| w.allocation.is_none()),
+                    "hidden lifetime never restores geometry via focus"
+                );
+            }
+            WorldOutcome::Rejected { kind, .. } => {
+                assert!(
+                    kind == "focus-unknown" || kind == "scope-held",
+                    "got {kind}"
+                );
+            }
+            other => panic!("directional source focus must not focus hidden, got {other:?}"),
+        }
+    }
+
+    /// Same-report FIRST live-to-hidden transition plus direct-target
+    /// focus (option B): report 1 bootstraps both windows live, then a
+    /// single report carries the first minimized hidden fact for `1001_7`
+    /// (survivor `1002_8` only) together with `WorldCommand::Focus`
+    /// targeting `1001_7`. Covers the complete report and the incomplete
+    /// transitional-inventory report (unreadable hidden Space fences
+    /// inventory while the minimized fact rides). Either outcome is
+    /// accepted without blessing focus: rejection must be `focus-unknown`
+    /// with no revision, acceptance must mint no `Focus` effect on the
+    /// hidden lifetime and restore no geometry/allocation. A minted focus
+    /// on the hidden minimized lifetime is a core-semantics blocker, not
+    /// an adapter fix.
+    #[test]
+    fn first_transition_same_report_focus_never_restores_hidden() {
+        use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let partial_scope = key("macos-display-1", "space-12");
+        let memory = empty_memory();
+        let (_, closed, _) = empty_maps();
+        let full = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001, observed(7, 10, 35, 700, 800)),
+                (1002, observed(8, 720, 35, 700, 800)),
+            ],
+        )]);
+        let hidden_members =
+            BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 720, 35, 700, 800))])]);
+        let minimized = vec![MinimizedRecord {
+            window: WindowId("1001_7".to_owned()),
+            output: d1.output.clone(),
+            workspace: d1.workspace.clone(),
+            sticky: false,
+        }];
+        let complete_unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+        let mut partial_unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+        partial_unreadable.insert(partial_scope.clone(), HoldReason::Unreadable);
+        for (label, unreadable) in [
+            ("complete", &complete_unreadable),
+            ("incomplete-transitional", &partial_unreadable),
         ] {
+            let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
             let mut auto_asserted = BTreeSet::new();
-            let owned_id = "req-3".to_owned();
+            let first = assemble(
+                &ctx,
+                &full,
+                &memory,
+                &mut auto_asserted,
+                &closed,
+                &BTreeMap::new(),
+                &[],
+                "1001_7",
+                1,
+                1,
+            );
+            assert!(validate_report(&first));
+            accepted(&first, &mut engine);
+            // Same report: first minimized transition plus direct-target
+            // focus at the hidden lifetime.
+            let mut auto_asserted = BTreeSet::new();
+            let owned_id = "req-2".to_owned();
             let mut input = ReportInput::new(
                 OWNER,
                 INCARNATION,
                 GENERATION,
                 &ctx,
-                3,
-                3,
+                2,
+                2,
                 &owned_id,
-                hide,
+                &hidden_members,
                 &memory,
                 &mut auto_asserted,
                 &closed,
-                &unreadable,
-                minimized_rows,
+                unreadable,
+                &minimized,
                 "1002_8",
                 false,
             );
-            input.command_seq = Some(3);
+            input.command_seq = Some(2);
             input.command = Some(WorldCommand::Focus {
                 window: WindowId("1001_7".to_owned()),
                 direction: "left".to_owned(),
             });
             let report = build_report(&mut input);
-            assert!(validate_report(&report));
+            assert!(
+                validate_report(&report),
+                "{label}: transition report validates"
+            );
+            let hidden_row = report
+                .windows
+                .iter()
+                .find(|w| w.window.0 == "1001_7")
+                .expect("hidden minimized fact rides");
+            assert!(
+                hidden_row.minimized && hidden_row.rect.is_none(),
+                "{label}: frameless fact"
+            );
+            assert_eq!(hidden_row.native_workspace.as_deref(), Some("space-11"));
+            if label == "incomplete-transitional" {
+                assert!(!report.inventory_complete, "partial AX holds inventory");
+            }
             let revision_before = engine.state_revision();
             match engine.handle_report(&report) {
-                WorldOutcome::Rejected { kind, message } => {
-                    assert_eq!(
-                        kind, "focus-unknown",
-                        "directional focus from a hidden window refuses as focus-unknown, got {kind} {message}"
-                    );
+                WorldOutcome::Rejected { kind, .. } => {
+                    assert_eq!(kind, "focus-unknown", "{label}: rejected as focus-unknown");
                     assert_eq!(
                         engine.state_revision(),
                         revision_before,
-                        "refused directional focus converges nothing"
+                        "{label}: no convergence"
                     );
                 }
-                other => panic!(
-                    "directional focus sourced at a hidden window must refuse focus-unknown, got {other:?}"
-                ),
+                WorldOutcome::Accepted(reply) => {
+                    assert!(
+                        reply
+                            .effects
+                            .iter()
+                            .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+                        "{label}: core-semantics blocker if this mints focus on hidden",
+                    );
+                    let row = reply
+                        .windows
+                        .iter()
+                        .find(|w| w.lifetime.0 == "1001_7")
+                        .expect("hidden desired row");
+                    assert!(
+                        row.allocation.is_none() && row.effective_frame.is_none(),
+                        "{label}: no geometry restore for hidden"
+                    );
+                    assert!(
+                        row.frame_authority != ScopeAuthority::Controlled,
+                        "{label}: no controlled authority for hidden"
+                    );
+                }
+                other => panic!("{label}: unexpected outcome, got {other:?}"),
             }
+            // Follow-up observation-only report: the minimized transition
+            // itself holds with no focus effect either way.
+            let mut auto_asserted = BTreeSet::new();
+            let still = assemble(
+                &ctx,
+                &hidden_members,
+                &memory,
+                &mut auto_asserted,
+                &closed,
+                unreadable,
+                &minimized,
+                "1002_8",
+                3,
+                3,
+            );
+            assert!(validate_report(&still));
+            let reply = accepted(&still, &mut engine);
+            let desired = reply
+                .windows
+                .iter()
+                .find(|w| w.lifetime.0 == "1001_7")
+                .expect("minimized hold survives");
+            assert!(
+                desired.allocation.is_none() && desired.effective_frame.is_none(),
+                "{label}: follow-up restores no geometry"
+            );
+            assert!(
+                reply
+                    .effects
+                    .iter()
+                    .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+                "{label}: follow-up mints no focus for hidden"
+            );
         }
     }
 }

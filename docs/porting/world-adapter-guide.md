@@ -73,6 +73,8 @@ missing facts. Shape:
   per screen. Empty means unknown: never a copy of a desired view or a
   reply acknowledgement. Transfer and migration settlement needs a
   receipt exactly naming the expected logical id.
+  Host-owned adapters instead publish native current views in `native[]` and
+  omit logical view receipts; core derives those receipts from its bindings.
 - Membership evidence (`observed_workspace`) is an adapter-observed
   logical id (facade readback or mechanical application receipt),
   never authority by itself. Under `host_owned_workspace_domains`,
@@ -80,6 +82,8 @@ missing facts. Shape:
   observed opaque native desktop id; core derives the logical receipt through
   its per-output binding. This bootstraps before logical ids exist without
   adapter-minted ids. The default native-free contract needs no native field.
+  Host-owned adapters leave `observed_workspace` empty; logical receipts are
+  only for tiler-owned domains.
   Unknown/conflicting native evidence proves no arrival; adopted resident
   scopes hold write authority, and unhomed newcomers await evidence. `None`
   means unknown, never proof of absence.

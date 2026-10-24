@@ -200,7 +200,14 @@ platform API behavior.
     [Offline implementation](changes/macos-window-classification.md).
      Activation-policy/layer/application exceptions, sheet identity and exact
      restored-fullscreen reference outcomes remain
-    [TBD discriminators](spec/reference-outcomes.md#macos-classification-discriminators).
+     [TBD discriminators](spec/reference-outcomes.md#macos-classification-discriminators).
+  - **User-approved 2026-10-25 (app-hidden option B):** macOS reports Cmd+H
+    windows as explicit minimized facts with retained lifetime/close plumbing;
+    native diagnostics distinguish app-hidden from actual minimize. No core
+    restore/focus of the reported hidden lifetime. This adapter mapping is
+    reversible. Broadening the shared minimized-field documentation is deferred
+    pending agreement with KDE's inactive-Activity representation; no new core
+    state is selected. [Implementation and evidence](changes/macos-world-v2-port.md#stage-2-option-b-implementation-2026-10-25).
   - **User-approved option A, 2026-10-15 (restored fullscreen):** remove
     the macOS `omit_from_wire` workaround and report a minimized window's
     fullscreen return truthfully, preserving current adapter/core behavior.

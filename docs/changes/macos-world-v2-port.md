@@ -2,8 +2,8 @@
 
 ## Goal and status
 
-- Stage 0 reviewed; stage 1 complete offline; stage 2 has begun with hide/unhide
-  evidence, awaiting the final A/B/C product choice. Stage 0 evidence is from `a0f54105`
+- Stage 0 reviewed; stage 1 complete offline; stage 2 and independent offline
+  stage-3 work continue with app-hidden option B selected. Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
 - Replace the retired macOS contract, not wrap it. One `WorldEngine` owns policy;
@@ -124,6 +124,35 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   spanning domains, opaque/unstable native IDs and sticky scope. No separate
   macOS policy solution is implied by that handoff.
 
+## Reviewed update (2026-10-25)
+
+- App-hidden is option B: report Cmd+H windows as `WindowFact.minimized=true`
+  through existing lifetime/explicit-close plumbing. Preserve the real native
+  hidden/minimized cause in diagnostics; hide-then-terminate must emit a close.
+  Add a direct-target focus test, not only the directional-source fence: no
+  restore or focus of the hidden lifetime. This is a reversible adapter mapping.
+- The proposed `WindowFact.minimized` documentation broadening is deferred
+  pending a shared representation for KDE inactive-Activity windows. Do not
+  change the shared field/comment ahead of that agreement.
+- Updated tentative host-owned split supersedes the earlier logical-receipt
+  translation proposal: publish opaque native membership as
+  `WindowFact.native_workspace` (wire `nativeWs`), native order/current via
+  `native[]`, and no logical `observed_workspace` or view receipts. Core alone
+  derives logical membership/views. Reply `native_binding` resolves execution
+  against live native-id-to-handle lookups; no host binding table. Logical
+  receipts remain for tiler-owned domains.
+- Tentative edge facts pending shared tests: native membership is `None` for
+  fullscreen-Space windows, all-Spaces/sticky windows and unreadable membership.
+  Sticky still needs positive native proof and a per-display verification plan.
+- KDE stage 1b is not present at `0f3c92b5`. Creation attempts/correlation,
+  authoritative native ordering and optional `current_native` are pending shared
+  shapes. Only independent native select/send/remove/readback work proceeds;
+  creation integration waits for the delivered contract and seven macOS
+  discriminator tests. Existing async A/B/C evidence gates remain unchanged.
+- Shared sticky semantics are unchanged; a coordinate-basis token would follow
+  stage 1b only on reproduced evidence. The verified fixture reader hold-open
+  fix is already on main; no macOS fixture change is required.
+
 ## Staged plan and gates
 
 | Stage | Ports and deletions | Exit gate |
@@ -131,7 +160,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 | 0. State and fit review | This inventory, ranked contract review, dependency and gate baseline; no implementation | Findings and staged proposal available together; unsupported semantics remain TBD |
 | 1. Atomic strict-v2 compile cutover | Rewrite builder/envelope and command shapes; port runtime/dispatch to public world snapshot/results, raw attempt types and native binding interface; port active Meta-drag oracle/harness to world gesture reports; delete all retired engine/event/reply/report/feedback/binding routes and repair or delete cfg-leak callers | Locked macOS build and full tests, strict all-target macOS clippy, workspace fmt; core gate set below; search finds no retired private-boundary consumers. No shim or parallel route, including fixtures/tests |
 | 2. Policy and fact ownership | Replace classifier policy with native normalization plus shared in-process policy; delete local select/send/trailing/drag targeting/history/settlement policy; retain input eligibility/capture, lifetime and native proofs. Exercise classification/hidden/minimized/incomplete rosters and active Meta drag; passive titlebar source stays parked | Fake-native regressions for incomplete/closed/minimized, hidden-app ambiguity, exact cursor hit, command targeting, gesture lifecycle/preview/commit, stale/generation replies, no duplicate effects; stage-1 gates. Any unrepresentable safety semantics require a reviewed neutral core proposal, not a host policy workaround |
-| 3. Native workspace binding and settlement | Consume KDE adoption; publish native order/current via `native[]`, window membership as `observed_workspace`, views as independently verified logical receipts. Port native select/send/create/remove executors to desires and raw pre/post attempts; delete trailing proof policy and host membership authority | KDE dependency accepted; four occupied native Spaces -> four logical workspaces, same members and zero launch workspace moves; outside move/create coverage. Fake async/refusal/unreadable/supersession/no-replay/removal-pins tests; stage-1 gates. Native hide/reveal checkpoints required before claiming workspace acceptance |
+| 3. Native workspace binding and settlement | Consume KDE adoption; publish native order/current via `native[]` and per-window `native_workspace`, with logical receipts derived only in core. Port native select/send/remove executors to desires and raw pre/post attempts; creation integration waits for stage 1b. Delete trailing proof policy and host membership authority | KDE dependency accepted; four occupied native Spaces -> four logical workspaces, same members and zero launch workspace moves; outside move/create coverage. Fake async/refusal/unreadable/supersession/no-replay/removal-pins tests; stage-1 gates. Native hide/reveal checkpoints required before claiming workspace acceptance |
 | 4. Effects and presentation | Replace local bounds/eligibility derivation with reply border/underlay/pager/preview; preserve native focus-arrival and last-moment vetoes. Wire independently overridable border and focused-miniature colours, default live accent, full-strength miniature border plus dimmer same-colour fill | Fake render/focus/stack/cursor tests, independent colour override and live theme-update tests, paused-game/unknown-focus hides, no unsolicited fullscreen/focus writes; stage-1 gates; fixture visual/native checkpoint where supported |
 | 5. Native acceptance and closure | Complete fixture-first integration, physical input checks and native workspace lifecycle/multi-output coverage; remove remaining superseded policy caches/helpers/tests/docs rather than preserve a second route | All offline gates; signed bundle verification; native checkpoints below; narrow checker rejects missing/pending/fenced/skipped evidence before acceptance. Explicitly list unsupported host routes and deferred product behavior; no generic claim from the six-checkpoint core baseline |
 
@@ -288,6 +317,36 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   gesture into the next gesture; native capture release is fail-closed today,
   but missing-terminal core cleanup has not been established by the current tests.
 
+## Stage-2 option B implementation (2026-10-25)
+
+- `HiddenApp` now follows the retained minimized-fact path. Diagnostics retain
+  distinct `classifier-omitted-hidden-app` and `classifier-omitted-minimized`
+  tokens. The adapter mapping is reversible; no shared type/comment was changed.
+- Repeated hidden/minimized snapshots preserve the previous proven home after
+  live-member homing is pruned. Never-homed windows gain no invented home;
+  unhide, actual close, app-generation replacement and domain retirement still
+  clear the corresponding retained lifetime. Hide-then-terminate emits an
+  explicit close through the retained home.
+- Real world-engine tests prove frameless minimized holds and no hidden focus,
+  exact close/no desired-row resurrection, repeated-hide retention, distinct
+  diagnostic causes, steady-state direct-target focus refusal, and FIRST-hide
+  same-report focus refusal under both complete and incomplete inventory.
+  `FocusDirectional` is tested separately. The old test incorrectly named
+  `WorldCommand::Focus` a directional source; that obsolete duplicate is removed.
+- Host-owned reports keep `observed_workspace=None` and no logical views.
+  Deleted native-to-logical raw-attempt translation; target IDs remain operation
+  correlation only. Current attempt pre/post fields represent logical reads, so
+  unsupported native pre/post remains `None`, not forged receipts. This limits
+  refusal proof and must be assessed in the offline executor unit; no new native
+  attempt schema is assumed to be part of stage 1b.
+- Full macOS test recipe PASS: 1,279 tests, 0 failed. Strict all-target clippy
+  and workspace fmt PASS. Core/protocol locked tests and strict clippy PASS;
+  no shared behavior changed. No live acceptance claimed.
+- Remaining fact gap: fullscreen-Space and multi-Space windows are still omitted
+  by the old exact-Space partition, not explicitly reported with unknown native
+  membership. This is not accepted as the tentative `None` edge implementation;
+  the fact-ownership unit must keep those lifetimes truthful and fenced.
+
 ## Stage-2 hide/unhide evidence (2026-10-25)
 
 - Stage 1 landed as `d7a87d82`. Interim app-hidden A is unchanged; this checkpoint
@@ -318,10 +377,10 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   rows, survivor allocations and exact pre-hide return allocations in this
   sequence. Neither produces a focus effect for the hidden/returning window.
   This does not prove all A/B reply semantics equivalent.
-- A `WorldCommand::Focus` sourced at the hidden window refuses with
-  `focus-unknown`, with unchanged revision, under both producer shapes. This is
-  a directional-source fence, not a direct-target focus/unminimize command test.
-  No native unhide/restore effect was observed in the tested sequence.
+- Correction: `WorldCommand::Focus` directly targets the named window, despite
+  its direction field; `FocusDirectional` is the source/neighbor command. The
+  historical test was misnamed. Both producer shapes refused `focus-unknown`
+  with unchanged revision and no native unhide/restore effect in that sequence.
 - Source explanation: `world_observe.rs:290-317` excludes minimized facts from
   ordinary engine windows; `session/world.rs:1278-1308` stores a D23 slot when a
   known tiled window goes missing; `session/world.rs:1869-1876` keeps restore
@@ -396,6 +455,6 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: choose final app-hidden A/B/C using the stage-2
-  evidence; then finish stage-2 policy ownership and coordinate/gesture tests.
-  Keep any new core proposal separate.
+- Remaining exact next step: finish stage-2 policy ownership and
+  coordinate/gesture tests, then independent stage-3 native executor/readback
+  work. Keep pending stage-1b shapes and new core proposals separate.

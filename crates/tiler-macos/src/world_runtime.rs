@@ -155,18 +155,20 @@ impl WorldSession {
     }
 
     /// Stage one raw view-attempt row for the next dispatched report.
-    /// Resolves the retained transfer target by operation identity and
-    /// translates native Space reads through the last applied reply's
-    /// `native_binding` rows (a current-reply live lookup, never a durable
-    /// host table, never adapter mapping); unknown operations and
-    /// untranslatable reads drop without evidence (never forged, never
+    /// Resolves the retained transfer target by operation identity (logical
+    /// target correlation only, never adapter mapping). Native Space reads
+    /// ride as absence (`pre`/`post` are `None`): host-owned facts never
+    /// translate native ids to logical receipts. A native pre/post schema
+    /// is not represented by the current logical attempt fields; the adapter
+    /// reports no observed pre/post rather than forging logical values.
+    /// Unknown operations drop without evidence (never forged, never
     /// guessed). Latest-wins per owning operation.
     pub(crate) fn stage_view_attempt(
         &mut self,
         operation_id: &str,
         setter: FrameSetter,
-        pre_sid: Option<u64>,
-        post_sid: Option<u64>,
+        _pre_sid: Option<u64>,
+        _post_sid: Option<u64>,
     ) {
         let transfer = self
             .engine
@@ -178,17 +180,13 @@ impl WorldSession {
         };
         let target_output = transfer.target_output.clone();
         let target_workspace = transfer.target_workspace.clone();
-        let reply = self.sequencer.last_reply();
-        let pre = pre_sid.and_then(|sid| translate_native_sid(reply.as_ref(), &target_output, sid));
-        let post =
-            post_sid.and_then(|sid| translate_native_sid(reply.as_ref(), &target_output, sid));
         let attempt = ViewAttempt {
             operation_id: operation_id.to_owned(),
             target_output,
             target_workspace,
             setter,
-            pre,
-            post,
+            pre: None,
+            post: None,
             baseline: None,
             attempt_ms: 0,
         };
@@ -196,16 +194,18 @@ impl WorldSession {
     }
 
     /// Stage one raw membership-attempt row for the next dispatched report.
-    /// Same resolution/translation/drop rules as
+    /// Same target-correlation/drop rules as
     /// [`WorldSession::stage_view_attempt`]; the retained transfer must be
     /// a window transfer (its subject window and target ride the staged
     /// row — the operation identity already names them core-side, so the
-    /// drain never re-states them). Latest-wins per (operation, window).
+    /// drain never re-states them). Native Space reads ride as absence
+    /// (`post` is `None`, same logical-field limitation as above).
+    /// Latest-wins per (operation, window).
     pub(crate) fn stage_member_attempt(
         &mut self,
         operation_id: &str,
         setter: FrameSetter,
-        post_sid: Option<u64>,
+        _post_sid: Option<u64>,
     ) {
         let transfer = self
             .engine
@@ -220,10 +220,6 @@ impl WorldSession {
         };
         let target_output = transfer.target_output.clone();
         let target_workspace = transfer.target_workspace.clone();
-        let reply = self.sequencer.last_reply();
-        let post = post_sid
-            .and_then(|sid| translate_native_sid(reply.as_ref(), &target_output, sid))
-            .map(|workspace| (target_output.clone(), workspace));
         let attempt = MemberAttempt {
             operation_id: operation_id.to_owned(),
             window: window.clone(),
@@ -231,7 +227,7 @@ impl WorldSession {
             target_workspace,
             setter,
             pre: None,
-            post,
+            post: None,
             attempt_ms: 0,
         };
         self.pending_members
@@ -309,30 +305,6 @@ impl WorldSession {
     }
 }
 
-/// Native Space id to native vocabulary: the opaque host-owned desktop id
-/// the core adoption mapping keys on (same shape as
-/// [`crate::topology::workspace_key`]). Pure.
-pub(crate) fn native_space_id(sid: u64) -> String {
-    crate::topology::workspace_key(sid)
-}
-
-/// Translate one drain-observed native Space id to the core-published
-/// logical workspace id through the last applied reply's `native_binding`
-/// rows (a current-reply live lookup, never a durable host table, never
-/// adapter mapping). `None` when the reply is absent or the native is
-/// unmapped there — unknown, never guessed.
-fn translate_native_sid(
-    reply: Option<&tiler_core::world_report::WorldReply>,
-    output: &OutputId,
-    sid: u64,
-) -> Option<String> {
-    let native = native_space_id(sid);
-    reply?.workspaces.iter().find_map(|row| {
-        (row.output == *output && row.native_binding.as_deref() == Some(native.as_str()))
-            .then(|| row.id.clone())
-    })
-}
-
 /// Minimized lifetimes for one report, in stable order.
 pub(crate) fn minimized_entries(retained: &RetainedCore) -> Vec<MinimizedRecord> {
     let mut entries: Vec<MinimizedRecord> = retained.minimized.values().cloned().collect();
@@ -340,10 +312,21 @@ pub(crate) fn minimized_entries(retained: &RetainedCore) -> Vec<MinimizedRecord>
     entries
 }
 
+/// Whether a classifier exclusion mints a retained minimized lifetime
+/// (option B): genuine `Minimized` plus owner-hidden `HiddenApp` (Cmd+H).
+/// Both report as explicit `minimized: true` facts through the existing
+/// retained-lifetime path; the true native cause stays in diagnostics via
+/// `ExcludeReason::log_token` (`classifier-omitted-minimized` vs
+/// `classifier-omitted-hidden-app`), never in the fact itself.
+fn is_minimized_source(reason: crate::classifier::ExcludeReason) -> bool {
+    use crate::classifier::ExcludeReason;
+    matches!(reason, ExcludeReason::Minimized | ExcludeReason::HiddenApp)
+}
+
 /// Refresh retained minimized lifetimes from one scoped snapshot's
-/// classifier exclusions: minimized wids gain entries under last-known
-/// homing; windows live again (or closed, or homing-less) drop out, and
-/// entries whose home domain retired drop too.
+/// classifier exclusions: minimized and hidden-app wids gain entries under
+/// last-known homing; windows live again (or closed, or homing-less) drop
+/// out, and entries whose home domain retired drop too.
 ///
 /// Ordering: call BEFORE [`note_scoped_members`](crate::runtime_core::note_scoped_members)
 /// for the same snapshot — the mapping update prunes this PID first, so
@@ -353,7 +336,6 @@ pub(crate) fn refresh_minimized(
     pid: u32,
     snapshot: &ScopedBackendSnapshot,
 ) {
-    use crate::classifier::ExcludeReason;
     use std::collections::BTreeSet;
     let live: BTreeSet<String> = snapshot
         .windows
@@ -363,7 +345,7 @@ pub(crate) fn refresh_minimized(
     let excluded_minimized: BTreeSet<String> = snapshot
         .excluded_reasons
         .iter()
-        .filter(|o| o.reason == ExcludeReason::Minimized)
+        .filter(|o| is_minimized_source(o.reason))
         .map(|o| window_id(pid, o.wid))
         .collect();
     // Live windows are never minimized rows; windows absent from members
@@ -380,7 +362,7 @@ pub(crate) fn refresh_minimized(
         !live.contains(id) && excluded_minimized.contains(id)
     });
     for omission in &snapshot.excluded_reasons {
-        if omission.reason != ExcludeReason::Minimized {
+        if !is_minimized_source(omission.reason) {
             continue;
         }
         let id = window_id(pid, omission.wid);
@@ -400,9 +382,16 @@ pub(crate) fn refresh_minimized(
                 );
             }
             None => {
-                // Never homed: unprovable home, omit (never guessed into a
-                // domain).
-                retained.minimized.remove(&id);
+                // Repeated hidden/minimized snapshot after the mapping prune:
+                // `note_scoped_members` prunes this PID first, so the second
+                // same-lifetime snapshot has no live homing to mint from.
+                // Preserve the previous proven home instead of dropping the
+                // just-retained fact. Unknown never-homed windows still
+                // cannot fabricate a home (no entry exists to preserve).
+                // Actual close (absent from exclusions) already dropped
+                // above via the retain gate; newer homing overwrites via
+                // the `Some` arm on the next observed homing; retired
+                // domains drop in the known-domain fence below.
             }
         }
     }
