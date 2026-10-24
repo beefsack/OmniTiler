@@ -400,6 +400,10 @@ impl WorldEngine {
             return Some(session.home.clone());
         }
         let fact = report.windows.iter().find(|fact| fact.window == *window)?;
+        // Effective logical receipt: native-derived under the capability,
+        // adapter logical receipt otherwise. Unknown/conflicting native
+        // evidence yields `None` (hold, never collapse into the view).
+        let receipt = self.effective_logical_receipt(report, fact);
         // In-flight migration member: the raw screen decides ahead of any
         // echo or session state, so member arrival proves independently of
         // views. Observed at the target screen homes to the target key
@@ -428,9 +432,10 @@ impl WorldEngine {
             // contrary logical receipt must never count as arrival proof.
             // Unknown membership proves arrival only in the native-free
             // default (physical screen semantics); with host-owned domains
-            // the adapter later supplies translated logical receipts.
+            // unknown native membership holds at the source (the adapter
+            // supplies native evidence, never a collapsed view).
             if fact.output == target_key.output {
-                match fact.observed_workspace.as_deref() {
+                match receipt.as_deref() {
                     Some(observed) if observed == target_key.workspace.0 => {
                         return Some(target_key);
                     }
@@ -449,7 +454,7 @@ impl WorldEngine {
                 }
             }
             if fact.output == source_key.output {
-                match fact.observed_workspace.as_deref() {
+                match receipt.as_deref() {
                     Some(observed) if observed == source_key.workspace.0 => {
                         return Some(source_key);
                     }
@@ -466,6 +471,33 @@ impl WorldEngine {
             }
         }
         if fact.minimized {
+            // Host-owned authoritative outputs resolve minimized
+            // membership through native evidence, never the current view:
+            // a known receipt homes its mapping even on a noncurrent
+            // desktop at launch; unknown evidence keeps retained homing
+            // (publish fences the scope, it does not bless writes) or
+            // stays unhomed for newcomers.
+            if self.native_authoritative(report, &fact.output) {
+                if let Some(observed) = receipt.as_deref()
+                    && self.known_workspace(&fact.output, observed)
+                {
+                    return Some(DomainKey {
+                        output: fact.output.clone(),
+                        workspace: WorkspaceId(observed.to_owned()),
+                    });
+                }
+                if let Some(key) = self.core_homing(window) {
+                    if key.output == fact.output {
+                        return Some(key);
+                    }
+                    if let Some(remapped) = self.rehome_displaced(key)
+                        && remapped.output == fact.output
+                    {
+                        return Some(remapped);
+                    }
+                }
+                return None;
+            }
             if let Some(key) = self.core_homing(window) {
                 return Some(key);
             }
@@ -480,8 +512,8 @@ impl WorldEngine {
         // only on observed membership; cross-output arrivals keep the
         // mechanical screen proof when membership is unknown (None), and
         // require the exact target id when the adapter reports one.
-        // With host-owned domains unknown membership never proves arrival
-        // (the adapter later supplies translated logical receipts).
+        // With host-owned domains unknown native membership never proves
+        // arrival (it holds at the source until native evidence arrives).
         if let Some(found) = self.retained.iter().find_map(|r| match &r.target.kind {
             TransferKind::Window(w) if w == window => Some(r.clone()),
             _ => None,
@@ -489,7 +521,7 @@ impl WorldEngine {
             let target = found.target.clone();
             if fact.output == target.target_output {
                 let same_output = found.source_output == target.target_output;
-                match fact.observed_workspace.as_deref() {
+                match receipt.as_deref() {
                     Some(observed) if observed == target.target_workspace => {
                         return Some(DomainKey {
                             output: target.target_output,
@@ -536,7 +568,9 @@ impl WorldEngine {
         // proves anything; unknown ids never authorize). A floating
         // receipt naming a workspace owned by another screen homes
         // there: the physical frame stays put on a logical crossing.
-        if let Some(observed) = fact.observed_workspace.as_deref()
+        // With the capability on, `receipt` is native-derived: `None`
+        // holds below instead of collapsing into the current view.
+        if let Some(observed) = receipt.as_deref()
             && self.known_workspace(&fact.output, observed)
         {
             return Some(DomainKey {
@@ -545,7 +579,7 @@ impl WorldEngine {
             });
         }
         if fact.floating
-            && let Some(observed) = fact.observed_workspace.as_deref()
+            && let Some(observed) = receipt.as_deref()
             && let Some(owning) = self.owning_output(observed)
         {
             return Some(DomainKey {
@@ -560,7 +594,27 @@ impl WorldEngine {
         // rebind, first observations, and post-gap inventory native.
         // Restored intent lanes (floating, sticky, automatic-fixed,
         // explicit tile wins) and unreadable facts keep native affinity:
-        // only a readable tiled candidate routes by policy.
+        // only a readable tiled candidate routes by policy. With
+        // host-owned evidence authoritative for the output, unknown native
+        // membership never routes by policy and never collapses into the
+        // current view: newcomers stay unhomed until native evidence
+        // arrives, retained members keep their homing (the publish fence
+        // withholds write authority there; keeping the homing is not a
+        // proof of arrival). Outputs with no native evidence at all keep
+        // the native-free path.
+        if receipt.is_none() && self.native_authoritative(report, &fact.output) {
+            if let Some(key) = self.core_homing(window) {
+                if key.output == fact.output {
+                    return Some(key);
+                }
+                if let Some(remapped) = self.rehome_displaced(key)
+                    && remapped.output == fact.output
+                {
+                    return Some(remapped);
+                }
+            }
+            return None;
+        }
         if self.core_homing(window).is_none()
             && !self.engine_knows_window(window)
             && self.fresh_placement_armed_for(report)

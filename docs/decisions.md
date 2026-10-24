@@ -37,6 +37,8 @@ Tentative index (user review pending; not approved product rules):
 - Activities defaults ([below](#port-deferred-investigations-2026-10-24))
 - KDE v2 stage sequencing and broker capture transport
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
+- Native adoption count: four native-bound workspaces plus ordinary trailing
+  lifecycle ([below](#native-adoption-2026-10-24))
 
 ## KDE rapid directional input
 
@@ -4585,7 +4587,7 @@ User-approved 2026-10-24 (final confirmations):
 
 ## Native adoption 2026-10-24
 
-User-approved 2026-10-24, approved core change not yet implemented:
+User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
 
 - Host-owned workspace adoption: a fresh core generation adopts native
   desktops/Spaces in native order for each display with native window
@@ -4597,14 +4599,16 @@ User-approved 2026-10-24, approved core change not yet implemented:
   reuses it. Four occupied native desktops on a fresh core mean four
   logical workspaces with the same members and no workspace-move
   discriminator; the native result stays TBD until KDE-tested.
-- Current `native[]` rows that do not bootstrap rings or publish
-  `native_binding` are the implementation gap, not an uncertain
-  product choice.
-- Implementation boundary identified 2026-10-24: existing trailing policy
-  appends after an occupied final workspace. Four-total versus four native-bound
-  plus the ordinary spare is parked for clarification; no lifecycle exception
-  or changed adoption rule has been selected. The approved adoption remains
-  unimplemented; [plan and evidence](changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle).
+- `native[]` now bootstraps native-bound workspaces, with capability-gated
+  per-window native membership evidence. Existing completeness flags fence
+  incomplete adoption; native-free behavior is unchanged. KDE/macOS runtime
+  consumption and native acceptance remain outstanding.
+- **Tentative (later user review), 2026-10-24:** four-to-four describes native
+  membership mapping, not total reply rows. Four occupied native desktops map
+  to four native-bound workspaces in native order, preserving members and
+  issuing no launch moves; the existing ordinary trailing-spare lifecycle
+  follows unchanged. This preserves core behavior without a host-owned
+  lifecycle exception. [Implementation and evidence](changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle).
 
 ## Port deferred investigations 2026-10-24
 

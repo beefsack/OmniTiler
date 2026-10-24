@@ -692,6 +692,7 @@ pub(crate) mod tests {
             hints: WindowSizeHints::none(),
             minimized: false,
             observed_workspace: None,
+            native_workspace: None,
         }
     }
 

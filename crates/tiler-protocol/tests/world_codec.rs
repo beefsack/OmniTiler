@@ -152,7 +152,7 @@ fn native_observations_require_the_capability() {
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
     let error = decode_request(&value.to_string()).expect_err("native refuses");
     assert_eq!(error.kind, "snapshot-invalid");
-    // With the capability they ride as pure observations.
+    // With the capability they decode as observations for adoption.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
@@ -1343,6 +1343,86 @@ fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
     assert!(decode_request(&bad_win.to_string()).is_err());
     // The estimate still bounds the wider gesture wire shape.
     let wire = value.to_string();
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+}
+
+#[test]
+fn native_ws_field_decodes_and_gates() {
+    // Missing nativeWs backfills unknown (native-free reports predate it).
+    let report = decode_request(&one_window_request()).expect("missing backfills");
+    assert_eq!(report.windows[0].native_workspace, None);
+    let with_native = |native: serde_json::Value| {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["hostOwned"] = serde_json::Value::Bool(true);
+        value["native"] = serde_json::json!([{"out": "out", "order": ["d1"], "current": "d1"}]);
+        value["windows"] = serde_json::json!([{
+            "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
+            "floating": false, "fitExcluded": false, "fullscreen": false,
+            "maximized": false, "sticky": false, "fixedAuto": false,
+            "fixedSuppress": false, "minimized": false, "observedWs": null,
+            "nativeWs": native,
+            "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
+        }]);
+        decode_request(&value.to_string())
+    };
+    // Null and empty mean unknown, never proof of absence.
+    let report = with_native(serde_json::Value::Null).expect("null decodes");
+    assert_eq!(report.windows[0].native_workspace, None);
+    let report = with_native(serde_json::Value::String(String::new())).expect("empty decodes");
+    assert_eq!(report.windows[0].native_workspace, None);
+    // A valid opaque native id decodes.
+    let report = with_native(serde_json::Value::String("d1".to_owned())).expect("id decodes");
+    assert_eq!(report.windows[0].native_workspace.as_deref(), Some("d1"));
+    // Non-id native membership refuses as unknown-value.
+    let error = with_native(serde_json::Value::String("not an id!".to_owned()))
+        .expect_err("bad id refuses");
+    assert_eq!(error.kind, "unknown-value");
+    // Non-string native membership is malformed.
+    let error = with_native(serde_json::json!(7)).expect_err("number refuses");
+    assert_eq!(error.kind, "malformed");
+    // Capability off with native evidence refuses at the core gate.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["windows"] = serde_json::json!([{
+        "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
+        "floating": false, "fitExcluded": false, "fullscreen": false,
+        "maximized": false, "sticky": false, "fixedAuto": false,
+        "fixedSuppress": false, "minimized": false, "observedWs": null,
+        "nativeWs": "d1",
+        "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("cap off refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "native-without-capability");
+}
+
+#[test]
+fn native_ws_estimate_bounds_actual_wire() {
+    // The structural estimate accounts for the nativeWs field: it bounds
+    // a wire message carrying a realistic Space-style id.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["9f1c-0005-space"], "current": "9f1c-0005-space"}]);
+    value["windows"] = serde_json::json!([{
+        "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
+        "floating": false, "fitExcluded": false, "fullscreen": false,
+        "maximized": false, "sticky": false, "fixedAuto": false,
+        "fixedSuppress": false, "minimized": false, "observedWs": null,
+        "nativeWs": "9f1c-0005-space",
+        "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null},
+    }]);
+    let wire = value.to_string();
+    assert!(wire.contains("\"nativeWs\":\"9f1c-0005-space\""));
+    let report = decode_request(&wire).expect("native report decodes");
+    assert_eq!(
+        report.windows[0].native_workspace.as_deref(),
+        Some("9f1c-0005-space")
+    );
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(
         estimate >= wire.len(),

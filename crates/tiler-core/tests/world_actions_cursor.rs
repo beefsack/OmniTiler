@@ -70,6 +70,7 @@ fn fact(window: &str, output: &str, frame: Rect) -> tiler_core::world_report::Wi
         hints: WindowSizeHints::none(),
         minimized: false,
         observed_workspace: None,
+        native_workspace: None,
     }
 }
 

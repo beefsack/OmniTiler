@@ -160,12 +160,11 @@ impl WorldEngine {
                 retained.pending_view = Some(attempt.clone());
             }
             let raw = retained.pending_view.clone();
-            let echo = report
-                .views
-                .iter()
-                .find(|view| view.output == retained.target.target_output)
-                .map(|view| view.view.as_str())
-                .filter(|view| !view.is_empty());
+            // Proof echo: the explicit logical echo, else the
+            // native-derived echo under the capability. A conflicting
+            // pair holds (neither proves); unknown holds.
+            let echo = self.view_echo_for(report, &retained.target.target_output);
+            let echo = echo.as_deref();
             if echo == Some(retained.target.target_workspace.as_str()) {
                 // Confirmed by echo: adopt as the core view.
                 self.views.insert(
@@ -358,11 +357,23 @@ impl WorldEngine {
                             // holds the flight).
                             let same_output =
                                 retained.source_output == retained.target.target_output;
+                            // Exact native receipt feeds the same proof lane:
+                            // under the capability the native-derived logical
+                            // receipt (not the raw observed field) decides,
+                            // without bypassing at-most-once/refusal/unknown
+                            // handling around it.
                             let observed_proves = self
                                 .staged
                                 .facts
                                 .get(window)
-                                .and_then(|fact| fact.observed_workspace.as_deref())
+                                .and_then(|fact| {
+                                    if report.host_owned_workspace_domains {
+                                        self.effective_logical_receipt(report, fact)
+                                    } else {
+                                        fact.observed_workspace.clone()
+                                    }
+                                })
+                                .as_deref()
                                 == Some(retained.target.target_workspace.as_str());
                             if same_output && !observed_proves {
                                 let mut held = retained;

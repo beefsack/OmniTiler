@@ -46,6 +46,7 @@ fn test_report() -> WorldReport {
             hints: crate::size_hints::WindowSizeHints::none(),
             minimized: false,
             observed_workspace: None,
+            native_workspace: None,
         }],
         views: vec![ScreenView {
             output: OutputId("out".to_owned()),
@@ -105,6 +106,14 @@ fn digest_covers_every_section() {
     let mut changed = base.clone();
     changed.windows[0].minimized = true;
     assert_ne!(report_digest(&changed), digest);
+    // The capability-gated native membership moves the digest too.
+    let mut capable = base.clone();
+    capable.host_owned_workspace_domains = true;
+    let capable_digest = report_digest(&capable);
+    let mut changed = capable;
+    changed.windows[0].native_workspace = Some("d1".to_owned());
+    assert!(validate_report(&changed));
+    assert_ne!(report_digest(&changed), capable_digest);
     let mut changed = base.clone();
     changed.views[0].view = "ws-1".to_owned();
     assert_ne!(report_digest(&changed), digest);
@@ -267,17 +276,52 @@ fn validation_gates_shapes() {
         validate_report_reason(&bad),
         Some("native-without-capability")
     );
-    // Native payload with the capability validates.
+    // Native member evidence without the capability refuses, even with
+    // no native list at all.
+    let mut bad = base.clone();
+    bad.windows[0].native_workspace = Some("d1".to_owned());
+    assert_eq!(
+        validate_report_reason(&bad),
+        Some("native-without-capability")
+    );
+    // Native member evidence must be a valid opaque id.
+    let mut bad = base.clone();
+    bad.host_owned_workspace_domains = true;
+    bad.windows[0].native_workspace = Some("not an id".to_owned());
+    assert_eq!(validate_report_reason(&bad), Some("window-native-invalid"));
+    // Native member evidence with the capability validates.
     let mut good = base.clone();
     good.host_owned_workspace_domains = true;
-    good.native.push(NativeObservation {
-        output: OutputId("out".to_owned()),
-        native_order: vec!["ws".to_owned()],
-        current_native: "ws".to_owned(),
-    });
+    good.windows[0].native_workspace = Some("d1".to_owned());
     assert!(validate_report(&good));
+    // Duplicate native ids within one output refuse.
+    let mut bad = good.clone();
+    bad.native.push(NativeObservation {
+        output: OutputId("out".to_owned()),
+        native_order: vec!["d1".to_owned(), "d1".to_owned()],
+        current_native: "d1".to_owned(),
+    });
+    assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
+    // Contradictory native rows for the same output refuse.
+    let mut bad = good.clone();
+    bad.native.push(NativeObservation {
+        output: OutputId("out".to_owned()),
+        native_order: vec!["d1".to_owned()],
+        current_native: String::new(),
+    });
+    bad.native.push(NativeObservation {
+        output: OutputId("out".to_owned()),
+        native_order: vec!["d2".to_owned()],
+        current_native: String::new(),
+    });
+    assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
     // Native on unknown screen refuses.
     let mut bad = good.clone();
+    bad.native.push(NativeObservation {
+        output: OutputId("out".to_owned()),
+        native_order: Vec::new(),
+        current_native: String::new(),
+    });
     bad.native[0].output = OutputId("nope".to_owned());
     assert_eq!(validate_report_reason(&bad), Some("native-output-unknown"));
     // Cursor hit names a reported window and rides with the cursor.

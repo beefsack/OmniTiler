@@ -43,6 +43,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
         hints: WindowSizeHints::none(),
         minimized: false,
         observed_workspace: None,
+        native_workspace: None,
     }
 }
 
@@ -2178,6 +2179,7 @@ fn offset_two_output_migration_applies() {
             hints: WindowSizeHints::none(),
             minimized: false,
             observed_workspace: None,
+            native_workspace: None,
         }
     }
     let screens = vec![

@@ -37,6 +37,7 @@ mod world_frames;
 mod world_gesture;
 pub mod world_members;
 pub mod world_model;
+pub mod world_native;
 pub mod world_observe;
 pub mod world_operations;
 pub mod world_presentation;

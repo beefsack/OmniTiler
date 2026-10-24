@@ -445,6 +445,7 @@ pub(crate) fn fact(window: &str, frame: Option<Rect>) -> WindowFact {
         hints: crate::size_hints::WindowSizeHints::none(),
         minimized: false,
         observed_workspace: None,
+        native_workspace: None,
     }
 }
 

@@ -44,6 +44,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
         hints: WindowSizeHints::none(),
         minimized: false,
         observed_workspace: None,
+        native_workspace: None,
     }
 }
 
@@ -334,6 +335,7 @@ fn fact_at(window: &str, output: &str, rect: Rect) -> WindowFact {
         hints: WindowSizeHints::none(),
         minimized: false,
         observed_workspace: None,
+        native_workspace: None,
     }
 }
 

@@ -58,6 +58,7 @@ fn fact(window: &str, output: &str, r: Rect) -> WindowFact {
         hints: crate::size_hints::WindowSizeHints::none(),
         minimized: false,
         observed_workspace: None,
+        native_workspace: None,
     }
 }
 

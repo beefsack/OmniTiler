@@ -70,19 +70,25 @@ missing facts. Shape:
   receipt exactly naming the expected logical id.
 - Membership evidence (`observed_workspace`) is an adapter-observed
   logical id (facade readback or mechanical application receipt),
-  never authority by itself. Host-native membership is translated by
-  the port into this logical receipt; there is no host-native
-  per-window field in the default contract. This is insufficient for fresh
-  host-owned adoption before logical ids exist: that approved implementation
-  needs separate capability-gated native membership evidence, not adapter-minted
-  logical ids. No such field is shipped yet. `None` means unknown, never proof
-  of absence.
+  never authority by itself. Under `host_owned_workspace_domains`,
+  `WindowFact.native_workspace` (optional wire `nativeWs`) instead carries the
+  observed opaque native desktop id; core derives the logical receipt through
+  its per-output binding. This bootstraps before logical ids exist without
+  adapter-minted ids. The default native-free contract needs no native field.
+  Unknown/conflicting native evidence proves no arrival; adopted resident
+  scopes hold write authority, and unhomed newcomers await evidence. `None`
+  means unknown, never proof of absence.
 - Capability opt-ins (off by default, never platform-name checks in
   core): `host_owned_workspace_domains` carries `native[]`
   (`NativeObservation`: observed native order plus current native view
   per screen, pure observation); `equal_workspace_count` pads core
-  rings neutrally for hosts that need equal counts. Carrying `native[]`
-  without the capability refuses.
+  rings neutrally for hosts that need equal counts. Carrying `native[]` or
+  non-null native window membership without the capability refuses. A present
+  native list is complete only when its screen `complete` and report
+  `inventory_complete` are both true; missing rows never imply native deletion.
+  Duplicate output rows/within-output ids refuse; native ids can repeat across
+  outputs. Separate views bind independently; linked views share logical ids
+  but only genuinely observed output/native pairs publish bindings.
 - Presentation ingress (`PresentationIngress`): genuinely observed
   foreground lifetime (proof-verified adapter-side, `""` when none),
   its live frame (or `None`), host-scaled style numbers in the same
@@ -198,11 +204,10 @@ constraint-clamp, minimized).
   order, planner-owned tiling mode and removal eligibility. The adapter
   never deletes logical workspaces; `existence=false` is removal
   eligibility only (re-enumerate occupants, pins and minimum count;
-  unknown occupancy keeps). `native_binding` is currently always `None`
-  (the only construction, in `world_publish.rs`): the approved
-  host-owned adoption is not yet implemented, and when it lands the
-  binding rides only under that capability, never in the default
-  contract.
+  unknown occupancy keeps). `native_binding` carries an adopted native id only
+  under `host_owned_workspace_domains`, and only for that observed output.
+  Unbound trailing spares, mirrored/migrated rows without observed native
+  backing and all default native-free rows carry `None`, never guessed backing.
 - Output rows publish the retained logical view target (informational
   retained view, never a focus command) and the planner-owned tiling
   mode of the current view.
@@ -280,7 +285,7 @@ native effect:
 
 ## 7. Host limits, coordinates, DPI and gaming
 
-### Approved host-owned adoption, not yet implemented
+### Host-owned adoption (core delivered; native acceptance pending)
 
 Under `host_owned_workspace_domains`, a fresh core generation must adopt each
 display's observed native desktops/Spaces in native order and preserve observed
@@ -290,16 +295,19 @@ After startup, adopt outside host membership moves and newly created native
 desktops. This is an approved core change for the KDE port to deliver and accept
 against real native observations; macOS reuses it, not a separate policy copy.
 The discriminator is four occupied native desktops, fresh generation, four
-logical workspaces with membership preserved and no workspace moves. Native
-outcome remains TBD. See [decision](../decisions.md#native-adoption-2026-10-24).
+native-bound logical workspaces in native order with members preserved and no
+launch workspace moves. Tentative count clarification retains the ordinary
+trailing spare under existing lifecycle rules; it does not require exactly
+four total rows. Core coverage is delivered; native outcome remains TBD.
+See [decision](../decisions.md#native-adoption-2026-10-24).
 
-The implementation is currently [parked on lifecycle composition](../changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle):
-existing core policy appends a trailing spare after an occupied final workspace.
-Four native-bound workspaces plus that spare and exactly four total workspace
-rows are different assertions; no lifecycle exception or reinterpretation is
-selected. Native inventory scope/completeness also needs explicit treatment
-before currently inert observations become load-bearing; do not infer native
-removal from an absent row.
+Native-bound empty desktops retain identity; missing native rows never prove
+removal. Linked views use one compatible logical order; fresh native projections
+whose first-appearance union reverses a display's order hold without adoption
+rather than choosing a new merge policy. General native-order merging and
+correlation of empty native creation to an unbound desired spare remain
+[parked neutrality concerns](../changes/kde-world-v2-port.md#decisions-and-core-neutrality-concerns),
+not extra fields or platform-side policy to invent during a port.
 
 ### Coordinates and safety
 

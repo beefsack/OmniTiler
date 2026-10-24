@@ -299,6 +299,7 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
             hints: WindowSizeHints::none(),
             minimized: false,
             observed_workspace: None,
+            native_workspace: None,
         }
     }
     let owner = "tiler-windows".to_owned();
@@ -445,6 +446,7 @@ fn t2_supported_and_floating_movers_adopt_once() {
             hints: WindowSizeHints::none(),
             minimized: false,
             observed_workspace: None,
+            native_workspace: None,
         }
     }
     for floating_source in [false, true] {

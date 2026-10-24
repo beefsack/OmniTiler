@@ -276,6 +276,7 @@ fn build_report(
             hints: WindowSizeHints::none(),
             minimized: false,
             observed_workspace: None,
+            native_workspace: None,
         });
     }
     let command = build_command(step, binding)?;

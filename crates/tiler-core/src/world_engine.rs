@@ -418,6 +418,14 @@ pub struct WorldEngine {
     /// hotplug displacement, and commands (migration moves the logical id
     /// between screens). Native observations never move ownership.
     pub(crate) mapping: BTreeMap<String, Vec<String>>,
+    /// Host-owned native binding (capability-gated adoption): maps
+    /// `(output, native desktop id)` to the stable core logical workspace
+    /// id adopted for it. Built once per output from the first complete
+    /// `native_order` (native order preserved), extended when an outside
+    /// host creates a native desktop (inserted at native-order position),
+    /// never shrunk (absent native rows never delete mappings). Reset on
+    /// generation/incarnation. Empty in the native-free default.
+    pub(crate) native_map: BTreeMap<(String, String), String>,
     /// Core-owned current view per screen: the stable logical workspace id
     /// shown, retained across reports. Commands and policy moves update it;
     /// adapter echoes prove it.
@@ -656,6 +664,7 @@ impl WorldEngine {
             gesture_terminal: None,
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
+            native_map: BTreeMap::new(),
             views: BTreeMap::new(),
             history: ScopeHistory::new(),
             displaced: BTreeMap::new(),
@@ -743,6 +752,7 @@ impl WorldEngine {
         self.floating_scopes.clear();
         self.last_views.clear();
         self.mapping.clear();
+        self.native_map.clear();
         self.views.clear();
         self.history = ScopeHistory::new();
         self.displaced.clear();
@@ -1400,6 +1410,41 @@ impl WorldEngine {
         // recovered scope never inherits a previous hold.
         self.hold_reasons.clear();
         let mut held_scopes: BTreeSet<DomainKey> = BTreeSet::new();
+        // Host-owned adoption fence: a fact on an authoritative output
+        // whose native evidence is unknown, unmapped, or conflicting keeps
+        // its retained homing but must not bless writes derived from that
+        // retained state. Fence the homed scope with the existing
+        // Unreadable authority (no new lane, no new enum): publish
+        // withholds frame and membership writes there. Unhomed unknowns
+        // (newcomers awaiting evidence) publish no row at all.
+        if report.host_owned_workspace_domains {
+            let mut fence: Vec<DomainKey> = Vec::new();
+            for (window, fact) in &self.staged.facts {
+                if !self.native_authoritative(report, &fact.output) {
+                    continue;
+                }
+                if self.effective_logical_receipt(report, fact).is_some() {
+                    continue;
+                }
+                if let Some(key) = self.staged.homing.get(window) {
+                    fence.push(key.clone());
+                }
+            }
+            // Incompatible fresh shared projection: fence every staged
+            // scope (the fallback singletons), not just homed members.
+            if self.native_order_conflict(report) {
+                for domain in &self.staged.domains {
+                    if !fence.contains(&domain.key) {
+                        fence.push(domain.key.clone());
+                    }
+                }
+            }
+            for key in fence {
+                self.hold_reasons
+                    .insert(key.clone(), HoldReason::Unreadable);
+                held_scopes.insert(key);
+            }
+        }
         // Clone the staged domains for iteration: sweeps borrow `self`
         // mutably while reading staged homing.
         let domains = self.staged.domains.clone();

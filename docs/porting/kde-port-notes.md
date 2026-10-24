@@ -5,9 +5,9 @@ How the KDE adapter moves to the strict v2 contract in
 implemented vs approved-not-implemented vs open as of `01a73798`.
 Rechecked at `a0f54105`: the v1/service/presentation gaps below remain.
 The staged implementation and parked boundaries are tracked in
-[KDE world-v2 port](../changes/kde-world-v2-port.md). Stage 0 is complete;
-stage 1 adoption is parked on four-total versus existing trailing lifecycle,
-not delivered. Later stages have not started.
+[KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1 are delivered
+at the core-only boundary; KDE runtime adoption and native acceptance remain
+outstanding. Later stages have not started.
 
 KWin source is read from the local sibling clone at the documented
 `v6.7.4` pin; port work must not web-fetch KWin sources. Mechanical
@@ -184,29 +184,28 @@ fixtures passing through shims.
 
 ## Approved core changes this port must deliver
 
-- Host-owned native adoption (user-approved 2026-10-24, not yet
-  implemented in core): a fresh core generation adopts native
+- Host-owned native adoption (user-approved 2026-10-24, implemented
+  in core; native acceptance TBD): a fresh core generation adopts native
   desktops/Spaces in native order for each display with native window
   membership preserved and no workspace moves at launch; tiling still
   follows the existing startup arrangement inference
   (size/position). Subsequent outside moves are adopted as new
   membership; an outside-created native desktop becomes a workspace.
   The KDE port delivers and accepts against native facts; macOS
-  reuses the same core change. Current `native[]` rows that do not
-  bootstrap rings or publish `native_binding` are the gap to
-  implement, not an uncertain product choice.
+  reuses the same core change. `native[]` now bootstraps rings and publishes
+  truthful per-output `native_binding`; the port must supply
+  `WindowFact.native_workspace` (`nativeWs`) for native membership.
 - Four occupied native desktops on a fresh core mean four logical
   workspaces with the same members and no workspace-move
   discriminator; the native result stays TBD until KDE-tested.
-- Implementation intake gap: `WindowFact.observed_workspace` is a logical
-  receipt, so it cannot identify native membership before core ids exist.
-  Adoption needs capability-gated per-window native evidence, separate from
-  logical receipts. Current `native[]` has no native-list completeness field;
-  duplicate/absent rows need explicit handling before they become load-bearing.
-- Count ambiguity: existing core lifecycle appends a spare after four occupied
-  workspaces. Whether four-to-four means four total or four native-bound plus
-  that spare is [parked](../changes/kde-world-v2-port.md#p1-four-total-versus-existing-trailing-lifecycle);
-  no lifecycle exception is implicitly approved by this implementation plan.
+- `observed_workspace` remains a logical receipt, never a native-id alias.
+  Native lists are complete only when both screen `complete` and report
+  `inventory_complete` are true. Missing lists never prove deletion; duplicate
+  output rows/within-output ids refuse, while global ids may repeat on outputs.
+- Tentative count clarification: four native-bound occupied workspaces plus
+  the existing ordinary trailing spare, not an exactly-four-total exception.
+  [Decision and remaining neutrality concerns](../changes/kde-world-v2-port.md#decisions-and-core-neutrality-concerns)
+  cover incompatible linked native ordering and empty-creation correlation.
 
 ## Build, check and gate commands
 

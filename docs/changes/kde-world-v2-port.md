@@ -6,15 +6,17 @@
   Windows is the migrated reference. No v1 compatibility, policy copies or
   second owner. [Principles](../principles.md#layering) and the
   [adapter guide](../porting/world-adapter-guide.md) are authoritative.
-- Stage 0 complete against `a0f54105`; stage 1 parked on the workspace-count
-  ambiguity below. No runtime changes or native acceptance yet. This record
-  remains active for the whole port; stages 2 onward have not started.
-- Confirmed the `01a73798` inventory still applies: JS pins version 1
+- Stage 0 complete against `a0f54105`; stage 1 implements capability-gated
+  host-owned adoption in core/protocol. KDE remains unported and native
+  acceptance remains TBD. This record stays active for the whole port;
+  stages 2 onward have not started.
+- Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
   `WorldBackend::fresh` references the removed
   `aligned_per_output_workspaces` config field. The effect's `updateBorder`
-  still derives eligibility and bounds. Core publishes no native bindings.
+  still derives eligibility and bounds. Stage 1 replaces the previously inert
+  core native observations with adoption and binding publication.
 - Native API checks use the sibling KWin clone at the notes' `v6.7.4` pin,
   never fetched source. The declaration header separately cites 6.7.5;
   pinned comparison confirms identical relied-on scripting APIs between the
@@ -25,7 +27,7 @@
 | Stage | Outcome and deletion boundary | Required evidence |
 | --- | --- | --- |
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
-| 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Four native memberships preserved on a fresh generation, no member moves, stable bindings, outside move/create regressions, incomplete evidence holds; parked on total workspace count |
+| 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
 | 2. Broker and strict v2 cutover | Port Rust service and JS wire together; sole identity/sequencer, stream, request/observation namespace and monotonic clock; replace v1 discovery, stale config, wire vectors and legacy routes, never shim them | Protocol/service/JS paired tests; invalidation during flight, duplicates, lost replies, reset, reconnect; authorization separated for query/presentation/commands versus report/actuator; native work actuator-only, terminal results issuing-reply-only, no subscriber effect replay |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
@@ -36,23 +38,27 @@
 
 ## Stage 1 implementation boundary
 
-- `WindowFact` currently carries only logical `observed_workspace`; a fresh
-  generation has no logical ids for the adapter to read back. Physical output
-  and frame cannot establish which native desktop contains a window.
-- Necessary implementation direction within approved adoption: optional,
-  capability-gated native member evidence with opaque host ids, distinct from
-  logical receipts; retain core-owned `(output, native id)` bindings and publish
-  `WorkspaceDesire.native_binding` only under the capability. No adapter-minted
-  logical ids or native ids disguised as logical receipts.
-- Extend validation, digest, conservative size accounting and strict v2 codec
-  together. Native-free Windows reports must retain current behavior. Reuse the
-  existing startup layout inference and transfer/gesture shielding; native facts
-  are observations, never a second policy owner or settlement verdict.
-- Tests must use native-shaped ids/order and nontrivial window geometry:
-  fresh/repeated/reset generations, per-output and linked views, outside moves
-  and desktop creation, unknown/partial evidence, pending transfers and stable
-  binding publication. Four occupied native desktops remain the membership
-  discriminator; do not silently redefine its total-count assertion.
+- `WindowFact.native_workspace` (optional wire `nativeWs`) carries observed
+  opaque native membership, distinct from logical `observed_workspace`.
+  Non-null evidence without the capability refuses. Validation, digest and
+  conservative wire accounting cover it; no version-1 route is added.
+- `world_native.rs` maps `(output, native id)` to core logical ids and derives
+  observed logical member/view receipts. Only actually observed per-output
+  pairs publish `native_binding`; migration or shared mirroring cannot invent
+  native backing. Generation/incarnation reset clears the map.
+- Complete native lists use existing screen/inventory completeness flags.
+  Missing lists never prove deletion; native-bound empties retain identity.
+  Ordinary trailing and equal-count policy is unchanged. Outside creations
+  bind at native-order positions; outside moves use existing homing/settlement.
+- Native uncertainty retains known homing with existing `Unreadable` write
+  fences; unhomed newcomers await evidence without a membership write. Fresh
+  minimized members use native membership, never the current desktop. Native-free
+  Windows uses `native_workspace: None` with no behavior change.
+- Tests use UUID/numeric native ids, asymmetric desktop ordering and reversed
+  window input order. Exact 300/500 startup allocations prove existing position
+  and size inference, alongside minimized/floating/fullscreen membership,
+  reset/repeat, separate/linked lists, outside move/create, uncertainty,
+  pending transfer, truthful migrated bindings and equal-count cases.
 
 ## Tentative technical decisions
 
@@ -62,46 +68,62 @@
 - Use a KDE broker capture envelope feeding existing shared Rust predicates,
   not a new shared classification ingress. This implements the guide's remote
   transport boundary without changing core policy or deciding parked questions.
+- P1 count clarification (tentative, later review): four occupied native
+  desktops map to four native-bound logical workspaces in native order with
+  membership preserved and no workspace moves; the existing ordinary trailing
+  spare follows unchanged. This preserves core behavior rather than adding a
+  host-owned lifecycle exception.
 
-## Parked product and core-neutrality concerns
+## Decisions and core-neutrality concerns
 
 ### P1. Four-total versus existing trailing lifecycle
 
-- Approved adoption says four occupied native desktops give four workspaces.
-  `workspace.rs::plan_trailing` appends when the final workspace is occupied;
-  `world_model.rs::converge_logical_post` runs that policy on the first accepted
-  report. Thus unchanged lifecycle produces four native-bound occupied
-  workspaces plus a fifth trailing spare. Exact four-total needs an exception.
-- Options: (A) exactly four total under host-owned adoption, requiring an
-  explicit lifecycle exception; (B) four native-bound occupied workspaces plus
-  ordinary trailing spare, clarifying that four-to-four describes membership
-  adoption, not total rows. Recommendation: B preserves existing lifecycle.
-  Neither interpretation is selected here. Stage 1 is parked, not implemented.
-- Neutrality: Windows currently uses core-created trailing workspaces; KDE
-  global desktop lists and macOS per-display Spaces must both preserve native
-  membership without implicit lifecycle exceptions. GNOME dynamic workspaces
-  and ChromeOS desks likewise need capability-defined composition, not
-  platform-name branches. Clarify once for the capability.
-- Minimal [discriminator](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs)
-  records the ambiguity; native outcome remains TBD.
+- Resolved tentatively as four native-bound workspaces plus ordinary trailing
+  spare, as above. `workspace.rs::plan_trailing` remains unchanged; no Windows,
+  KDE, macOS, GNOME or ChromeOS-specific lifecycle exception. The
+  [discriminator](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs)
+  now distinguishes native mapping from total rows; native outcome remains TBD.
 
 ### N1. Native inventory scope and completeness
 
-- Current `NativeObservation` is `(output, native_order, current_native)` with
-  no native-list completeness field. Validation permits absent native rows,
-  duplicate output rows and repeated native ids. Harmless inert observations
-  become load-bearing when they bootstrap rings or supply membership evidence.
-- Options: define complete per-output projections using existing completeness
-  flags and reject contradictory duplicates, or add explicit neutral native
-  inventory/domain completeness. Recommendation: first prove whether existing
-  screen/inventory completeness is sufficient on KDE and macOS; park any new
-  shared field until that evidence exists. Missing rows are not removal proof.
-- Windows' native-free default must be unchanged; KDE can repeat the same
-  global desktop ids across outputs; macOS may expose different lists per
-  display; GNOME may have a global dynamic list; ChromeOS may expose global
-  desks. Never globally deduplicate an opaque id or assume identical lists
-  merely because the Windows default needs neither. Shared-view conflicting
-  lists need a defined hold, not silent loss of native members.
+- Existing flags suffice for adoption: a present list is complete only with
+  both screen `complete` and report `inventory_complete`; otherwise no new
+  binding is adopted. Absent rows never remove mappings. Duplicate output rows
+  and within-output ids refuse; repeated native ids across outputs remain valid.
+- No extra completeness field added. Per-window native membership is the only
+  new evidence field. Windows' native-free path is unchanged; KDE global ids
+  can repeat across outputs, and macOS-style differing lists remain independent
+  in separate-view modes. GNOME/ChromeOS need only report truthful projections
+  and lower existing completeness flags when a list cannot be captured.
+
+### N2. Linked views with incompatible native-order projections (parked)
+
+- Shared core has one logical ring. Native lists such as output A `[a,b]` and
+  B `[c,a]` cannot use the simple stable-output first-appearance union without
+  reversing B's order. Stage 1 holds fresh ambiguous projections using existing
+  fences, adopts nothing, and recovers on consistent observations; no merge
+  policy or invented backing is selected. Compatible linked projections retain
+  one ring and only genuine per-output native bindings.
+- Options: require host projections compatible with linked order, select a
+  neutral order-preserving merge, or provide richer native-domain evidence.
+  Recommendation: establish real host need first, then propose the smallest
+  neutral solution; keep the hold meanwhile. Windows native-free linked views
+  are unaffected; KDE global lists normally agree; macOS independent Spaces,
+  GNOME global workspaces and ChromeOS desks must not be forced into a
+  Windows-shaped backing assumption. Native result TBD.
+
+### N3. Empty native creation versus an unbound logical spare (parked)
+
+- Current observations do not correlate an occupant-less native creation with
+  an already-published unbound logical spare. Stage 1 truthfully adopts a new
+  outside native id as a workspace; it does not pretend to prove a requested
+  creation or bind by guessed ordinal.
+- Options: retain independent adoption, reuse an eligible empty spare, or add
+  an explicit neutral binding observation. Recommendation: exercise the actual
+  creation route after the wire cutover before proposing a new shared field.
+  Windows creates logical backing locally; KDE/macOS native creation and future
+  GNOME/ChromeOS adapters must distinguish observed backing from desired ids.
+  Native deletion/reordering policy is not selected by this adoption change.
 
 ### Existing deferred product boundaries
 
@@ -167,5 +189,17 @@
   all-target tests passed (1,244 tests, zero failed/ignored, 28 suites), strict
   all-target clippy passed, workspace formatting and whitespace passed, and
   world acceptance passed 6/6 checkpoints. KDE and native gates were not run.
-- Next: clarify P1's total-count interpretation; then implement the isolated
-  adoption change and address N1 without changing native-free behavior.
+- Stage 1 review corrected fabricated cross-output native bindings, missed
+  linked late bindings and unknown-membership write authority. Minimized native
+  startup homing and an empty-target minimized fallback received regressions;
+  the fallback regression failed before its narrow repair and passed after.
+  No failed approach remains as an accepted behavior or weakened oracle.
+- Final Stage 1 core/protocol/Windows gates through devenv: locked build and
+  all-target tests passed (1,984 passed, zero failed/ignored, 50 suites), strict
+  all-target clippy passed, workspace formatting/whitespace passed, and world
+  acceptance passed 6/6 checkpoints. Adoption coverage is 14/14 tests; codec
+  coverage includes native membership parsing, capability refusal and size
+  bounds. Independent boundary review accepted the corrected implementation.
+  No KDE build, native-host or physical acceptance is claimed.
+- Next: stage 2 atomic Rust/JS v2 broker/wire cutover; no stage 2 work delivered
+  here. Native adoption and hide/reveal acceptance remain fixture-first work.

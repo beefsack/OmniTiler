@@ -113,7 +113,10 @@ impl WorldEngine {
                 TransferKind::Migration => r.members.iter().any(|m| m == window),
                 TransferKind::View => false,
             });
-            let observed_known = fact.observed_workspace.as_deref().and_then(|obs| {
+            // Effective receipt: native-derived under the capability
+            // (unknown/conflicting holds), adapter logical otherwise.
+            let receipt = self.effective_logical_receipt(report, fact);
+            let observed_known = receipt.as_deref().and_then(|obs| {
                 if self.known_workspace(&fact.output, obs) {
                     Some(DomainKey {
                         output: fact.output.clone(),
@@ -135,7 +138,13 @@ impl WorldEngine {
                 .get(window)
                 .map(|state| state.home.output.clone());
             // Precompute adoption view before the mutable borrow.
-            let adopt = if fact.observed_workspace.is_none()
+            // Native-free only: unknown logical membership adopts the
+            // screen's effective view. With the capability authoritative,
+            // unknown native membership keeps the retained home with no
+            // view adoption and never collapses (write authority is
+            // fenced at publish; keeping the home invents no proof).
+            let adopt = if !report.host_owned_workspace_domains
+                && receipt.is_none()
                 && home_output
                     .as_ref()
                     .is_some_and(|home| home != &fact.output)
@@ -172,12 +181,20 @@ impl WorldEngine {
                 state.geometry = fact.rect;
             } else {
                 // Newcomer admission: truthful known receipt wins, else the
-                // screen's effective view (never silent absence).
+                // screen's effective view (native-free only; never silent
+                // absence). With the capability authoritative, unknown
+                // native membership stays unhomed: newcomers publish no
+                // row and authorize no writes until native evidence
+                // arrives.
                 let home = observed_known.or_else(|| {
-                    self.effective_view(&fact.output).map(|view| DomainKey {
-                        output: fact.output.clone(),
-                        workspace: WorkspaceId(view),
-                    })
+                    if report.host_owned_workspace_domains {
+                        None
+                    } else {
+                        self.effective_view(&fact.output).map(|view| DomainKey {
+                            output: fact.output.clone(),
+                            workspace: WorkspaceId(view),
+                        })
+                    }
                 });
                 if let Some(home) = home {
                     self.members.insert(

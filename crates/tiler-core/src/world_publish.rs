@@ -818,6 +818,13 @@ impl WorldEngine {
                         .map(|key| (key.output, key.workspace))
                         .unwrap_or((fact.output.clone(), WorkspaceId(String::new())))
                 });
+            // No native membership evidence authorizes an empty logical target.
+            if home_workspace.0.is_empty()
+                && self.native_authoritative(report, &fact.output)
+                && self.effective_logical_receipt(report, fact).is_none()
+            {
+                continue;
+            }
             // A minimized lifetime homed on a held scope carries that
             // scope's hold on membership. Omission inside a held scope
             // authorizes no write or retirement.
@@ -1002,15 +1009,30 @@ impl WorldEngine {
                 .iter()
                 .any(|screen| screen.output.0 == output && screen.complete);
             for (index, id) in ring.iter().enumerate() {
+                let native_binding = if report.host_owned_workspace_domains {
+                    self.native_binding_for(&output, id)
+                } else {
+                    None
+                };
+                // An incompatible fresh shared projection holds its
+                // workspace rows through the existing Unreadable lane;
+                // ordinary incomplete screens keep IncompleteInventory.
+                let hold = if held {
+                    Some(HoldReason::IncompleteInventory)
+                } else if self.native_order_conflict(report) {
+                    Some(HoldReason::Unreadable)
+                } else {
+                    None
+                };
                 rows.push(WorkspaceDesire {
                     id: id.clone(),
                     output: OutputId(output.clone()),
-                    native_binding: None,
+                    native_binding,
                     scope: workspace_scope_key(report.workspace_mode, &OutputId(output.clone())),
                     order: index,
                     tiling_mode: self.workspace_tiling_mode(&OutputId(output.clone()), id),
                     existence: true,
-                    hold: held.then_some(HoldReason::IncompleteInventory),
+                    hold,
                 });
             }
         }

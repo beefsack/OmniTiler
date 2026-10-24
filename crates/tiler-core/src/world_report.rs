@@ -314,9 +314,11 @@ pub struct WindowDesire {
 /// Desired workspace row. `id` is the stable core logical workspace id;
 /// `output` is its owning screen. `existence=false` is removal ELIGIBILITY
 /// only (the adapter re-enumerates occupants, pins and minimum count before
-/// deleting; unknown occupancy keeps). `native_binding` carries a host-owned
-/// binding only when the `host_owned_workspace_domains` capability is set;
-/// it is always `None` in the default contract and never authorizes mapping.
+/// deleting; unknown occupancy keeps). `native_binding` carries the
+/// host-owned native desktop id bound to this logical workspace, only when
+/// the `host_owned_workspace_domains` capability is set (`None` in the
+/// default contract and for the ordinary trailing spare); it never
+/// authorizes mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceDesire {
     pub id: String,
@@ -646,10 +648,17 @@ pub struct ScreenReport {
 /// Optional membership evidence (never authority by itself):
 /// `observed_workspace` is an adapter-observed logical workspace id for
 /// this window (facade readback / mechanical application receipt),
-/// distinct from core desire. Host-native window membership (if any) is
-/// translated by future ports into this observed logical receipt; there is
-/// no separate host-native per-window field in the default contract.
-/// `None` means unknown, never a proof of absence.
+/// distinct from core desire.
+/// `native_workspace` is the capability-gated host-owned native desktop id
+/// for this window (KWin desktop id, macOS Space id, opaque platform
+/// vocabulary, separate namespace from logical ids). It is only meaningful
+/// when `host_owned_workspace_domains` is set; without the capability it
+/// must be `None` (carrying it refuses, like `native[]`). The core maps
+/// `(output, native_workspace)` to a stable logical id and derives the
+/// logical receipt from that mapping; the adapter never mints logical ids
+/// from native ids. `None` means unknown, never a proof of absence: with
+/// the capability set, unknown native membership holds (never collapses
+/// into the current view).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowFact {
     pub window: WindowId,
@@ -665,6 +674,7 @@ pub struct WindowFact {
     pub hints: crate::size_hints::WindowSizeHints,
     pub minimized: bool,
     pub observed_workspace: Option<String>,
+    pub native_workspace: Option<String>,
 }
 
 /// Observed applied logical view per screen: the stable logical workspace id
@@ -683,6 +693,25 @@ pub struct ScreenView {
 /// screen. Pure observation, never mapping authority: core logical
 /// workspaces authorize all homing, lifecycle, and commands. Carrying any
 /// entry without the `host_owned_workspace_domains` capability refuses.
+/// Completeness contract (producer requirement): `native_order` is the
+/// complete observed native list for `output` only when that screen's
+/// `complete` is true AND the report `inventory_complete` is true.
+/// Otherwise the list is partial and must not create mappings: the core
+/// holds. An absent `NativeObservation` row for a live output never
+/// deletes mappings (no inferred native deletion). Within one output,
+/// `native_order` ids must be unique and `current_native` (when non-empty)
+/// should name a member of that order; contradictory duplicate rows for the
+/// same output refuse. The same native id string may repeat across
+/// different outputs (KWin global ids): each `(output, native id)` pair
+/// maps independently in separate-view modes; linked views share logical ids
+/// while retaining only the native bindings actually observed on each output.
+/// Empty `current_native` means unknown view, never
+/// proof of absence. In shared (linked-view) mode one native id string
+/// observed on several outputs maps to a single unified logical id, but a
+/// binding publishes only for outputs that actually observed it. A fresh
+/// shared projection whose first-appearance union would reverse some
+/// output's reported order is ambiguous: the core adopts nothing for it
+/// (no merge policy is selected) and holds the affected rows instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeObservation {
     pub output: OutputId,
@@ -1289,7 +1318,8 @@ pub fn classify_request(
 /// sequences, owner, request/command identity, screens (output, FULL and
 /// work-area rectangles, gaps, completeness, primary), facts (identity,
 /// observed screen, frame, every safety flag, size-hint bounds, minimized
-/// state), view echoes, explicit closes, capability flags, host-owned
+/// state, observed logical receipt plus capability-gated native membership),
+/// view echoes, explicit closes, capability flags, host-owned
 /// native observations, inventory completeness, the default-tiling seed,
 /// the migration source-refill mode, the D2/D3 capacity settings, the
 /// switch-target and fresh-placement modes, the focus-follows-cursor and
@@ -1481,6 +1511,11 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(
             &mut hash,
             fact.observed_workspace.as_deref().unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            fact.native_workspace.as_deref().unwrap_or_default(),
         );
         sep(&mut hash);
         for bound in [
@@ -1887,6 +1922,14 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         {
             return Some("window-observed-invalid");
         }
+        if let Some(native) = fact.native_workspace.as_deref() {
+            if !is_opaque_id(native) {
+                return Some("window-native-invalid");
+            }
+            if !report.host_owned_workspace_domains {
+                return Some("native-without-capability");
+            }
+        }
     }
     for id in &report.closed {
         if !is_opaque_id(&id.0) {
@@ -1924,22 +1967,34 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         }
     }
     let mut total_native = 0usize;
-    for native in &report.native {
-        if !is_opaque_id(&native.output.0)
-            || !native.current_native.is_empty() && !is_opaque_id(&native.current_native)
-            || native.native_order.len() > MAX_NATIVE_PER_OUTPUT
-        {
-            return Some("native-invalid");
-        }
-        if !seen_outputs.contains(&native.output.0) {
-            return Some("native-output-unknown");
-        }
-        for id in &native.native_order {
-            if !is_opaque_id(id) {
-                return Some("native-id-invalid");
+    {
+        let mut seen_native_outputs = BTreeSet::new();
+        for native in &report.native {
+            if !is_opaque_id(&native.output.0)
+                || !native.current_native.is_empty() && !is_opaque_id(&native.current_native)
+                || native.native_order.len() > MAX_NATIVE_PER_OUTPUT
+            {
+                return Some("native-invalid");
             }
+            if !seen_outputs.contains(&native.output.0) {
+                return Some("native-output-unknown");
+            }
+            if !seen_native_outputs.insert(native.output.0.clone()) {
+                return Some("duplicate-native");
+            }
+            {
+                let mut seen_ids = BTreeSet::new();
+                for id in &native.native_order {
+                    if !is_opaque_id(id) {
+                        return Some("native-id-invalid");
+                    }
+                    if !seen_ids.insert(id.clone()) {
+                        return Some("duplicate-native");
+                    }
+                }
+            }
+            total_native += native.native_order.len();
         }
-        total_native += native.native_order.len();
     }
     if total_native > MAX_WORLD_NATIVE {
         return Some("native-over-cap");

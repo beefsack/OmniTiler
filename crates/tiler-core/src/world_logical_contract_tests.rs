@@ -45,6 +45,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
         hints: WindowSizeHints::none(),
         minimized: false,
         observed_workspace: None,
+        native_workspace: None,
     }
 }
 
@@ -3332,8 +3333,9 @@ fn host_owned_capability_gates_native_observations() {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
         other => panic!("expected snapshot-invalid, got {other:?}"),
     }
-    // With the capability they ride as pure observations: mapping stays
-    // logical and no native id leaks into the reply.
+    // With the capability native observations adopt: out-a builds one
+    // logical per native id in native order and publishes the binding;
+    // the ordinary trailing spare stays unbound.
     let mut good = report(
         1,
         1,
@@ -3355,10 +3357,25 @@ fn host_owned_capability_gates_native_observations() {
     });
     let reply = accepted(&mut engine, &good);
     assert!(reply.ready);
+    let bound = reply
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == "out-a" && row.native_binding.as_deref() == Some("ws"))
+        .expect("bound row publishes its native id");
+    assert_eq!(bound.order, 0);
+    // The ordinary trailing spare stays unbound.
     assert!(
         reply
             .workspaces
             .iter()
+            .any(|row| row.output.0 == "out-a" && row.native_binding.is_none())
+    );
+    // Native-free output stays unbound.
+    assert!(
+        reply
+            .workspaces
+            .iter()
+            .filter(|row| row.output.0 == "out-b")
             .all(|row| row.native_binding.is_none())
     );
 }

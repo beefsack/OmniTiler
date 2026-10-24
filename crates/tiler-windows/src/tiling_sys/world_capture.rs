@@ -972,6 +972,7 @@ pub(super) fn capture_world(
                 // No facade readback on the default path: unknown, never
                 // proof of absence.
                 observed_workspace: None,
+                native_workspace: None,
             });
             $held.push($token.to_owned());
             $complete = false;
@@ -993,6 +994,7 @@ pub(super) fn capture_world(
                 hints: WindowSizeHints::none(),
                 minimized: true,
                 observed_workspace: None,
+                native_workspace: None,
             });
         }};
     }
@@ -1241,6 +1243,7 @@ pub(super) fn capture_world(
                     hints,
                     minimized: false,
                     observed_workspace: None,
+                    native_workspace: None,
                 });
                 continue;
             }
@@ -1279,6 +1282,7 @@ pub(super) fn capture_world(
                 hints,
                 minimized: false,
                 observed_workspace: None,
+                native_workspace: None,
             });
         }
         // Retained occupancy for bound members with no live row: overlay
@@ -1407,6 +1411,7 @@ pub(super) fn capture_world(
                 hints,
                 minimized: false,
                 observed_workspace: None,
+                native_workspace: None,
             });
         }
         // Hidden-claim members with no live row: snapshot or minimized lanes.
@@ -1504,6 +1509,7 @@ pub(super) fn capture_world(
                 hints,
                 minimized: false,
                 observed_workspace: None,
+                native_workspace: None,
             });
         }
         // Iconic omission without any row minimizes with no frame.

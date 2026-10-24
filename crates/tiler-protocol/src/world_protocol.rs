@@ -40,7 +40,10 @@
 //! windows[] (facts): {win, out, rect:[x,y,w,h]|null, floating:bool,
 //!             fitExcluded:bool, fullscreen:bool, maximized:bool, sticky:bool,
 //!             fixedAuto:bool, fixedSuppress:bool, minimized:bool, hints:{...},
-//!             observedWs:""|id|null}
+//!             observedWs:""|id|null, nativeWs:""|id|null (optional, tolerant:
+//!             missing backfills null; capability-gated host-owned native
+//!             desktop id, separate namespace from observedWs; without
+//!             hostOwned it refuses)}
 //! views[]: {out, view:""|id} (empty means unknown)
 //! closed[]: [id...] (explicit closes)
 //! native[] (host-owned observations, requires hostOwned): {out, order:[id...],
@@ -525,7 +528,7 @@ fn opt_point_or_null(
 
 fn decode_fact(value: &serde_json::Value) -> Result<WindowFact> {
     let map = as_object(value)?;
-    check_keys(
+    check_keys_with_optional(
         map,
         &[
             "win",
@@ -542,10 +545,23 @@ fn decode_fact(value: &serde_json::Value) -> Result<WindowFact> {
             "hints",
             "observedWs",
         ],
+        &["nativeWs"],
     )?;
     // A null rect is an explicitly unreadable frame: the staged scope
     // holds instead of authorizing geometry, never a silent absence.
     let rect = opt_rect_or_null(map, "rect")?;
+    let native_workspace = match map.get("nativeWs") {
+        None => None,
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) if text.is_empty() => None,
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Some(text.clone())
+        }
+        Some(_) => return Err(malformed()),
+    };
     Ok(WindowFact {
         window: WindowId(req_id(map, "win")?),
         output: OutputId(req_id(map, "out")?),
@@ -560,6 +576,7 @@ fn decode_fact(value: &serde_json::Value) -> Result<WindowFact> {
         hints: decode_hints(map.get("hints").ok_or_else(malformed)?)?,
         minimized: req_bool(map, "minimized")?,
         observed_workspace: opt_id_or_null(map, "observedWs")?,
+        native_workspace,
     })
 }
 

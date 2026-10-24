@@ -587,10 +587,10 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         // {"win":S,"out":S,"rect":R|null,"floating":B,
         // "fitExcluded":B,"fullscreen":B,"maximized":B,"sticky":B,
         // "fixedAuto":B,"fixedSuppress":B,"minimized":B,
-        // "observedWs":S|null,
-        // "hints":{"minW":N,"minH":N,"maxW":N,"maxH":N}} = 240 fixed
+        // "observedWs":S|null,"nativeWs":S|null,
+        // "hints":{"minW":N,"minH":N,"maxW":N,"maxH":N}} = 252 fixed
         // plus ids, rect digits, and hint bounds (`null` counts 4).
-        bytes += 240
+        bytes += 252
             + json_string_len(&fact.window.0)
             + json_string_len(&fact.output.0)
             + rect_len(fact.rect)
@@ -606,6 +606,7 @@ pub fn report_estimate(report: &WorldReport) -> usize {
                 .observed_workspace
                 .as_deref()
                 .map_or(4, json_string_len)
+            + fact.native_workspace.as_deref().map_or(4, json_string_len)
             + fact.hints.min_w.map_or(4, int_len)
             + fact.hints.min_h.map_or(4, int_len)
             + fact.hints.max_w.map_or(4, int_len)

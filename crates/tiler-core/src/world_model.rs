@@ -101,7 +101,7 @@ impl WorldEngine {
                         empty: !occupied_ids.contains(id),
                         visible: visible == *id,
                         occupied: occupied_ids.contains(id),
-                        retained: retained_ids.contains(id),
+                        retained: retained_ids.contains(id) || self.is_native_bound(id),
                     })
                     .collect();
                 let plan = plan_trailing(&facts);
@@ -174,7 +174,9 @@ impl WorldEngine {
                             empty: !occupied.contains(&scoped),
                             visible,
                             occupied: occupied.contains(&scoped),
-                            retained: sticky_homed.contains(&scoped) || hosted.contains(&scoped),
+                            retained: sticky_homed.contains(&scoped)
+                                || hosted.contains(&scoped)
+                                || self.is_native_bound(id),
                         }
                     })
                     .collect();
@@ -330,6 +332,13 @@ impl WorldEngine {
         // mode bootstraps one logical workspace on the first live output in
         // stable output-key order (quiet, no previous transition) and
         // mirrors it to every other live output.
+        //
+        // Host-owned adoption takes precedence over this single-workspace
+        // fallback: when a complete native list is available for an empty
+        // ring, that ring is left empty here and
+        // [`WorldEngine::converge_native_pre`] builds one logical per
+        // native desktop in native order below.
+        let native_bootstrap = report.host_owned_workspace_domains && report.inventory_complete;
         if shared {
             let mut ordered = live.clone();
             ordered.sort();
@@ -339,7 +348,25 @@ impl WorldEngine {
                     .is_some_and(|ring| !ring.is_empty())
             });
             if !inhabited {
-                if let Some(first) = ordered.first().cloned() {
+                // An incompatible fresh shared projection adopts nothing
+                // (no merge policy selected): fall through to the fallback
+                // singleton below so the reply still publishes held rows,
+                // and [`WorldEngine::converge_native_pre`] skips adoption.
+                let native_ready = native_bootstrap
+                    && !self.native_order_conflict(report)
+                    && ordered.iter().all(|output| {
+                        report
+                            .screens
+                            .iter()
+                            .find(|screen| screen.output.0 == *output)
+                            .is_some_and(|screen| screen.complete)
+                    })
+                    && ordered.iter().any(|output| {
+                        report.native.iter().any(|entry| {
+                            entry.output.0 == *output && !entry.native_order.is_empty()
+                        })
+                    });
+                if !native_ready && let Some(first) = ordered.first().cloned() {
                     let id = self
                         .create_trailing_workspace(&OutputId(first.clone()), report.default_tiled);
                     if let Some(id) = id {
@@ -374,6 +401,18 @@ impl WorldEngine {
                 self.mapping.entry(output.clone()).or_default();
                 let empty = self.mapping.get(output).is_some_and(Vec::is_empty);
                 if empty {
+                    let native_ready = native_bootstrap
+                        && report
+                            .screens
+                            .iter()
+                            .find(|screen| screen.output.0 == *output)
+                            .is_some_and(|screen| screen.complete)
+                        && report.native.iter().any(|entry| {
+                            entry.output.0 == *output && !entry.native_order.is_empty()
+                        });
+                    if native_ready {
+                        continue;
+                    }
                     let id = self
                         .create_trailing_workspace(&OutputId(output.clone()), report.default_tiled);
                     if let Some(id) = id {
@@ -382,6 +421,10 @@ impl WorldEngine {
                 }
             }
         }
+        // Host-owned native adoption: build each display's ring from its
+        // observed native order (initial) and bind outside-created native
+        // desktops (later). Absent rows never delete mappings.
+        self.converge_native_pre(report);
         // Returns first: a live origin reclaims its preserved units.
         // Shared mode never displaces: disconnected output history
         // discards while the one shared history persists.
