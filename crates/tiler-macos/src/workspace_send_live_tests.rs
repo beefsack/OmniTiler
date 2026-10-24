@@ -200,7 +200,6 @@ fn admitted_claim() -> ClaimedSelect {
         send_source_focus: None,
         send_source_focus_empty: false,
         operation_id: Some(OP.to_owned()),
-        trailing_token: None,
     }
 }
 
@@ -1603,7 +1602,7 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
     // admission and engine dispatch.
     use crate::config::ProbeModifier;
     use crate::workspace_input::{effective_flags_for, workspace_unsupported_outcome};
-    use crate::workspace_send::{attempt_outcome_for, feedback_kind_for, send_drain_outcome_for};
+    use crate::workspace_send::{is_send_action, send_drain_outcome_for, setter_for};
     const CTRL: u64 = 0x0004_0000;
     const SHIFT: u64 = 0x0002_0000;
     let binding = crate::workspace_send::bindings()
@@ -1643,14 +1642,13 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
         crate::workspace_send::SendDrainOutcome::Applied,
         "effect completion maps to the drain outcome"
     );
-    assert_eq!(
-        feedback_kind_for(&binding.action),
-        tiler_core::world_report::AttemptKind::Transfer,
+    assert!(
+        is_send_action(&binding.action),
         "sends settle transfers, never views"
     );
     assert_eq!(
-        attempt_outcome_for(drain),
-        tiler_core::world_report::AttemptOutcome::Applied
+        setter_for(drain),
+        tiler_core::world_report::FrameSetter::Accepted
     );
     assert!(controller.poll().is_none(), "completion never replays");
     // Numbered stay-2 dispatches too (armed, bindable unbound): no
@@ -1842,7 +1840,6 @@ fn admitted_stay_claim() -> ClaimedSelect {
         send_source_focus: None,
         send_source_focus_empty: false,
         operation_id: Some(OP.to_owned()),
-        trailing_token: None,
     }
 }
 

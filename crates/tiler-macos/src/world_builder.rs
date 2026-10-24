@@ -3,70 +3,71 @@
 //! would flag every constructor as dead. Tests own the coverage meanwhile.
 #![cfg_attr(not(test), allow(dead_code))]
 
-//! Full world-state report builder (Unit A, additive, offline).
+//! Full world-state report builder (world contract v2, additive, offline).
 //!
 //! Pure construction of one complete [`WorldReport`](tiler_core::world_report::WorldReport)
-//! from observed native state. No threads, no locks, no sinks, no actuation:
-//! the existing native actuation paths are untouched and this module is not
-//! called by them yet (Unit B adopts replies for reconciliation/commands).
+//! from observed native facts. No threads, no locks, no sinks, no actuation:
+//! Unit B adopts replies for reconciliation/commands.
 //!
-//! Fixed Unit A contract (see `docs/changes/macos-full-state-replies.md`):
+//! Fixed stage-1 contract:
 //! - [`WorkspaceMode::PerOutputLocal`](tiler_core::workspace_scope::WorkspaceMode)
-//!   always; topology and domain keys are the observed native ones.
-//! - Logical bindings carry trailing creation proof only (see
-//!   [`crate::trailing_binding`]): the adapter publishes an explicit
-//!   logical/native row for each native-created trailing Space whose
-//!   exact-append proof is bound to the engine's pending token. Nothing
-//!   else is invented: the core rebuilds its
-//!   planner-owned mapping from the reported topology each report.
-//! - Topology `geometry` carries the FULL native output rectangle from the
-//!   already-retained [`NativeDomain`](crate::runtime_types::NativeDomain)
-//!   `bounds` (core-owned adjacency authority; wire `adjacent` stays
-//!   empty). Domain bounds carry the RAW visible work area with the report's
-//!   `domain_outer_gap` riding separately (native: [`PHASE1_OUTER_GAP`];
-//!   synthetic skeleton: `0`, which preserves the legacy skeleton's exact
-//!   edge-to-edge geometry because the [`WorldEngine`] always insets by the
-//!   carried gap): the [`WorldEngine`](tiler_core::world_engine::WorldEngine)
-//!   applies its single engine-owned inset. (The legacy domain path
-//!   pre-insets adapter-side via [`tile_domain_bounds`](crate::runtime_core::tile_domain_bounds);
-//!   both converge to the same retained geometry on real displays and differ
-//!   only on degenerate sub-margin work areas, which never occur live.)
-//! - Window rows reuse [`collect_app_windows`](crate::runtime_core::collect_app_windows),
-//!   so wire flags are identical to the legacy path: truthful
-//!   fullscreen/hints, `maximized: false` always (no native inference, so the
-//!   core maximized fence stays inert), first-sight fixed-size asserts and
-//!   retained-float echoes from core-session lifetime.
-//! - `focused_global` is informational only, never a focus command.
+//!   always ("Displays have separate workspaces"); separate/spanning mode
+//!   detection is later-stage work, never guessed here.
+//! - Screens carry the FULL native output rectangle plus the RAW visible
+//!   work area with the adapter-side outer gap riding separately (native:
+//!   [`PHASE1_OUTER_GAP`]; synthetic skeleton: `0`, which preserves the
+//!   legacy skeleton's exact edge-to-edge geometry because the
+//!   [`WorldEngine`](tiler_core::world_engine::WorldEngine) always insets by
+//!   the carried gap).
+//! - The capability `host_owned_workspace_domains` is always set: the core
+//!   owns adoption, existence/order/current/membership, and native-to-logical
+//!   bindings. The adapter publishes native order/current (user Spaces
+//!   only — fullscreen/system Spaces never become domains upstream, so the
+//!   native rows omit them), per-window native membership facts, and no
+//!   logical receipts (`observed_workspace: None`, views empty): the core
+//!   maps `(output, native_workspace)` to stable logical ids and derives
+//!   the logical receipts. Logical echo translation via live reply lookups
+//!   is stage-3 work, never a durable host table.
+//! - Window rows reuse [`collect_window_facts`](crate::runtime_core::collect_window_facts)
+//!   over adapter-side [`LifetimeMemory`](crate::runtime_core::LifetimeMemory)
+//!   (last applied reply rows plus the native-to-logical home map): the
+//!   same wire-flag normalization as the retired session-read path, with no
+//!   private engine-boundary access.
+//! - Minimized lifetimes are explicit [`WindowFact`](tiler_core::world_report::WindowFact)
+//!   rows (`minimized: true`, no frame) homed through their native Space,
+//!   never silent absence or inferred close. App-hidden windows are omitted
+//!   (interim A, legacy parity); transition-partial inventory never reads
+//!   as closes: unreadable domains omit their members and fence their
+//!   screen plus the whole report incomplete.
 //! - Overlap precedence is closed > minimized > live: explicit closes always
-//!   win (even with incomplete inventory), minimized lifetimes are stripped
-//!   from domain membership (reported separately), and minimized entries that
-//!   collide with a close are dropped. The produced report therefore always
+//!   win (even with incomplete inventory). The produced report always
 //!   passes [`validate_report`](tiler_core::world_report::validate_report)
 //!   on id overlap, given opaque caller ids.
-//! - Unreadable scopes report `readable: false` with empty membership and an
-//!   explicit hold: they acquire no write authority and force
-//!   `inventory_complete: false`.
+//! - Raw mechanical attempts ride verbatim (latest-wins per key is the
+//!   caller's contract); the core derives every verdict. `dpi_before` /
+//!   `dpi_after` are always `None`: the logical-point adapter space has no
+//!   per-window basis, never a guessed DPI.
 //! - With no outputs at all the builder still returns a valid empty report;
 //!   Unit B must NOT dispatch it (nothing to report, same as the KDE null).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::gesture::GestureIngress;
 use tiler_core::output_selection::MigrationSourceRefill;
-use tiler_core::seed::EngineWindow;
-use tiler_core::session::{DomainKey, OutputDomain, Session};
+use tiler_core::session::DomainKey;
 use tiler_core::size_hints::FixedSizePredicate;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_report::{
-    AttemptFeedback, DomainReport, HoldReason, MinimizedEntry, OutputTopology,
-    WORLD_CONTRACT_VERSION, WorkspaceBinding, WorldCommand, WorldReport,
+    ClearAttempt, FrameAttempt, HoldReason, MemberAttempt, NativeObservation, ScreenReport,
+    ViewAttempt, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 
-use crate::runtime_core::collect_app_windows;
+use crate::runtime_core::{LifetimeMemory, MinimizedRecord, collect_window_facts, minimized_fact};
 use crate::runtime_types::{NativeContext, ObservedWindow, PHASE1_GAP, PHASE1_OUTER_GAP};
 
 /// Complete input for one world report. The caller owns observation truth
-/// (Unit B wires retained homing/sessions/focus); the builder only shapes,
+/// (Unit B wires retained homing/lifetime memory); the builder only shapes,
 /// normalizes, and de-overlaps.
 pub(crate) struct ReportInput<'a> {
     pub owner: &'a str,
@@ -77,28 +78,47 @@ pub(crate) struct ReportInput<'a> {
     pub request_id: &'a str,
     pub command_seq: Option<u64>,
     pub command: Option<WorldCommand>,
-    /// Observed native topology (every retainable Space per display).
+    /// Observed native topology (every retainable user Space per display).
     pub ctx: &'a NativeContext,
-    /// Member windows per domain as `(pid, window)` pairs (exact-Space
+    /// Member windows per native domain as `(pid, window)` pairs (exact-Space
     /// homing decided by the caller, never geometry here).
     pub members: &'a BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
-    /// Core sessions per domain for wire-flag lifetime (empty = all
-    /// first-sight; Unit B passes the engine-side sessions).
-    pub sessions: &'a BTreeMap<DomainKey, Session>,
-    /// Focused window per domain (observed truth only).
-    pub domain_focused: &'a BTreeMap<DomainKey, WindowId>,
-    /// Explicit closes per domain (always honored, even incomplete).
+    /// Adapter-side core-delivery lifetime memory (last applied reply rows
+    /// plus the native-to-logical home map) for wire-flag normalization.
+    pub memory: &'a LifetimeMemory,
+    /// Adapter-side automatic-float assertions (see
+    /// [`LifetimeMemory`]): pruned to core-floating rows by the caller,
+    /// extended with newly asserted lifetimes during collection.
+    pub auto_asserted: &'a mut BTreeSet<String>,
+    /// Explicit closes per native domain (always honored, even incomplete).
     pub closed: &'a BTreeMap<DomainKey, Vec<WindowId>>,
     /// Explicit minimized lifetimes (absent from domain membership).
-    pub minimized: &'a [MinimizedEntry],
-    /// Unreadable scopes with their explicit hold (no write authority).
+    pub minimized: &'a [MinimizedRecord],
+    /// Unreadable scopes with their explicit hold (no write authority, no
+    /// guessed membership: members omit and the scope fences incomplete).
     pub unreadable: &'a BTreeMap<DomainKey, HoldReason>,
-    /// Attempt feedback carrier (possibly-executed holds etc.).
-    pub feedback: &'a [AttemptFeedback],
+    /// Raw mechanical frame attempts since the previous report (latest-wins
+    /// per window is the caller's contract).
+    pub frames: &'a [FrameAttempt],
+    /// Raw mechanical membership attempts (latest-wins per operation window).
+    pub member_attempts: &'a [MemberAttempt],
+    /// Raw mechanical view attempts (latest-wins per owning view phase).
+    pub view_attempts: &'a [ViewAttempt],
+    /// Raw mechanical maximize-clear attempts (latest-wins per operation).
+    pub clear_attempts: &'a [ClearAttempt],
+    /// Normalized gesture ingress for one open native move/size gesture
+    /// (`None` on observation-only reports).
+    pub gesture: Option<GestureIngress>,
     /// Observed global focus id (`""` when none; informational only).
     pub focused_global: &'a str,
     /// Caller-observed enumeration completeness over live outputs.
+    /// False when retained truth missed input (coverage gap) or a display
+    /// went unenumerated (skipped); the whole-report inventory fence.
     pub complete: bool,
+    /// Retained truth missed input (refused observation): fences every
+    /// screen, since the gap cannot be localized. Skipped displays fence
+    /// only their own screen row, never live screens.
+    pub coverage_gap: bool,
     /// Outputs whose native enumeration was partial (forces per-output
     /// `complete: false` plus whole-report incompleteness).
     pub incomplete_outputs: &'a [OutputId],
@@ -110,25 +130,26 @@ pub(crate) struct ReportInput<'a> {
     pub refill: MigrationSourceRefill,
     /// Saved default-tiling seed for newly observed natives.
     pub default_tiled: bool,
-    /// Explicit trailing creation bindings (see [`crate::trailing_binding`]):
-    /// one logical/native row per native-created trailing Space bound to
-    /// the engine's pending token. Empty in all other cases: no native
-    /// logical creation and no ordinary window transfer is invented.
-    pub bindings: &'a [WorkspaceBinding],
     /// Primary output (`None` = first output in context order).
     pub primary_output: Option<OutputId>,
-    /// Adapter-side outer gap riding with each domain's raw bounds (the
-    /// engine applies its single inset). Native reports carry
-    /// [`PHASE1_OUTER_GAP`]; the synthetic skeleton reports `0` to
-    /// preserve the legacy skeleton's exact edge-to-edge geometry.
-    pub domain_outer_gap: i32,
+    /// Adapter-side inner gap riding with each screen (the engine applies
+    /// its single inset).
+    pub gap: i32,
+    /// Adapter-side outer gap riding with each screen (the engine applies
+    /// its single inset). Native reports carry [`PHASE1_OUTER_GAP`]; the
+    /// synthetic skeleton reports `0` to preserve the legacy skeleton's
+    /// exact edge-to-edge geometry.
+    pub outer_gap: i32,
+    /// Adapter monotonic clock in milliseconds (arbitrary process epoch).
+    /// `0` means unreported (stage 1: no clock source claimed).
+    pub monotonic_ms: u64,
 }
 
 impl<'a> ReportInput<'a> {
     /// Fresh input with migration/product defaults: both-axes predicate,
     /// last-remaining refill, default-tiled seed, complete inventory, no
-    /// barrier, first-output primary. The caller fills members/sessions and
-    /// any holds/closes/minimized/feedback.
+    /// barrier, first-output primary, silent presentation, no clock. The
+    /// caller fills members/memory and any holds/closes/minimized/attempts.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         owner: &'a str,
@@ -139,13 +160,13 @@ impl<'a> ReportInput<'a> {
         request_seq: u64,
         request_id: &'a str,
         members: &'a BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
-        sessions: &'a BTreeMap<DomainKey, Session>,
-        domain_focused: &'a BTreeMap<DomainKey, WindowId>,
+        memory: &'a LifetimeMemory,
+        auto_asserted: &'a mut BTreeSet<String>,
         closed: &'a BTreeMap<DomainKey, Vec<WindowId>>,
         unreadable: &'a BTreeMap<DomainKey, HoldReason>,
-        minimized: &'a [MinimizedEntry],
-        feedback: &'a [AttemptFeedback],
+        minimized: &'a [MinimizedRecord],
         focused_global: &'a str,
+        coverage_gap: bool,
     ) -> Self {
         Self {
             owner,
@@ -158,23 +179,28 @@ impl<'a> ReportInput<'a> {
             command: None,
             ctx,
             members,
-            sessions,
-            domain_focused,
+            memory,
+            auto_asserted,
             closed,
             minimized,
             unreadable,
-            feedback,
+            frames: &[],
+            member_attempts: &[],
+            view_attempts: &[],
+            clear_attempts: &[],
+            gesture: None,
             focused_global,
             complete: true,
+            coverage_gap,
             incomplete_outputs: &[],
             gesture_barrier: false,
-            gesture: None,
             predicate: FixedSizePredicate::BothAxes,
             refill: MigrationSourceRefill::LastRemaining,
             default_tiled: true,
-            bindings: &[],
             primary_output: None,
-            domain_outer_gap: PHASE1_OUTER_GAP,
+            gap: PHASE1_GAP,
+            outer_gap: PHASE1_OUTER_GAP,
+            monotonic_ms: 0,
         }
     }
 }
@@ -182,14 +208,22 @@ impl<'a> ReportInput<'a> {
 /// Build one complete world report. Infallible over the typed inputs; id
 /// validity (opaque alphabet) stays the caller's contract, checked by
 /// [`validate_report`](tiler_core::world_report::validate_report).
-pub(crate) fn build_report(input: &ReportInput<'_>) -> WorldReport {
+pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
     // Closed > minimized > live: collect the explicit-close set first so
-    // both minimized entries and live membership defer to it.
+    // both minimized rows and live membership defer to it.
     let closed_set: BTreeSet<&str> = input
         .closed
         .values()
         .flatten()
         .map(|id| id.0.as_str())
+        .collect();
+    let closed: Vec<WindowId> = input
+        .closed
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<WindowId>>()
+        .into_iter()
         .collect();
     let minimized_set: BTreeSet<&str> = input
         .minimized
@@ -199,10 +233,13 @@ pub(crate) fn build_report(input: &ReportInput<'_>) -> WorldReport {
         .collect();
 
     // Per-output native order in context order (first-seen output order).
+    // Non-user Spaces never become domains upstream, so the native rows
+    // omit fullscreen/system by construction.
     let mut output_order: Vec<OutputId> = Vec::new();
     let mut native_order: BTreeMap<OutputId, Vec<String>> = BTreeMap::new();
     let mut current_native: BTreeMap<OutputId, String> = BTreeMap::new();
     let mut output_geometry: BTreeMap<OutputId, tiler_core::geometry::Rect> = BTreeMap::new();
+    let mut output_visible: BTreeMap<OutputId, tiler_core::geometry::Rect> = BTreeMap::new();
     for domain in &input.ctx.domains {
         if !native_order.contains_key(&domain.output) {
             output_order.push(domain.output.clone());
@@ -216,12 +253,14 @@ pub(crate) fn build_report(input: &ReportInput<'_>) -> WorldReport {
         }
         // Core-owned topology authority: FULL native rectangles from the
         // already-retained display bounds (never the visible work area,
-        // never a window-frame proxy). Domain `bounds` below stays the
-        // separate visible work area; wire adjacency stays empty for core
-        // derivation.
+        // never a window-frame proxy). The visible work area rides
+        // separately below.
         output_geometry
             .entry(domain.output.clone())
             .or_insert(domain.bounds);
+        output_visible
+            .entry(domain.output.clone())
+            .or_insert(domain.visible);
     }
     let primary = input.primary_output.clone().unwrap_or_else(|| {
         output_order
@@ -229,105 +268,112 @@ pub(crate) fn build_report(input: &ReportInput<'_>) -> WorldReport {
             .cloned()
             .unwrap_or_else(|| OutputId(String::new()))
     });
-    let topology: Vec<OutputTopology> = output_order
+    // An unreadable Space fences its own scope (omitted members plus the
+    // whole-report inventory fence, which the core publishes as a hold),
+    // never its screen: the native order/current stay completely observed.
+    let mut screens: Vec<ScreenReport> = output_order
         .iter()
-        .map(|output| OutputTopology {
+        .map(|output| ScreenReport {
             output: output.clone(),
-            native_order: native_order.get(output).cloned().unwrap_or_default(),
-            current_native: current_native.get(output).cloned().unwrap_or_default(),
-            complete: input.complete && !input.incomplete_outputs.contains(output),
-            geometry: output_geometry.get(output).copied(),
+            full_rect: output_geometry.get(output).copied(),
+            work_area: output_visible.get(output).copied(),
+            gap: input.gap,
+            outer_gap: input.outer_gap,
+            complete: !input.coverage_gap && !input.incomplete_outputs.contains(output),
             primary: *output == primary,
         })
         .collect();
-
-    let mut domains: Vec<DomainReport> = Vec::with_capacity(input.ctx.domains.len());
-    for native in &input.ctx.domains {
-        let key = DomainKey {
-            output: native.output.clone(),
-            workspace: native.workspace.clone(),
-        };
-        if let Some(reason) = input.unreadable.get(&key) {
-            // Unreadable scope: explicit hold, empty membership, no write
-            // authority. Closes still ride (explicit closes are always
-            // honored, even inside unreadable scopes).
-            domains.push(DomainReport {
-                domain: OutputDomain {
-                    id: native.output.clone(),
-                    workspace: native.workspace.clone(),
-                    bounds: native.visible,
-                    gap: PHASE1_GAP,
-                    adjacent: BTreeMap::new(),
-                },
-                outer_gap: input.domain_outer_gap,
-                focused: WindowId(String::new()),
-                windows: Vec::new(),
-                closed: input.closed.get(&key).cloned().unwrap_or_default(),
-                readable: false,
-                hold: Some(*reason),
+    // Skipped displays stay reported (incomplete, never actuated) rather
+    // than deleted: their geometry is last-observed fact, only the Space
+    // homing failed. Deleting them would read as a hotplug removal and
+    // displace their parked members; an incomplete screen parks them
+    // instead (holds, no writes) until the homing proof returns.
+    {
+        let mut seen: BTreeSet<String> = output_order.iter().map(|o| o.0.clone()).collect();
+        for skipped in &input.ctx.skipped {
+            let output = crate::topology::output_key(skipped.cg_id);
+            if !seen.insert(output.clone()) {
+                continue;
+            }
+            screens.push(ScreenReport {
+                output: OutputId(output),
+                full_rect: skipped.full_rect,
+                work_area: skipped.work_area,
+                gap: input.gap,
+                outer_gap: input.outer_gap,
+                complete: false,
+                primary: false,
             });
+        }
+    }
+    let native: Vec<NativeObservation> = output_order
+        .iter()
+        .map(|output| NativeObservation {
+            output: output.clone(),
+            native_order: native_order.get(output).cloned().unwrap_or_default(),
+            // Empty when the native current is a non-user Space (or
+            // unknown): unknown view holds, never proof of absence.
+            current_native: current_native.get(output).cloned().unwrap_or_default(),
+        })
+        .collect();
+
+    // Live window facts: member apps per domain (unreadable domains omit
+    // their members — never guessed), minimized/closed ids stripped.
+    let mut windows: Vec<WindowFact> = Vec::new();
+    for domain in &input.ctx.domains {
+        let key = DomainKey {
+            output: domain.output.clone(),
+            workspace: domain.workspace.clone(),
+        };
+        if input.unreadable.contains_key(&key) {
+            // Unreadable scope: no membership guessed, no write authority.
+            // Closes still ride (explicit closes are always honored, even
+            // inside unreadable scopes).
             continue;
         }
-        // Raw visible work area: the engine applies its single inset.
-        let domain = OutputDomain {
-            id: native.output.clone(),
-            workspace: native.workspace.clone(),
-            bounds: native.visible,
-            gap: PHASE1_GAP,
-            adjacent: BTreeMap::new(),
+        let Some(members) = input.members.get(&key) else {
+            continue;
         };
-        let session = input.sessions.get(&key);
-        let mut rows: Vec<(String, tiler_core::geometry::Rect)> = Vec::new();
-        let mut windows: Vec<EngineWindow> = Vec::new();
-        if let Some(members) = input.members.get(&key) {
-            // One collect call per PID group keeps the (`pid`, `wid`)
-            // identity minting exact; minimized/closed ids defer out.
-            let mut by_pid: BTreeMap<u32, Vec<ObservedWindow>> = BTreeMap::new();
-            for (pid, window) in members {
-                let id = crate::runtime_types::window_id(*pid, window.wid);
-                if closed_set.contains(id.as_str()) || minimized_set.contains(id.as_str()) {
-                    continue;
-                }
-                by_pid.entry(*pid).or_default().push(*window);
+        // One collect call per PID group keeps the (`pid`, `wid`)
+        // identity minting exact; minimized/closed ids defer out.
+        let mut by_pid: BTreeMap<u32, Vec<ObservedWindow>> = BTreeMap::new();
+        for (pid, window) in members {
+            let id = crate::runtime_types::window_id(*pid, window.wid);
+            if closed_set.contains(id.as_str()) || minimized_set.contains(id.as_str()) {
+                continue;
             }
-            for (pid, observed) in &by_pid {
-                collect_app_windows(
-                    &mut rows,
-                    &mut windows,
-                    *pid,
-                    observed,
-                    &key.output.0,
-                    &key.workspace.0,
-                    session,
-                    input.predicate,
-                );
-            }
+            by_pid.entry(*pid).or_default().push(*window);
         }
-        let focused = input
-            .domain_focused
-            .get(&key)
-            .cloned()
-            .unwrap_or(WindowId(String::new()));
-        domains.push(DomainReport {
-            domain,
-            outer_gap: input.domain_outer_gap,
-            focused,
-            windows,
-            closed: input.closed.get(&key).cloned().unwrap_or_default(),
-            readable: true,
-            hold: None,
-        });
+        let mut domain_facts: Vec<WindowFact> = Vec::new();
+        for (pid, observed) in &by_pid {
+            collect_window_facts(
+                &mut domain_facts,
+                *pid,
+                observed,
+                &key,
+                input.memory,
+                input.auto_asserted,
+                input.predicate,
+            );
+        }
+        domain_facts.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+        windows.extend(domain_facts);
     }
-
-    let minimized: Vec<MinimizedEntry> = input
+    // Explicit minimized rows (absent from domain membership).
+    let mut minimized_facts: Vec<WindowFact> = input
         .minimized
         .iter()
         .filter(|entry| !closed_set.contains(entry.window.0.as_str()))
-        .cloned()
+        .map(minimized_fact)
         .collect();
+    minimized_facts.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+    windows.extend(minimized_facts);
+    windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
 
-    let inventory_complete =
-        input.complete && input.unreadable.is_empty() && input.incomplete_outputs.is_empty();
+    let inventory_complete = input.complete
+        && input.unreadable.is_empty()
+        && input.incomplete_outputs.is_empty()
+        && input.ctx.skipped.is_empty();
 
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
@@ -340,23 +386,42 @@ pub(crate) fn build_report(input: &ReportInput<'_>) -> WorldReport {
         command_seq: input.command_seq,
         command: input.command.clone(),
         workspace_mode: WorkspaceMode::PerOutputLocal,
-        topology,
-        // Trailing creation proof only (see the `bindings` input): one
-        // explicit logical/native row per bound trailing Space. The core
-        // rebuilds planner mapping from topology.
-        bindings: input.bindings.to_vec(),
-        domains,
-        minimized,
+        screens,
+        windows,
+        // Stage 1 carries no independently observed logical views: empty
+        // means unknown and the core keeps its retained views. Native
+        // evidence (native[] plus native_workspace facts) proves arrival.
+        views: Vec::new(),
+        closed,
+        // The macOS adapter always opts into host-owned adoption: core
+        // owns the mapping, the adapter only observes.
+        host_owned_workspace_domains: true,
+        equal_workspace_count: false,
+        native,
         fixed_size_predicate: input.predicate,
         migration_source_refill: input.refill,
         default_tiled: input.default_tiled,
         focused_global: input.focused_global.to_owned(),
         inventory_complete,
         gesture_barrier: input.gesture_barrier,
-        gesture: None,
-        feedback: input.feedback.to_vec(),
+        gesture: input.gesture.clone(),
         anchor_fallback: tiler_core::admission::AnchorFallback::default(),
         no_space_result: tiler_core::admission::NoSpaceResult::default(),
+        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
+        cursor_hit: None,
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
+        monotonic_ms: input.monotonic_ms,
+        frames: input.frames.to_vec(),
+        member_attempts: input.member_attempts.to_vec(),
+        view_attempts: input.view_attempts.to_vec(),
+        clear_attempts: input.clear_attempts.to_vec(),
+        presentation: tiler_core::world_report::PresentationIngress::disabled(),
     }
 }
 
@@ -367,7 +432,7 @@ mod tests {
     use tiler_core::geometry::Rect;
     use tiler_core::size_hints::WindowSizeHints;
     use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-    use tiler_core::world_report::{AttemptKind, AttemptOutcome, validate_report};
+    use tiler_core::world_report::validate_report;
 
     use crate::runtime_types::{NativeDomain, ObservedWindow, ScopedWindowMeta};
 
@@ -438,18 +503,17 @@ mod tests {
     fn assemble(
         ctx: &NativeContext,
         members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
-        sessions: &BTreeMap<DomainKey, Session>,
-        focused: &BTreeMap<DomainKey, WindowId>,
+        memory: &LifetimeMemory,
+        auto_asserted: &mut BTreeSet<String>,
         closed: &BTreeMap<DomainKey, Vec<WindowId>>,
         unreadable: &BTreeMap<DomainKey, HoldReason>,
-        minimized: &[MinimizedEntry],
-        feedback: &[AttemptFeedback],
+        minimized: &[MinimizedRecord],
         focused_global: &str,
         obs: u64,
         req: u64,
     ) -> WorldReport {
         let owned_id = format!("req-{req}");
-        let input = ReportInput::new(
+        let mut input = ReportInput::new(
             OWNER,
             INCARNATION,
             GENERATION,
@@ -458,34 +522,33 @@ mod tests {
             req,
             &owned_id,
             members,
-            sessions,
-            focused,
+            memory,
+            auto_asserted,
             closed,
             unreadable,
             minimized,
-            feedback,
             focused_global,
+            false,
         );
-        let report = build_report(&input);
+        let report = build_report(&mut input);
         assert_eq!(report.request_id, owned_id);
         report
     }
 
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-    fn empty_maps() -> (
+    /// Empty report inputs: no members, closes, or unreadable scopes.
+    /// Factored so the multi-map tuple stays under the complexity lint.
+    type EmptyReportMaps = (
         BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
-        BTreeMap<DomainKey, Session>,
-        BTreeMap<DomainKey, WindowId>,
         BTreeMap<DomainKey, Vec<WindowId>>,
         BTreeMap<DomainKey, HoldReason>,
-    ) {
-        (
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-        )
+    );
+
+    fn empty_maps() -> EmptyReportMaps {
+        (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+    }
+
+    fn empty_memory() -> LifetimeMemory {
+        LifetimeMemory::empty()
     }
 
     fn accepted(
@@ -527,17 +590,18 @@ mod tests {
     }
 
     #[test]
-    fn builder_reports_per_output_local_with_empty_bindings() {
+    fn builder_reports_per_output_local_with_native_adoption_rows() {
         let ctx = two_display_ctx();
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
@@ -545,34 +609,29 @@ mod tests {
         );
         assert!(validate_report(&report), "builder output validates");
         assert_eq!(report.workspace_mode, WorkspaceMode::PerOutputLocal);
-        assert!(report.bindings.is_empty(), "no logical bindings invented");
-        assert_eq!(report.topology.len(), 2);
+        assert!(report.host_owned_workspace_domains);
+        assert_eq!(report.screens.len(), 2);
+        assert_eq!(report.views, Vec::new(), "no logical views invented");
+        // Native adoption rows: user Spaces in context order with the
+        // native current, per output.
+        assert_eq!(report.native.len(), 2);
         assert_eq!(
-            report.topology[0].native_order,
+            report.native[0].native_order,
             vec!["space-11".to_owned(), "space-12".to_owned()]
         );
-        assert_eq!(report.topology[0].current_native, "space-11");
-        assert!(report.topology[0].complete);
+        assert_eq!(report.native[0].current_native, "space-11");
+        assert_eq!(report.native[1].current_native, "space-21");
+        assert!(report.screens[0].complete);
         assert!(
-            report.topology[0].primary,
+            report.screens[0].primary,
             "first output is primary by default"
         );
-        assert!(!report.topology[1].primary);
-        assert_eq!(report.topology[1].current_native, "space-21");
-        // Raw visible work area rides with the outer gap separate (the
-        // engine applies its single inset).
-        assert_eq!(report.domains.len(), 3);
-        assert_eq!(report.domains[0].domain.bounds, rect(0, 25, 1440, 875));
-        assert_eq!(report.domains[0].outer_gap, PHASE1_OUTER_GAP);
+        assert!(!report.screens[1].primary);
         // Core-owned topology carries the FULL display rect, never the
-        // visible work area; wire adjacency stays empty for core derivation.
-        assert_eq!(report.topology[0].geometry, Some(rect(0, 0, 1440, 900)));
-        assert_eq!(report.topology[1].geometry, Some(rect(1440, 0, 1440, 900)));
-        assert!(
-            report.domains.iter().all(|d| d.domain.adjacent.is_empty()),
-            "no adapter-owned adjacency"
-        );
-        assert!(report.domains.iter().all(|d| d.readable));
+        // visible work area; domain work areas ride separately per screen.
+        assert_eq!(report.screens[0].full_rect, Some(rect(0, 0, 1440, 900)));
+        assert_eq!(report.screens[1].full_rect, Some(rect(1440, 0, 1440, 900)));
+        assert_eq!(report.screens[0].work_area, Some(rect(0, 25, 1440, 875)));
         assert!(report.inventory_complete);
     }
 
@@ -618,28 +677,31 @@ mod tests {
             ],
             skipped: Vec::new(),
         };
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
             1,
         );
         assert!(validate_report(&report));
-        assert_eq!(report.topology[0].geometry, Some(rect(0, -900, 1440, 900)));
-        assert_eq!(report.topology[1].geometry, Some(rect(0, 0, 1440, 900)));
+        assert_eq!(report.screens[0].full_rect, Some(rect(0, -900, 1440, 900)));
+        assert_eq!(report.screens[1].full_rect, Some(rect(0, 0, 1440, 900)));
         // The visible pair demonstrably does NOT edge-touch: deriving
         // topology from work areas would lose this edge.
+        let first_work = report.screens[0].work_area.expect("work area");
+        let second_work = report.screens[1].work_area.expect("work area");
         assert_ne!(
-            report.domains[0].domain.bounds.y + report.domains[0].domain.bounds.h,
-            report.domains[1].domain.bounds.y,
+            first_work.y + first_work.h,
+            second_work.y,
             "work areas are gapped; FULL is the adjacency authority"
         );
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
@@ -708,43 +770,40 @@ mod tests {
         let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
         assert!(skipped.is_empty(), "both displays home: {skipped:?}");
         assert_eq!(ctx.domains.len(), 3, "hidden Space retains its domain");
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
             1,
         );
         assert!(validate_report(&report));
-        assert_eq!(report.topology.len(), 2);
+        assert_eq!(report.screens.len(), 2);
         // 1:1 rounding lands the fractional seam on the exact shared edge.
-        assert_eq!(report.topology[0].geometry, Some(rect(0, 0, 1512, 982)));
-        assert_eq!(report.topology[1].geometry, Some(rect(1512, 0, 1512, 982)));
-        // Domain bounds stay the converted visible work areas (menu inset
+        assert_eq!(report.screens[0].full_rect, Some(rect(0, 0, 1512, 982)));
+        assert_eq!(report.screens[1].full_rect, Some(rect(1512, 0, 1512, 982)));
+        // Domain work areas stay the converted visible work areas (menu inset
         // survives conversion: AppKit y=32 of 982pt -> CG y=25).
-        let first_bounds = report.domains[0].domain.bounds;
-        assert_eq!((first_bounds.x, first_bounds.y), (0, 25));
+        let first_work = report.screens[0].work_area.expect("work area");
+        assert_eq!((first_work.x, first_work.y), (0, 25));
         // Display identity follows the CG id through shuffled rows; Space
         // order and the focused display never move geometry.
-        assert_eq!(report.topology[0].output.0, "macos-display-1");
+        assert_eq!(report.screens[0].output.0, "macos-display-1");
         assert_eq!(
-            report.topology[0].native_order,
+            report.native[0].native_order,
             vec!["space-11".to_owned(), "space-12".to_owned()]
         );
-        assert_eq!(report.topology[0].current_native, "space-11");
-        assert_eq!(report.topology[1].current_native, "space-21");
-        assert!(report.topology[0].primary, "display order owns primary");
-        assert!(
-            report.domains.iter().all(|d| d.domain.adjacent.is_empty()),
-            "no adapter-owned adjacency"
-        );
+        assert_eq!(report.native[0].current_native, "space-11");
+        assert_eq!(report.native[1].current_native, "space-21");
+        assert!(report.screens[0].primary, "display order owns primary");
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready, "rounded FULL-topology report is accepted");
@@ -830,15 +889,16 @@ mod tests {
         let snapshot = build_snapshot(&ns, &rows, Some(true));
         let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
         assert!(skipped.is_empty(), "all three home: {skipped:?}");
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
@@ -847,10 +907,10 @@ mod tests {
         assert!(validate_report(&report));
         let geometry = |out: &str| {
             report
-                .topology
+                .screens
                 .iter()
                 .find(|t| t.output.0 == out)
-                .and_then(|t| t.geometry)
+                .and_then(|t| t.full_rect)
         };
         assert_eq!(geometry("macos-display-1"), Some(rect(0, 0, 1440, 900)));
         assert_eq!(
@@ -866,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn producer_snapshot_without_primary_yields_valid_empty_report() {
+    fn producer_snapshot_without_primary_yields_valid_skipped_screen_report() {
         use crate::ffi::{DisplayRect, NsDisplay, SlsDisplayRow, SlsSpaceType};
         use crate::topology::build_snapshot;
         // No (0,0) AppKit origin anywhere: conversion refuses, the display
@@ -898,41 +958,50 @@ mod tests {
         let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
         assert_eq!(ctx.domains.len(), 0, "no converted geometry, no domains");
         assert_eq!(skipped.len(), 1, "skipped honestly, never guessed");
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
             1,
         );
         assert!(validate_report(&report));
-        assert!(report.domains.is_empty() && report.topology.is_empty());
+        // The skipped display stays reported as one incomplete screen
+        // (last-observed geometry, never guessed homing) with no windows
+        // and no native rows.
+        assert!(report.windows.is_empty());
+        assert!(report.native.is_empty());
+        assert_eq!(report.screens.len(), 1);
+        assert!(!report.screens[0].complete);
+        assert!(!report.inventory_complete);
     }
 
     #[test]
     fn bootstrap_then_ordered_reports() {
         let ctx = two_display_ctx();
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let bootstrap = engine.bootstrap_reply(INCARNATION, "req-0");
         assert!(!bootstrap.ready, "bootstrap carries no desired state");
         assert!(bootstrap.windows.is_empty());
 
+        let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
@@ -952,14 +1021,14 @@ mod tests {
         }
 
         // Advanced observation + request: accepted with a new revision.
+        let mut auto_asserted = BTreeSet::new();
         let second = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             2,
@@ -975,7 +1044,8 @@ mod tests {
         // Fullscreen natives still report maximized:false (fence inert);
         // first-sight fixed hints assert automatic origin (membership only).
         let ctx = two_display_ctx();
-        let (mut members, sessions, focused, closed, unreadable) = empty_maps();
+        let (mut members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
         let d1 = key("macos-display-1", "space-11");
         let mut full = observed(1, 10, 10, 800, 600);
         full.fullscreen = true;
@@ -987,30 +1057,35 @@ mod tests {
             max_h: Some(480),
         };
         members.insert(d1.clone(), vec![(1001, full), (1001, fixed)]);
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
             1,
         );
         assert!(validate_report(&report));
-        let row = &report.domains[0];
-        assert_eq!(row.windows.len(), 2);
-        assert!(row.windows.iter().all(|w| !w.maximized));
-        let fullscreen = row
+        assert_eq!(report.windows.len(), 2);
+        assert!(report.windows.iter().all(|w| !w.maximized));
+        let fullscreen = report
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_1")
             .expect("live");
         assert!(fullscreen.fullscreen, "fullscreen rides truthfully");
-        let fixed_row = row
+        assert_eq!(
+            fullscreen.native_workspace.as_deref(),
+            Some("space-11"),
+            "native membership rides the fact"
+        );
+        assert!(fullscreen.observed_workspace.is_none());
+        let fixed_row = report
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_2")
@@ -1026,123 +1101,167 @@ mod tests {
     }
 
     #[test]
-    fn minimized_reports_hold_without_membership_or_frames() {
+    fn minimized_reports_hold_without_membership_frames() {
         let ctx = two_display_ctx();
-        let (mut members, sessions, focused, closed, unreadable) = empty_maps();
+        let (mut members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
         let d1 = key("macos-display-1", "space-11");
         members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
-        let minimized = vec![MinimizedEntry {
+        let minimized = vec![MinimizedRecord {
             window: WindowId("1001_9".to_owned()),
             output: OutputId("macos-display-1".to_owned()),
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
         }];
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
-            &[],
             "",
             1,
             1,
         );
         assert!(validate_report(&report));
-        // A minimized id that also appears live is stripped from membership.
-        let d1_members = members.get(&d1).cloned().unwrap_or_default();
-        let _ = d1_members;
         assert!(
-            report.domains[0]
+            report
                 .windows
                 .iter()
+                .filter(|w| !w.minimized)
                 .all(|w| w.window.0 != "1001_9"),
-            "minimized lifetimes are absent from domain membership"
+            "minimized lifetimes are absent from live membership"
         );
+        let row = report
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_9")
+            .expect("explicit minimized row");
+        assert!(row.minimized && row.rect.is_none());
+        assert_eq!(row.native_workspace.as_deref(), Some("space-11"));
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let reply = accepted(&report, &mut engine);
-        let row = reply
+        let desired = reply
             .windows
             .iter()
             .find(|w| w.lifetime.0 == "1001_9")
             .expect("explicit minimized row");
         assert_eq!(
-            row.frame_authority,
+            desired.frame_authority,
             tiler_core::world_report::ScopeAuthority::Hold(HoldReason::Minimized)
         );
-        assert!(row.allocation.is_none() && row.effective_frame.is_none());
+        assert!(desired.allocation.is_none() && desired.effective_frame.is_none());
     }
 
     #[test]
     fn unreadable_scope_holds_without_write_authority() {
+        // Adopt first (production order: complete observations precede
+        // the gap), then lose Space 12 to an unreadable type. The
+        // unreadable scope authorizes no writes — its members omit and no
+        // desired row homes to its bound logical — while the healthy
+        // current scope keeps tiling. Inventory reads incomplete throughout
+        // the gap (never a silent close, never a guessed membership).
         let ctx = two_display_ctx();
-        let (mut members, sessions, focused, closed, mut unreadable) = empty_maps();
+        let (mut members, closed, mut unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
         let hidden = key("macos-display-1", "space-12");
-        // Even if the caller still carries stale members, the unreadable
-        // scope publishes empty with an explicit hold.
-        members.insert(hidden.clone(), vec![(1001, observed(3, 10, 10, 100, 100))]);
-        unreadable.insert(hidden.clone(), HoldReason::Unreadable);
-        let report = assemble(
+        let live = key("macos-display-1", "space-11");
+        members.insert(live.clone(), vec![(1001, observed(3, 10, 10, 100, 100))]);
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let first = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
             1,
         );
+        assert!(validate_report(&first));
+        let reply = accepted(&first, &mut engine);
+        assert!(reply.ready);
+        let bound_12 = reply
+            .workspaces
+            .iter()
+            .find(|row| row.native_binding.as_deref() == Some("space-12"))
+            .map(|row| row.id.clone())
+            .expect("adoption binds the hidden Space too");
+        // Even if the caller still carries stale members, the unreadable
+        // scope publishes nothing for that Space: no guessed membership.
+        members.insert(hidden.clone(), vec![(1001, observed(3, 10, 10, 100, 100))]);
+        unreadable.insert(hidden.clone(), HoldReason::Unreadable);
+        let report = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            2,
+            2,
+        );
         assert!(validate_report(&report));
         assert!(!report.inventory_complete);
-        let row = report
-            .domains
-            .iter()
-            .find(|d| d.domain.key() == hidden)
-            .expect("hidden domain reported");
-        assert!(!row.readable);
-        assert!(row.windows.is_empty(), "held scope authorizes no rows");
-        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let reply = accepted(&report, &mut engine);
-        let scope = reply
-            .scopes
-            .iter()
-            .find(|s| s.scope == "macos-display-1/space-12")
-            .expect("held scope status present");
         assert!(
-            matches!(
-                scope.authority,
-                tiler_core::world_report::ScopeAuthority::Hold(_)
-            ),
-            "hidden scope publishes held, never controlled: {scope:?}"
+            report
+                .windows
+                .iter()
+                .all(|w| w.native_workspace.as_deref() != Some("space-12")),
+            "held scope authorizes no rows"
+        );
+        assert!(
+            report
+                .screens
+                .iter()
+                .find(|s| s.output.0 == "macos-display-1")
+                .is_some_and(|s| s.complete),
+            "unreadable Space fences its scope and the inventory, never screen geometry"
+        );
+        let reply = accepted(&report, &mut engine);
+        assert!(
+            reply
+                .windows
+                .iter()
+                .filter(|w| w.output.0 == "macos-display-1" && w.workspace == bound_12)
+                .all(
+                    |w| w.frame_authority != tiler_core::world_report::ScopeAuthority::Controlled
+                        && w.allocation.is_none()
+                        && w.effective_frame.is_none()
+                ),
+            "no controlled frame authority and no geometry inside the held scope"
         );
         assert!(
             reply
                 .windows
                 .iter()
-                .filter(|w| w.output.0 == "macos-display-1" && w.workspace == "space-12")
-                .all(|w| w.frame_authority != tiler_core::world_report::ScopeAuthority::Controlled),
-            "no controlled frame authority inside the held scope"
+                .any(|w| w.frame_authority == tiler_core::world_report::ScopeAuthority::Controlled),
+            "healthy scopes keep tiling through the gap"
         );
     }
 
     #[test]
     fn generation_revision_watermark_rejections() {
         let ctx = two_display_ctx();
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             5,
@@ -1151,14 +1270,14 @@ mod tests {
         accepted(&first, &mut engine);
 
         // Older request sequence: superseded, never executed.
+        let mut auto_asserted = BTreeSet::new();
         let stale_req = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             6,
@@ -1169,14 +1288,14 @@ mod tests {
             other => panic!("expected superseded, got {other:?}"),
         }
         // Older observation sequence on a fresh request: stale observation.
+        let mut auto_asserted = BTreeSet::new();
         let stale_obs = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             4,
@@ -1190,11 +1309,10 @@ mod tests {
         let mut foreign = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             6,
@@ -1211,37 +1329,38 @@ mod tests {
     #[test]
     fn explicit_close_wins_over_minimized_and_live() {
         let ctx = two_display_ctx();
-        let (mut members, sessions, focused, mut closed, unreadable) = empty_maps();
+        let (mut members, mut closed, unreadable) = empty_maps();
+        let memory = empty_memory();
         let d1 = key("macos-display-1", "space-11");
         members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
         closed.insert(d1.clone(), vec![WindowId("1001_1".to_owned())]);
-        let minimized = vec![MinimizedEntry {
+        let minimized = vec![MinimizedRecord {
             window: WindowId("1001_1".to_owned()),
             output: OutputId("macos-display-1".to_owned()),
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
         }];
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
-            &[],
             "",
             1,
             1,
         );
         // Closed beats live (no closed-overlaps-live) and beats minimized
-        // (no minimized-overlaps): the report validates.
+        // (no minimized row): the report validates.
         assert!(validate_report(&report));
-        assert!(report.domains[0].windows.is_empty());
         assert!(
-            report.minimized.is_empty(),
-            "close drops the minimized twin"
+            report.windows.iter().all(|w| w.window.0 != "1001_1"),
+            "close drops live and minimized twins"
         );
+        assert!(report.closed.iter().any(|id| id.0 == "1001_1"));
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let reply = accepted(&report, &mut engine);
         assert!(
@@ -1251,18 +1370,154 @@ mod tests {
     }
 
     #[test]
-    fn focused_global_is_informational_only() {
-        // Unknown global focus never refuses: it drives policy, never proof.
+    fn retained_automatic_float_reasserts_across_hint_loss() {
+        // D2: a retained automatic float (adapter-asserted, core still
+        // floating it) stays floating with its origin across hint loss —
+        // never reclassified to tile. An intentional float without
+        // placement and no automatic assertion reports tiled instead, so
+        // hold exits tile.
+        use tiler_core::world_report::{ScopeAuthority, WindowDesire};
         let ctx = two_display_ctx();
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (mut members, closed, unreadable) = empty_maps();
+        let d1 = key("macos-display-1", "space-11");
+        // Hintless observation: the classifier calls it tiled.
+        members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
+        let mut rows = BTreeMap::new();
+        rows.insert(
+            "1001_1".to_owned(),
+            WindowDesire {
+                lifetime: WindowId("1001_1".to_owned()),
+                output: OutputId("macos-display-1".to_owned()),
+                workspace: "ws-1".to_owned(),
+                allocation: None,
+                effective_frame: Some(rect(10, 10, 800, 600)),
+                frame_authority: ScopeAuthority::Untouched,
+                membership_authority: ScopeAuthority::Untouched,
+                floating: true,
+                float_origin: None,
+                frame_operation: None,
+                clear_operation: None,
+            },
+        );
+        let mut native_home = BTreeMap::new();
+        native_home.insert(
+            ("macos-display-1".to_owned(), "space-11".to_owned()),
+            ("macos-display-1".to_owned(), "ws-1".to_owned()),
+        );
+        let memory = LifetimeMemory { rows, native_home };
+        // Adapter-asserted: re-asserts floating with automatic origin.
+        let mut auto_asserted = BTreeSet::from(["1001_1".to_owned()]);
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&report));
+        let row = report
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_1")
+            .expect("live row");
+        assert!(
+            row.floating && row.fixed_auto,
+            "retained automatic re-asserts across hint loss, got floating={} fixed_auto={}",
+            row.floating,
+            row.fixed_auto,
+        );
+        // Not asserted but placed (effective frame): the intentional
+        // placement re-asserts floating without automatic origin.
+        let mut auto_empty = BTreeSet::new();
+        let report = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &mut auto_empty,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            2,
+            2,
+        );
+        assert!(validate_report(&report));
+        let row = report
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_1")
+            .expect("live row");
+        assert!(
+            row.floating && !row.fixed_auto,
+            "placed intentional float re-asserts without origin"
+        );
+        // Not asserted and placement-less: reports tiled (hold exit),
+        // never a guessed float.
+        let mut rows_bare = BTreeMap::new();
+        rows_bare.insert(
+            "1001_1".to_owned(),
+            WindowDesire {
+                lifetime: WindowId("1001_1".to_owned()),
+                output: OutputId("macos-display-1".to_owned()),
+                workspace: "ws-1".to_owned(),
+                allocation: None,
+                effective_frame: None,
+                frame_authority: ScopeAuthority::Untouched,
+                membership_authority: ScopeAuthority::Untouched,
+                floating: true,
+                float_origin: None,
+                frame_operation: None,
+                clear_operation: None,
+            },
+        );
+        let memory_bare = LifetimeMemory {
+            rows: rows_bare,
+            native_home: memory.native_home.clone(),
+        };
+        let mut auto_empty = BTreeSet::new();
+        let report = assemble(
+            &ctx,
+            &members,
+            &memory_bare,
+            &mut auto_empty,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            3,
+            3,
+        );
+        assert!(validate_report(&report));
+        let row = report
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_1")
+            .expect("live row");
+        assert!(
+            !row.floating && !row.fixed_auto,
+            "unasserted placement-less float reports tiled"
+        );
+    }
+
+    #[test]
+    fn focused_global_is_informational_only() {
+        // Unknown global focus never refuses: it drives policy, never proof.
+        let ctx = two_display_ctx();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
+        let report = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
             &[],
             "4242_7",
             1,
@@ -1283,34 +1538,118 @@ mod tests {
     }
 
     #[test]
-    fn feedback_carrier_accepted_and_held() {
-        // Possibly-executed transfer feedback holds its target without
-        // re-actuation: the report is accepted and the transfer stays
-        // retained (visible on the next reply) instead of settling.
+    fn raw_attempts_ride_without_verdicts() {
+        // Raw mechanical attempts ride the report; the core derives every
+        // verdict. An unmatched operation id is forged evidence: staged
+        // but never settling anything.
+        use tiler_core::world_report::{FrameAttempt, FrameSetter, MemberAttempt, ViewAttempt};
         let ctx = two_display_ctx();
-        let (mut members, sessions, focused, closed, unreadable) = empty_maps();
+        let (mut members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
         let d1 = key("macos-display-1", "space-11");
         members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
-        let feedback = vec![AttemptFeedback {
-            operation_id: "op-1".to_owned(),
-            kind: AttemptKind::Transfer,
-            outcome: AttemptOutcome::PossiblyExecuted,
-            hold: None,
-        }];
-        let report = assemble(
+        let owned_id = "req-1".to_owned();
+        let mut auto_asserted = BTreeSet::new();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
             &ctx,
+            1,
+            1,
+            &owned_id,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
-            &feedback,
+            "",
+            false,
+        );
+        let frames = [FrameAttempt {
+            window: WindowId("1001_1".to_owned()),
+            target: rect(0, 25, 1440, 875),
+            setter: FrameSetter::Accepted,
+            readback: Some(rect(0, 25, 1440, 875)),
+            dpi_before: None,
+            dpi_after: None,
+            attempt_ms: 0,
+            operation_id: None,
+            prewrite: None,
+        }];
+        let member_attempts = [MemberAttempt {
+            operation_id: "op-9".to_owned(),
+            window: WindowId("1001_1".to_owned()),
+            target_output: OutputId("macos-display-1".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            setter: FrameSetter::Accepted,
+            pre: None,
+            post: None,
+            attempt_ms: 0,
+        }];
+        let view_attempts = [ViewAttempt {
+            operation_id: "op-9".to_owned(),
+            target_output: OutputId("macos-display-1".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            setter: FrameSetter::Accepted,
+            pre: None,
+            post: None,
+            baseline: None,
+            attempt_ms: 0,
+        }];
+        input.frames = &frames;
+        input.member_attempts = &member_attempts;
+        input.view_attempts = &view_attempts;
+        let report = build_report(&mut input);
+        assert!(validate_report(&report));
+        assert_eq!(report.frames.len(), 1);
+        assert_eq!(report.member_attempts.len(), 1);
+        assert_eq!(report.view_attempts.len(), 1);
+        assert!(
+            report
+                .frames
+                .iter()
+                .all(|a| a.dpi_before.is_none() && a.dpi_after.is_none()),
+            "no per-window DPI basis is ever claimed"
+        );
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&report, &mut engine);
+        assert!(reply.ready);
+    }
+
+    #[test]
+    fn fullscreen_current_native_holds_view_with_empty_logical() {
+        // Fullscreen/system Spaces never become domains upstream: an
+        // output whose native current is unknown carries an empty
+        // current_native, and the core holds the view instead of
+        // inventing one.
+        let mut ctx = two_display_ctx();
+        for domain in &mut ctx.domains {
+            if domain.output.0 == "macos-display-1" {
+                domain.current = false;
+            }
+        }
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
+        let report = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &mut auto_asserted,
+            &closed,
+            &unreadable,
+            &[],
             "",
             1,
             1,
         );
         assert!(validate_report(&report));
+        assert_eq!(
+            report.native[0].current_native, "",
+            "unknown native current reads empty, never guessed"
+        );
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready);
@@ -1323,21 +1662,22 @@ mod tests {
             domains: Vec::new(),
             skipped: Vec::new(),
         };
-        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
-            &sessions,
-            &focused,
+            &memory,
+            &mut auto_asserted,
             &closed,
             &unreadable,
-            &[],
             &[],
             "",
             1,
             1,
         );
         assert!(validate_report(&report));
-        assert!(report.domains.is_empty() && report.topology.is_empty());
+        assert!(report.windows.is_empty() && report.screens.is_empty());
     }
 }

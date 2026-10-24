@@ -7,20 +7,19 @@
 //! stay parked (see [`crate::drag_native`]): no blanket
 //! AX-moved classification, no consume/replay, host-native movement only.
 //!
-//! Reuses the actual shared Engine drag oracle
-//! ([`tiler_core::boundary::CoreCommand::DragPreview`] / `DragDrop` via
-//! [`tiler_core::engine::Engine::handle`]) and the filled above-target
-//! carrier intent (BorderCarrier ordering + group-underlay fill parsing and
-//! geometry). Centre is unsupported (no swap/stacks); same-axis, group,
-//! wrap, and interior targeting ride the core resolver. Zero/self/outside
-//! releases snap back; Escape cancels; the overlay clears before any
-//! mutation; the final pointer capture is single-flight. Cross-output reuses
-//! the core pair route where the existing topology permits. Fullscreen, lock,
-//! stale scope/focus/revision fence every sample. No below-target route.
+//! Reuses the shared world gesture route (gesture ingress per report plus
+//! correlated [`CommandResult::DragPreview`](tiler_core::world_report::CommandResult)
+//! and [`GestureSettled`](tiler_core::gesture::GestureSettled) results) and
+//! the filled above-target carrier intent (BorderCarrier ordering +
+//! group-underlay fill parsing and geometry). Centre is unsupported (no
+//! swap/stacks); same-axis, group, wrap, and interior targeting ride the
+//! core resolver. Zero/self/outside releases snap back; Escape cancels; the
+//! overlay clears before any mutation; the final pointer capture is
+//! single-flight. Cross-output reuses the core pair route where the
+//! existing topology permits. Fullscreen, lock, stale scope/focus/revision
+//! fence every sample. No below-target route.
 
-use tiler_core::boundary::{CoreCommand, CoreEvent, CoreReply, TiledPlan};
 use tiler_core::directional::WindowId;
-use tiler_core::engine::Engine;
 use tiler_core::session::DragHoverPrior;
 use tiler_core::visual::VisualRect;
 
@@ -544,7 +543,9 @@ impl Default for DragTapGate {
 
 /// Pure drag phase: at most one active gesture (single-flight). `Armed`
 /// tracks a consumed Meta+left press before movement; `Dragging` carries
-/// the press origin plus the carried sticky hover prior across samples.
+/// the press origin across samples. The sticky hover prior stays
+/// core-side (gesture ingress carries no hover); the controller never
+/// mints or forwards it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DragPhase {
     Idle,
@@ -557,14 +558,14 @@ enum DragPhase {
         window: String,
         press_x: i32,
         press_y: i32,
-        hover_prior: Option<DragHoverPrior>,
     },
 }
 
 /// Pure Meta+left drag controller: suppression lifecycle plus overlay
-/// intents plus single-flight capture. The Engine oracle calls
-/// ([`engine_preview`]/[`engine_drop`]) stay outside so the tap callback
-/// never blocks on AX/core/log work; the owner thread drives them.
+/// intents plus single-flight capture. World-route resolution
+/// ([`WorldEngine`](tiler_core::world_engine::WorldEngine) gesture ingress
+/// plus correlated reply results) stays outside so the tap callback never
+/// blocks on AX/core/log work; the owner thread drives it.
 #[derive(Debug, Clone)]
 pub struct DragController {
     phase: DragPhase,
@@ -572,9 +573,19 @@ pub struct DragController {
     /// tracks exactly this: every consumed down gets exactly one release
     /// path — drop, Escape, or stale fence).
     consumed_down: bool,
-    /// Topology context revision proven at press time (rides the drop
-    /// submit so the worker refuses stale pid_wid reuse).
+    /// Topology context revision proven at press time (rides the terminal
+    /// submit so the engine refuses stale pid_wid reuse).
     press_revision: Option<u64>,
+    /// Stable native gesture id for the held gesture (`None` when idle):
+    /// allocated once at native START within this controller incarnation
+    /// and carried unchanged on every ingress of the gesture.
+    gesture_id: Option<u64>,
+    /// Next gesture id to mint (monotonic within the incarnation).
+    next_gesture_id: u64,
+    /// PRE-gesture frame frozen at START (never a mid-gesture read).
+    start_frame: Option<tiler_core::geometry::Rect>,
+    /// START down point (never a mid-gesture read).
+    start_cursor: Option<(i32, i32)>,
     options: DragOptions,
 }
 
@@ -586,6 +597,10 @@ impl DragController {
             phase: DragPhase::Idle,
             consumed_down: false,
             press_revision: None,
+            gesture_id: None,
+            next_gesture_id: 0,
+            start_frame: None,
+            start_cursor: None,
             options,
         }
     }
@@ -609,14 +624,22 @@ impl DragController {
         self.consumed_down
     }
 
-    /// Carried sticky hover prior for the next Engine sample (`None` until
-    /// the first resolved preview).
+    /// Stable gesture id for the held gesture (`None` when idle).
     #[must_use]
-    pub const fn hover_prior(&self) -> Option<&DragHoverPrior> {
-        match &self.phase {
-            DragPhase::Dragging { hover_prior, .. } => hover_prior.as_ref(),
-            _ => None,
-        }
+    pub const fn gesture_id(&self) -> Option<u64> {
+        self.gesture_id
+    }
+
+    /// PRE-gesture frame frozen at START (`None` when idle).
+    #[must_use]
+    pub const fn start_frame(&self) -> Option<tiler_core::geometry::Rect> {
+        self.start_frame
+    }
+
+    /// START down point (`None` when idle).
+    #[must_use]
+    pub const fn start_cursor(&self) -> Option<(i32, i32)> {
+        self.start_cursor
     }
 
     /// Held-gesture window token (armed owner or dragging mover): `None`
@@ -635,8 +658,11 @@ impl DragController {
     /// holds (single-flight), while disabled, or on any fence refusal.
     /// Unrelated buttons, unmodified presses, and ineligible foregrounds
     /// never arm and never consume. `context_revision` is the topology
-    /// revision proven alongside the owner; it rides the drop submit so the
-    /// worker refuses a drifted pid_wid.
+    /// revision proven alongside the owner; it rides the terminal submit so
+    /// the engine refuses a drifted pid_wid. `start_frame` is the
+    /// PRE-gesture frame frozen at START (never a mid-gesture read); the
+    /// press point doubles as the START cursor. The gesture id mints once
+    /// here and rides every ingress of the gesture unchanged.
     #[allow(clippy::too_many_arguments)]
     pub fn press(
         &mut self,
@@ -647,6 +673,7 @@ impl DragController {
         left_button: bool,
         fences: DragFences,
         context_revision: u64,
+        start_frame: tiler_core::geometry::Rect,
     ) -> Result<(), &'static str> {
         if !matches!(self.phase, DragPhase::Idle) {
             return Err("single-flight");
@@ -668,6 +695,10 @@ impl DragController {
         };
         self.consumed_down = true;
         self.press_revision = Some(context_revision);
+        self.next_gesture_id = self.next_gesture_id.saturating_add(1).max(1);
+        self.gesture_id = Some(self.next_gesture_id);
+        self.start_frame = Some(start_frame);
+        self.start_cursor = Some((x, y));
         Ok(())
     }
 
@@ -714,8 +745,8 @@ impl DragController {
     }
 
     /// Pointer motion: zero movement from the press point hides transiently
-    /// (snap-back posture, no plan); otherwise the caller resolves through
-    /// [`engine_preview`] and feeds the outcome to
+    /// (snap-back posture, no plan); otherwise the caller resolves a world
+    /// gesture update through the world route and feeds the outcome to
     /// [`DragController::note_preview`]. Fence refusals cancel dead (clear
     /// overlay, fail-safe release).
     pub fn motion(&mut self, x: i32, y: i32, fences: DragFences) -> MotionGate {
@@ -742,13 +773,13 @@ impl DragController {
     }
 
     /// Record one Engine preview outcome: resolved previews promote
-    /// `Armed` to `Dragging` and carry the next sticky prior; refusals
-    /// clear the carried prior (transient hide, gesture stays for the next
-    /// sample); dead replies (divergence/pending) terminate the gesture
+    /// `Armed` to `Dragging` (the sticky hover stays core-side, never
+    /// carried back); transient refusals keep the gesture for the next
+    /// sample; dead replies (divergence/pending) terminate the gesture
     /// with overlay cleared and fail-safe release.
     pub fn note_preview(&mut self, outcome: &PreviewOutcome) {
         match outcome {
-            PreviewOutcome::Show { hover_prior, .. } => {
+            PreviewOutcome::Show { .. } => {
                 let window = match &self.phase {
                     DragPhase::Armed { window, .. } | DragPhase::Dragging { window, .. } => {
                         window.clone()
@@ -768,14 +799,9 @@ impl DragController {
                     window,
                     press_x,
                     press_y,
-                    hover_prior: hover_prior.as_deref().cloned(),
                 };
             }
-            PreviewOutcome::HideTransient { .. } => {
-                if let DragPhase::Dragging { hover_prior, .. } = &mut self.phase {
-                    *hover_prior = None;
-                }
-            }
+            PreviewOutcome::HideTransient { .. } => {}
             PreviewOutcome::CancelDead { .. } => self.clear(),
         }
     }
@@ -792,9 +818,10 @@ impl DragController {
     }
 
     /// Final pointer up: ends the single-flight capture exactly once. The
-    /// caller resolves the drop through [`engine_drop`] AFTER clearing the
-    /// overlay (clear-before-mutation); this method only releases the
-    /// capture. Returns the dragged window when a gesture was held.
+    /// caller resolves the drop through a world gesture release AFTER
+    /// clearing the overlay (clear-before-mutation); this method only
+    /// releases the capture. Returns the dragged window when a gesture was
+    /// held.
     pub fn release(&mut self) -> Option<String> {
         if matches!(self.phase, DragPhase::Idle) {
             return None;
@@ -848,6 +875,9 @@ impl DragController {
         self.phase = DragPhase::Idle;
         self.consumed_down = false;
         self.press_revision = None;
+        self.gesture_id = None;
+        self.start_frame = None;
+        self.start_cursor = None;
     }
 }
 
@@ -858,13 +888,13 @@ pub enum MotionGate {
     Ignore,
     /// Zero movement from press: transient snap-back posture (hide, no plan).
     ZeroSnapBack,
-    /// Moved pointer with live fences: resolve via [`engine_preview`].
+    /// Moved pointer with live fences: resolve a world gesture update.
     Sample,
     /// Fence refused mid-gesture: overlay cleared, capture released, dead.
     CancelDead(&'static str),
 }
 
-/// Read-only preview outcome from the shared Engine oracle.
+/// Read-only preview outcome from the world gesture route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewOutcome {
     /// Resolved insertion slot: show the filled rect above the target.
@@ -884,50 +914,12 @@ pub enum PreviewOutcome {
     CancelDead { reason: &'static str },
 }
 
-/// Map one Engine reply for a `DragPreview` command to a pure outcome.
-/// Centre (`unsupported-capability`), self (`unchanged`), and outside
-/// (`cross-domain-mismatch`) hide transiently; divergences and pending
-/// cancel dead; anything else hides without a rectangle.
-#[must_use]
-pub fn classify_preview_reply(reply: &CoreReply) -> PreviewOutcome {
-    match reply {
-        CoreReply::DragPreview(plan) => PreviewOutcome::Show {
-            rect: plan.preview.proposed_rect,
-            hover_prior: Some(Box::new(plan.preview.hover_prior())),
-            target: plan.preview.target_window.clone(),
-        },
-        CoreReply::Rejected { kind, .. } => match *kind {
-            "unsupported-capability" => PreviewOutcome::HideTransient {
-                reason: "centre-unsupported",
-            },
-            "unchanged" => PreviewOutcome::HideTransient { reason: "self" },
-            "cross-domain-mismatch" => PreviewOutcome::HideTransient { reason: "outside" },
-            "pending-exists" => PreviewOutcome::CancelDead {
-                reason: "single-flight",
-            },
-            _ => PreviewOutcome::HideTransient { reason: kind },
-        },
-        CoreReply::Diverged(reason) => PreviewOutcome::CancelDead {
-            reason: reason.as_str(),
-        },
-        _ => PreviewOutcome::HideTransient { reason: "refused" },
-    }
-}
-
-/// Synchronous read-only preview through the actual shared Engine oracle.
-/// Stages nothing and touches no reconciler state (the Engine resolves on
-/// a working clone). The caller feeds the outcome to
-/// [`DragController::note_preview`] to carry the sticky prior.
-pub fn engine_preview(engine: &mut Engine, event: CoreEvent) -> PreviewOutcome {
-    classify_preview_reply(&engine.handle(&event))
-}
-
 /// Map one world-route preview rejection kind to its pure outcome (shared
 /// by live and duplicate-preview paths so refusal vocabulary cannot
-/// diverge). World counterpart to [`classify_preview_reply`]: the legacy
-/// path classifies [`CoreReply`], this one classifies world rejection
-/// kinds — including `pending-exists`, which cancels dead exactly like the
-/// legacy single-flight arm.
+/// diverge). Centre (`unsupported-capability`), self (`unchanged`) and
+/// outside (`cross-domain-mismatch`) hide transiently; pending engine
+/// plans and superseded/single-flight sequences cancel dead exactly like
+/// the legacy single-flight arm; anything else hides without a rectangle.
 pub(crate) fn map_preview_rejection(kind: &'static str) -> crate::drag_drop::PreviewOutcome {
     use crate::drag_drop::PreviewOutcome;
     match kind {
@@ -946,105 +938,11 @@ pub(crate) fn map_preview_rejection(kind: &'static str) -> crate::drag_drop::Pre
     }
 }
 
-/// Synchronous drop outcome from the shared Engine oracle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DropOutcome {
-    /// Committed plan: the caller clears the overlay FIRST, then applies
-    /// the native frames from the plan geometry (single-flight final
-    /// capture already released by [`DragController::release`]).
-    Planned { plan: TiledPlan },
-    /// Invalid release (self/zero/outside/refused): snap back to the
-    /// accepted source rect with no plan and no reconciler use.
-    SnapBack { reason: &'static str },
-    /// Centre drop: unsupported with no plan and no commit (no swap/stacks).
-    CentreUnsupported,
-    /// Dead reply (divergence/pending): terminate with no plan.
-    CancelDead { reason: &'static str },
-}
-
-/// Map one Engine reply for a `DragDrop` command to a pure outcome.
-#[must_use]
-pub fn classify_drop_reply(reply: &CoreReply) -> DropOutcome {
-    match reply {
-        CoreReply::Tiled(plan) => DropOutcome::Planned { plan: plan.clone() },
-        CoreReply::Rejected { kind, .. } => match *kind {
-            "unsupported-capability" => DropOutcome::CentreUnsupported,
-            "unchanged" | "cross-domain-mismatch" => DropOutcome::SnapBack { reason: kind },
-            "pending-exists" => DropOutcome::CancelDead { reason: kind },
-            _ => DropOutcome::SnapBack { reason: kind },
-        },
-        CoreReply::Diverged(reason) => DropOutcome::CancelDead {
-            reason: reason.as_str(),
-        },
-        _ => DropOutcome::SnapBack { reason: "refused" },
-    }
-}
-
-/// Synchronous drop through the actual shared Engine oracle (commits via
-/// acknowledge plus `verify_drag` inside the Engine, mirroring the Windows
-/// settle path). The caller MUST clear the overlay before applying the
-/// returned plan geometry to native frames.
-pub fn engine_drop(engine: &mut Engine, event: CoreEvent) -> DropOutcome {
-    classify_drop_reply(&engine.handle(&event))
-}
-
-/// Build a same-domain drag command event over an already-converged Engine
-/// observation. The caller supplies the domain observation exactly as the
-/// reconcile path does (complete canonical rows, focused mover, fingerprint,
-/// revision); this only swaps the command to `DragPreview`/`DragDrop` with
-/// the carried sticky prior. Cross-output callers set `source` plus the
-/// source-first pair in `directional` per the Engine pair contract.
-#[must_use]
-pub fn drag_command_for(
-    _base: &CoreEvent,
-    window: &str,
-    x: i32,
-    y: i32,
-    hover_prior: Option<DragHoverPrior>,
-    source: Option<tiler_core::session::DomainKey>,
-    preview: bool,
-) -> CoreCommand {
-    if preview {
-        CoreCommand::DragPreview {
-            window: window.to_owned(),
-            x,
-            y,
-            hover_prior,
-            source,
-        }
-    } else {
-        CoreCommand::DragDrop {
-            window: window.to_owned(),
-            x,
-            y,
-            hover_prior,
-            source,
-        }
-    }
-}
-
-/// Native frames applied from a committed drop plan: window token plus
-/// integer rect per plan geometry row. Pure projection over the plan (the
-/// live backend pins each leg to its planned domain and fences revision
-/// exactly like the keyboard paths).
-#[must_use]
-pub fn frames_for_plan(plan: &TiledPlan) -> Vec<(WindowId, tiler_core::geometry::Rect)> {
-    plan.geometry
-        .iter()
-        .map(|g| (g.window.clone(), g.rect))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tiler_core::boundary::CoreEvent;
-    use tiler_core::contract::DragCapabilities;
-    use tiler_core::directional::{OutputId, WorkspaceId};
+    use tiler_core::directional::OutputId;
     use tiler_core::geometry::Rect;
-    use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
-    use tiler_core::seed::EngineWindow;
-    use tiler_core::session::{DomainKey, OutputDomain};
 
     fn fences_ok() -> DragFences {
         DragFences {
@@ -1201,14 +1099,42 @@ mod tests {
         let mut controller = DragController::new(DragOptions::default());
         assert!(
             controller
-                .press("w1", 10, 10, true, true, fences_ok(), 9)
+                .press(
+                    "w1",
+                    10,
+                    10,
+                    true,
+                    true,
+                    fences_ok(),
+                    9,
+                    tiler_core::geometry::Rect {
+                        x: 10,
+                        y: 10,
+                        w: 400,
+                        h: 300
+                    }
+                )
                 .is_ok()
         );
         assert!(controller.active());
         assert!(controller.should_consume_held());
         assert!(
             controller
-                .press("w2", 12, 12, true, true, fences_ok(), 9)
+                .press(
+                    "w2",
+                    12,
+                    12,
+                    true,
+                    true,
+                    fences_ok(),
+                    9,
+                    tiler_core::geometry::Rect {
+                        x: 12,
+                        y: 12,
+                        w: 400,
+                        h: 300
+                    }
+                )
                 .is_err()
         );
         assert!(!controller.should_consume_down(true, true, fences_ok()));
@@ -1218,7 +1144,21 @@ mod tests {
         assert!(controller.release().is_none());
         assert!(
             controller
-                .press("w1", 10, 10, false, true, fences_ok(), 9)
+                .press(
+                    "w1",
+                    10,
+                    10,
+                    false,
+                    true,
+                    fences_ok(),
+                    9,
+                    tiler_core::geometry::Rect {
+                        x: 10,
+                        y: 10,
+                        w: 400,
+                        h: 300
+                    }
+                )
                 .is_err()
         );
         assert!(
@@ -1234,6 +1174,12 @@ mod tests {
                         ..fences_ok()
                     },
                     9,
+                    tiler_core::geometry::Rect {
+                        x: 10,
+                        y: 10,
+                        w: 400,
+                        h: 300
+                    },
                 )
                 .is_err()
         );
@@ -1264,7 +1210,21 @@ mod tests {
         assert!(controller.should_consume_mouse_down(true));
         assert!(!controller.should_consume_mouse_down(false));
         controller
-            .press("w1", 10, 10, true, true, fences_ok(), 9)
+            .press(
+                "w1",
+                10,
+                10,
+                true,
+                true,
+                fences_ok(),
+                9,
+                tiler_core::geometry::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 400,
+                    h: 300,
+                },
+            )
             .unwrap();
         // Held gesture: further downs never consume (single-flight).
         assert!(!controller.should_consume_mouse_down(true));
@@ -1458,7 +1418,21 @@ mod tests {
         let mut controller = DragController::new(DragOptions::default());
         assert_eq!(controller.press_revision(), None);
         controller
-            .press("w1", 10, 10, true, true, fences_ok(), 9)
+            .press(
+                "w1",
+                10,
+                10,
+                true,
+                true,
+                fences_ok(),
+                9,
+                tiler_core::geometry::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 400,
+                    h: 300,
+                },
+            )
             .unwrap();
         assert_eq!(controller.press_revision(), Some(9));
         assert_eq!(controller.release().as_deref(), Some("w1"));
@@ -1470,7 +1444,21 @@ mod tests {
         let mut controller = DragController::new(DragOptions::default());
         assert_eq!(controller.motion(5, 5, fences_ok()), MotionGate::Ignore);
         controller
-            .press("w1", 10, 10, true, true, fences_ok(), 9)
+            .press(
+                "w1",
+                10,
+                10,
+                true,
+                true,
+                fences_ok(),
+                9,
+                tiler_core::geometry::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 400,
+                    h: 300,
+                },
+            )
             .unwrap();
         assert_eq!(
             controller.motion(10, 10, fences_ok()),
@@ -1481,7 +1469,21 @@ mod tests {
         assert!(!controller.active());
         assert!(!controller.escape());
         controller
-            .press("w1", 10, 10, true, true, fences_ok(), 9)
+            .press(
+                "w1",
+                10,
+                10,
+                true,
+                true,
+                fences_ok(),
+                9,
+                tiler_core::geometry::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 400,
+                    h: 300,
+                },
+            )
             .unwrap();
         assert!(matches!(
             controller.motion(
@@ -1497,7 +1499,21 @@ mod tests {
         assert!(!controller.active());
         assert!(!controller.consumed());
         controller
-            .press("w1", 10, 10, true, true, fences_ok(), 9)
+            .press(
+                "w1",
+                10,
+                10,
+                true,
+                true,
+                fences_ok(),
+                9,
+                tiler_core::geometry::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 400,
+                    h: 300,
+                },
+            )
             .unwrap();
         assert!(controller.note_stale());
         assert!(!controller.active());
@@ -1550,129 +1566,182 @@ mod tests {
         );
     }
 
-    // -- Shared Engine oracle integration (real Engine, no fakes) ------------
+    // -- World gesture route integration (real WorldEngine, no fakes) ----------
 
-    fn domain() -> (OutputDomain, DomainKey) {
-        let key = DomainKey {
-            output: OutputId("macos-display-1".to_owned()),
-            workspace: WorkspaceId("space-11".to_owned()),
-        };
-        let domain = OutputDomain {
-            id: OutputId("macos-display-1".to_owned()),
-            workspace: WorkspaceId("space-11".to_owned()),
-            bounds: Rect {
-                x: 0,
-                y: 0,
-                w: 800,
-                h: 600,
-            },
-            gap: 8,
-            adjacent: std::collections::BTreeMap::new(),
-        };
-        (domain, key)
+    use tiler_core::gesture::{GestureIngress, GestureKind, GesturePhase};
+    use tiler_core::world_engine::WorldOutcome;
+    use tiler_core::world_report::{NativeObservation, ScreenReport, WindowFact, WorldReport};
+
+    /// Offline world drag harness: one screen, two tiled windows on one
+    /// native Space, and a retained [`WorldEngine`](tiler_core::world_engine::WorldEngine)
+    /// converging them. Reports ride gesture ingress per phase (Started on
+    /// arm, Updated per sample, Released/Cancelled terminally); results
+    /// correlate from `command_result` (preview) and `gesture_settled`
+    /// (terminal commit), never from a direct engine oracle.
+    struct WorldDrag {
+        engine: tiler_core::world_engine::WorldEngine,
+        obs: u64,
+        req: u64,
     }
 
-    fn fresh_engine() -> (Engine, OwnerId, GenerationId, OutputDomain, DomainKey) {
-        let (domain, key) = domain();
-        let mut engine = Engine::new();
-        let owner = OwnerId::parse("macos-drag-test").expect("owner");
-        let generation = GenerationId::parse("drag-gen").expect("generation");
-        engine.sync_binding(&owner, &generation);
-        (engine, owner, generation, domain, key)
-    }
-
-    fn drag_event(
-        owner: &OwnerId,
-        generation: &GenerationId,
-        domain: &OutputDomain,
-        key: &DomainKey,
-        command: CoreCommand,
-        correlation: &str,
-    ) -> CoreEvent {
-        CoreEvent {
-            owner: owner.clone(),
-            generation: generation.clone(),
-            correlation: CorrelationId::parse(correlation).expect("correlation"),
-            revision: 0,
-            fingerprint: 7,
-            domain: domain.clone(),
-            domain_key: key.clone(),
-            outer_gap: 8,
-            focused_window: WindowId("w1".to_owned()),
-            windows: two_windows(),
-            closed_windows: Vec::new(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command,
+    impl WorldDrag {
+        fn new() -> Self {
+            Self {
+                engine: tiler_core::world_engine::WorldEngine::new("drag-gen").expect("generation"),
+                obs: 0,
+                req: 0,
+            }
         }
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    fn preview_at(
-        engine: &mut Engine,
-        owner: &OwnerId,
-        generation: &GenerationId,
-        domain: &OutputDomain,
-        key: &DomainKey,
-        x: i32,
-        y: i32,
-        correlation: &str,
-        prior: Option<DragHoverPrior>,
-    ) -> PreviewOutcome {
-        let command = CoreCommand::DragPreview {
-            window: "w1".to_owned(),
-            x,
-            y,
-            hover_prior: prior,
-            source: None,
-        };
-        let event = drag_event(owner, generation, domain, key, command, correlation);
-        engine_preview(engine, event)
-    }
+        fn fact(window: &str, rect: Rect) -> WindowFact {
+            WindowFact {
+                window: WindowId(window.to_owned()),
+                output: OutputId("macos-display-1".to_owned()),
+                rect: Some(rect),
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                minimized: false,
+                observed_workspace: None,
+                native_workspace: Some("space-11".to_owned()),
+            }
+        }
 
-    fn two_windows() -> Vec<EngineWindow> {
-        vec![
-            EngineWindow {
+        fn report(&mut self, w1: Rect, gesture: Option<GestureIngress>) -> WorldReport {
+            self.obs += 1;
+            self.req += 1;
+            WorldReport {
+                contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+                owner: "macos-drag-test".to_owned(),
+                adapter_incarnation: "drag-fixture-1".to_owned(),
+                core_generation: "drag-gen".to_owned(),
+                observation_seq: self.obs,
+                request_seq: self.req,
+                request_id: format!("req-{}", self.req),
+                command_seq: None,
+                command: None,
+                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
+                screens: vec![ScreenReport {
+                    output: OutputId("macos-display-1".to_owned()),
+                    full_rect: Some(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 800,
+                        h: 600,
+                    }),
+                    work_area: Some(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 800,
+                        h: 600,
+                    }),
+                    gap: 8,
+                    outer_gap: 8,
+                    complete: true,
+                    primary: true,
+                }],
+                windows: vec![
+                    Self::fact("w1", w1),
+                    Self::fact(
+                        "w2",
+                        Rect {
+                            x: 200,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        },
+                    ),
+                ],
+                views: vec![],
+                closed: vec![],
+                host_owned_workspace_domains: true,
+                equal_workspace_count: false,
+                native: vec![NativeObservation {
+                    output: OutputId("macos-display-1".to_owned()),
+                    native_order: vec!["space-11".to_owned()],
+                    current_native: "space-11".to_owned(),
+                }],
+                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
+                migration_source_refill:
+                    tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
+                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
+                no_space_result: tiler_core::admission::NoSpaceResult::default(),
+                default_tiled: true,
+                focused_global: "w1".to_owned(),
+                action_foreground: None,
+                action_cached: None,
+                action_outputs: Vec::new(),
+                inventory_complete: true,
+                gesture_barrier: false,
+                gesture,
+                switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+                focus_follows_cursor: false,
+                cursor_warp: false,
+                cursor: None,
+                cursor_hit: None,
+                monotonic_ms: 0,
+                frames: Vec::new(),
+                member_attempts: Vec::new(),
+                view_attempts: Vec::new(),
+                clear_attempts: Vec::new(),
+                presentation: tiler_core::world_report::PresentationIngress::disabled(),
+            }
+        }
+
+        fn send(
+            &mut self,
+            w1: Rect,
+            gesture: Option<GestureIngress>,
+        ) -> tiler_core::world_report::WorldReply {
+            let report = self.report(w1, gesture);
+            match self.engine.handle_report(&report) {
+                WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+                other => panic!("world drag report must apply, got {other:?}"),
+            }
+        }
+
+        fn ingress(
+            id: u64,
+            phase: GesturePhase,
+            cursor: Option<(i32, i32)>,
+            start_frame: Rect,
+        ) -> GestureIngress {
+            GestureIngress {
+                id,
                 window: WindowId("w1".to_owned()),
-                output: OutputId("macos-display-1".to_owned()),
-                workspace: WorkspaceId("space-11".to_owned()),
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 100,
-                    h: 100,
+                kind: GestureKind::Move,
+                cursor,
+                start_cursor: Some((10, 10)),
+                phase,
+                esc: false,
+                modal_move: true,
+                start_frame,
+            }
+        }
+
+        fn to_preview(reply: &tiler_core::world_report::WorldReply) -> PreviewOutcome {
+            match &reply.command_result {
+                Some(tiler_core::world_report::CommandResult::DragPreview {
+                    rect,
+                    hover,
+                    target,
+                    ..
+                }) => PreviewOutcome::Show {
+                    rect: *rect,
+                    hover_prior: hover.clone().map(Box::new),
+                    target: target.clone(),
                 },
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: tiler_core::size_hints::WindowSizeHints::none(),
-            },
-            EngineWindow {
-                window: WindowId("w2".to_owned()),
-                output: OutputId("macos-display-1".to_owned()),
-                workspace: WorkspaceId("space-11".to_owned()),
-                rect: Rect {
-                    x: 200,
-                    y: 0,
-                    w: 100,
-                    h: 100,
+                _ => PreviewOutcome::HideTransient {
+                    reason: "no-preview",
                 },
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: tiler_core::size_hints::WindowSizeHints::none(),
-            },
-        ]
+            }
+        }
     }
 
     #[test]
@@ -1710,157 +1779,235 @@ mod tests {
     }
 
     #[test]
-    fn engine_preview_resolves_insertion_slot_and_hides_for_self_outside() {
-        let (mut engine, owner, generation, domain, key) = fresh_engine();
-        let moved = preview_at(
-            &mut engine,
-            &owner,
-            &generation,
-            &domain,
-            &key,
-            790,
-            300,
-            "drag-p1",
-            None,
-        );
-        let PreviewOutcome::Show {
-            rect, hover_prior, ..
-        } = moved
-        else {
-            panic!("moved pointer must resolve a slot, got {moved:?}");
+    fn world_gesture_preview_resolves_slot_and_hides_for_zero_outside() {
+        let mut world = WorldDrag::new();
+        let start = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
         };
-        assert!(rect.w > 0 && rect.h > 0);
-        let _ = hover_prior;
-        let outside = preview_at(
-            &mut engine,
-            &owner,
-            &generation,
-            &domain,
-            &key,
-            5000,
-            5000,
-            "drag-p2",
-            None,
+        // Bootstrap observation (no gesture): the engine adopts both
+        // windows before the gesture binds.
+        let _ = world.send(start, None);
+        // Started binds the session; no overlay publishes at the down
+        // point itself.
+        let started = world.send(
+            start,
+            Some(WorldDrag::ingress(
+                1,
+                GesturePhase::Started,
+                Some((10, 10)),
+                start,
+            )),
         );
         assert!(
-            matches!(outside, PreviewOutcome::HideTransient { reason: "outside" }),
-            "outside must hide transiently, got {outside:?}"
+            started.command_result.is_none(),
+            "start binds only, never previews"
+        );
+        // Zero movement against the immutable START point holds with no
+        // overlay (exact session, never a guess).
+        let zero = world.send(
+            start,
+            Some(WorldDrag::ingress(
+                1,
+                GesturePhase::Updated,
+                Some((10, 10)),
+                start,
+            )),
+        );
+        assert!(
+            matches!(
+                WorldDrag::to_preview(&zero),
+                PreviewOutcome::HideTransient { .. }
+            ),
+            "zero movement must hold with no overlay"
+        );
+        // Moved pointer resolves a slot through the world route. The engine
+        // re-tiles to fill the work area (w2 left, w1 right), so the sample
+        // targets two pixels inside the sibling's left edge (an insertion
+        // slot), never the mover's own tile (which refuses as self).
+        let moved = world.send(
+            start,
+            Some(WorldDrag::ingress(
+                1,
+                GesturePhase::Updated,
+                Some((10, 300)),
+                start,
+            )),
+        );
+        let PreviewOutcome::Show { rect, .. } = WorldDrag::to_preview(&moved) else {
+            panic!("moved pointer must resolve a slot");
+        };
+        assert!(rect.w > 0 && rect.h > 0);
+        // Outside every output holds with no overlay (never a drop).
+        let outside = world.send(
+            start,
+            Some(WorldDrag::ingress(
+                1,
+                GesturePhase::Updated,
+                Some((5000, 5000)),
+                start,
+            )),
+        );
+        assert!(
+            matches!(
+                WorldDrag::to_preview(&outside),
+                PreviewOutcome::HideTransient { .. }
+            ),
+            "outside must hold with no overlay"
         );
     }
 
     #[test]
-    fn engine_drop_commits_moved_plan_and_centre_reports_unsupported() {
-        let (mut engine, owner, generation, domain, key) = fresh_engine();
-        let moved = preview_at(
-            &mut engine,
-            &owner,
-            &generation,
-            &domain,
-            &key,
-            790,
-            300,
-            "drag-d1",
-            None,
+    fn world_gesture_release_commits_moved_geometry() {
+        let mut world = WorldDrag::new();
+        let start = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        };
+        let _ = world.send(start, None);
+        let _ = world.send(
+            start,
+            Some(WorldDrag::ingress(
+                2,
+                GesturePhase::Started,
+                Some((10, 10)),
+                start,
+            )),
         );
-        let PreviewOutcome::Show { hover_prior, .. } = moved else {
-            panic!("need a resolved slot for the drop, got {moved:?}");
+        let moved = world.send(
+            start,
+            Some(WorldDrag::ingress(
+                2,
+                GesturePhase::Updated,
+                Some((10, 300)),
+                start,
+            )),
+        );
+        let PreviewOutcome::Show { .. } = WorldDrag::to_preview(&moved) else {
+            panic!("need a resolved slot for the release");
         };
-        let command = CoreCommand::DragDrop {
-            window: "w1".to_owned(),
-            x: 790,
-            y: 300,
-            hover_prior: hover_prior.map(|prior| *prior),
-            source: None,
+        // The native move happened (the window server moved the window
+        // under the gesture): the release report carries the post-gesture
+        // observation, so the release intent derives from the frame delta.
+        let released_frame = Rect {
+            x: 350,
+            y: 250,
+            w: 100,
+            h: 100,
         };
-        let event = drag_event(&owner, &generation, &domain, &key, command, "drag-drop-1");
-        match engine_drop(&mut engine, event) {
-            DropOutcome::Planned { plan } => {
-                let frames = frames_for_plan(&plan);
-                assert_eq!(frames.len(), 2);
-                assert!(frames.iter().any(|(w, _)| w.0 == "w1"));
-            }
-            other => panic!("moved drop must plan, got {other:?}"),
-        }
-        let capabilities = DragCapabilities::full();
-        let _ = capabilities;
+        // The release cursor names the previewed slot (the drop commits
+        // where the last sample resolved, never a divergent point).
+        let released = world.send(
+            released_frame,
+            Some(WorldDrag::ingress(
+                2,
+                GesturePhase::Released,
+                Some((10, 300)),
+                start,
+            )),
+        );
+        let settled = released.gesture_settled.expect("terminal must settle");
+        assert!(settled.committed, "moved release must commit");
+        let frames: Vec<(String, Rect)> = released
+            .windows
+            .iter()
+            .filter_map(|row| {
+                row.effective_frame
+                    .or(row.allocation)
+                    .map(|frame| (row.lifetime.0.clone(), frame))
+            })
+            .collect();
+        assert_eq!(frames.len(), 2, "both windows land in the snapshot");
+        assert!(
+            frames.iter().any(|(w, _)| w == "w1"),
+            "mover geometry rides the committed snapshot"
+        );
+        assert!(
+            !released
+                .gesture_settled
+                .is_some_and(|terminal| !terminal.committed),
+            "committed terminal carries the commit exactly once"
+        );
     }
 
     #[test]
-    fn controller_carries_sticky_prior_across_samples() {
-        let (mut engine, owner, generation, domain, key) = fresh_engine();
+    fn controller_promotes_armed_to_dragging_without_hover_carrier() {
+        // Strict-v2: the sticky hover stays core-side (ingress carries no
+        // hover prior). The controller only promotes Armed to Dragging on
+        // a resolved Show and keeps the gesture on transient hides; the
+        // gesture id and frozen START mechanics ride unchanged.
         let mut controller = DragController::new(DragOptions::default());
         controller
-            .press("w1", 10, 10, true, true, fences_ok(), 9)
+            .press(
+                "w1",
+                10,
+                10,
+                true,
+                true,
+                fences_ok(),
+                9,
+                tiler_core::geometry::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 400,
+                    h: 300,
+                },
+            )
             .unwrap();
+        let gid = controller.gesture_id().expect("press mints a gesture id");
+        assert_eq!(controller.start_cursor(), Some((10, 10)));
+        assert_eq!(
+            controller.start_frame(),
+            Some(tiler_core::geometry::Rect {
+                x: 10,
+                y: 10,
+                w: 400,
+                h: 300
+            })
+        );
         assert_eq!(controller.motion(790, 300, fences_ok()), MotionGate::Sample);
-        let first = preview_at(
-            &mut engine,
-            &owner,
-            &generation,
-            &domain,
-            &key,
-            790,
-            300,
-            "drag-c1",
-            None,
-        );
-        controller.note_preview(&first);
+        controller.note_preview(&PreviewOutcome::Show {
+            rect: Rect {
+                x: 690,
+                y: 250,
+                w: 100,
+                h: 100,
+            },
+            hover_prior: None,
+            target: WindowId("w2".to_owned()),
+        });
         assert!(matches!(controller.phase, DragPhase::Dragging { .. }));
-        let carried = controller.hover_prior().cloned();
-        let second = preview_at(
-            &mut engine,
-            &owner,
-            &generation,
-            &domain,
-            &key,
-            790,
-            300,
-            "drag-c2",
-            carried,
-        );
-        controller.note_preview(&second);
+        // A second Show keeps the same gesture mechanics (no adapter hover
+        // to carry); a transient hide keeps the gesture for the next sample.
+        controller.note_preview(&PreviewOutcome::HideTransient { reason: "held" });
         assert!(controller.active());
+        assert_eq!(controller.gesture_id(), Some(gid));
         assert_eq!(controller.release().as_deref(), Some("w1"));
+        assert_eq!(controller.gesture_id(), None);
     }
 
     #[test]
-    fn preview_reply_taxonomy_pins_centre_self_outside_and_dead() {
+    fn world_rejection_taxonomy_pins_centre_self_outside_and_dead() {
+        // World-route taxonomy: transient refusals hide (the gesture stays
+        // for the next sample); single-flight/superseded cancel dead;
+        // unknown kinds hide under their own token (never a dropped reply).
+        for (kind, _expected) in [
+            ("unsupported-capability", "centre-unsupported"),
+            ("unchanged", "self"),
+            ("cross-domain-mismatch", "outside"),
+        ] {
+            assert!(matches!(
+                map_preview_rejection(kind),
+                PreviewOutcome::HideTransient { .. }
+            ));
+        }
         assert!(matches!(
-            classify_preview_reply(&CoreReply::Rejected {
-                kind: "unsupported-capability",
-                message: "x",
-            }),
-            PreviewOutcome::HideTransient {
-                reason: "centre-unsupported"
-            }
-        ));
-        assert!(matches!(
-            classify_preview_reply(&CoreReply::Rejected {
-                kind: "unchanged",
-                message: "x",
-            }),
-            PreviewOutcome::HideTransient { reason: "self" }
-        ));
-        assert!(matches!(
-            classify_preview_reply(&CoreReply::Rejected {
-                kind: "cross-domain-mismatch",
-                message: "x",
-            }),
-            PreviewOutcome::HideTransient { reason: "outside" }
-        ));
-        assert!(matches!(
-            classify_drop_reply(&CoreReply::Rejected {
-                kind: "unsupported-capability",
-                message: "x",
-            }),
-            DropOutcome::CentreUnsupported
-        ));
-        assert!(matches!(
-            classify_drop_reply(&CoreReply::Rejected {
-                kind: "unchanged",
-                message: "x",
-            }),
-            DropOutcome::SnapBack { .. }
+            map_preview_rejection("pending-exists"),
+            PreviewOutcome::CancelDead { .. }
         ));
     }
 

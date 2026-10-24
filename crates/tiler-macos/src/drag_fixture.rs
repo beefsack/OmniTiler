@@ -7,38 +7,42 @@
 //! monotonic-age preproof), [`crate::drag_session::resolve_press_owner`]
 //! (published-facts plus explicit AX/WindowServer join), the main-thread
 //! [`crate::drag_session::DragSession`] (arm/sample/release lifecycle), and
-//! the shared Engine oracle ([`crate::drag_drop::engine_preview`] /
-//! [`engine_drop`](crate::drag_drop::engine_drop)) with the pure overlay and
-//! ordering verdicts. Two independent fixture windows stand in for two
-//! disposable owned helpers; the live leg replays the same shape against
-//! real helpers and reads back the carrier order from the window server.
+//! the world gesture route (gesture ingress per report plus correlated
+//! [`CommandResult::DragPreview`](tiler_core::world_report::CommandResult)
+//! and [`GestureSettled`](tiler_core::gesture::GestureSettled) results from
+//! a retained [`WorldEngine`](tiler_core::world_engine::WorldEngine)) with
+//! the pure overlay and ordering verdicts. Two independent fixture windows
+//! stand in for two disposable owned helpers; the live leg replays the same
+//! shape against real helpers and reads back the carrier order from the
+//! window server.
 //!
 //! Anti-fake rule: the harness calls [`crate::drag_session::DragSession::on_down`]
 //! ONLY when the gate consumed the down at the same point (the tap proof is
 //! never bypassed), and every leg records structured evidence
-//! ([`FixtureLegEvidence`]) covering the press proof, the Engine before/after
-//! plan, expected versus applied frames, overlay intent and ordering, gate
-//! decision counts, capture release, and restoration.
+//! ([`FixtureLegEvidence`]) covering the press proof, the world before/after
+//! snapshot, expected versus applied frames, overlay intent and ordering,
+//! gate decision counts, capture release, and restoration.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
-use tiler_core::boundary::{CoreCommand, CoreEvent};
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
-use tiler_core::engine::Engine;
 use tiler_core::geometry::Rect;
-use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
-use tiler_core::seed::EngineWindow;
-use tiler_core::session::{DomainKey, OutputDomain};
+use tiler_core::gesture::GestureIngress;
+use tiler_core::session::DomainKey;
 use tiler_core::size_hints::WindowSizeHints;
+use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_report::{CommandResult, WorldReport};
 
 use crate::border_runtime::{BorderAppRecord, BorderWindowFacts};
 use crate::classifier::{AppFacts, AxFacts, CgFacts};
 use crate::config::ProbeModifier;
-use crate::drag_drop::{DragFences, DragOptions, DropOutcome, PreviewOutcome, frames_for_plan};
+use crate::drag_drop::{DragFences, DragOptions, PreviewOutcome};
 use crate::drag_session::{DragSession, PressOwner, resolve_press_owner};
 use crate::ffi::AxFrame;
-use crate::runtime_types::window_id;
+use crate::runtime_core::LifetimeMemory;
+use crate::runtime_types::{NativeContext, NativeDomain, ObservedWindow, window_id};
+use crate::world_builder::{ReportInput, build_report};
 
 /// One fixture window: the published facts plus the explicit off-tap join
 /// legs the live leg reads from AX and the window server.
@@ -75,6 +79,20 @@ impl FixtureWindow {
             updated_ms: now_ms,
         }
     }
+
+    fn observed(&self) -> ObservedWindow {
+        let (x, y, w, h) = self.frame;
+        ObservedWindow {
+            wid: self.wid,
+            x: x as i32,
+            y: y as i32,
+            w: w as i32,
+            h: h as i32,
+            floating: false,
+            fullscreen: false,
+            hints: WindowSizeHints::none(),
+        }
+    }
 }
 
 /// Two independent fixture windows (helper A left, helper B right).
@@ -97,7 +115,7 @@ impl FixturePair {
             b: FixtureWindow {
                 pid: 4243,
                 wid: 9,
-                frame: (700.0, 100.0, 400.0, 300.0),
+                frame: (0.0, 400.0, 400.0, 300.0),
                 revision: 9,
             },
         }
@@ -110,9 +128,12 @@ impl FixturePair {
     }
 
     /// Interior point of window B (the move/drop point for drop legs).
+    /// Also two pixels inside the tiled sibling's left edge for the
+    /// 1200x800 world tiling, so the world preview resolves an insertion
+    /// slot instead of refusing self.
     #[must_use]
     pub const fn move_point_b(&self) -> (i32, i32) {
-        (900, 250)
+        (10, 450)
     }
 }
 
@@ -157,27 +178,27 @@ pub struct FixtureLegEvidence {
     pub overlay: String,
     pub order_verified: Option<bool>,
     pub drop_outcome: Option<String>,
-    pub engine_before: Vec<(String, (i32, i32, i32, i32))>,
-    pub engine_after: Vec<(String, (i32, i32, i32, i32))>,
+    pub world_before: Vec<(String, (i32, i32, i32, i32))>,
+    pub world_after: Vec<(String, (i32, i32, i32, i32))>,
     pub applied_frames: Vec<(String, (i32, i32, i32, i32))>,
-    pub engine_mutated: bool,
+    pub world_mutated: bool,
     pub capture_released: bool,
     pub restoration_ok: bool,
 }
 
-/// Offline harness: the gate, the session, and the current Engine wired as
-/// the tile main thread wires them (gate proof, then owner proof, then arm,
-/// then samples, then exactly one terminal edge).
+/// Offline harness: the gate, the session, and the retained world engine
+/// wired as the tile main thread wires them (gate proof, then owner proof,
+/// then arm, then samples, then exactly one terminal edge). Every
+/// observation converges through one complete world report; every preview
+/// and terminal correlates from the reply (never a direct engine oracle).
 pub struct DragFixture {
     pair: FixturePair,
     gate: crate::drag_drop::DragTapGate,
     session: DragSession,
-    engine: Engine,
-    owner: OwnerId,
-    generation: GenerationId,
-    domain: OutputDomain,
-    domain_key: DomainKey,
+    engine: WorldEngine,
     now_ms: u64,
+    obs: u64,
+    req: u64,
     downs_consumed: u64,
     downs_passed: u64,
     drags_consumed: u64,
@@ -185,120 +206,161 @@ pub struct DragFixture {
 }
 
 impl DragFixture {
-    /// New harness over two fixture windows and a converged Engine holding
+    /// New harness over two fixture windows and a world engine converging
     /// both (same observation shape the reconcile path feeds the worker).
     #[must_use]
     pub fn new() -> Self {
-        let pair = FixturePair::new();
-        let domain = OutputDomain {
-            id: OutputId("macos-display-1".to_owned()),
-            workspace: WorkspaceId("space-11".to_owned()),
-            bounds: Rect {
-                x: 0,
-                y: 0,
-                w: 1200,
-                h: 800,
-            },
-            gap: 8,
-            adjacent: BTreeMap::new(),
-        };
-        let domain_key = DomainKey {
-            output: OutputId("macos-display-1".to_owned()),
-            workspace: WorkspaceId("space-11".to_owned()),
-        };
-        let mut engine = Engine::new();
-        let owner = OwnerId::parse("macos-drag-fixture").expect("owner");
-        let generation = GenerationId::parse("drag-fixture-gen").expect("generation");
-        engine.sync_binding(&owner, &generation);
-        Self {
-            pair,
+        let mut fixture = Self {
+            pair: FixturePair::new(),
             gate: crate::drag_drop::DragTapGate::new(),
             session: DragSession::new(DragOptions::default(), ProbeModifier::Ctrl),
-            engine,
-            owner,
-            generation,
-            domain,
-            domain_key,
+            engine: WorldEngine::new("drag-fixture-gen").expect("generation"),
             now_ms: 1_000,
+            obs: 0,
+            req: 0,
             downs_consumed: 0,
             downs_passed: 0,
             drags_consumed: 0,
             ups_consumed: 0,
-        }
-    }
-
-    /// Engine window rows for both fixture windows (tokens are the runtime
-    /// `pid_wid` tokens, so the session owner proof names the Engine mover
-    /// directly).
-    fn engine_windows(&self) -> Vec<EngineWindow> {
-        let rect = |frame: (f64, f64, f64, f64)| Rect {
-            x: frame.0 as i32,
-            y: frame.1 as i32,
-            w: frame.2 as i32,
-            h: frame.3 as i32,
         };
-        vec![
-            EngineWindow {
-                window: WindowId(self.pair.a.token()),
-                output: OutputId("macos-display-1".to_owned()),
-                workspace: WorkspaceId("space-11".to_owned()),
-                rect: rect(self.pair.a.frame),
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: WindowSizeHints::none(),
-            },
-            EngineWindow {
-                window: WindowId(self.pair.b.token()),
-                output: OutputId("macos-display-1".to_owned()),
-                workspace: WorkspaceId("space-11".to_owned()),
-                rect: rect(self.pair.b.frame),
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: WindowSizeHints::none(),
-            },
-        ]
+        // Bootstrap observation (no gesture): the engine adopts both
+        // fixture windows before any gesture binds.
+        let _ = fixture.dispatch(None, fixture.frames());
+        fixture
     }
 
-    /// Sorted Engine geometry rows (window token plus rect), for before/after
-    /// comparison.
-    fn engine_geometry(&self) -> Vec<(String, (i32, i32, i32, i32))> {
-        let mut rows: Vec<(String, (i32, i32, i32, i32))> = self
-            .engine_windows()
-            .into_iter()
-            .map(|w| (w.window.0, (w.rect.x, w.rect.y, w.rect.w, w.rect.h)))
-            .collect();
+    /// Live fixture frames per window token, sorted (before/after
+    /// comparison over the world snapshot, never a direct plan).
+    fn frames(&self) -> Vec<(String, (i32, i32, i32, i32))> {
+        let mut rows = vec![
+            (self.pair.a.token(), rect_tuple(self.pair.a.frame)),
+            (self.pair.b.token(), rect_tuple(self.pair.b.frame)),
+        ];
         rows.sort();
         rows
     }
 
-    fn drag_event(&self, command: CoreCommand, correlation: &str) -> CoreEvent {
-        CoreEvent {
-            owner: self.owner.clone(),
-            generation: self.generation.clone(),
-            correlation: CorrelationId::parse(correlation).expect("correlation"),
-            revision: 0,
-            fingerprint: 7,
-            domain: self.domain.clone(),
-            domain_key: self.domain_key.clone(),
-            outer_gap: 8,
-            focused_window: WindowId(self.pair.a.token()),
-            windows: self.engine_windows(),
-            closed_windows: Vec::new(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command,
+    /// Native context for one report: both fixture windows homed by exact
+    /// Space membership to the single current user Space (stage-1 native
+    /// order/current vocabulary, no invented logical ids).
+    fn context(&self) -> NativeContext {
+        NativeContext {
+            revision: 9,
+            domains: vec![NativeDomain {
+                cg_id: 1,
+                uuid: None,
+                output: OutputId("macos-display-1".to_owned()),
+                workspace: WorkspaceId("space-11".to_owned()),
+                space: 11,
+                current: true,
+                readable: true,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1200,
+                    h: 800,
+                },
+                visible: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1200,
+                    h: 800,
+                },
+            }],
+            skipped: Vec::new(),
+        }
+    }
+
+    /// Dispatch one complete world report with an optional gesture ingress
+    /// and return the accepted reply. Observation and request sequences
+    /// advance per dispatch (never a duplicate, never a replay).
+    fn dispatch(
+        &mut self,
+        gesture: Option<GestureIngress>,
+        frames: Vec<(String, (i32, i32, i32, i32))>,
+    ) -> tiler_core::world_report::WorldReply {
+        self.obs += 1;
+        self.req += 1;
+        let request_id = format!("req-{}", self.req);
+        let ctx = self.context();
+        let key = DomainKey {
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("space-11".to_owned()),
+        };
+        let mut members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::new();
+        let mut observed_a = self.pair.a.observed();
+        let mut observed_b = self.pair.b.observed();
+        for (token, (x, y, w, h)) in &frames {
+            let observed = if *token == self.pair.a.token() {
+                &mut observed_a
+            } else {
+                &mut observed_b
+            };
+            observed.x = *x;
+            observed.y = *y;
+            observed.w = *w;
+            observed.h = *h;
+        }
+        members.insert(
+            key,
+            vec![(self.pair.a.pid, observed_a), (self.pair.b.pid, observed_b)],
+        );
+        let empty_closed: BTreeMap<DomainKey, Vec<WindowId>> = BTreeMap::new();
+        let empty_unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> =
+            BTreeMap::new();
+        let memory = LifetimeMemory::empty();
+        let a_token = self.pair.a.token();
+        let mut no_assertions = BTreeSet::new();
+        let mut input = ReportInput::new(
+            "macos-drag-fixture",
+            "drag-fixture-1",
+            "drag-fixture-gen",
+            &ctx,
+            self.obs,
+            self.req,
+            &request_id,
+            &members,
+            &memory,
+            &mut no_assertions,
+            &empty_closed,
+            &empty_unreadable,
+            &[],
+            &a_token,
+            false,
+        );
+        input.gesture = gesture;
+        let report: WorldReport = build_report(&mut input);
+        assert!(
+            tiler_core::world_report::validate_report(&report),
+            "fixture report validates"
+        );
+        match self.engine.handle_report(&report) {
+            WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
+            other => panic!("fixture report must apply, got {other:?}"),
+        }
+    }
+
+    fn outcome_token(outcome: &PreviewOutcome) -> String {
+        match outcome {
+            PreviewOutcome::Show { .. } => "show".to_owned(),
+            PreviewOutcome::HideTransient { reason } => (*reason).to_owned(),
+            PreviewOutcome::CancelDead { reason } => (*reason).to_owned(),
+        }
+    }
+
+    fn to_preview(reply: &tiler_core::world_report::WorldReply) -> PreviewOutcome {
+        match &reply.command_result {
+            Some(CommandResult::DragPreview {
+                rect,
+                hover,
+                target,
+                ..
+            }) => PreviewOutcome::Show {
+                rect: *rect,
+                hover_prior: hover.clone().map(Box::new),
+                target: target.clone(),
+            },
+            _ => PreviewOutcome::HideTransient { reason: "held" },
         }
     }
 
@@ -367,32 +429,11 @@ impl DragFixture {
         }
     }
 
-    fn outcome_token(outcome: &PreviewOutcome) -> String {
-        match outcome {
-            PreviewOutcome::Show { .. } => "show",
-            PreviewOutcome::HideTransient { reason } => reason,
-            PreviewOutcome::CancelDead { reason } => reason,
-        }
-        .to_owned()
-    }
-
-    /// Read-only Engine preview at one point (never mutates): the live
+    /// Read-only world preview at one point (never mutates): the live
     /// behavior probe for before/after comparison.
-    fn preview_summary(
-        &mut self,
-        window: &str,
-        point: (i32, i32),
-        correlation: &str,
-    ) -> PreviewSummary {
-        let command = CoreCommand::DragPreview {
-            window: window.to_owned(),
-            x: point.0,
-            y: point.1,
-            hover_prior: None,
-            source: None,
-        };
-        let event = self.drag_event(command, correlation);
-        match crate::drag_drop::engine_preview(&mut self.engine, event) {
+    fn preview_summary(&mut self, _window: &str, _point: (i32, i32)) -> PreviewSummary {
+        let reply = self.dispatch(None, self.frames());
+        match Self::to_preview(&reply) {
             PreviewOutcome::Show { rect, target, .. } => (
                 "show".to_owned(),
                 Some((rect.x, rect.y, rect.w, rect.h)),
@@ -402,15 +443,16 @@ impl DragFixture {
         }
     }
 
-    /// Cancel leg: exact press on A, arm, Escape, balanced release. The
-    /// Engine is never contacted for a mutation (no drop submit): a
-    /// read-only preview at the move point must resolve identically before
-    /// and after, and the geometry rows read identical.
+    /// Cancel leg: exact press on A, arm, world START, Escape, world
+    /// CANCELLED, balanced release. The world never commits (no terminal
+    /// result): a read-only preview at the move point must resolve
+    /// identically before and after, and the snapshot geometry reads
+    /// identical.
     pub fn run_cancel_leg(&mut self) -> FixtureLegEvidence {
-        let before = self.engine_geometry();
+        let before = self.frames();
         let moved = self.pair.move_point_b();
-        let probe_before =
-            self.preview_summary(&self.pair.a.token(), moved, "fixture-cancel-probe-0");
+        let window_token = self.pair.a.token();
+        let probe_before = self.preview_summary(&window_token, moved);
         let point = self.pair.press_point_a();
         let window = self.pair.a.clone();
         let owner = self.publish_press_proof(&window, point);
@@ -421,19 +463,40 @@ impl DragFixture {
             self.arm_on_consumed(&owner, point, true)
                 .expect("proven press must arm");
             armed_window = Some(owner.window.clone());
+            // START binds the world session through the ACTUAL session
+            // handoff (same ingress the product drive submits); no overlay
+            // publishes at the down point itself.
+            let started_ingress = self
+                .session
+                .start_ingress()
+                .expect("armed gesture must offer a bind ingress");
+            let started = self.dispatch(Some(started_ingress), self.frames());
+            assert!(
+                started.command_result.is_none(),
+                "start binds only, never previews"
+            );
         }
         // Escape cancels with overlay cleared and fail-safe release; the
+        // world clears the retained session with no commit, and the
         // trailing release then passes through (never a drop).
         let cancelled = self.session.on_escape();
-        assert!(cancelled, "Escape must cancel the armed gesture");
+        assert!(cancelled.is_some(), "Escape must cancel the armed gesture");
+        if gate_consumed {
+            let terminal = self.dispatch(cancelled, self.frames());
+            assert!(
+                terminal
+                    .gesture_settled
+                    .is_none_or(|settled| !settled.committed),
+                "cancel clears with no commit"
+            );
+        }
         let capture_released = matches!(
             self.session.on_up(point.0, point.1),
             crate::drag_session::HitIntent::Release(crate::drag_session::ReleaseIntent::Ignore)
         );
-        let probe_after =
-            self.preview_summary(&self.pair.a.token(), moved, "fixture-cancel-probe-1");
-        let after = self.engine_geometry();
-        let engine_mutated = before != after || probe_before != probe_after;
+        let probe_after = self.preview_summary(&window_token, moved);
+        let after = self.frames();
+        let world_mutated = before != after || probe_before != probe_after;
         FixtureLegEvidence {
             leg: "cancel".to_owned(),
             gate_counts: self.counts(),
@@ -448,18 +511,19 @@ impl DragFixture {
             overlay: "hide".to_owned(),
             order_verified: None,
             drop_outcome: None,
-            engine_before: before.clone(),
-            engine_after: after.clone(),
+            world_before: before.clone(),
+            world_after: after.clone(),
             applied_frames: Vec::new(),
-            engine_mutated,
+            world_mutated,
             capture_released,
-            restoration_ok: !engine_mutated,
+            restoration_ok: !world_mutated,
         }
     }
 
-    /// Drop leg: exact press on A, move to B, Engine preview resolves a slot,
-    /// overlay shows above the joined target with verified order, release
-    /// drops through the Engine, and the applied frames equal the plan.
+    /// Drop leg: exact press on A, world START, move to B, world UPDATED
+    /// preview resolves a slot, overlay shows above the joined target with
+    /// verified order, release drops through a world RELEASED terminal, and
+    /// the applied snapshot frames equal the committed reply geometry.
     /// `carrier_wid` and `order_front_to_back` stand in for the live window-
     /// server readback (the live leg fills them from CG).
     pub fn run_drop_leg(
@@ -470,7 +534,7 @@ impl DragFixture {
         use crate::drag_drop::{DragOrdering, DragOverlay};
         use crate::drag_session::SampleIntent;
 
-        let before = self.engine_geometry();
+        let before = self.frames();
         let press = self.pair.press_point_a();
         let moved = self.pair.move_point_b();
         let window = self.pair.a.clone();
@@ -482,12 +546,22 @@ impl DragFixture {
             self.arm_on_consumed(&owner, press, true)
                 .expect("proven press must arm");
             armed_window = Some(owner.window.clone());
+            let started_ingress = self
+                .session
+                .start_ingress()
+                .expect("armed gesture must offer a bind ingress");
+            let started = self.dispatch(Some(started_ingress), self.frames());
+            assert!(
+                started.command_result.is_none(),
+                "start binds only, never previews"
+            );
         }
-        // Moved sample previews through the real Engine oracle.
-        let preview_query = match self.session.on_drag(moved.0, moved.1, fences_ok()) {
-            crate::drag_session::HitIntent::Sample(SampleIntent::Preview { window, x, y }) => {
+        // Moved sample previews through the world gesture route using the
+        // ACTUAL session ingress (same handoff the product drive submits).
+        let preview_ingress = match self.session.on_drag(moved.0, moved.1, fences_ok()) {
+            crate::drag_session::HitIntent::Sample(SampleIntent::Preview { ingress }) => {
                 self.drags_consumed += 1;
-                Some(self.session.preview_query(window, x, y))
+                Some(ingress)
             }
             _ => None,
         };
@@ -496,16 +570,9 @@ impl DragFixture {
         let mut preview_target = None;
         let mut overlay_text = "hide".to_owned();
         let mut order_verified = None;
-        if let Some(query) = preview_query {
-            let command = CoreCommand::DragPreview {
-                window: query.window.clone(),
-                x: query.x,
-                y: query.y,
-                hover_prior: query.hover_prior.clone(),
-                source: None,
-            };
-            let event = self.drag_event(command, "fixture-preview-1");
-            let outcome = crate::drag_drop::engine_preview(&mut self.engine, event);
+        if let Some(ingress) = preview_ingress {
+            let updated = self.dispatch(Some(ingress), self.frames());
+            let outcome = Self::to_preview(&updated);
             preview_outcome_text = Self::outcome_token(&outcome);
             self.session.note_preview(&outcome);
             if let PreviewOutcome::Show { rect, target, .. } = &outcome {
@@ -528,43 +595,58 @@ impl DragFixture {
                 }
             }
         }
-        // Release drops through the real Engine oracle (single-flight, once).
+        // Release drops through the world gesture terminal (single-flight,
+        // once). The native move happened under the gesture, so the release
+        // report carries the post-gesture observation the intent derives
+        // from — exactly like the live AX readback.
         let mut drop_outcome = None;
         let mut applied_frames = Vec::new();
         if let crate::drag_session::HitIntent::Release(crate::drag_session::ReleaseIntent::Drop {
-            window,
-            x,
-            y,
-            press_revision,
+            ingress,
+            ..
         }) = self.session.on_up(moved.0, moved.1)
         {
+            let window = ingress.window.0.clone();
             self.ups_consumed += 1;
-            let request = self.session.drop_request(window, x, y, press_revision);
-            let command = CoreCommand::DragDrop {
-                window: request.window.clone(),
-                x: request.x,
-                y: request.y,
-                hover_prior: request.hover_prior.clone(),
-                source: None,
-            };
-            let event = self.drag_event(command, "fixture-drop-1");
-            match crate::drag_drop::engine_drop(&mut self.engine, event) {
-                DropOutcome::Planned { plan } => {
+            assert_eq!(
+                window,
+                self.pair.a.token(),
+                "release drops the proven owner"
+            );
+            let start_frame = rect_tuple(self.pair.a.frame);
+            let mut moved_frames = self.frames();
+            for (token, frame) in &mut moved_frames {
+                if *token == self.pair.a.token() {
+                    // Native post-gesture observation: the window server
+                    // moved the window with the gesture (same size, new
+                    // origin — the release intent derives from this delta).
+                    *frame = (100, 400, start_frame.2, start_frame.3);
+                }
+            }
+            assert_ne!(
+                moved_frames, before,
+                "post-gesture observation must differ from START"
+            );
+            let released = self.dispatch(Some(ingress), moved_frames);
+            match released.gesture_settled {
+                Some(terminal) if terminal.committed => {
                     drop_outcome = Some("planned".to_owned());
-                    applied_frames = frames_for_plan(&plan)
-                        .into_iter()
-                        .map(|(w, r)| (w.0, (r.x, r.y, r.w, r.h)))
+                    applied_frames = released
+                        .windows
+                        .iter()
+                        .filter_map(|row| {
+                            row.effective_frame.or(row.allocation).map(|frame| {
+                                (row.lifetime.0.clone(), (frame.x, frame.y, frame.w, frame.h))
+                            })
+                        })
                         .collect::<Vec<_>>();
                     applied_frames.sort();
                 }
-                DropOutcome::SnapBack { reason } => {
-                    drop_outcome = Some(format!("snap-back:{reason}"));
+                Some(_) => {
+                    drop_outcome = Some("snap-back:uncommitted".to_owned());
                 }
-                DropOutcome::CentreUnsupported => {
-                    drop_outcome = Some("centre-unsupported".to_owned());
-                }
-                DropOutcome::CancelDead { reason } => {
-                    drop_outcome = Some(format!("cancel-dead:{reason}"));
+                None => {
+                    drop_outcome = Some("cancel-dead:no-terminal".to_owned());
                 }
             }
         }
@@ -573,12 +655,12 @@ impl DragFixture {
             self.session.on_up(moved.0, moved.1),
             crate::drag_session::HitIntent::Release(crate::drag_session::ReleaseIntent::Ignore)
         ) && !self.session.active();
-        // The drop commits through the Engine: the committed plan rows are
-        // the after-state, and the applied frames must equal them exactly
-        // (no silent drift between plan and application).
-        let engine_after = applied_frames.clone();
-        let engine_mutated = before != engine_after;
-        let restoration_ok = !applied_frames.is_empty() && applied_frames == engine_after;
+        // The release commits through the world: the committed snapshot rows
+        // are the after-state, and the applied frames must equal them
+        // exactly (no silent drift between commit and application).
+        let world_after = applied_frames.clone();
+        let world_mutated = before != world_after;
+        let restoration_ok = !applied_frames.is_empty() && applied_frames == world_after;
         FixtureLegEvidence {
             leg: "drop".to_owned(),
             gate_counts: self.counts(),
@@ -593,10 +675,10 @@ impl DragFixture {
             overlay: overlay_text,
             order_verified,
             drop_outcome,
-            engine_before: before,
-            engine_after,
+            world_before: before,
+            world_after,
             applied_frames,
-            engine_mutated,
+            world_mutated,
             capture_released,
             restoration_ok,
         }
@@ -605,10 +687,10 @@ impl DragFixture {
     /// Pass-through leg: the tap point misses the proven snapshot by 1px, so
     /// the gate refuses and the session must never arm (no fake `on_down`).
     pub fn run_off_point_leg(&mut self) -> FixtureLegEvidence {
-        let before = self.engine_geometry();
+        let before = self.frames();
         let moved = self.pair.move_point_b();
-        let probe_before =
-            self.preview_summary(&self.pair.a.token(), moved, "fixture-offpoint-probe-0");
+        let window_token = self.pair.a.token();
+        let probe_before = self.preview_summary(&window_token, moved);
         let press = self.pair.press_point_a();
         let window = self.pair.a.clone();
         self.publish_press_proof(&window, press);
@@ -618,10 +700,9 @@ impl DragFixture {
         // No on_down call by construction: the session stays idle and the
         // trailing up passes through.
         let idle_up_passes = !self.gate.consume_up() && !self.session.active();
-        let probe_after =
-            self.preview_summary(&self.pair.a.token(), moved, "fixture-offpoint-probe-1");
-        let after = self.engine_geometry();
-        let engine_mutated = before != after || probe_before != probe_after;
+        let probe_after = self.preview_summary(&window_token, moved);
+        let after = self.frames();
+        let world_mutated = before != after || probe_before != probe_after;
         FixtureLegEvidence {
             leg: "off-point-pass-through".to_owned(),
             gate_counts: self.counts(),
@@ -636,12 +717,12 @@ impl DragFixture {
             overlay: "hide".to_owned(),
             order_verified: None,
             drop_outcome: None,
-            engine_before: before.clone(),
-            engine_after: after.clone(),
+            world_before: before.clone(),
+            world_after: after.clone(),
             applied_frames: Vec::new(),
-            engine_mutated,
+            world_mutated,
             capture_released: idle_up_passes,
-            restoration_ok: !engine_mutated,
+            restoration_ok: !world_mutated,
         }
     }
 
@@ -661,13 +742,22 @@ impl Default for DragFixture {
     }
 }
 
+fn rect_tuple(frame: (f64, f64, f64, f64)) -> (i32, i32, i32, i32) {
+    (
+        frame.0 as i32,
+        frame.1 as i32,
+        frame.2 as i32,
+        frame.3 as i32,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::drag_drop::DragController;
 
     #[test]
-    fn fixture_cancel_leg_arms_then_cancels_without_engine_mutation() {
+    fn fixture_cancel_leg_arms_then_cancels_without_world_mutation() {
         let mut fixture = DragFixture::new();
         let evidence = fixture.run_cancel_leg();
         assert!(evidence.gate_consumed, "exact press must consume");
@@ -676,21 +766,18 @@ mod tests {
             Some(fixture.pair.a.token()),
             "arm names the proven owner"
         );
-        assert!(
-            !evidence.engine_mutated,
-            "cancel must not mutate the Engine"
-        );
+        assert!(!evidence.world_mutated, "cancel must not mutate the world");
         assert!(evidence.restoration_ok, "cancel restores trivially");
         assert!(evidence.capture_released, "trailing release must ignore");
         assert_eq!(evidence.overlay, "hide");
         assert_eq!(evidence.gate_counts, (1, 0, 0, 0));
-        // The evidence serializes for the live-oracle shape check.
+        // The evidence serializes for the live-world shape check.
         let json = serde_json::to_string(&evidence).expect("evidence serializes");
         assert!(json.contains("\"leg\":\"cancel\""));
     }
 
     #[test]
-    fn fixture_drop_leg_applies_engine_plan_with_verified_order() {
+    fn fixture_drop_leg_applies_world_snapshot_with_verified_order() {
         let mut fixture = DragFixture::new();
         // Carrier above the B target in the global order (live: CG join).
         let carrier_wid = 55;
@@ -709,9 +796,9 @@ mod tests {
         assert_eq!(
             evidence.applied_frames.len(),
             2,
-            "both windows land in the plan"
+            "both windows land in the snapshot"
         );
-        assert!(evidence.engine_mutated, "a committed drop moves geometry");
+        assert!(evidence.world_mutated, "a committed drop moves geometry");
         assert!(evidence.capture_released, "release balances exactly once");
         // Applied frames name both fixture windows (no silent drift).
         let windows: Vec<&str> = evidence
@@ -731,11 +818,11 @@ mod tests {
         let carrier_wid = 55;
         let order = vec![fixture.pair.b.wid, 55, fixture.pair.a.wid];
         let evidence = fixture.run_drop_leg(carrier_wid, &order);
-        assert_eq!(evidence.preview_outcome, "show", "Engine still resolves");
+        assert_eq!(evidence.preview_outcome, "show", "world still resolves");
         assert_eq!(evidence.order_verified, Some(false));
         assert_eq!(evidence.overlay, "hide (order-unverified)");
-        // The drop still commits through the Engine (ordering only gates the
-        // preview render, never the gesture); capture still balances.
+        // The release still commits through the world (ordering only gates
+        // the preview render, never the gesture); capture still balances.
         assert_eq!(evidence.drop_outcome.as_deref(), Some("planned"));
         assert!(evidence.capture_released);
     }
@@ -746,7 +833,7 @@ mod tests {
         let evidence = fixture.run_off_point_leg();
         assert!(!evidence.gate_consumed, "1px miss must pass through");
         assert_eq!(evidence.armed_window, None, "no arm without tap proof");
-        assert!(!evidence.engine_mutated);
+        assert!(!evidence.world_mutated);
         assert!(evidence.restoration_ok);
         assert!(evidence.capture_released);
         assert!(!fixture.session.active(), "session stays idle");
@@ -767,7 +854,7 @@ mod tests {
             .arm_on_consumed(&owner, point, true)
             .expect("B press arms");
         assert!(fixture.session.active());
-        assert!(fixture.session.on_escape());
+        assert!(fixture.session.on_escape().is_some());
         assert!(!fixture.session.active());
     }
 
@@ -780,7 +867,21 @@ mod tests {
         assert!(controller_gate.try_consume_down_at(300, 250, true, 1_000));
         let mut controller = DragController::new(DragOptions::default());
         controller
-            .press("4242_7", 300, 250, true, true, fences_ok(), 9)
+            .press(
+                "4242_7",
+                300,
+                250,
+                true,
+                true,
+                fences_ok(),
+                9,
+                tiler_core::geometry::Rect {
+                    x: 300,
+                    y: 250,
+                    w: 400,
+                    h: 300,
+                },
+            )
             .expect("proven press arms the controller");
         assert!(controller.should_consume_held());
         assert_eq!(controller.release().as_deref(), Some("4242_7"));

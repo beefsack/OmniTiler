@@ -999,16 +999,16 @@ fn bound_drain_refuses_vanished_position_and_unbound_revision_skips_leg() {
 /// Native-ordinal parity shared repro: a single-display synthetic snapshot
 /// with the SLS row `[1, 277]` and `current` naming the startup Space.
 /// Display geometry and UUID are synthetic shapes only (never a live
-/// machine value). The core claims the startup current at scoped-ring
-/// position 1 (observed currents claim first), so a 277-started runtime
-/// holds the reversed retained ring `[space-277, space-1]` while the native
-/// row stays `[1, 277]`.
+/// machine value). Under host-owned adoption the retained ring tracks
+/// native order (`[space-1, space-277]`) however the runtime started, so a
+/// positional `SelectNumbered{index: 1}` names native Desktop-1 (SID 1)
+/// even on a 277-started runtime — no self-target, no adapter-side
+/// logical mapping table.
 #[cfg(test)]
 mod ordinal_parity_repro {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use tiler_core::directional::OutputId;
-    use tiler_core::session::Session;
     use tiler_core::world_engine::WorldOutcome;
     use tiler_core::world_report::{WorldCommand, validate_report};
 
@@ -1070,7 +1070,7 @@ mod ordinal_parity_repro {
 
     /// Drive one engine from a commandless first report (establishes the
     /// retained ring under this startup current) and return the outcome of
-    /// one numbered/explicit command report plus the retained transfers.
+    /// one positional/explicit command report plus the retained transfers.
     pub fn drive(
         ctx: &NativeContext,
         command: WorldCommand,
@@ -1078,12 +1078,12 @@ mod ordinal_parity_repro {
         use tiler_core::world_engine::WorldEngine;
 
         let empty_members = BTreeMap::new();
-        let empty_sessions: BTreeMap<tiler_core::session::DomainKey, Session> = BTreeMap::new();
-        let empty_focused = BTreeMap::new();
+        let empty_memory = crate::runtime_core::LifetimeMemory::empty();
         let empty_closed = BTreeMap::new();
         let empty_unreadable = BTreeMap::new();
         let build =
             |obs: u64, req: u64, req_id: &str, seq: Option<u64>, command: Option<WorldCommand>| {
+                let mut auto_asserted = BTreeSet::new();
                 let mut input = ReportInput::new(
                     OWNER,
                     INCARNATION,
@@ -1093,17 +1093,17 @@ mod ordinal_parity_repro {
                     req,
                     req_id,
                     &empty_members,
-                    &empty_sessions,
-                    &empty_focused,
+                    &empty_memory,
+                    &mut auto_asserted,
                     &empty_closed,
                     &empty_unreadable,
                     &[],
-                    &[],
                     "",
+                    false,
                 );
                 input.command_seq = seq;
                 input.command = command;
-                build_report(&input)
+                build_report(&mut input)
             };
         let mut engine = WorldEngine::new(GENERATION).expect("generation parses");
         let first = build(1, 1, "req-1", None, None);
@@ -1123,16 +1123,15 @@ mod ordinal_parity_repro {
     }
 }
 
-/// Semantic contrast for the 277-startup repair: the legacy positional
-/// `SelectNumbered{index: 1}` resolves through the stable-logical scoped
-/// ring (`[space-277, space-1]`) and self-targets the startup current, while
-/// the fixed admission-resolved `SelectWorkspace{space-1}` against the
-/// native row (`[1, 277]`) selects Desktop-1 — under identical native
-/// context plus validated reports on fresh engines. Both second reports
-/// validate, so the red is a semantic wrong-target route failure, never an
-/// API/compile oracle.
+/// Positional selects resolve native Desktop order under adoption: a
+/// runtime started on a non-first Space still selects by native ordinal.
+/// `SelectNumbered{index: 1}` on a 277-started runtime names native
+/// Desktop-1 (SID 1) — the adopted ring tracks native order, so positional
+/// resolution never self-targets the startup current. The admission still
+/// pins the native SID plus the live revision, and the drain refuses a
+/// moved ordinal instead of selecting the new occupant.
 #[test]
-fn legacy_numbered_select_self_targets_under_277_startup() {
+fn positional_select_resolves_native_order_under_adoption() {
     use tiler_core::world_report::WorldCommand;
 
     use ordinal_parity_repro as repro;
@@ -1142,27 +1141,29 @@ fn legacy_numbered_select_self_targets_under_277_startup() {
     let (outcome, retained) = repro::drive(
         &ctx,
         WorldCommand::SelectNumbered {
-            output: output.clone(),
+            output: Some(output.clone()),
             index: 1,
         },
     );
     assert!(
         matches!(outcome, tiler_core::world_engine::WorldOutcome::Accepted(_)),
-        "legacy numbered select admits (it just names the wrong target)"
+        "positional numbered select admits"
     );
     assert_eq!(retained.len(), 1, "one retained view");
     assert_eq!(
-        retained[0].target_workspace, "space-277",
-        "Desktop-1 through the stable-logical ring names the 277-started current, not native SID 1"
+        retained[0].target_workspace, "ws-1",
+        "Desktop-1 through the adopted ring names the adopted logical for native SID 1, never the 277-started current"
     );
 }
 
-/// Native Desktop-N resolves exactly once at admission: a runtime started
-/// on a non-first Space still selects by native ordinal. A startup on 277
-/// selects Desktop-1 to SID 1 (the retained inverse-refusal shape), and a
-/// startup on 1 keeps the proven Desktop-2 path. Same-Space and unknown
-/// targets keep their honest refusals, and the bound-claim drain proves the
-/// pinned SID instead of interpreting the ordinal against a new generation.
+/// Native Desktop-N resolves positionally core-side under adoption: a
+/// runtime started on a non-first Space still selects by native ordinal. A
+/// startup on 277 selects Desktop-1 (positional index 1 over the adopted
+/// native-order ring), and a startup on 1 keeps the proven Desktop-2 path.
+/// Same-Space and unknown targets keep their honest refusals, and the
+/// admission pins the native SID plus the live revision so the drain
+/// proves the pinned ordinal instead of interpreting it against a new
+/// generation.
 #[test]
 fn explicit_select_resolves_native_ordinal_once_at_admission() {
     use tiler_core::world_engine::WorldOutcome;
@@ -1175,8 +1176,9 @@ fn explicit_select_resolves_native_ordinal_once_at_admission() {
     let select = |index: u8| Action::WorkspaceSelect { index };
     let output = repro::output();
 
-    // Startup on 277: admission binds the native Desktop-1 SID, and the
-    // production command carries it explicitly — never the ordinal.
+    // Startup on 277: admission pins the native Desktop-1 SID, and the
+    // production command carries the positional index — the core resolves
+    // it against the adopted native-order ring in the same report.
     let ctx = repro::ctx(277);
     assert!(
         ctx.domains.iter().any(|d| d.space == 277 && d.current),
@@ -1184,19 +1186,14 @@ fn explicit_select_resolves_native_ordinal_once_at_admission() {
     );
     let sid = context_target_sid(&ctx, &output, 1).expect("Desktop-1 binds");
     assert_eq!(sid, 1, "Desktop-1 is native SID 1");
-    let command = select_command(
-        &select(1),
-        output.clone(),
-        &crate::topology::workspace_key(sid),
-    )
-    .expect("select route");
+    let command = select_command(&select(1), output.clone()).expect("select route");
     assert_eq!(
         command,
-        WorldCommand::SelectWorkspace {
-            output: output.clone(),
-            workspace: "space-1".to_owned(),
+        WorldCommand::SelectNumbered {
+            output: Some(output.clone()),
+            index: 1,
         },
-        "select-1 carries an explicit SID target, got {command:?}"
+        "select-1 carries a positional index, got {command:?}"
     );
     let (outcome, retained) = repro::drive(&ctx, command);
     assert!(
@@ -1206,7 +1203,7 @@ fn explicit_select_resolves_native_ordinal_once_at_admission() {
     assert_eq!(retained.len(), 1, "one retained view");
     assert_eq!(retained[0].kind, TransferKind::View);
     assert_eq!(retained[0].target_output, output);
-    assert_eq!(retained[0].target_workspace, "space-1");
+    assert_eq!(retained[0].target_workspace, "ws-1");
     assert_eq!(
         retained[0].operation_id, "op-2",
         "stable operation identity unchanged"
@@ -1254,37 +1251,27 @@ fn explicit_select_resolves_native_ordinal_once_at_admission() {
     let ctx = repro::ctx(1);
     let sid = context_target_sid(&ctx, &output, 2).expect("Desktop-2 binds");
     assert_eq!(sid, 277);
-    let command = select_command(
-        &select(2),
-        output.clone(),
-        &crate::topology::workspace_key(sid),
-    )
-    .expect("select route");
+    let command = select_command(&select(2), output.clone()).expect("select route");
     let (outcome, retained) = repro::drive(&ctx, command);
     assert!(
         matches!(outcome, WorldOutcome::Accepted(_)),
         "Desktop-2 from a 1-started runtime admits"
     );
     assert_eq!(retained.len(), 1);
-    assert_eq!(retained[0].target_workspace, "space-277");
+    assert_eq!(retained[0].target_workspace, "ws-2");
 
     // Bounds/missing targets refuse narrowly at admission (never guessed).
     assert_eq!(context_target_sid(&ctx, &output, 0), None);
     assert_eq!(context_target_sid(&ctx, &output, 10), None);
     assert_eq!(
-        select_command(&select(0), output.clone(), "space-1"),
+        select_command(&select(0), output.clone()),
         Some(WorldCommand::SelectTrailing {
-            output: output.clone()
+            output: Some(output.clone())
         }),
         "trailing select-0 armed through the capability gate"
     );
     assert_eq!(
-        crate::world_command_map::select_command_with_capability(
-            &select(0),
-            output.clone(),
-            "space-1",
-            false
-        ),
+        crate::world_command_map::select_command_with_capability(&select(0), output.clone(), false),
         None,
         "capability-disabled trailing select-0 has no route"
     );
@@ -1310,22 +1297,23 @@ fn explicit_select_resolves_native_ordinal_once_at_admission() {
     assert!(retained.is_empty(), "refused select retains nothing");
 
     // Relative/previous semantics are untouched (binding-free core paths).
-    let relative = select_command(
-        &Action::WorkspaceRelative { prev: true },
-        output.clone(),
-        "",
-    )
-    .expect("relative route");
+    let relative = select_command(&Action::WorkspaceRelative { prev: true }, output.clone())
+        .expect("relative route");
     assert_eq!(
         relative,
         WorldCommand::SelectRelative {
-            output: output.clone(),
+            output: Some(output.clone()),
             delta: -1
         }
     );
     let previous =
-        select_command(&Action::WorkspacePrevious, output.clone(), "").expect("previous route");
-    assert_eq!(previous, WorldCommand::SelectPrevious { output });
+        select_command(&Action::WorkspacePrevious, output.clone()).expect("previous route");
+    assert_eq!(
+        previous,
+        WorldCommand::SelectPrevious {
+            output: Some(output)
+        }
+    );
 }
 
 #[test]

@@ -5,16 +5,15 @@
 //! [`crate::runtime_thread`] own these values and drive them; reports are
 //! built by [`crate::world_builder`] over this retained truth.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tiler_core::{
     directional::{OutputId, WindowId, WorkspaceId},
     geometry::Rect,
-    seed::EngineWindow,
-    session::{DomainKey, OutputDomain, Session},
+    session::{DomainKey, OutputDomain},
     size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with},
     window_policy::should_hold_born_fullscreen,
-    world_report::MinimizedEntry,
+    world_report::WindowFact,
 };
 
 use crate::runtime_types::{
@@ -42,20 +41,60 @@ pub(crate) struct KnownState {
 }
 
 impl KnownState {
-    fn of(session: Option<&Session>, id: &WindowId) -> Self {
-        let Some(session) = session else {
+    /// Core-delivery lifetime memory for one window under one native
+    /// domain: the adapter-side replacement for direct core-session reads
+    /// (the retired `WorldEngine::engine()` boundary). `rows` carries the
+    /// last applied world reply's desired rows by lifetime; `native_home`
+    /// maps each native `(output, space)` domain to its core-published
+    /// logical `(output, workspace)` home (from the same reply's
+    /// `native_binding` rows — a live reply lookup, never a durable host
+    /// table). `auto_asserted` names lifetimes the adapter itself asserted
+    /// automatic-float origin for (first-sight fixed asserts, re-asserted
+    /// while retained — cleared when the reply stops floating them or a
+    /// ToggleFloat retargets them). Unknown windows and unmapped domains
+    /// read first-sight
+    /// (the pre-adoption steady state, matching the old empty-session
+    /// read on early reports).
+    ///
+    /// Field mapping from the core's own delivery:
+    /// - `member`: a non-float row homed to the translated domain with
+    ///   controlled membership (the reserved tile slot).
+    /// - `exception`/`placed`/`automatic`: the row's float echo and
+    ///   effective frame (the retained target or session placement the core
+    ///   publishes for floats) plus the adapter's own automatic assertion.
+    ///   The reply cannot distinguish a retained D2 automatic from an
+    ///   intentional float without placement (identical rows), so that bit
+    ///   stays adapter-side: only lifetimes the adapter asserted re-assert
+    ///   automatic, and only while the core still floats them.
+    /// - `slot`: a `Hold(Minimized)` frame authority (the stored minimize
+    ///   slot for a previously tiled lifetime).
+    /// - `placed`: a float row carrying an effective frame (the retained
+    ///   target or session placement the core publishes for floats).
+    pub(crate) fn of_reply(
+        rows: &BTreeMap<String, tiler_core::world_report::WindowDesire>,
+        native_home: &BTreeMap<(String, String), (String, String)>,
+        auto_asserted: &BTreeSet<String>,
+        domain: &DomainKey,
+        id: &WindowId,
+    ) -> Self {
+        let Some(row) = rows.get(&id.0) else {
             return Self::default();
         };
+        let home = native_home.get(&(domain.output.0.clone(), domain.workspace.0.clone()));
+        let homed = home.is_some_and(|(output, workspace)| {
+            *output == row.output.0 && *workspace == row.workspace
+        });
         Self {
-            member: session
-                .snapshot()
-                .windows
-                .iter()
-                .any(|link| link.window == *id),
-            exception: session.is_exception(id),
-            automatic: session.is_automatic_fixed_float(id),
-            slot: session.minimized_slot(id).is_some(),
-            placed: session.floating_geometry(id).is_some(),
+            member: homed
+                && !row.floating
+                && row.membership_authority == tiler_core::world_report::ScopeAuthority::Controlled,
+            exception: row.floating,
+            automatic: row.floating && auto_asserted.contains(&id.0),
+            slot: row.frame_authority
+                == tiler_core::world_report::ScopeAuthority::Hold(
+                    tiler_core::world_report::HoldReason::Minimized,
+                ),
+            placed: row.floating && row.effective_frame.is_some(),
         }
     }
 
@@ -131,6 +170,21 @@ pub(crate) struct RetainedApp {
     pub(crate) focused_wid: Option<u32>,
 }
 
+/// Native-mode explicit minimized lifetime from classifier exclusions,
+/// keyed by runtime window id (`"<pid>_<wid>"`). Refreshed per scoped
+/// observation from last-known homing; reported as an explicit minimized
+/// [`WindowFact`] (never silent absence, never inferred close).
+/// Replaces the retired shared `MinimizedEntry`: the minimized home is
+/// native vocabulary (output plus native Space id); the core derives the
+/// logical homing from its own adoption mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MinimizedRecord {
+    pub window: WindowId,
+    pub output: OutputId,
+    pub workspace: WorkspaceId,
+    pub sticky: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct RetainedCore {
     pub(crate) apps: BTreeMap<u32, RetainedApp>,
@@ -156,7 +210,7 @@ pub(crate) struct RetainedCore {
     /// keyed by runtime window id (`"<pid>_<wid>"`). Refreshed per scoped
     /// observation from last-known homing; reported as explicit world
     /// minimized entries (never silent absence, never inferred close).
-    pub(crate) minimized: BTreeMap<String, MinimizedEntry>,
+    pub(crate) minimized: BTreeMap<String, MinimizedRecord>,
     /// Keyboard-resize repeat cursor (Windows `ResizeRepeat` parity,
     /// macOS-local): the press index for the next resize dispatch. Key-up
     /// never resets it — like KDE/Windows, only a focused-window, direction,
@@ -234,46 +288,92 @@ pub(crate) fn clear_focus_into(retained: &mut RetainedCore, pid: u32) {
     }
 }
 
-/// Collect one app's retained windows into core wire rows for a single
-/// domain: fingerprint rows plus normalized [`EngineWindow`] values homed to
-/// exactly (`output`, `workspace`). Shared by the synthetic path (all apps
-/// into the skeleton domain) and the native path (member apps per domain).
-/// Also shared by the additive world-state builder
-/// ([`crate::world_builder`]), so legacy and world wire flags stay identical.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn collect_app_windows(
-    rows: &mut Vec<(String, Rect)>,
-    windows: &mut Vec<EngineWindow>,
+/// Adapter-side core-delivery lifetime memory for wire-flag
+/// normalization: the last applied world reply's desired rows by lifetime
+/// plus the native-to-logical home map from the same reply's
+/// `native_binding` rows. A live reply lookup, never a durable host
+/// table: rebuilt from each applied reply, empty before the first.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LifetimeMemory {
+    pub rows: BTreeMap<String, tiler_core::world_report::WindowDesire>,
+    pub native_home: BTreeMap<(String, String), (String, String)>,
+}
+
+impl LifetimeMemory {
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Rebuild from one applied reply: desired rows by lifetime plus the
+    /// native-to-logical home map from bound workspace rows.
+    pub(crate) fn from_reply(reply: &tiler_core::world_report::WorldReply) -> Self {
+        let mut memory = Self::default();
+        for row in &reply.windows {
+            memory.rows.insert(row.lifetime.0.clone(), row.clone());
+        }
+        for workspace in &reply.workspaces {
+            if let Some(native) = workspace.native_binding.as_deref() {
+                memory.native_home.insert(
+                    (workspace.output.0.clone(), native.to_owned()),
+                    (workspace.output.0.clone(), workspace.id.clone()),
+                );
+            }
+        }
+        memory
+    }
+}
+
+/// Collect one app's retained windows into v2 [`WindowFact`] rows for a
+/// single native domain. Wire flags reuse [`normalize_wire_flags`] over
+/// the adapter-side [`LifetimeMemory`] (last applied reply rows plus the
+/// native-to-logical home map) and the adapter's own automatic-float
+/// assertions, so world wire flags stay identical to the retired
+/// session-read path. Lifetimes the adapter reports `fixed_auto` for are
+/// recorded into `auto_asserted` (the caller prunes un-floated lifetimes
+/// from the last reply first): only adapter-asserted lifetimes re-assert
+/// automatic origin, never classified floats gaining provenance.
+/// Fullscreen, hints, and the minimized flag ride truthfully; maximized is
+/// never inferred; sticky needs positive all-Spaces proof (stage 2) and
+/// stays false. Logical receipts stay unknown (`observed_workspace:
+/// None`): the core derives logical homing from its own adoption mapping
+/// over `native_workspace`.
+pub(crate) fn collect_window_facts(
+    facts: &mut Vec<WindowFact>,
     pid: u32,
     observed: &[ObservedWindow],
-    output: &str,
-    workspace: &str,
-    session: Option<&Session>,
+    domain: &DomainKey,
+    memory: &LifetimeMemory,
+    auto_asserted: &mut BTreeSet<String>,
     predicate: FixedSizePredicate,
 ) {
     for w in observed {
         let id = window_id(pid, w.wid);
-        let known = KnownState::of(session, &WindowId(id.clone()));
+        let known = KnownState::of_reply(
+            &memory.rows,
+            &memory.native_home,
+            auto_asserted,
+            domain,
+            &WindowId(id.clone()),
+        );
         let rect = Rect {
             x: w.x,
             y: w.y,
             w: w.w,
             h: w.h,
         };
-        rows.push((id.clone(), rect));
-        // Wire normalization over core-session lifetime: fullscreen and
+        // Wire normalization over core-delivery lifetime: fullscreen and
         // hints ride truthfully; floating/fixed_auto carry the hold and
-        // first-sight asserts. Retained overlays keep their reserved
-        // slot/allocation in plan truth (no writes via the emission
-        // filter); born arrivals hold slotless. The macOS adapter performs
-        // no maximized inference.
+        // first-sight asserts. The macOS adapter performs no maximized
+        // inference.
         let (floating, fixed_auto) =
             normalize_wire_flags(w.floating, w.fullscreen, w.hints, &known, predicate);
-        windows.push(EngineWindow {
+        if fixed_auto {
+            auto_asserted.insert(id.clone());
+        }
+        facts.push(WindowFact {
             window: WindowId(id),
-            output: OutputId(output.to_owned()),
-            workspace: WorkspaceId(workspace.to_owned()),
-            rect,
+            output: domain.output.clone(),
+            rect: Some(rect),
             floating,
             fit_excluded: false,
             fullscreen: w.fullscreen,
@@ -282,7 +382,32 @@ pub(crate) fn collect_app_windows(
             fixed_auto,
             fixed_suppress: false,
             hints: w.hints,
+            minimized: false,
+            observed_workspace: None,
+            native_workspace: Some(domain.workspace.0.clone()),
         });
+    }
+}
+
+/// One explicit minimized [`WindowFact`]: no frame, minimized homing, the
+/// native Space as capability-gated membership evidence, no logical
+/// receipt. Never silent absence, never an inferred close.
+pub(crate) fn minimized_fact(entry: &MinimizedRecord) -> WindowFact {
+    WindowFact {
+        window: entry.window.clone(),
+        output: entry.output.clone(),
+        rect: None,
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+        minimized: true,
+        observed_workspace: None,
+        native_workspace: Some(entry.workspace.0.clone()),
     }
 }
 
@@ -1207,7 +1332,7 @@ mod tests {
         // Classifier-excluded minimized lifetime for window 1 only.
         retained.minimized.insert(
             "1001_1".to_owned(),
-            MinimizedEntry {
+            MinimizedRecord {
                 window: WindowId("1001_1".to_owned()),
                 output: OutputId("macos-display-1".to_owned()),
                 workspace: WorkspaceId("space-11".to_owned()),

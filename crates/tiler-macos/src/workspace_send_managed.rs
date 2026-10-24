@@ -88,9 +88,8 @@ use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::SendGates;
 use crate::workspace_send_effect::{
     BlindRoot, ManagedSendTarget, SendCompletion, SendEffectHandoff, SendEffectOutcome,
-    SendFreshEvidence, SendProofRefusal, SendRequest, TrailingBindingProof,
-    TrailingCompletionProof, TrailingPrepPins, TrailingPrepProof, TrailingSendRequest,
-    prove_managed_send,
+    SendFreshEvidence, SendProofRefusal, SendRequest, TrailingCompletionProof, TrailingPrepPins,
+    TrailingPrepProof, TrailingSendRequest, prove_managed_send,
 };
 
 /// Injectable managed-send backend for the dedicated effect owner.
@@ -1397,22 +1396,10 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
         }
     };
     let proof = || -> Option<TrailingCompletionProof> {
-        let created = prep.created;
-        let binding = match (created, request.token.clone()) {
-            (Some(created), Some(token)) => Some(TrailingBindingProof {
-                token,
-                display_id: prep.display_id.clone(),
-                created,
-                before: prep.before.clone(),
-                after: prep.after.clone(),
-            }),
-            _ => None,
-        };
         Some(TrailingCompletionProof {
             target_sid: prep.target_sid,
             revision: prep.revision,
-            created,
-            binding,
+            created: prep.created,
         })
     };
     // Bind through the single pin contract: the ephemeral claim carries
@@ -1433,7 +1420,6 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
         send_source_focus: None,
         send_source_focus_empty: false,
         operation_id: Some(request.operation_id.clone()),
-        trailing_token: request.token.clone(),
     };
     let send_prep = crate::workspace_send::TrailingSendPrep {
         target_sid: prep.target_sid,

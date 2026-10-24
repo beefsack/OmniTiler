@@ -4,7 +4,7 @@
 //!
 //! Threading contract: the main thread runs AppKit/UI only and never blocks
 //! on this runtime; one dedicated engine thread owns a single
-//! [`tiler_core::engine::Engine`] plus all retained observation state; one
+//! [`tiler_core::world_engine::WorldEngine`] plus retained native observations; one
 //! dedicated input thread owns its input source; one worker thread per
 //! observed application owns its AX backend. Native handles are created,
 //! used, and destroyed inside their owning thread (see
@@ -27,11 +27,9 @@
 //! is never a clean stop; timed-out handles are retained for [`RuntimeHandle::reap`]
 //! and block overlapping replacement generations.
 //!
-//! The core adapter reuses the existing [`tiler_core::engine::Engine::handle`]
-//! entry point with [`tiler_core::boundary::CoreCommand`]. Layout policy is
-//! never duplicated here (the engine carries its default policy); the
-//! single-domain constants below are skeleton placeholders — platform
-//! policy extraction is separate work.
+//! Reports enter [`tiler_core::world_engine::WorldEngine::handle_report`].
+//! Native facts and semantic commands share that stream with gesture ingress;
+//! the single-domain constants below are offline skeleton placeholders.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
@@ -1159,54 +1157,33 @@ impl RuntimeHandle {
         }
     }
 
-    /// Submit one Meta+left drop for the press-proven window at the final
-    /// pointer snapshot. The worker homes the subject to its current
-    /// domain, validates the press revision plus live membership, and
-    /// commits through the current Engine; the returned plan geometry
-    /// flows to the native backends through the existing desired-frame
-    /// application. Nonblocking (data lane, latest-wins coalescing happens
-    /// engine-side through re-plans).
-    pub fn submit_drag_drop(&self, request: crate::drag_session::DragDropRequest) -> SubmitOutcome {
-        if !engine_alive(&self.shared) {
-            return SubmitOutcome::AdmissionClosed;
-        }
-        // Bump before enqueue (see `invalidate_clock`).
-        invalidate_clock(&self.shared);
-        if self.inbox.try_send_data(EngineJob::InputAction {
-            action: InputSemanticAction::DragDrop {
-                window: request.window,
-                x: request.x,
-                y: request.y,
-                hover_prior: request.hover_prior.map(Box::new),
-                press_revision: request.press_revision,
-            },
-        }) {
-            SubmitOutcome::Accepted
-        } else {
-            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
-            SubmitOutcome::EngineQueueFull
-        }
-    }
-
-    /// Resolve one read-only drag preview against the current Engine.
-    /// Control lane (never silently dropped); waits at most `timeout`
-    /// for the worker reply. `None` means the engine is gone, the inbox
-    /// is closed, or the bound elapsed — the caller cancels the gesture
-    /// stale. Never blocks the tap (the tap never calls this).
-    pub fn preview_drag(
+    /// Submit one Meta+left gesture ingress (Started, Updated, Released,
+    /// or Cancelled) through the SAME world gesture lifecycle the offline
+    /// harness traverses, and wait at most `timeout` for the
+    /// requester-correlated transient reply (preview outcome plus the
+    /// incorporated terminal, if any). Control lane (never silently
+    /// dropped); `None` means the engine is gone, the inbox is closed, or
+    /// the bound elapsed — the caller cancels the gesture stale. Never
+    /// blocks the tap (the tap never calls this). `press_revision` is the
+    /// topology revision proven at press time; a drifted revision refuses
+    /// stale before dispatch. Core owns targeting, preview, and commit.
+    pub fn submit_drag_gesture(
         &self,
-        request: &crate::drag_session::DragPreviewQuery,
+        ingress: tiler_core::gesture::GestureIngress,
+        press_revision: Option<u64>,
         timeout: Duration,
-    ) -> Option<crate::drag_drop::PreviewOutcome> {
+    ) -> Option<crate::runtime_thread::DragGestureReply> {
         if !engine_alive(&self.shared) {
             return None;
         }
-        let (tx, rx) = mpsc::channel::<crate::drag_drop::PreviewOutcome>();
-        if !self.inbox.send_control(EngineJob::DragPreviewQuery {
-            window: request.window.clone(),
-            x: request.x,
-            y: request.y,
-            hover_prior: request.hover_prior.clone(),
+        // Bump before enqueue (see `invalidate_clock`): each gesture
+        // ingress is invalidating input, so a mid-flight arrival refuses
+        // the in-flight reply as stale instead of actuating over it.
+        invalidate_clock(&self.shared);
+        let (tx, rx) = mpsc::channel::<crate::runtime_thread::DragGestureReply>();
+        if !self.inbox.send_control(EngineJob::DragGesture {
+            ingress,
+            press_revision,
             reply: tx,
         }) {
             return None;

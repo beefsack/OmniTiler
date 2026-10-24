@@ -2895,7 +2895,7 @@ fn numbered_send_hotkey_claim_settles_transfer_end_to_end() {
     fixture.handle.release_select_after_drain();
     fixture
         .handle
-        .report_send_outcome(&op, SendDrainOutcome::Applied);
+        .report_send_outcome(&op, SendDrainOutcome::Applied, None);
     assert!(fixture.handle.flush(FLUSH));
     assert!(
         fixture
@@ -3572,7 +3572,7 @@ fn select_drain_and_discard_outcomes_stage_feedback_end_to_end() {
     fixture.handle.release_select_after_drain();
     fixture
         .handle
-        .report_select_outcome(&op, SelectDrainOutcome::Applied);
+        .report_select_outcome(&op, SelectDrainOutcome::Applied, None, None);
     assert!(fixture.handle.flush(FLUSH));
     assert_eq!(staged_count(), 1, "drain outcome must stage exactly once");
     // Discard path: a second pending claim dropped without dispatch still

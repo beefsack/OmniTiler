@@ -140,19 +140,17 @@ pub struct SelectionState {
     last_created: Option<u64>,
     /// Exact-append proof rows from the latest `execute`, captured with
     /// `last_created` (the `before`/`after` native rows around the single
-    /// append plus the snapshot display identity). The drain pairs this
-    /// with the claim's engine-minted token and reports the binding back
-    /// (see [`crate::trailing_binding`]); cleared together with
-    /// `last_created` so a stale proof can never bind twice.
+    /// append plus the snapshot display identity). The drain adopts the
+    /// created SID into lifecycle ownership from this single take; cleared
+    /// together with `last_created` so a stale proof can never adopt twice.
     last_proof: Option<TrailingAppendProof>,
 }
 
 /// Exact native append proof for one trailing creation: the snapshot
 /// display identity plus the native rows around the single verified
-/// append. The engine pairs `created` with its pending token through
-/// [`TrailingBindingStore::bind_exact_append`](crate::trailing_binding::TrailingBindingStore::bind_exact_append)
-/// (exact same-output append only - drift refuses); rows travel by value
-/// so the drain never re-reads topology it already proved.
+/// append. Rows travel by value so the drain never re-reads topology it
+/// already proved; the main side adopts `created` into lifecycle ownership
+/// from this single take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrailingAppendProof {
     pub display_id: String,
@@ -187,10 +185,9 @@ impl SelectionState {
     /// Take the exact-append proof the latest `execute` verified, if any
     /// (clears both the proof and the SID slot). Call after every trailing
     /// execution - success or failure - exactly once: the drain adopts the
-    /// created SID into lifecycle ownership AND reports the token/SID
-    /// binding back to the engine from this single take, so neither leg
-    /// can adopt or bind twice.
-    #[cfg(any(target_os = "macos", test))]
+    /// created SID into lifecycle ownership from this single take, so it
+    /// can never adopt twice. Always available (the sole production caller
+    /// is cross-platform; the macOS-only gate was a cfg leak).
     pub(crate) fn take_trailing_proof(&mut self) -> Option<TrailingAppendProof> {
         self.last_created.take();
         self.last_proof.take()

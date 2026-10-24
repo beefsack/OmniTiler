@@ -2383,7 +2383,7 @@ fn managed_thread_stay_branch_holds_on_focus_mismatch_where_follow_applies() {
 
 // -- Trailing owner execution (explicit local capability) ---------------------
 
-fn trailing_request(token: Option<&str>) -> TrailingSendRequest {
+fn trailing_request() -> TrailingSendRequest {
     TrailingSendRequest {
         pid: 4242,
         wid: 7,
@@ -2391,7 +2391,6 @@ fn trailing_request(token: Option<&str>) -> TrailingSendRequest {
         app_generation: 1,
         source: source_domain(),
         operation_id: "op-3".to_owned(),
-        token: token.map(str::to_owned),
         pins: TrailingPrepPins {
             display_index: 0,
             pinned_cgid: 1,
@@ -2425,12 +2424,13 @@ fn appended_row() -> SelectionSnapshot {
 }
 
 #[test]
-fn trailing_append_binds_token_and_applies_with_proof() {
-    // Owner-verified append plus the engine token: the forward drag runs
-    // against the exact prepared SID and the completion carries the
-    // binding rows for the engine store.
+fn trailing_append_applies_with_proof_for_adoption() {
+    // Owner-verified append: the forward drag runs against the exact
+    // prepared SID and the completion carries the created SID for
+    // lifecycle adoption (the world adopts the native from its order row;
+    // no binding rows travel).
     let handoff = SendEffectHandoff::new();
-    let request = trailing_request(Some("wl-1"));
+    let request = trailing_request();
     let mut backend = FakeManaged::new();
     backend.snapshot = Ok(appended_row());
     backend.trailing_prep = Some(Ok(trailing_prep(21, Some(21))));
@@ -2440,15 +2440,10 @@ fn trailing_append_binds_token_and_applies_with_proof() {
     let target = target.expect("append binds a target");
     assert_eq!((target.target_sid(), target.revision()), (21, 9));
     assert_eq!(target.operation_id(), "op-3");
-    let proof = proof.expect("append with token proves");
+    let proof = proof.expect("append proves");
     assert_eq!(proof.target_sid, 21);
     assert_eq!(proof.revision, 9);
-    assert_eq!(proof.created, Some(21), "creation rides with the token");
-    let binding = proof.binding.as_ref().expect("token pairs the rows");
-    assert_eq!(binding.token, "wl-1");
-    assert_eq!(binding.created, 21);
-    assert_eq!(binding.before, vec![20, 3, 7]);
-    assert_eq!(binding.after, vec![20, 3, 7, 21]);
+    assert_eq!(proof.created, Some(21), "creation rides for adoption");
     // The bound target settles through the normal completion fence.
     let done = completion_for(&target, outcome, Some(proof));
     handoff.submit(target).expect("idle submits");
@@ -2457,11 +2452,11 @@ fn trailing_append_binds_token_and_applies_with_proof() {
 }
 
 #[test]
-fn trailing_reuse_applies_without_binding_rows() {
+fn trailing_reuse_applies_without_creation() {
     // Reuse proves no append: the drag still runs and settles, but no
-    // binding rows travel (nothing to bind).
+    // creation rides (nothing to adopt).
     let handoff = SendEffectHandoff::new();
-    let request = trailing_request(Some("wl-1"));
+    let request = trailing_request();
     let mut backend = FakeManaged::new();
     backend.trailing_prep = Some(Ok(trailing_prep(7, None)));
     let (outcome, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
@@ -2471,17 +2466,15 @@ fn trailing_reuse_applies_without_binding_rows() {
     let proof = proof.expect("target still reports for settlement");
     assert_eq!((proof.target_sid, proof.revision), (7, 9));
     assert_eq!(proof.created, None, "reuse creates nothing");
-    assert!(proof.binding.is_none(), "reuse binds nothing");
 }
 
 #[test]
-fn trailing_tokenless_append_applies_without_binding() {
-    // A tokenless request (dispatch carried no unbound desire) still sends
-    // to its prepared target and still reports the runtime-created SID so
-    // the main thread adopts it into lifecycle ownership; only the engine
-    // binding is token-gated, never invented.
+fn trailing_append_reports_created_for_adoption() {
+    // A request still sends to its prepared target and still reports the
+    // runtime-created SID so the main thread adopts it into lifecycle
+    // ownership (the world adopts the native from its order row).
     let handoff = SendEffectHandoff::new();
-    let request = trailing_request(None);
+    let request = trailing_request();
     let mut backend = FakeManaged::new();
     backend.snapshot = Ok(appended_row());
     backend.trailing_prep = Some(Ok(trailing_prep(21, Some(21))));
@@ -2489,8 +2482,7 @@ fn trailing_tokenless_append_applies_without_binding() {
     assert_eq!(outcome, SendEffectOutcome::Applied);
     assert!(target.is_some());
     let proof = proof.expect("target still reports for settlement");
-    assert_eq!(proof.created, Some(21), "creation rides without a token");
-    assert!(proof.binding.is_none(), "no token means no binding");
+    assert_eq!(proof.created, Some(21), "creation rides for adoption");
     // The owned creation reaches the real main-thread adoption helper
     // (the same `adopt_created` the tile settle and shutdown arms call),
     // so the Space is lifecycle-owned even though nothing binds.
@@ -2518,7 +2510,7 @@ fn trailing_prep_pre_actuation_refuses_proven_without_proof() {
         let mut backend = FakeManaged::new();
         backend.trailing_prep = Some(Err(reason.to_owned()));
         let (outcome, target, proof) =
-            execute_trailing_send(&trailing_request(Some("wl-1")), &mut backend, &handoff);
+            execute_trailing_send(&trailing_request(), &mut backend, &handoff);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{reason}");
         assert!(target.is_none() && proof.is_none(), "{reason}");
         assert_eq!(backend.counts.total(), 0, "{reason} posts nothing");
@@ -2527,7 +2519,7 @@ fn trailing_prep_pre_actuation_refuses_proven_without_proof() {
     let handoff = SendEffectHandoff::new();
     let mut backend = FakeManaged::new();
     let (outcome, target, proof) =
-        execute_trailing_send(&trailing_request(Some("wl-1")), &mut backend, &handoff);
+        execute_trailing_send(&trailing_request(), &mut backend, &handoff);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(target.is_none() && proof.is_none());
     assert_eq!(backend.prep_calls, 1);
@@ -2550,7 +2542,7 @@ fn trailing_prep_ambiguous_holds_without_proof() {
         let mut backend = FakeManaged::new();
         backend.trailing_prep = Some(Err(reason.to_owned()));
         let (outcome, target, proof) =
-            execute_trailing_send(&trailing_request(Some("wl-1")), &mut backend, &handoff);
+            execute_trailing_send(&trailing_request(), &mut backend, &handoff);
         assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted, "{reason}");
         assert!(target.is_none() && proof.is_none(), "{reason}");
     }
@@ -2561,7 +2553,7 @@ fn trailing_cancel_before_prep_refuses_without_preparation() {
     // A stop that lands while the request stands inflight refuses before
     // preparation: proven pre-actuation, preparation never runs.
     let handoff = SendEffectHandoff::new();
-    let request = trailing_request(Some("wl-1"));
+    let request = trailing_request();
     handoff
         .submit_trailing(request.clone())
         .expect("idle submits");
@@ -2585,7 +2577,7 @@ fn trailing_cancel_after_prep_skips_drag_but_keeps_proof() {
         (None, SendEffectOutcome::RefusedProven),
     ] {
         let handoff = Arc::new(SendEffectHandoff::new());
-        let request = trailing_request(Some("wl-1"));
+        let request = trailing_request();
         handoff
             .submit_trailing(request.clone())
             .expect("idle submits");
@@ -2600,18 +2592,17 @@ fn trailing_cancel_after_prep_skips_drag_but_keeps_proof() {
         if created.is_some() {
             let proof = proof.expect("ran append keeps its proof");
             assert_eq!(proof.created, created, "stopped append keeps creation");
-            assert!(proof.binding.is_some());
             assert!(target.is_some(), "bound before the stop");
         } else {
             assert!(target.is_some(), "reuse binds before the stop");
-            assert!(proof.expect("target reports").binding.is_none());
+            assert!(proof.expect("target reports").created.is_none());
         }
     }
 }
 
 // -- Trailing controller: off-caller preparation through the owner --------
 
-fn trailing_claim(token: Option<&str>) -> crate::runtime_types::ClaimedSelect {
+fn trailing_claim() -> crate::runtime_types::ClaimedSelect {
     crate::runtime_types::ClaimedSelect {
         action: crate::runtime_types::InputSemanticAction::WorkspaceSend {
             index: 0,
@@ -2627,7 +2618,6 @@ fn trailing_claim(token: Option<&str>) -> crate::runtime_types::ClaimedSelect {
         send_source_focus: None,
         send_source_focus_empty: false,
         operation_id: Some("op-3".to_owned()),
-        trailing_token: token.map(str::to_owned),
     }
 }
 
@@ -2669,7 +2659,7 @@ fn trailing_controller_prepares_off_caller_and_settles_with_proof() {
     let mut controller = crate::workspace_send::LiveSendController::new();
     controller
         .submit_trailing(
-            &trailing_claim(Some("wl-1")),
+            &trailing_claim(),
             crate::workspace_send::TrailingSubmit {
                 display_index: 0,
                 pinned_cgid: 1,
@@ -2697,10 +2687,7 @@ fn trailing_controller_prepares_off_caller_and_settles_with_proof() {
     assert_eq!(settle.target.target_sid(), 21);
     assert!(settle.follow);
     let proof = settle.trailing.as_ref().expect("proof settles");
-    let binding = proof.binding.as_ref().expect("append binds");
-    assert_eq!((binding.token.as_str(), binding.created), ("wl-1", 21));
-    assert_eq!(binding.before, vec![20, 3, 7]);
-    assert_eq!(binding.after, vec![20, 3, 7, 21]);
+    assert_eq!(proof.created, Some(21), "created SID rides for adoption");
     assert!(!controller.is_busy(), "polled lane idles");
     assert!(controller.poll().is_none(), "settlement never replays");
     // Preparation ran on the owner thread, never the submitter.
@@ -2729,7 +2716,7 @@ fn trailing_controller_refusal_settles_feedback_only() {
     let mut controller = crate::workspace_send::LiveSendController::new();
     controller
         .submit_trailing(
-            &trailing_claim(Some("wl-1")),
+            &trailing_claim(),
             crate::workspace_send::TrailingSubmit {
                 display_index: 0,
                 pinned_cgid: 1,
@@ -2773,7 +2760,7 @@ fn trailing_controller_busy_and_unpinned_refuse_before_submit() {
     let (release_tx, release_rx) = mpsc::channel::<()>();
     controller
         .submit_trailing(
-            &trailing_claim(Some("wl-1")),
+            &trailing_claim(),
             crate::workspace_send::TrailingSubmit {
                 display_index: 0,
                 pinned_cgid: 1,
@@ -2798,7 +2785,7 @@ fn trailing_controller_busy_and_unpinned_refuse_before_submit() {
         .expect("owner reaches preparation");
     assert_eq!(
         controller.submit_trailing(
-            &trailing_claim(Some("wl-1")),
+            &trailing_claim(),
             crate::workspace_send::TrailingSubmit {
                 display_index: 0,
                 pinned_cgid: 1,
@@ -2816,7 +2803,7 @@ fn trailing_controller_busy_and_unpinned_refuse_before_submit() {
     let mut idle = crate::workspace_send::LiveSendController::new();
     assert!(
         idle.submit_trailing(
-            &trailing_claim(Some("wl-1")),
+            &trailing_claim(),
             crate::workspace_send::TrailingSubmit {
                 display_index: 0,
                 pinned_cgid: 0,
@@ -2831,7 +2818,7 @@ fn trailing_controller_busy_and_unpinned_refuse_before_submit() {
     );
     assert!(!idle.is_busy());
     // A non-trailing claim refuses too.
-    let mut numbered = trailing_claim(None);
+    let mut numbered = trailing_claim();
     numbered.action = crate::runtime_types::InputSemanticAction::WorkspaceSend {
         index: 2,
         follow: true,

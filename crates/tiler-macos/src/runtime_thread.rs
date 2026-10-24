@@ -26,12 +26,12 @@ use crate::runtime_lifecycle::EngineExit;
 use crate::runtime_log::sanitize_backend_reason;
 use crate::runtime_types::ScopedBackendSnapshot;
 use crate::world_command_map::{
-    OP_RECONCILE, OP_SELECT, OP_SEND, OP_TERMINATE, operation_command, select_command,
-    select_output, send_command,
+    OP_DRAG_GESTURE, OP_RECONCILE, OP_SELECT, OP_SEND, OP_TERMINATE, operation_command,
+    select_command, select_output, send_command,
 };
-use crate::world_dispatch::{DispatchVerdict, dispatch_report};
+use crate::world_dispatch::{DispatchVerdict, dispatch_gesture_report, dispatch_report};
 use crate::world_runtime::{
-    DispatchContext, WorldSession, forget_world_members, preview_world, stage_write_feedback,
+    DispatchContext, WorldSession, forget_world_members, stage_write_feedback,
 };
 
 // -- Wake-driven inbox ---------------------------------------------------------
@@ -106,24 +106,23 @@ pub(crate) enum EngineJob {
     WorkspaceOccupancyQuery {
         reply: mpsc::Sender<crate::runtime::WorkspaceOccupancyReport>,
     },
-    /// Read-only drag preview query for the tile Meta+left route: resolve
-    /// one [`tiler_core::boundary::CoreCommand::DragPreview`] against the
-    /// current Engine and reply with the pure outcome. Stages nothing and
-    /// touches no reconciler state (the Engine resolves on a working
-    /// clone); the main thread feeds the outcome to its session and maps
-    /// it to one carrier intent. Control lane (never silently dropped —
-    /// the main thread always gets its reply or an engine-dead refusal),
-    /// strict FIFO with observations. A dropped/closed inbox or a dead
-    /// engine surfaces as `None` main-side, which cancels the gesture
-    /// stale. The reply carries no new revision: the main thread fences
-    /// revision before querying, and the sticky prior revalidates
-    /// capture-side inside the Engine.
-    DragPreviewQuery {
-        window: String,
-        x: i32,
-        y: i32,
-        hover_prior: Option<tiler_core::session::DragHoverPrior>,
-        reply: mpsc::Sender<crate::drag_drop::PreviewOutcome>,
+    /// Meta+left drag gesture ingress for the tile route: one
+    /// [`tiler_core::gesture::GestureIngress`] phase (Started, Updated,
+    /// Released, or Cancelled) dispatched through the SAME world gesture
+    /// lifecycle the offline harness traverses, with the requester-
+    /// correlated transient reply (preview outcome plus the incorporated
+    /// terminal, if any). Control lane (never silently dropped — the main
+    /// thread always gets its reply or an engine-dead refusal), strict
+    /// FIFO with observations. A dropped/closed inbox or a dead engine
+    /// surfaces as `None` main-side, which cancels the gesture stale.
+    /// `press_revision` is the topology revision proven at press time;
+    /// a drifted revision refuses stale before dispatch (never a late
+    /// commit). Core owns targeting, preview, and commit; the adapter
+    /// never mints hover priors or drop targets.
+    DragGesture {
+        ingress: tiler_core::gesture::GestureIngress,
+        press_revision: Option<u64>,
+        reply: mpsc::Sender<DragGestureReply>,
     },
     AxResult {
         pid: u32,
@@ -141,37 +140,39 @@ pub(crate) enum EngineJob {
         cmd_id: u64,
         completion: AxCompletion,
     },
-    /// Per-operation actuation feedback from proven setter/drain
-    /// outcomes (never false success): staged into the next world report
-    /// so the core settles retained transfers, views, and placements.
+    /// Raw mechanical view-attempt evidence from one proven select-drain
+    /// outcome (never a verdict): the setter disposition plus the drain's
+    /// native Space reads around the actuation. The engine resolves the
+    /// retained transfer target by operation identity and translates the
+    /// native SIDs to logical views through its own adoption mapping (a
+    /// live core lookup, never adapter mapping); unknown operations or
+    /// unmapped SIDs drop without evidence. Staged into the next world
+    /// report so the core settles its retained planner-owned view target.
     /// Data lane (drops counted when full, never blocks); a dropped row
     /// merely delays settlement — retained core targets never re-actuate
     /// without fresh proof.
-    AttemptFeedback {
+    ViewAttempt {
         operation_id: String,
-        kind: tiler_core::world_report::AttemptKind,
-        outcome: tiler_core::world_report::AttemptOutcome,
-        hold: Option<tiler_core::world_report::HoldReason>,
+        setter: tiler_core::world_report::FrameSetter,
+        /// Native Space id read before the drain actuated (`None` unread).
+        pre_sid: Option<u64>,
+        /// Native Space id read after the drain actuated (`None` unread).
+        post_sid: Option<u64>,
     },
-    /// Proven trailing append proof from a main-thread (select) or
-    /// effect-owner (send) drain: the engine-minted pending token from the
-    /// drained claim paired with the exact native append rows. The engine
-    /// records it through
-    /// [`WorldSession::adopt_trailing_binding`](crate::world_runtime::WorldSession::adopt_trailing_binding)
-    /// (exact same-output append only - drift, guesses, and duplicates
-    /// refuse without mutation) and carries the binding on every full
-    /// report until the core acknowledges it. Data lane (drops counted
-    /// when full, never blocks); a dropped proof merely leaves the core
-    /// pending outstanding - never a false resolution, never a replay.
-    TrailingProof {
-        logical_id: String,
-        /// SLS in-row display identifier from the proven snapshot (the
-        /// engine resolves the output against its native context - never
-        /// a positional guess).
-        display_id: String,
-        created_sid: u64,
-        before: Vec<u64>,
-        after: Vec<u64>,
+    /// Raw mechanical membership-attempt evidence from one proven
+    /// send-drain outcome (never a verdict): the setter disposition plus
+    /// the drain-verified arrival Space. The engine resolves the retained
+    /// transfer target (window plus target) by operation identity and
+    /// translates the native SID through its own adoption mapping (a live
+    /// core lookup, never adapter mapping); unknown operations or
+    /// untranslatable rows drop without evidence. Staged into the next
+    /// world report so the core settles its retained window transfer.
+    MemberAttempt {
+        operation_id: String,
+        setter: tiler_core::world_report::FrameSetter,
+        /// Native Space id of the drain-verified arrival (`None` unless
+        /// the drain proved arrival there).
+        post_sid: Option<u64>,
     },
     /// Rendezvous for deterministic tests: processed in FIFO order, so a
     /// completed barrier proves every earlier job was processed.
@@ -216,8 +217,8 @@ impl EngineJob {
                 | Self::ScopedObservation { .. }
                 | Self::InputAction { .. }
                 | Self::IndicatorSelect { .. }
-                | Self::AttemptFeedback { .. }
-                | Self::TrailingProof { .. }
+                | Self::ViewAttempt { .. }
+                | Self::MemberAttempt { .. }
                 | Self::AxResult { .. }
                 | Self::FocusResult { .. }
         )
@@ -674,27 +675,106 @@ fn refuse_select_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
     emit(shared, 0, 0, 0, "input", token, 0);
 }
 
-/// Read-only drag preview against the current world session (engine thread
-/// only): home the press-proven subject to its current domain and resolve
-/// one `Operation(DragPreview)` through the world route. Hidden-domain
-/// subjects (off-current Space) and unmapped subjects cancel dead — the
-/// main thread already fenced focus/scope/revision before querying, so
-/// these legs are backstops, never the primary gate. Synthetic mode
-/// (no native context) resolves over the skeleton report. Read-only:
-/// never commits, never advances the revision.
-fn resolve_drag_preview(
+/// Requester-correlated transient reply for one Meta+left gesture
+/// ingress: the read-only preview outcome plus the incorporated terminal,
+/// if any (committed only on a real core move/resize commit).
+pub struct DragGestureReply {
+    pub preview: crate::drag_drop::PreviewOutcome,
+    pub settled: Option<tiler_core::gesture::GestureSettled>,
+}
+
+/// Engine-side Meta+left gesture handoff (engine thread only): fence the
+/// press-proven subject against retained truth, then dispatch one gesture
+/// report through the world gesture lifecycle and return the correlated
+/// transient reply. Unknown-window and hidden-domain subjects cancel dead
+/// (the main thread already fenced focus/scope/revision before sending,
+/// so these legs are backstops, never the primary gate); a drifted press
+/// revision refuses stale (never a late commit, never a replay).
+/// Synthetic mode (no native context) resolves over the skeleton report.
+#[allow(clippy::too_many_arguments)]
+fn handle_drag_gesture(
     session: &mut WorldSession,
-    retained: &RetainedCore,
+    retained: &mut RetainedCore,
     shared: &Arc<Mutex<Shared>>,
-    window: &str,
-    x: i32,
-    y: i32,
-    hover_prior: Option<tiler_core::session::DragHoverPrior>,
-) -> crate::drag_drop::PreviewOutcome {
-    let outcome = preview_world(session, retained, shared, window, x, y, hover_prior);
+    inbox: &Arc<Inbox>,
+    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    focus_capacity: usize,
+    ingress: tiler_core::gesture::GestureIngress,
+    press_revision: Option<u64>,
+) -> DragGestureReply {
+    use crate::drag_drop::PreviewOutcome;
+    let window = ingress.window.0.clone();
+    let dispatch = dispatch_context(shared, session);
+    if session.is_native() && lock_shared(shared).native_context.is_some() {
+        let Some(key) = retained.window_domains.get(&window).cloned() else {
+            return DragGestureReply {
+                preview: PreviewOutcome::CancelDead {
+                    reason: "unknown-window",
+                },
+                settled: None,
+            };
+        };
+        let current = lock_shared(shared)
+            .native_context
+            .clone()
+            .is_some_and(|ctx| ctx.is_current(&key));
+        if !current {
+            return DragGestureReply {
+                preview: PreviewOutcome::CancelDead {
+                    reason: "hidden-domain",
+                },
+                settled: None,
+            };
+        }
+        if let Some(press_revision) = press_revision
+            && press_revision != retained.native_revision
+        {
+            return DragGestureReply {
+                preview: PreviewOutcome::CancelDead {
+                    reason: "stale-press",
+                },
+                settled: None,
+            };
+        }
+        let live = retained
+            .window_domains
+            .get(&window)
+            .is_some_and(|k| k == &key);
+        if !live {
+            return DragGestureReply {
+                preview: PreviewOutcome::CancelDead {
+                    reason: "closed-target",
+                },
+                settled: None,
+            };
+        }
+    } else if let Some(press_revision) = press_revision
+        && press_revision != retained.native_revision
+    {
+        return DragGestureReply {
+            preview: PreviewOutcome::CancelDead {
+                reason: "stale-press",
+            },
+            settled: None,
+        };
+    }
     lock_shared(shared).diagnostics.input_forwarded += 1;
-    emit(shared, 0, 0, 0, "input", "drag-preview", 0);
-    outcome
+    emit(shared, 0, 0, 0, "input", OP_DRAG_GESTURE, 0);
+    let (_verdict, preview, settled) = dispatch_gesture_report(
+        session,
+        retained,
+        shared,
+        inbox,
+        focus_queue,
+        focus_capacity,
+        dispatch,
+        ingress,
+        OP_DRAG_GESTURE,
+        0,
+        0,
+        0,
+    );
+    DragGestureReply { preview, settled }
 }
 
 // -- Thread bodies -------------------------------------------------------------
@@ -951,6 +1031,7 @@ fn process_job(
                 dispatch,
                 closed_map,
                 None,
+                None,
                 false,
                 OP_TERMINATE,
                 pid,
@@ -1077,6 +1158,7 @@ fn process_job(
                 DispatchContext::Synthetic,
                 BTreeMap::new(),
                 None,
+                None,
                 false,
                 OP_RECONCILE,
                 pid,
@@ -1147,27 +1229,8 @@ fn process_job(
                 );
                 return;
             }
-            // The subject is observed truth, never planned focus — except
-            // the drag drop, whose subject is the press-proven window from
-            // the tile drag session (focus-at-press was fenced main-side
-            // with selected-oracle agreement; the drop never inherits a
-            // drifted focus).
-            let drag_subject: Option<WindowId> = match &action {
-                InputSemanticAction::DragDrop { window, .. } => Some(WindowId(window.clone())),
-                _ => None,
-            };
-            // Press topology revision for drag drops (stale pid_wid reuse
-            // never mutates; validated against retained revision plus live
-            // membership below).
-            let drag_press_revision: Option<u64> = match &action {
-                InputSemanticAction::DragDrop { press_revision, .. } => Some(*press_revision),
-                _ => None,
-            };
-            let focused = match drag_subject {
-                Some(subject) => Some(subject),
-                None => retained.observed_focus.clone(),
-            };
-            let Some(window) = focused else {
+            // The subject is observed truth, never planned focus.
+            let Some(window) = retained.observed_focus.clone() else {
                 lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                 emit(shared, 0, 0, 0, "input", "refused-no-focus", 0);
                 return;
@@ -1202,27 +1265,6 @@ fn process_job(
                     emit(shared, 0, 0, 0, "input", "refused-hidden-domain", 0);
                     return;
                 }
-                // Drag-drop staleness: the press revision must still equal
-                // the retained topology revision (a mid-gesture resnapshot
-                // drifted the pid_wid), and the subject must still ride
-                // live membership (a missing/closed target refuses instead
-                // of mutating).
-                if let Some(press_revision) = drag_press_revision {
-                    if press_revision != retained.native_revision {
-                        lock_shared(shared).diagnostics.input_refused_no_focus += 1;
-                        emit(shared, 0, 0, 0, "input", "refused-stale-press", 0);
-                        return;
-                    }
-                    let live = retained
-                        .window_domains
-                        .get(&window.0)
-                        .is_some_and(|k| k == &key);
-                    if !live {
-                        lock_shared(shared).diagnostics.input_refused_no_focus += 1;
-                        emit(shared, 0, 0, 0, "input", "refused-closed-target", 0);
-                        return;
-                    }
-                }
             }
             dispatch_report(
                 session,
@@ -1234,6 +1276,7 @@ fn process_job(
                 dispatch,
                 BTreeMap::new(),
                 Some(tiler_core::world_report::WorldCommand::Operation(command)),
+                None,
                 false,
                 op,
                 0,
@@ -1266,80 +1309,46 @@ fn process_job(
                 ),
             );
         }
-        EngineJob::AttemptFeedback {
+        EngineJob::ViewAttempt {
             operation_id,
-            kind,
-            outcome,
-            hold,
+            setter,
+            pre_sid,
+            post_sid,
         } => {
-            // Proven setter/drain truth staged for the next report (never
-            // false success: only recorded outcomes stage). The ring line
-            // makes staging observable end to end (drain, discard, and
-            // placement completions all land here).
-            session.stage_feedback(tiler_core::world_report::AttemptFeedback {
-                operation_id,
-                kind,
-                outcome,
-                hold,
-            });
+            // Raw drain evidence staged for the next report (never a
+            // verdict: the core derives confirmation, refusal, ambiguity,
+            // and supersession). Unknown operations drop without evidence.
+            // The ring line makes staging observable end to end.
+            session.stage_view_attempt(&operation_id, setter, pre_sid, post_sid);
             emit(shared, 0, 0, 0, "feedback", "staged", 1);
         }
-        EngineJob::TrailingProof {
-            logical_id,
-            display_id,
-            created_sid,
-            before,
-            after,
+        EngineJob::MemberAttempt {
+            operation_id,
+            setter,
+            post_sid,
         } => {
-            // Resolve the proven SLS display identifier to exactly one
-            // output under the published native context (never a
-            // positional guess), then record the exact append: drift,
-            // guesses, and duplicates refuse inside without mutation, and
-            // a dropped proof merely leaves the core pending outstanding.
-            let output = {
-                let guard = lock_shared(shared);
-                crate::trailing_binding::resolve_trailing_output(
-                    guard.native_context.as_deref(),
-                    &display_id,
-                )
-            };
-            let Some(output) = output else {
-                lock_shared(shared).diagnostics.stale_dropped += 1;
-                emit(
-                    shared,
-                    0,
-                    0,
-                    0,
-                    "trailing-proof",
-                    "refused-unknown-display",
-                    0,
-                );
-                return;
-            };
-            match session.adopt_trailing_binding(&logical_id, &output, created_sid, &before, &after)
-            {
-                Ok(()) => {
-                    emit(shared, 0, 0, 0, "trailing-proof", "adopted", 0);
-                }
-                Err(_) => {
-                    lock_shared(shared).diagnostics.stale_dropped += 1;
-                    emit(shared, 0, 0, 0, "trailing-proof", "refused-drift", 0);
-                }
-            }
+            session.stage_member_attempt(&operation_id, setter, post_sid);
+            emit(shared, 0, 0, 0, "feedback", "staged", 1);
         }
-        EngineJob::DragPreviewQuery {
-            window,
-            x,
-            y,
-            hover_prior,
+        EngineJob::DragGesture {
+            ingress,
+            press_revision,
             reply,
         } => {
-            // Read-only preview through the world route (never commits,
-            // never advances the revision). Every refusal maps to a pure
-            // outcome — never a dropped reply — so the main thread always
-            // unblocks by its timeout.
-            let outcome =
-                resolve_drag_preview(session, retained, shared, &window, x, y, hover_prior);
+            // One gesture phase through the world gesture lifecycle
+            // (Started/Updated/Released/Cancelled). Every refusal maps to
+            // a pure reply — never a dropped reply — so the main thread
+            // always unblocks by its timeout.
+            let outcome = handle_drag_gesture(
+                session,
+                retained,
+                shared,
+                inbox,
+                focus_queue,
+                focus_capacity,
+                ingress,
+                press_revision,
+            );
             let _ = reply.send(outcome);
         }
         EngineJob::AxResult {
@@ -1352,7 +1361,7 @@ fn process_job(
             // A staged placement row changes the next report: advance the
             // shared mark now (the completion itself is already
             // incorporated). Ordinary writes stage nothing — no mark moves.
-            if stage_write_feedback(session, pid, cmd_id, &completion) {
+            if stage_write_feedback(session, retained, pid, generation, cmd_id, &completion) {
                 crate::runtime::invalidate_clock(shared);
             }
         }
@@ -1517,7 +1526,10 @@ fn handle_select_action_with(
     // semantics and ride binding-free. The drain revalidates the pinned
     // target instead of interpreting the ordinal against a different
     // generation (a moved ordinal refuses instead of selecting the new
-    // occupant).
+    // occupant). The dispatched command is positional (`SelectNumbered`
+    // over the adopted ring, whose order tracks native Desktop order):
+    // Desktop-N resolves core-side in the same report the adoption
+    // converges, so no adapter-side logical mapping is pinned.
     // Trailing `index 0` rides binding-free (no ordinal SID to pin: the
     // native drain ensures reuse-or-append first); the dispatched
     // `SelectTrailing` command resolves core-side. Admission already gated
@@ -1527,7 +1539,6 @@ fn handle_select_action_with(
             match crate::world_command_map::select_command_with_capability(
                 &claim.action,
                 output.clone(),
-                "",
                 trailing_enabled,
             ) {
                 Some(command) => command,
@@ -1540,9 +1551,7 @@ fn handle_select_action_with(
         crate::runtime_types::InputSemanticAction::WorkspaceSelect { index }
             if (1..=9).contains(index) =>
         {
-            let workspace = if let Some(sid) = claim.expected_sid {
-                crate::topology::workspace_key(sid)
-            } else {
+            if claim.expected_sid.is_none() {
                 let Some(sid) = crate::workspace_send::context_target_sid(&ctx, &output, *index)
                 else {
                     refuse_select_claim(shared, "refused-select-no-target");
@@ -1550,9 +1559,8 @@ fn handle_select_action_with(
                 };
                 claim.expected_sid = Some(sid);
                 claim.topology_revision = Some(ctx.revision);
-                crate::topology::workspace_key(sid)
-            };
-            match select_command(&claim.action, output.clone(), &workspace) {
+            }
+            match select_command(&claim.action, output.clone()) {
                 Some(command) => command,
                 None => {
                     refuse_select_claim(shared, "refused-select-unarmed");
@@ -1560,7 +1568,7 @@ fn handle_select_action_with(
                 }
             }
         }
-        _ => match select_command(&claim.action, output.clone(), "") {
+        _ => match select_command(&claim.action, output.clone()) {
             Some(command) => command,
             None => {
                 refuse_select_claim(shared, "refused-select-unarmed");
@@ -1578,20 +1586,17 @@ fn handle_select_action_with(
         DispatchContext::Native(Arc::clone(&ctx)),
         BTreeMap::new(),
         Some(command),
+        None,
         true,
         OP_SELECT,
         0,
         0,
         0,
     ) {
-        DispatchVerdict::Applied {
-            select_operation,
-            trailing_token,
-        } => {
-            // Trailing lanes pair the engine-minted token with the exact
-            // native append proof at drain (never a guess); other lanes
-            // never carry one (the dispatch helper yields `None` there).
-            claim.trailing_token = trailing_token;
+        DispatchVerdict::Applied { select_operation } => {
+            // The applied reply's operation identity rides the stored
+            // claim so the drain reports its native outcome under that
+            // identity (raw attempt evidence, never a verdict).
             store_select_claim(shared, claim, select_operation.as_deref());
         }
         DispatchVerdict::Duplicate => {
@@ -1660,19 +1665,18 @@ pub(crate) fn pin_stay_claim(
 }
 
 /// Armed-send lane (numbered sends 1..9 product path plus the
-/// capability-gated trailing send-0 follow): admission, a planner-owned
-/// explicit-`Send` world command carrying the admission-resolved native
-/// workspace, and — when the reply
-/// applies, or when a stale-observation refusal proves the command already
-/// executed core-side — one bound pending claim for the main-thread send
-/// drain. Other core refusals drop the claim (never actuated, never
+/// capability-gated trailing send-0 follow): admission, a positional
+/// planner-owned `SendNumbered` world command for the explicit source, and
+/// — when the reply applies, or when a stale-observation refusal proves the
+/// command already executed core-side — one bound pending claim for the
+/// main-thread send drain. Other core refusals drop the claim (never actuated, never
 /// replayed). The subject is observed truth (never planned focus): the
 /// focused window must be homed to a currently-actuated domain and must
 /// not read native fullscreen (game/fullscreen foregrounds never drag).
 /// Numbered target ordinals bind to their admission-time SID plus the current
 /// topology revision so the drain revalidates instead of interpreting the
-/// ordinal against a different generation; the dispatched command names the
-/// pinned workspace directly and never re-resolves the ordinal core-side.
+/// ordinal against a different generation; the dispatched command resolves
+/// the ordinal core-side against the adopted ring for the explicit source.
 /// The trailing `index 0` follow binds NO admission SID (the Space may not
 /// exist yet): the drain ensures it natively (reuse-or-append) and binds
 /// the exact ensured SID with the post-preparation revision through
@@ -1816,19 +1820,22 @@ fn handle_send_action_with(
         return;
     };
     // Bind the admission-time target: numbered ordinals resolve exactly once
-    // here against the native row (never re-resolved core-side through the
-    // scoped ring). The trailing `index 0` follow binds NO admission SID (the
-    // Space may not exist yet — the drain ensures reuse-or-append natively
-    // and binds the exact ensured SID with the post-preparation revision);
-    // only the admission revision rides the claim so the drain can detect a
-    // pre-preparation topology move.
+    // here against the native row (the drain revalidates the pinned SID
+    // plus the topology revision instead of interpreting the ordinal
+    // against a different generation). The dispatched command is positional
+    // (`SendNumbered` over the scoped send ring for the explicit source,
+    // whose order tracks native Desktop order) — the pinned native SID
+    // stays drain-side for revalidation only, never a logical guess. The
+    // trailing `index 0` follow binds NO admission SID (the Space may not
+    // exist yet): the drain ensures it natively (reuse-or-append) and binds
+    // the exact ensured SID with the post-preparation revision through
+    // [`crate::workspace_send::bind_trailing_send_target`].
     let trailing = index == 0;
     if trailing {
         let Some(command) = crate::world_command_map::send_command_with_capability(
             &claim.action,
             &window.0,
             output.clone(),
-            "",
             trailing_enabled,
         ) else {
             refuse_send_claim(shared, "refused-send-unarmed");
@@ -1854,19 +1861,14 @@ fn handle_send_action_with(
             DispatchContext::Native(Arc::clone(&ctx)),
             BTreeMap::new(),
             Some(command),
+            None,
             true,
             OP_SEND,
             0,
             0,
             0,
         ) {
-            DispatchVerdict::Applied {
-                select_operation,
-                trailing_token,
-            } => {
-                // Trailing follow pairs the engine-minted token with the
-                // owner-side exact append proof (never a guess).
-                claim.trailing_token = trailing_token;
+            DispatchVerdict::Applied { select_operation } => {
                 store_select_claim(shared, claim, select_operation.as_deref());
             }
             DispatchVerdict::Duplicate => {
@@ -1894,9 +1896,7 @@ fn handle_send_action_with(
         refuse_send_claim(shared, "refused-send-no-target");
         return;
     };
-    let target_workspace = crate::topology::workspace_key(target_sid);
-    let Some(command) = send_command(&claim.action, &window.0, output.clone(), &target_workspace)
-    else {
+    let Some(command) = send_command(&claim.action, &window.0, output.clone()) else {
         refuse_send_claim(shared, "refused-send-unarmed");
         return;
     };
@@ -1924,19 +1924,17 @@ fn handle_send_action_with(
         DispatchContext::Native(Arc::clone(&ctx)),
         BTreeMap::new(),
         Some(command),
+        None,
         true,
         OP_SEND,
         0,
         0,
         0,
     ) {
-        DispatchVerdict::Applied {
-            select_operation,
-            trailing_token: _,
-        } => {
-            // Numbered sends resolve to an explicit native at admission:
-            // no pending token ever rides here (the dispatch helper
-            // yields a token for trailing commands only).
+        DispatchVerdict::Applied { select_operation } => {
+            // The applied reply's operation identity rides the stored
+            // claim so the drain reports its native outcome under that
+            // identity (raw attempt evidence, never a verdict).
             if !stay {
                 store_select_claim(shared, claim, select_operation.as_deref());
             } else if let Some(op) = select_operation.as_deref() {
@@ -2228,7 +2226,7 @@ mod trailing_join_tests {
     use tiler_core::session::DomainKey;
     use tiler_core::size_hints::WindowSizeHints;
     use tiler_core::world_engine::WorldOutcome;
-    use tiler_core::world_report::{AttemptKind, AttemptOutcome};
+    use tiler_core::world_report::FrameSetter;
 
     use crate::focus_route::FocusRoute;
     use crate::runtime::{Shared, lock_shared};
@@ -2236,7 +2234,6 @@ mod trailing_join_tests {
     use crate::runtime_types::{
         ClaimedSelect, InputSemanticAction, NativeContext, NativeDomain, ObservedWindow,
     };
-    use crate::trailing_binding::unbound_trailing_token;
     use crate::workspace_select::{SelectionBackend, SelectionSnapshot};
     use crate::world_runtime::{WorldSession, build_dispatch_report};
     use crate::world_sequencer::ObservationClock;
@@ -2384,7 +2381,7 @@ mod trailing_join_tests {
     }
 
     #[test]
-    fn trailing_select_dispatch_binds_real_engine_token_to_claim() {
+    fn trailing_select_dispatch_binds_operation_identity_to_claim() {
         let ctx = ctx();
         let (mut session, mut retained, shared, inbox, focus_queue) =
             harness(Arc::clone(&ctx), retained_occupied_trailing());
@@ -2406,14 +2403,6 @@ mod trailing_join_tests {
                 .as_deref()
                 .is_some_and(|op| op.starts_with("op-")),
             "planner-owned operation identity binds"
-        );
-        let token = claim
-            .trailing_token
-            .clone()
-            .expect("real engine token binds");
-        assert!(
-            token.starts_with("wl-"),
-            "engine-minted token, never a guess"
         );
         assert_eq!(guard.diagnostics.input_select_enqueued, 1);
     }
@@ -2440,79 +2429,214 @@ mod trailing_join_tests {
     }
 
     #[test]
-    fn trailing_proof_job_records_exact_append_and_refuses_drift() {
+    fn raw_attempt_jobs_stage_only_against_retained_operations() {
         let ctx = ctx();
         let (mut session, mut retained, shared, inbox, focus_queue) =
             harness(Arc::clone(&ctx), RetainedCore::default());
-        // Exact append records: the next report (under the post-create
-        // topology that now shows the Space) carries the binding.
-        process_job(
-            EngineJob::TrailingProof {
-                logical_id: "wl-1".to_owned(),
-                display_id: UUID_1.to_owned(),
-                created_sid: 278,
-                before: vec![1, 277],
-                after: vec![1, 277, 278],
+        // Unknown operations (forged, retired, or never issued) drop
+        // without evidence — never fabricated rows, never guessed targets.
+        for job in [
+            EngineJob::ViewAttempt {
+                operation_id: "op-404".to_owned(),
+                setter: FrameSetter::Accepted,
+                pre_sid: Some(1),
+                post_sid: Some(277),
             },
+            EngineJob::MemberAttempt {
+                operation_id: "op-404".to_owned(),
+                setter: FrameSetter::Accepted,
+                post_sid: Some(277),
+            },
+        ] {
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        let report = build_dispatch_report(
             &mut session,
-            &mut retained,
-            &shared,
-            &inbox,
-            &focus_queue,
-            8,
+            &retained,
+            &crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            BTreeMap::new(),
+            1,
+            1,
+            None,
+            None,
+            None,
+            "req-1",
+        )
+        .expect("nonempty context reports");
+        assert!(
+            report.view_attempts.is_empty() && report.member_attempts.is_empty(),
+            "unknown operations stage no raw evidence"
         );
-        let created = Arc::new(NativeContext {
-            revision: 10,
-            domains: vec![domain(1, false), domain(277, false), domain(278, true)],
+    }
+
+    /// No-report dispatches drain nothing: staged raw attempts of every
+    /// kind and the automatic-float assertions survive an empty native
+    /// context and ride the next real report (latest-wins keys intact).
+    /// A dropped row would silently lose proven native actuation, so the
+    /// guard runs before any take.
+    #[test]
+    fn no_report_dispatch_retains_staged_attempts_and_assertions() {
+        use tiler_core::world_report::{FrameAttempt, MemberAttempt, ViewAttempt};
+
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        // Stage one row of every raw kind plus one automatic-float
+        // assertion, bypassing resolution (latest-wins keys are what the
+        // guard must preserve, not the evidence content).
+        session.pending_views.insert(
+            "op-9".to_owned(),
+            ViewAttempt {
+                operation_id: "op-9".to_owned(),
+                target_output: output(),
+                target_workspace: "ws-9".to_owned(),
+                setter: FrameSetter::Accepted,
+                pre: Some("ws-1".to_owned()),
+                post: None,
+                baseline: None,
+                attempt_ms: 0,
+            },
+        );
+        session.pending_members.insert(
+            ("op-9".to_owned(), "4242_7".to_owned()),
+            MemberAttempt {
+                operation_id: "op-9".to_owned(),
+                window: WindowId("4242_7".to_owned()),
+                target_output: output(),
+                target_workspace: "ws-9".to_owned(),
+                setter: FrameSetter::Threw,
+                pre: None,
+                post: None,
+                attempt_ms: 0,
+            },
+        );
+        session.pending_frames.insert(
+            "4242_7".to_owned(),
+            FrameAttempt {
+                window: WindowId("4242_7".to_owned()),
+                target: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                },
+                setter: FrameSetter::Accepted,
+                readback: None,
+                dpi_before: None,
+                dpi_after: None,
+                attempt_ms: 0,
+                operation_id: Some("op-7".to_owned()),
+                prewrite: None,
+            },
+        );
+        session.auto_asserted.insert("4242_7".to_owned());
+        // Fixed-hint window homed to the live domain: the next real build
+        // asserts automatic origin first-sight and records it back.
+        retained.apps.insert(
+            4242,
+            RetainedApp {
+                generation: 1,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: vec![ObservedWindow {
+                    wid: 7,
+                    x: 0,
+                    y: 0,
+                    w: 640,
+                    h: 480,
+                    floating: false,
+                    fullscreen: false,
+                    hints: tiler_core::size_hints::WindowSizeHints {
+                        min_w: Some(640),
+                        min_h: Some(480),
+                        max_w: Some(640),
+                        max_h: Some(480),
+                    },
+                }],
+                focused_wid: None,
+            },
+        );
+        retained.window_domains.insert(
+            crate::runtime::window_id(4242, 7),
+            DomainKey {
+                output: output(),
+                workspace: WorkspaceId(crate::topology::workspace_key(1)),
+            },
+        );
+        // Empty native context: nothing to report, nothing drained.
+        let empty = Arc::new(NativeContext {
+            revision: 1,
+            domains: Vec::new(),
             skipped: Vec::new(),
         });
-        let staged = session.trailing_report_bindings(&created);
-        assert_eq!(staged.len(), 1, "exact proof records");
-        assert_eq!(staged[0].logical_id, "wl-1");
-        assert_eq!(staged[0].native_id, "space-278");
-        // Drifted rows refuse without mutation (stale counted, never a
-        // false binding).
-        let stale_before = lock_shared(&shared).diagnostics.stale_dropped;
-        process_job(
-            EngineJob::TrailingProof {
-                logical_id: "wl-2".to_owned(),
-                display_id: UUID_1.to_owned(),
-                created_sid: 279,
-                before: vec![1, 277],
-                after: vec![1, 279, 278],
-            },
+        match dispatch_report(
             &mut session,
             &mut retained,
             &shared,
             &inbox,
             &focus_queue,
             8,
+            crate::world_runtime::DispatchContext::Native(empty),
+            BTreeMap::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::NoReport => {}
+            DispatchVerdict::Applied { .. } => panic!("empty context must not apply"),
+            DispatchVerdict::Duplicate => panic!("empty context must not duplicate"),
+            DispatchVerdict::Refused { token, .. } => {
+                panic!("empty context must not refuse, got {token}")
+            }
+        }
+        assert_eq!(session.pending_views.len(), 1, "view row retained");
+        assert_eq!(session.pending_members.len(), 1, "member row retained");
+        assert_eq!(session.pending_frames.len(), 1, "frame row retained");
+        assert!(
+            session.auto_asserted.contains("4242_7"),
+            "assertion retained (prune runs only on real builds)"
         );
-        assert_eq!(session.trailing_report_bindings(&created).len(), 1);
-        assert_eq!(
-            lock_shared(&shared).diagnostics.stale_dropped,
-            stale_before + 1
-        );
-        // Unknown display identifier refuses the same way.
-        process_job(
-            EngineJob::TrailingProof {
-                logical_id: "wl-2".to_owned(),
-                display_id: "uuid-unknown".to_owned(),
-                created_sid: 279,
-                before: vec![1, 277],
-                after: vec![1, 277, 279],
-            },
+        // Next real dispatch carries every staged row; the fixed-hint
+        // window asserts automatic origin and records it back.
+        let report = build_dispatch_report(
             &mut session,
-            &mut retained,
-            &shared,
-            &inbox,
-            &focus_queue,
-            8,
-        );
-        assert_eq!(session.trailing_report_bindings(&created).len(), 1);
+            &retained,
+            &crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            BTreeMap::new(),
+            1,
+            1,
+            None,
+            None,
+            None,
+            "req-1",
+        )
+        .expect("nonempty context reports");
+        assert_eq!(report.view_attempts.len(), 1, "view row rides next report");
         assert_eq!(
-            lock_shared(&shared).diagnostics.stale_dropped,
-            stale_before + 2
+            report.view_attempts[0].operation_id, "op-9",
+            "latest-wins identity preserved"
+        );
+        assert_eq!(
+            report.member_attempts.len(),
+            1,
+            "member row rides next report"
+        );
+        assert_eq!(report.frames.len(), 1, "frame row rides next report");
+        assert!(
+            session.auto_asserted.contains("4242_7"),
+            "first-sight fixed assert records back after the gap"
         );
     }
 
@@ -2544,11 +2668,58 @@ mod trailing_join_tests {
         retained
     }
 
+    /// Bootstrap one observation-only report through the real dispatch
+    /// path: adoption converges and the trailing lifecycle mints the
+    /// spare with full staged state, exactly like production observations
+    /// precede input. A trailing send dispatched as the very first report
+    /// would refuse (the lifecycle-minted spare has no staged domain yet
+    /// in the same pass) — reported core gap, not an adapter guess.
+    fn bootstrap_observation(
+        session: &mut WorldSession,
+        retained: &mut RetainedCore,
+        shared: &Arc<Mutex<Shared>>,
+        inbox: &Arc<Inbox>,
+        focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+        ctx: &Arc<NativeContext>,
+    ) {
+        match dispatch_report(
+            session,
+            retained,
+            shared,
+            inbox,
+            focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(ctx)),
+            BTreeMap::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } | DispatchVerdict::Duplicate => {}
+            DispatchVerdict::Refused { token, .. } => {
+                panic!("bootstrap observation must apply, got {token}")
+            }
+            DispatchVerdict::NoReport => panic!("bootstrap observation must report"),
+        }
+    }
+
     #[test]
-    fn trailing_send_dispatch_binds_subject_pins_and_real_token() {
+    fn trailing_send_dispatch_binds_subject_pins() {
         let ctx = ctx();
         let (mut session, mut retained, shared, inbox, focus_queue) =
             harness(Arc::clone(&ctx), retained_send_subject());
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
         handle_send_action_with(
             &mut session,
             &mut retained,
@@ -2577,14 +2748,9 @@ mod trailing_join_tests {
         );
         // No admission SID (the Space may not exist yet) - only the
         // admission revision rides so the owner detects pre-preparation
-        // moves. The engine-minted pending token rides alongside.
+        // moves.
         assert_eq!(claim.expected_sid, None);
         assert_eq!(claim.topology_revision, Some(9));
-        let token = claim.trailing_token.clone().expect("pending token binds");
-        assert!(
-            token.starts_with("wl-"),
-            "engine-minted token, never a guess"
-        );
         assert_eq!(guard.diagnostics.input_select_enqueued, 1);
     }
 
@@ -2593,6 +2759,14 @@ mod trailing_join_tests {
         let ctx = ctx();
         let (mut session, mut retained, shared, inbox, focus_queue) =
             harness(Arc::clone(&ctx), retained_send_subject());
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
         handle_send_action(
             &mut session,
             &mut retained,
@@ -2687,28 +2861,32 @@ mod trailing_join_tests {
     }
 
     /// Actual producer handoff for one trailing append: the main thread's
-    /// same-tick jobs (`EngineJob::TrailingProof` plus the Applied
-    /// `EngineJob::AttemptFeedback` the outcome reporters enqueue)
-    /// processed through the real `process_job` arms into the same
-    /// `WorldSession`, then one real `build_dispatch_report` observation
-    /// carrying both staged rows into the real engine. Covers the select
-    /// lane (View Applied) and the send lane (Transfer Applied) with
-    /// fresh harnesses: each combined report settles its lane with no
-    /// retained transfer, and the following observation-only report stays
-    /// stable with no replay. The select lane leaves no unbound row (the
-    /// new trailing stays reusable); the settled send occupies the new
-    /// trailing, so the core mints a fresh onward token there (the
-    /// settled pending resolved, never retained).
+    /// same-tick raw-attempt jobs (the `ViewAttempt`/`MemberAttempt` rows
+    /// the outcome reporters enqueue) processed through the real
+    /// `process_job` arms into the same `WorldSession`, then one real
+    /// `build_dispatch_report` observation carrying the staged rows into
+    /// the real engine. Covers the select lane (view attempt with the
+    /// drain-verified Space reads) and the send lane (member attempt with
+    /// the verified arrival Space) with fresh harnesses.
+    ///
+    /// The select lane settles on the combined report: the native echo of
+    /// the appended current supersedes the retained view target, so the
+    /// view follows the new native with no retained transfer and the next
+    /// observation-only report stays stable with no replay. The send lane
+    /// holds safely: the appended native has no core mapping yet (the
+    /// empty-creation correlation is parked), so the member attempt stages
+    /// an unknown post and the retained window transfer holds without
+    /// re-actuation until newer input supersedes it. Neither lane invents
+    /// a binding or a verdict.
     ///
     /// The native proof rows come from the real select/send preparation
     /// over the scripted backend above (the established injection seam);
-    /// job processing, display resolution, feedback staging, report
-    /// building, and the core settle are the production functions, never
-    /// substitutes. Capability stays `false` outside the explicit `true`
-    /// locals: nothing arms.
+    /// job processing, feedback staging, report building, and the core
+    /// settle are the production functions, never substitutes. Capability
+    /// stays `false` outside the explicit `true` locals: nothing arms.
     #[test]
     fn trailing_jobs_settle_combined_report_through_real_dispatch() {
-        // -- Select lane: proof job plus View Applied in one report. --
+        // -- Select lane: view attempt plus native echo in one report. --
         {
             let ctx = ctx();
             let (mut session, mut retained, shared, inbox, focus_queue) =
@@ -2727,7 +2905,6 @@ mod trailing_join_tests {
                 .select_pending
                 .clone()
                 .expect("trailing select claim stored");
-            let token = claim.trailing_token.clone().expect("engine token rides");
             let op = claim.operation_id.clone().expect("operation rides");
 
             // Real native leg through the injected backend only.
@@ -2740,30 +2917,15 @@ mod trailing_join_tests {
                 )
                 .expect("native append+select proves");
             assert_eq!((effect.created, effect.target), (Some(278), 278));
-            let after = backend.spaces.clone();
 
-            // Actual same-tick handoff into the session.
+            // Actual same-tick handoff into the session: the drain-verified
+            // before/after native reads ride the raw attempt row.
             process_job(
-                EngineJob::TrailingProof {
-                    logical_id: token.clone(),
-                    display_id: UUID_1.to_owned(),
-                    created_sid: 278,
-                    before: vec![1, 277],
-                    after,
-                },
-                &mut session,
-                &mut retained,
-                &shared,
-                &inbox,
-                &focus_queue,
-                8,
-            );
-            process_job(
-                EngineJob::AttemptFeedback {
+                EngineJob::ViewAttempt {
                     operation_id: op.clone(),
-                    kind: AttemptKind::View,
-                    outcome: AttemptOutcome::Applied,
-                    hold: None,
+                    setter: FrameSetter::Accepted,
+                    pre_sid: Some(effect.from),
+                    post_sid: Some(effect.target),
                 },
                 &mut session,
                 &mut retained,
@@ -2773,13 +2935,11 @@ mod trailing_join_tests {
                 8,
             );
             let created = settled_ctx();
-            assert_eq!(
-                session.trailing_report_bindings(&created).len(),
-                1,
-                "proof job recorded the exact append"
-            );
 
-            // One dispatched observation carries both staged rows.
+            // One dispatched observation carries the staged row with the
+            // native reads translated through the last applied reply: the
+            // known source maps to its logical id, the not-yet-adopted
+            // append stays unknown (never guessed).
             let report = build_dispatch_report(
                 &mut session,
                 &retained,
@@ -2789,35 +2949,37 @@ mod trailing_join_tests {
                 3,
                 None,
                 None,
+                None,
                 "req-3",
             )
             .expect("nonempty context reports");
-            assert_eq!(report.bindings.len(), 1, "report carries the binding");
+            assert_eq!(report.view_attempts.len(), 1, "report carries the attempt");
+            assert_eq!(report.view_attempts[0].operation_id, op);
             assert_eq!(
-                report.bindings[0].logical_id, token,
-                "binding names the engine token"
+                report.view_attempts[0].pre,
+                Some("ws-1".to_owned()),
+                "known source Space translates through the live reply"
             );
-            assert_eq!(report.feedback.len(), 1, "report carries the outcome");
-            assert_eq!(report.feedback[0].operation_id, op);
-            assert_eq!(report.feedback[0].kind, AttemptKind::View);
+            assert_eq!(
+                report.view_attempts[0].post, None,
+                "unadopted append stays unknown, never guessed"
+            );
             let reply = match session.engine_mut().handle_report(&report) {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
             assert!(
                 session.engine_mut().retained_transfers().is_empty(),
-                "logical View settles on the combined report"
+                "native echo supersedes the retained view on the combined report"
             );
-            assert!(
-                unbound_trailing_token(&reply, &output()).is_none(),
-                "pending token resolved with no onward desire"
+            assert_eq!(
+                reply
+                    .outputs
+                    .first()
+                    .and_then(|out| out.logical_view.clone()),
+                Some("ws-4".to_owned()),
+                "view follows the appended native current"
             );
-            assert!(
-                reply.workspaces.iter().any(|row| row.id == "space-278"),
-                "mapping adopts the new current"
-            );
-            assert_eq!(session.note_trailing_ack(&reply), vec![token]);
-            assert!(session.trailing_report_bindings(&created).is_empty());
 
             // Next observation: stable, nothing pending, nothing replayed.
             let report = build_dispatch_report(
@@ -2829,27 +2991,42 @@ mod trailing_join_tests {
                 4,
                 None,
                 None,
+                None,
                 "req-4",
             )
             .expect("nonempty context reports");
-            assert!(report.bindings.is_empty() && report.feedback.is_empty());
+            assert!(report.view_attempts.is_empty() && report.member_attempts.is_empty());
             let reply = match session.engine_mut().handle_report(&report) {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
             assert!(session.engine_mut().retained_transfers().is_empty());
-            assert!(unbound_trailing_token(&reply, &output()).is_none());
-            assert!(
-                reply.workspaces.iter().any(|row| row.id == "space-278"),
-                "adopted native persists without re-binding"
+            assert_eq!(
+                reply
+                    .outputs
+                    .first()
+                    .and_then(|out| out.logical_view.clone()),
+                Some("ws-4".to_owned()),
+                "adopted view persists without re-binding"
             );
         }
 
-        // -- Send lane: proof job plus Transfer Applied in one report. --
+        // -- Send lane: member attempt with an untranslatable post holds. --
+        // The bootstrap observation precedes the send (production order):
+        // a same-report lifecycle spare has no staged domain yet (reported
+        // core gap), so the dispatch runs only once the spare is staged.
         {
             let ctx = ctx();
             let (mut session, mut retained, shared, inbox, focus_queue) =
                 harness(Arc::clone(&ctx), retained_send_subject());
+            bootstrap_observation(
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                &ctx,
+            );
             handle_send_action_with(
                 &mut session,
                 &mut retained,
@@ -2867,7 +3044,6 @@ mod trailing_join_tests {
                 .select_pending
                 .clone()
                 .expect("trailing send claim stored");
-            let token = claim.trailing_token.clone().expect("engine token rides");
             let op = claim.operation_id.clone().expect("operation rides");
 
             // Real native preparation through the injected backend only.
@@ -2876,6 +3052,7 @@ mod trailing_join_tests {
                 .expect("native append proves");
             assert_eq!((prep.target_sid, prep.created), (278, Some(278)));
             let after = backend.spaces.clone();
+            let _ = after;
             // Observed arrival: the mover now homes to the new trailing.
             retained.window_domains.insert(
                 crate::runtime::window_id(4242, 7),
@@ -2887,26 +3064,10 @@ mod trailing_join_tests {
 
             // Actual same-tick handoff into the session.
             process_job(
-                EngineJob::TrailingProof {
-                    logical_id: token.clone(),
-                    display_id: UUID_1.to_owned(),
-                    created_sid: prep.target_sid,
-                    before: vec![1, 277],
-                    after,
-                },
-                &mut session,
-                &mut retained,
-                &shared,
-                &inbox,
-                &focus_queue,
-                8,
-            );
-            process_job(
-                EngineJob::AttemptFeedback {
+                EngineJob::MemberAttempt {
                     operation_id: op.clone(),
-                    kind: AttemptKind::Transfer,
-                    outcome: AttemptOutcome::Applied,
-                    hold: None,
+                    setter: FrameSetter::Accepted,
+                    post_sid: Some(prep.target_sid),
                 },
                 &mut session,
                 &mut retained,
@@ -2916,13 +3077,10 @@ mod trailing_join_tests {
                 8,
             );
             let created = settled_ctx();
-            assert_eq!(
-                session.trailing_report_bindings(&created).len(),
-                1,
-                "proof job recorded the exact append"
-            );
 
-            // One dispatched observation carries both staged rows.
+            // One dispatched observation carries the staged row. The
+            // appended Space has no core mapping yet, so the verified
+            // post reads unknown — the row stages honestly without it.
             let report = build_dispatch_report(
                 &mut session,
                 &retained,
@@ -2930,47 +3088,48 @@ mod trailing_join_tests {
                 BTreeMap::new(),
                 3,
                 3,
+                None,
                 None,
                 None,
                 "req-3",
             )
             .expect("nonempty context reports");
-            assert_eq!(report.bindings.len(), 1, "report carries the binding");
             assert_eq!(
-                report.bindings[0].logical_id, token,
-                "binding names the engine token"
+                report.member_attempts.len(),
+                1,
+                "report carries the attempt"
             );
-            assert_eq!(report.feedback.len(), 1, "report carries the outcome");
-            assert_eq!(report.feedback[0].operation_id, op);
-            assert_eq!(report.feedback[0].kind, AttemptKind::Transfer);
+            assert_eq!(report.member_attempts[0].operation_id, op);
+            assert_eq!(
+                report.member_attempts[0].post, None,
+                "unadopted arrival stays unknown, never guessed"
+            );
             let reply = match session.engine_mut().handle_report(&report) {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
+            // The window transfer holds (never a false confirm, never a
+            // blind repeat); the follow view settles to the native echo.
+            // The empty-creation correlation to the retained target is the
+            // parked neutrality concern — no adapter policy invents it.
+            let held: Vec<_> = session
+                .engine_mut()
+                .retained_transfers()
+                .into_iter()
+                .filter(|target| target.operation_id == op)
+                .collect();
+            assert_eq!(held.len(), 1, "window transfer retained");
+            assert!(held[0].held, "held without re-actuation");
             assert!(
-                session.engine_mut().retained_transfers().is_empty(),
-                "arrival plus Applied settles on the combined report"
+                reply
+                    .transfers
+                    .iter()
+                    .all(|target| target.operation_id != format!("{op}-follow")),
+                "follow view leaves no separate flight"
             );
-            // The settled send occupies the new trailing, so the core
-            // desires onward trailing under a FRESH token: the settled
-            // pending resolved, never retained.
-            let fresh =
-                unbound_trailing_token(&reply, &output()).expect("occupied trailing mints onward");
-            assert_ne!(
-                fresh, token,
-                "settled pending resolved; only the next desire rides unbound"
-            );
-            assert!(
-                reply.workspaces.iter().any(|row| {
-                    row.logical_id.as_deref() == Some(token.as_str())
-                        && row.native_binding.as_deref() == Some("space-278")
-                }),
-                "core publishes the bound row"
-            );
-            assert_eq!(session.note_trailing_ack(&reply), vec![token]);
-            assert!(session.trailing_report_bindings(&created).is_empty());
 
-            // Next observation: stable onward desire, nothing replayed.
+            // Next observation: stable hold, nothing replayed, no arrival
+            // fabricated.
             let report = build_dispatch_report(
                 &mut session,
                 &retained,
@@ -2980,24 +3139,622 @@ mod trailing_join_tests {
                 4,
                 None,
                 None,
+                None,
                 "req-4",
             )
             .expect("nonempty context reports");
-            assert!(report.bindings.is_empty() && report.feedback.is_empty());
+            assert!(report.member_attempts.is_empty() && report.view_attempts.is_empty());
             let reply = match session.engine_mut().handle_report(&report) {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
-            assert!(session.engine_mut().retained_transfers().is_empty());
             assert_eq!(
-                unbound_trailing_token(&reply, &output()),
-                Some(fresh),
-                "onward desire stable without re-binding"
+                session
+                    .engine_mut()
+                    .retained_transfers()
+                    .iter()
+                    .filter(|target| target.operation_id == op)
+                    .count(),
+                1,
+                "hold persists without re-actuation"
             );
-            assert!(
-                reply.workspaces.iter().any(|row| row.id == "space-278"),
-                "settled native persists without re-binding"
-            );
+            let _ = reply;
         }
+    }
+}
+
+#[cfg(test)]
+mod drag_gesture_handoff_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use tiler_core::directional::{OutputId, WorkspaceId};
+    use tiler_core::geometry::Rect;
+    use tiler_core::gesture::GesturePhase;
+    use tiler_core::session::DomainKey;
+    use tiler_core::size_hints::WindowSizeHints;
+
+    use crate::config::ProbeModifier;
+    use crate::drag_drop::{DragFences, DragOptions, PreviewOutcome};
+    use crate::drag_session::{DragSession, PressOwner, gesture_ingress};
+    use crate::focus_route::FocusRoute;
+    use crate::runtime::Shared;
+    use crate::runtime_core::{RetainedApp, RetainedCore};
+    use crate::runtime_types::{NativeContext, NativeDomain, ObservedWindow, window_id};
+    use crate::world_runtime::WorldSession;
+    use crate::world_sequencer::ObservationClock;
+
+    const UUID_1: &str = "A1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6";
+
+    fn output() -> OutputId {
+        OutputId(crate::topology::output_key(1))
+    }
+
+    fn domain_key() -> DomainKey {
+        DomainKey {
+            output: output(),
+            workspace: WorkspaceId(crate::topology::workspace_key(11)),
+        }
+    }
+
+    fn ctx_current() -> Arc<NativeContext> {
+        Arc::new(NativeContext {
+            revision: 9,
+            domains: vec![NativeDomain {
+                cg_id: 1,
+                uuid: Some(UUID_1.to_owned()),
+                output: output(),
+                workspace: WorkspaceId(crate::topology::workspace_key(11)),
+                space: 11,
+                current: true,
+                readable: true,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1200,
+                    h: 800,
+                },
+                visible: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1200,
+                    h: 800,
+                },
+            }],
+            skipped: Vec::new(),
+        })
+    }
+
+    fn observed_a() -> ObservedWindow {
+        ObservedWindow {
+            wid: 7,
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+            floating: false,
+            fullscreen: false,
+            hints: WindowSizeHints::none(),
+        }
+    }
+
+    fn observed_b() -> ObservedWindow {
+        ObservedWindow {
+            wid: 9,
+            x: 0,
+            y: 400,
+            w: 400,
+            h: 300,
+            floating: false,
+            fullscreen: false,
+            hints: WindowSizeHints::none(),
+        }
+    }
+
+    fn retained_two_windows() -> RetainedCore {
+        let mut retained = RetainedCore::default();
+        retained.apps.insert(
+            4242,
+            RetainedApp {
+                generation: 1,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: vec![observed_a()],
+                focused_wid: Some(7),
+            },
+        );
+        retained.apps.insert(
+            4243,
+            RetainedApp {
+                generation: 1,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: vec![observed_b()],
+                focused_wid: None,
+            },
+        );
+        retained
+            .window_domains
+            .insert(window_id(4242, 7), domain_key());
+        retained
+            .window_domains
+            .insert(window_id(4243, 9), domain_key());
+        retained.observed_focus = Some(tiler_core::directional::WindowId(window_id(4242, 7)));
+        retained.native_revision = 9;
+        retained
+    }
+
+    fn test_shared(ctx: Arc<NativeContext>) -> Arc<Mutex<Shared>> {
+        Arc::new(Mutex::new(Shared {
+            config: crate::runtime_types::RuntimeConfig::default(),
+            handles_live: 0,
+            generation_counter: 0,
+            log_counter: 0,
+            start: Instant::now(),
+            apps: BTreeMap::new(),
+            clock: Arc::new(ObservationClock::new()),
+            midflight_hook: Mutex::new(None),
+            post_accept_hook: Mutex::new(None),
+            topology: None,
+            display_inputs: None,
+            select_wake: None,
+            topology_revision: ctx.revision,
+            native_context: Some(Arc::clone(&ctx)),
+            native_cell: crate::runtime_shared::NativeContextCell::new(),
+            select_pending: None,
+            select_busy: false,
+            focus_evidence: None,
+            zombies: Vec::new(),
+            engine_handle: None,
+            input_handle: None,
+            logger_handle: None,
+            input_thread: None,
+            terminal: None,
+            admission_closed: false,
+            stop_engine: Arc::new(AtomicBool::new(false)),
+            stop_input: Arc::new(AtomicBool::new(false)),
+            stop_logger: Arc::new(AtomicBool::new(false)),
+            log_tx: None,
+            diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
+            log: std::collections::VecDeque::new(),
+            last_desired: Vec::new(),
+        }))
+    }
+
+    type Harness = (
+        WorldSession,
+        RetainedCore,
+        Arc<Mutex<Shared>>,
+        Arc<Inbox>,
+        Arc<Mutex<Vec<FocusRequest>>>,
+    );
+
+    fn harness() -> Harness {
+        let ctx = ctx_current();
+        let shared = test_shared(ctx);
+        // The session must share the submitter watermark clock (the
+        // production route): invalidating input and the dispatch ticket
+        // stamp the SAME current mark, or every reply refuses as stale.
+        let clock = Arc::clone(&lock_shared(&shared).clock);
+        (
+            WorldSession::new(
+                tiler_core::size_hints::FixedSizePredicate::BothAxes,
+                true,
+                FocusRoute::Slps,
+                clock,
+            ),
+            retained_two_windows(),
+            shared,
+            Arc::new(Inbox::new(16)),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+    }
+
+    fn fences_ok() -> DragFences {
+        DragFences {
+            enabled: true,
+            session_unlocked: true,
+            secure_input_active: false,
+            scope_allowed: true,
+            fullscreen_active: false,
+            revision_fresh: true,
+            focus_matches: true,
+        }
+    }
+
+    const CONTROL_FLAGS: u64 = 0x0004_0000;
+
+    fn press_owner() -> PressOwner {
+        PressOwner {
+            pid: 4242,
+            wid: 7,
+            window: window_id(4242, 7),
+            fullscreen: false,
+            revision: 9,
+            start_frame: Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
+        }
+    }
+
+    fn down_hit(x: i32, y: i32) -> crate::ffi::DragMouseHit {
+        crate::ffi::DragMouseHit {
+            kind: crate::ffi::DragMouseKind::Down,
+            x,
+            y,
+            flags: CONTROL_FLAGS,
+        }
+    }
+
+    fn arm(session: &DragSession) {
+        match session.on_down(down_hit(300, 250), &Ok(press_owner()), fences_ok()) {
+            crate::drag_session::HitIntent::Down(crate::drag_session::Downcome::Armed {
+                window,
+            }) => {
+                assert_eq!(window, "4242_7");
+            }
+            other => panic!("press must arm, got {other:?}"),
+        }
+    }
+
+    /// Mirror the product submit bump: each gesture ingress is invalidating
+    /// input, so the ticket stamps the bumped watermark.
+    fn submit(
+        session: &mut WorldSession,
+        retained: &mut RetainedCore,
+        shared: &Arc<Mutex<Shared>>,
+        inbox: &Arc<Inbox>,
+        focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+        ingress: tiler_core::gesture::GestureIngress,
+        press_revision: Option<u64>,
+    ) -> DragGestureReply {
+        crate::runtime_shared::invalidate_clock(shared);
+        handle_drag_gesture(
+            session,
+            retained,
+            shared,
+            inbox,
+            focus_queue,
+            8,
+            ingress,
+            press_revision,
+        )
+    }
+
+    #[test]
+    fn gesture_start_binds_then_update_previews_core_slot() {
+        let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
+        arm(&drag);
+        // Started binds only: no overlay at the down point itself.
+        let started = drag.start_ingress().expect("armed gesture offers Started");
+        assert_eq!(started.phase, GesturePhase::Started);
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            started,
+            Some(9),
+        );
+        assert!(matches!(
+            reply.preview,
+            PreviewOutcome::HideTransient { .. }
+        ));
+        assert!(reply.settled.is_none(), "start never settles");
+        // Moved sample resolves the core insertion slot through the SAME
+        // gesture lifecycle the offline harness traverses.
+        match drag.on_drag(10, 450, fences_ok()) {
+            crate::drag_session::HitIntent::Sample(
+                crate::drag_session::SampleIntent::Preview { ingress },
+            ) => {
+                assert_eq!(ingress.phase, GesturePhase::Updated);
+                let reply = submit(
+                    &mut session,
+                    &mut retained,
+                    &shared,
+                    &inbox,
+                    &focus_queue,
+                    ingress,
+                    Some(9),
+                );
+                match reply.preview {
+                    PreviewOutcome::Show { rect, target, .. } => {
+                        assert!(rect.w > 0 && rect.h > 0, "slot rect is real geometry");
+                        assert_eq!(target.0, "4243_9", "core-resolved neighbor, never a guess");
+                        assert_ne!(target.0, "4242_7", "target is never the mover");
+                        drag.note_preview(&PreviewOutcome::Show {
+                            rect,
+                            hover_prior: None,
+                            target: target.clone(),
+                        });
+                        // Above-target carrier order verifies against the
+                        // fake window-server order (carrier above target).
+                        let overlay = drag.overlay_for(rect);
+                        match overlay {
+                            crate::drag_drop::DragOverlay::ShowFillAbove { ordering, .. } => {
+                                assert_eq!(ordering, crate::drag_drop::DragOrdering::AboveTarget);
+                            }
+                            other => panic!("preview must show above, got {other:?}"),
+                        }
+                        assert!(
+                            crate::drag_session::carrier_above_verified(&[55, 9, 7], 55, 9),
+                            "carrier above the joined target"
+                        );
+                    }
+                    other => panic!("moved pointer must resolve a slot, got {other:?}"),
+                }
+                assert!(reply.settled.is_none(), "update never settles");
+            }
+            other => panic!("moved sample must preview, got {other:?}"),
+        }
+        assert!(drag.active());
+    }
+
+    #[test]
+    fn gesture_release_commits_once_and_replay_stays_dead() {
+        let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
+        arm(&drag);
+        let started = drag.start_ingress().expect("Started");
+        let _ = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            started,
+            Some(9),
+        );
+        match drag.on_drag(10, 450, fences_ok()) {
+            crate::drag_session::HitIntent::Sample(
+                crate::drag_session::SampleIntent::Preview { ingress },
+            ) => {
+                let _ = submit(
+                    &mut session,
+                    &mut retained,
+                    &shared,
+                    &inbox,
+                    &focus_queue,
+                    ingress,
+                    Some(9),
+                );
+            }
+            other => panic!("preview expected, got {other:?}"),
+        }
+        // Native post-gesture observation: the window server moved the
+        // window with the gesture (same size, new origin), exactly like the
+        // live AX readback the release intent derives from.
+        retained.apps.get_mut(&4242).expect("mover").windows[0].x = 100;
+        retained.apps.get_mut(&4242).expect("mover").windows[0].y = 400;
+        let (ingress, press_revision) = match drag.on_up(10, 450) {
+            crate::drag_session::HitIntent::Release(crate::drag_session::ReleaseIntent::Drop {
+                ingress,
+                press_revision,
+            }) => (ingress, press_revision),
+            other => panic!("release must drop, got {other:?}"),
+        };
+        assert_eq!(press_revision, 9);
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            ingress.clone(),
+            Some(press_revision),
+        );
+        let settled = reply.settled.expect("release incorporates a terminal");
+        assert!(settled.committed, "a moved release commits");
+        // Exactly-once main-side: the trailing release ignores.
+        assert!(matches!(
+            drag.on_up(10, 450),
+            crate::drag_session::HitIntent::Release(crate::drag_session::ReleaseIntent::Ignore)
+        ));
+        // Replay of the same terminal never commits again (at-most-once by
+        // stable gesture id).
+        let replay = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            ingress,
+            Some(press_revision),
+        );
+        assert!(
+            replay.settled.is_none(),
+            "consumed id replays dead with no second terminal"
+        );
+    }
+
+    #[test]
+    fn gesture_cancel_clears_without_commit() {
+        let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
+        arm(&drag);
+        let started = drag.start_ingress().expect("Started");
+        let _ = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            started,
+            Some(9),
+        );
+        let cancelled = drag.on_escape().expect("Escape cancels the held gesture");
+        assert_eq!(cancelled.phase, GesturePhase::Cancelled);
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            cancelled,
+            None,
+        );
+        if let Some(settled) = reply.settled {
+            assert!(!settled.committed, "cancel clears with no commit");
+        }
+        assert!(!drag.active());
+        assert!(matches!(
+            drag.on_up(10, 450),
+            crate::drag_session::HitIntent::Release(crate::drag_session::ReleaseIntent::Ignore)
+        ));
+    }
+
+    #[test]
+    fn stale_press_hidden_domain_and_unknown_window_cancel_dead() {
+        let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
+        arm(&drag);
+        let started = drag.start_ingress().expect("Started");
+        // Drifted press revision refuses stale before dispatch (never a
+        // late commit, never a replay).
+        let stale = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            started.clone(),
+            Some(8),
+        );
+        assert!(matches!(stale.preview, PreviewOutcome::CancelDead { .. }));
+        assert!(stale.settled.is_none());
+        // Hidden-domain subject cancels dead: the current Space proof is
+        // valid and current, never a guessed target.
+        let mut hidden_ctx = (*ctx_current()).clone();
+        hidden_ctx.domains[0].current = false;
+        let hidden_shared = test_shared(Arc::new(hidden_ctx));
+        let hidden = submit(
+            &mut session,
+            &mut retained,
+            &hidden_shared,
+            &inbox,
+            &focus_queue,
+            started,
+            Some(9),
+        );
+        assert!(matches!(
+            hidden.preview,
+            PreviewOutcome::CancelDead {
+                reason: "hidden-domain"
+            }
+        ));
+        assert!(hidden.settled.is_none());
+        // Unknown window cancels dead without touching the core.
+        let unknown = gesture_ingress(
+            999,
+            "9999_1",
+            GesturePhase::Updated,
+            Some((10, 450)),
+            (300, 250),
+            Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            unknown,
+            Some(9),
+        );
+        assert!(matches!(
+            reply.preview,
+            PreviewOutcome::CancelDead {
+                reason: "unknown-window"
+            }
+        ));
+        assert!(reply.settled.is_none());
+    }
+
+    #[test]
+    fn stale_watermark_suppresses_preview_and_new_generation_refuses() {
+        let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
+        arm(&drag);
+        let started = drag.start_ingress().expect("Started");
+        let _ = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            started,
+            Some(9),
+        );
+        // Racing input lands mid-flight: the in-flight preview refuses as
+        // stale-observation and actuates nothing (no slot, no commit).
+        let clock = Arc::clone(&lock_shared(&shared).clock);
+        *lock_shared(&shared)
+            .midflight_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(move || {
+            clock.invalidate();
+        }));
+        let ingress = match drag.on_drag(10, 450, fences_ok()) {
+            crate::drag_session::HitIntent::Sample(
+                crate::drag_session::SampleIntent::Preview { ingress },
+            ) => ingress,
+            other => panic!("preview expected, got {other:?}"),
+        };
+        let stale = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            ingress,
+            Some(9),
+        );
+        assert!(
+            matches!(stale.preview, PreviewOutcome::HideTransient { .. }),
+            "stale preview hides, never shows a stale slot"
+        );
+        assert!(stale.settled.is_none());
+        *lock_shared(&shared)
+            .midflight_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+        // A new generation refuses without actuation (no late commit on a
+        // superseded generation).
+        session.sequencer().bind_generation("gen-2");
+        let fresh = gesture_ingress(
+            4242,
+            "4242_7",
+            GesturePhase::Updated,
+            Some((10, 450)),
+            (300, 250),
+            Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
+        );
+        let refused = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            fresh,
+            Some(9),
+        );
+        assert!(refused.settled.is_none(), "new generation settles nothing");
     }
 }

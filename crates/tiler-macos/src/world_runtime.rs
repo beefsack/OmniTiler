@@ -25,10 +25,9 @@
 //! - AppKit main / engine-owner / per-app AX worker ownership; per-app
 //!   generations and latest-wins frame/focus slots; observed focus is
 //!   truth (planned focus never promotes).
-//! - Native Space capability refusals: unsupported sends/trailing/create
-//!   refuse adapter-side before any world contact; exactly the armed
-//!   select-only subset travels planner-owned (`Select*`), everything
-//!   else rides [`WorldCommand::Operation`](tiler_core::world_report::WorldCommand).
+//! - Native Space capability refusals precede actuation. Armed selects/sends
+//!   use world commands; active Meta drag uses gesture ingress; other tiling
+//!   commands use [`WorldCommand::Operation`](tiler_core::world_report::WorldCommand).
 //! - Hidden/unreadable scopes never actuate: frames emit only for
 //!   currently-actuated domains carrying `Controlled` frame authority with
 //!   an effective frame. Holds preserve native state (no writes).
@@ -38,36 +37,30 @@
 //! - Empty native contexts never actuate (same as the KDE null): native
 //!   mode with no derived context refuses instead of reporting.
 //!
-//! Geometry (handover 1 proof): native reports carry the FULL display
-//! rectangle as core-owned topology `geometry` plus the RAW visible work
-//! area as domain `bounds` with [`PHASE1_OUTER_GAP`] riding separately — the world engine
-//! applies its single inset, converging to exactly the legacy pre-inset
-//! bounds on real displays (pinned by
-//! `native_raw_plus_gap_converges_to_legacy_inset` below; only degenerate
-//! sub-margin areas diverge, and those never occur live). The synthetic
-//! skeleton reports `domain_outer_gap = 0` with raw [`PHASE1_BOUNDS`],
-//! preserving the legacy skeleton's exact edge-to-edge geometry.
+//! Geometry: screen rows carry FULL display bounds plus the RAW visible work
+//! area with [`PHASE1_OUTER_GAP`] separately; core applies the inset once.
+//! The synthetic skeleton carries zero outer gap and raw [`PHASE1_BOUNDS`].
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
+use tiler_core::geometry::Rect;
+use tiler_core::gesture::GestureIngress;
 use tiler_core::output_selection::MigrationSourceRefill;
-use tiler_core::session::{DomainKey, Session};
+use tiler_core::session::DomainKey;
 use tiler_core::size_hints::FixedSizePredicate;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, CommandResult, HoldReason, MinimizedEntry,
-    WorldCommand, WorldReport,
+    FrameAttempt, FrameSetter, HoldReason, MemberAttempt, ViewAttempt, WorldCommand, WorldReport,
 };
 
-use crate::drag_drop::map_preview_rejection;
 use crate::focus_route::FocusRoute;
-use crate::runtime::{NativeContext, ObservedWindow, Shared, lock_shared, window_id};
-use crate::runtime_core::{RetainedCore, clear_focus_into};
+use crate::runtime::{NativeContext, ObservedWindow, window_id};
+use crate::runtime_core::{LifetimeMemory, MinimizedRecord, RetainedCore, clear_focus_into};
 use crate::runtime_types::{
-    AxCompletion, NativeDomain, PHASE1_BOUNDS, PHASE1_GENERATION, PHASE1_OUTER_GAP, PHASE1_OUTPUT,
-    PHASE1_OWNER, PHASE1_WORKSPACE, ScopedBackendSnapshot,
+    AxCompletion, NativeDomain, PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP,
+    PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE, ScopedBackendSnapshot,
 };
 use crate::world_builder::{ReportInput, build_report};
 use crate::world_sequencer::{ObservationClock, WorldSequencer};
@@ -91,27 +84,34 @@ pub(crate) struct WorldSession {
     predicate: FixedSizePredicate,
     native_mode: bool,
     focus_route: FocusRoute,
-    /// Staged attempt feedback drained into the next dispatched report
-    /// (select-drain outcomes). Drained (cleared) on every dispatch
-    /// whether or not the report is accepted — feedback describes
-    /// attempted actuation, never retries itself.
-    pending_feedback: Vec<AttemptFeedback>,
-    /// Frame-write correlation: `(pid, cmd_id)` to the emitted window plus
-    /// its explicit placement token, if any. Bounded (oldest evicted).
-    pending_writes: BTreeMap<(u32, u64), (String, Option<String>)>,
+    /// Staged raw view attempts drained into the next dispatched report,
+    /// latest-wins per owning operation. Drained (cleared) on every
+    /// dispatch whether or not the report is accepted — attempts describe
+    /// attempted actuation, never retry themselves.
+    pub(crate) pending_views: BTreeMap<String, ViewAttempt>,
+    /// Staged raw membership attempts, latest-wins per (operation, window).
+    pub(crate) pending_members: BTreeMap<(String, String), MemberAttempt>,
+    /// Staged raw frame attempts, latest-wins per window. Only explicit
+    /// float-placement writes ever stage here; ordinary frame traffic
+    /// rides the observation facts.
+    pub(crate) pending_frames: BTreeMap<String, FrameAttempt>,
+    /// Frame-write correlation: `(pid, cmd_id)` to the emitted window, its
+    /// attempted frame, and its explicit placement token, if any. Bounded
+    /// (oldest evicted).
+    pending_writes: BTreeMap<(u32, u64), (String, Rect, Option<String>)>,
     /// Explicit float-placement tokens already written once (exactly-once
     /// geometry under `frame_operation`).
     spent_frame_ops: BTreeSet<String>,
+    /// Adapter-asserted automatic-float lifetimes: windows the adapter
+    /// reported `fixed_auto` for (first-sight fixed asserts, re-asserted
+    /// while retained). Pruned to core-floating rows on every dispatch;
+    /// the builder inserts newly asserted lifetimes. Never inferred, never
+    /// a durable binding — only the adapter's own assertion echo.
+    pub(crate) auto_asserted: BTreeSet<String>,
     /// True once an observation was refused (stale revision, no context):
     /// retained truth missed input, so the next report publishes
     /// `inventory_complete = false` until a fresh observation lands.
     coverage_gap: bool,
-    /// Outstanding trailing creation bindings (see
-    /// [`crate::trailing_binding`]): published on every native report
-    /// until the core acknowledges the bound row or the native vanishes.
-    /// Empty until the trailing drain records an exact-append proof, so
-    /// all current reports are unchanged.
-    trailing: crate::trailing_binding::TrailingBindingStore,
 }
 
 impl WorldSession {
@@ -139,11 +139,13 @@ impl WorldSession {
             predicate,
             native_mode,
             focus_route: route,
-            pending_feedback: Vec::new(),
+            pending_views: BTreeMap::new(),
+            pending_members: BTreeMap::new(),
+            pending_frames: BTreeMap::new(),
             pending_writes: BTreeMap::new(),
             spent_frame_ops: BTreeSet::new(),
+            auto_asserted: BTreeSet::new(),
             coverage_gap: false,
-            trailing: crate::trailing_binding::TrailingBindingStore::default(),
         }
     }
 
@@ -152,14 +154,88 @@ impl WorldSession {
         &self.incarnation
     }
 
-    /// Stage one attempt-feedback row for the next dispatched report.
-    /// Bounded: oldest rows evict past a small cap (well under the core's
-    /// feedback cap).
-    pub(crate) fn stage_feedback(&mut self, feedback: AttemptFeedback) {
-        self.pending_feedback.push(feedback);
-        while self.pending_feedback.len() > 64 {
-            self.pending_feedback.remove(0);
-        }
+    /// Stage one raw view-attempt row for the next dispatched report.
+    /// Resolves the retained transfer target by operation identity and
+    /// translates native Space reads through the last applied reply's
+    /// `native_binding` rows (a current-reply live lookup, never a durable
+    /// host table, never adapter mapping); unknown operations and
+    /// untranslatable reads drop without evidence (never forged, never
+    /// guessed). Latest-wins per owning operation.
+    pub(crate) fn stage_view_attempt(
+        &mut self,
+        operation_id: &str,
+        setter: FrameSetter,
+        pre_sid: Option<u64>,
+        post_sid: Option<u64>,
+    ) {
+        let transfer = self
+            .engine
+            .retained_transfers()
+            .into_iter()
+            .find(|target| target.operation_id == operation_id);
+        let Some(transfer) = transfer else {
+            return;
+        };
+        let target_output = transfer.target_output.clone();
+        let target_workspace = transfer.target_workspace.clone();
+        let reply = self.sequencer.last_reply();
+        let pre = pre_sid.and_then(|sid| translate_native_sid(reply.as_ref(), &target_output, sid));
+        let post =
+            post_sid.and_then(|sid| translate_native_sid(reply.as_ref(), &target_output, sid));
+        let attempt = ViewAttempt {
+            operation_id: operation_id.to_owned(),
+            target_output,
+            target_workspace,
+            setter,
+            pre,
+            post,
+            baseline: None,
+            attempt_ms: 0,
+        };
+        self.pending_views.insert(operation_id.to_owned(), attempt);
+    }
+
+    /// Stage one raw membership-attempt row for the next dispatched report.
+    /// Same resolution/translation/drop rules as
+    /// [`WorldSession::stage_view_attempt`]; the retained transfer must be
+    /// a window transfer (its subject window and target ride the staged
+    /// row — the operation identity already names them core-side, so the
+    /// drain never re-states them). Latest-wins per (operation, window).
+    pub(crate) fn stage_member_attempt(
+        &mut self,
+        operation_id: &str,
+        setter: FrameSetter,
+        post_sid: Option<u64>,
+    ) {
+        let transfer = self
+            .engine
+            .retained_transfers()
+            .into_iter()
+            .find(|target| target.operation_id == operation_id);
+        let Some(transfer) = transfer else {
+            return;
+        };
+        let tiler_core::world_report::TransferKind::Window(window) = transfer.kind.clone() else {
+            return;
+        };
+        let target_output = transfer.target_output.clone();
+        let target_workspace = transfer.target_workspace.clone();
+        let reply = self.sequencer.last_reply();
+        let post = post_sid
+            .and_then(|sid| translate_native_sid(reply.as_ref(), &target_output, sid))
+            .map(|workspace| (target_output.clone(), workspace));
+        let attempt = MemberAttempt {
+            operation_id: operation_id.to_owned(),
+            window: window.clone(),
+            target_output,
+            target_workspace,
+            setter,
+            pre: None,
+            post,
+            attempt_ms: 0,
+        };
+        self.pending_members
+            .insert((operation_id.to_owned(), window.0.clone()), attempt);
     }
 
     /// Mark retained truth as having missed input (refused observation):
@@ -173,23 +249,35 @@ impl WorldSession {
         self.coverage_gap = false;
     }
 
-    fn take_feedback(&mut self) -> Vec<AttemptFeedback> {
-        std::mem::take(&mut self.pending_feedback)
+    fn take_view_attempts(&mut self) -> Vec<ViewAttempt> {
+        std::mem::take(&mut self.pending_views)
+            .into_values()
+            .collect()
     }
 
-    /// Per-domain core sessions cloned for one report (handover 2): the
-    /// engine-side sessions carry fixed-size admission and retained float
-    /// lifetime, so [`collect_app_windows`](crate::runtime_core::collect_app_windows)
-    /// normalizes wire flags exactly as the legacy path did.
-    fn domain_sessions(&self, keys: &[DomainKey]) -> BTreeMap<DomainKey, Session> {
-        let inner = self.engine.engine();
-        keys.iter()
-            .filter_map(|key| {
-                inner
-                    .session(key)
-                    .map(|session| (key.clone(), session.clone()))
-            })
+    fn take_member_attempts(&mut self) -> Vec<MemberAttempt> {
+        std::mem::take(&mut self.pending_members)
+            .into_values()
             .collect()
+    }
+
+    fn take_frame_attempts(&mut self) -> Vec<FrameAttempt> {
+        std::mem::take(&mut self.pending_frames)
+            .into_values()
+            .collect()
+    }
+
+    /// Adapter-side core-delivery lifetime memory for wire-flag
+    /// normalization: the last applied reply's rows plus the
+    /// native-to-logical home map (a live reply lookup, never a durable
+    /// host table). Empty before the first applied reply (pre-adoption
+    /// first-sight, matching the old empty-session read).
+    fn lifetime_memory(&self) -> LifetimeMemory {
+        self.sequencer
+            .last_reply()
+            .as_ref()
+            .map(LifetimeMemory::from_reply)
+            .unwrap_or_else(LifetimeMemory::empty)
     }
 
     /// Native mode flag (synthetic skeleton otherwise).
@@ -219,57 +307,35 @@ impl WorldSession {
     pub(crate) fn spend_frame_op(&mut self, operation: &str) -> bool {
         self.spent_frame_ops.insert(operation.to_owned())
     }
+}
 
-    /// Outstanding trailing bindings for the next report. Prunes natives
-    /// that left this dispatch's live topology first, so a vanished Space
-    /// never reports a stale binding.
-    pub(crate) fn trailing_report_bindings(
-        &mut self,
-        ctx: &NativeContext,
-    ) -> Vec<tiler_core::world_report::WorkspaceBinding> {
-        use std::collections::BTreeMap;
-        let mut live: BTreeMap<OutputId, Vec<String>> = BTreeMap::new();
-        for domain in &ctx.domains {
-            live.entry(domain.output.clone())
-                .or_default()
-                .push(domain.workspace.0.clone());
-        }
-        self.trailing.prune_vanished(&live);
-        self.trailing.report_bindings()
-    }
+/// Native Space id to native vocabulary: the opaque host-owned desktop id
+/// the core adoption mapping keys on (same shape as
+/// [`crate::topology::workspace_key`]). Pure.
+pub(crate) fn native_space_id(sid: u64) -> String {
+    crate::topology::workspace_key(sid)
+}
 
-    /// Release trailing bindings the core acknowledged (the applied reply
-    /// publishes their bound rows). Called once per applied reply; returns
-    /// the acknowledged logical ids.
-    pub(crate) fn note_trailing_ack(
-        &mut self,
-        reply: &tiler_core::world_report::WorldReply,
-    ) -> Vec<String> {
-        self.trailing.note_ack(reply)
-    }
-
-    /// Record one exact-append trailing proof against the engine's pending
-    /// token (see
-    /// [`TrailingBindingStore::bind_exact_append`](crate::trailing_binding::TrailingBindingStore::bind_exact_append)).
-    /// Production drains call this through the [`EngineJob::TrailingProof`](crate::runtime_thread::EngineJob::TrailingProof)
-    /// lane (capability-disabled production never reaches it: admission
-    /// refuses trailing first).
-    pub(crate) fn adopt_trailing_binding(
-        &mut self,
-        logical_id: &str,
-        output: &OutputId,
-        created_sid: u64,
-        before: &[u64],
-        after: &[u64],
-    ) -> Result<(), String> {
-        self.trailing
-            .bind_exact_append(logical_id, output, created_sid, before, after)
-    }
+/// Translate one drain-observed native Space id to the core-published
+/// logical workspace id through the last applied reply's `native_binding`
+/// rows (a current-reply live lookup, never a durable host table, never
+/// adapter mapping). `None` when the reply is absent or the native is
+/// unmapped there — unknown, never guessed.
+fn translate_native_sid(
+    reply: Option<&tiler_core::world_report::WorldReply>,
+    output: &OutputId,
+    sid: u64,
+) -> Option<String> {
+    let native = native_space_id(sid);
+    reply?.workspaces.iter().find_map(|row| {
+        (row.output == *output && row.native_binding.as_deref() == Some(native.as_str()))
+            .then(|| row.id.clone())
+    })
 }
 
 /// Minimized lifetimes for one report, in stable order.
-pub(crate) fn minimized_entries(retained: &RetainedCore) -> Vec<MinimizedEntry> {
-    let mut entries: Vec<MinimizedEntry> = retained.minimized.values().cloned().collect();
+pub(crate) fn minimized_entries(retained: &RetainedCore) -> Vec<MinimizedRecord> {
+    let mut entries: Vec<MinimizedRecord> = retained.minimized.values().cloned().collect();
     entries.sort_by(|a, b| a.window.0.cmp(&b.window.0));
     entries
 }
@@ -325,7 +391,7 @@ pub(crate) fn refresh_minimized(
             Some(key) => {
                 retained.minimized.insert(
                     id.clone(),
-                    MinimizedEntry {
+                    MinimizedRecord {
                         window: WindowId(id),
                         output: key.output,
                         workspace: key.workspace,
@@ -393,21 +459,6 @@ pub(crate) fn terminate_close_map(
     map
 }
 
-/// Per-domain observed focus: the global truth restricted to its homed
-/// domain (empty id elsewhere — focus never leaks across domains).
-fn domain_focused(retained: &RetainedCore, keys: &[DomainKey]) -> BTreeMap<DomainKey, WindowId> {
-    let mut out = BTreeMap::new();
-    if let Some(focus) = retained.observed_focus.as_ref()
-        && let Some(key) = retained.window_domains.get(&focus.0)
-    {
-        out.insert(key.clone(), focus.clone());
-    }
-    for key in keys {
-        out.entry(key.clone()).or_insert(WindowId(String::new()));
-    }
-    out
-}
-
 /// Member windows per domain as `(pid, window)` pairs for
 /// [`ReportInput`]: every retained window currently homed to the key.
 /// Observations arrive per app, but each report converges complete domain
@@ -454,9 +505,30 @@ pub(crate) fn build_dispatch_report(
     ticket_request: u64,
     ticket_command_seq: Option<u64>,
     ticket_command: Option<WorldCommand>,
+    gesture: Option<GestureIngress>,
     request_id: &str,
 ) -> Option<WorldReport> {
-    let feedback = session.take_feedback();
+    // No-context guard BEFORE any drain: an empty native context reports
+    // nothing (KDE null parity), and the staged rows must survive for the
+    // next real dispatch — attempts describe attempted actuation and the
+    // assertion set names asserted lifetimes, and neither may be dropped
+    // by a report that never runs.
+    if let DispatchContext::Native(ctx) = dispatch
+        && ctx.domains.is_empty()
+    {
+        return None;
+    }
+    let view_rows = session.take_view_attempts();
+    let member_rows = session.take_member_attempts();
+    let frame_rows = session.take_frame_attempts();
+    let memory = session.lifetime_memory();
+    // Prune automatic-float assertions to lifetimes the core still floats
+    // (un-floated lifetimes drop the assertion with the exception); the
+    // builder inserts newly asserted lifetimes during collection.
+    session
+        .auto_asserted
+        .retain(|id| memory.rows.get(id).is_some_and(|row| row.floating));
+    let mut auto_asserted = std::mem::take(&mut session.auto_asserted);
     let focused_global = retained
         .observed_focus
         .as_ref()
@@ -464,9 +536,6 @@ pub(crate) fn build_dispatch_report(
         .unwrap_or_default();
     match dispatch {
         DispatchContext::Native(ctx) => {
-            if ctx.domains.is_empty() {
-                return None;
-            }
             let keys: Vec<DomainKey> = ctx
                 .domains
                 .iter()
@@ -475,9 +544,7 @@ pub(crate) fn build_dispatch_report(
                     workspace: d.workspace.clone(),
                 })
                 .collect();
-            let sessions = session.domain_sessions(&keys);
             let members = report_members(retained, &keys);
-            let focused = domain_focused(retained, &keys);
             // Explicit closes arrive pre-partitioned by the caller
             // (terminate homes member closes through live homing plus
             // minimized closes through their entry homing, before
@@ -504,8 +571,7 @@ pub(crate) fn build_dispatch_report(
             let incomplete = session.coverage_gap || !ctx.skipped.is_empty();
             let owned_command = ticket_command.clone();
             let owned_request = request_id.to_owned();
-            let staged_bindings = session.trailing_report_bindings(ctx);
-            let input = ReportInput {
+            let mut input = ReportInput {
                 owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
                 core_generation: PHASE1_GENERATION,
@@ -516,36 +582,42 @@ pub(crate) fn build_dispatch_report(
                 command: owned_command,
                 ctx,
                 members: &members,
-                sessions: &sessions,
-                domain_focused: &focused,
+                memory: &memory,
+                auto_asserted: &mut auto_asserted,
                 closed: &closed,
                 minimized: &minimized_entries(retained),
                 unreadable: &unreadable,
-                feedback: &feedback,
+                frames: &frame_rows,
+                member_attempts: &member_rows,
+                view_attempts: &view_rows,
+                clear_attempts: &[],
+                gesture,
                 focused_global: &focused_global,
                 complete: !incomplete,
+                coverage_gap: session.coverage_gap,
                 incomplete_outputs: &[],
                 gesture_barrier: false,
                 predicate: session.predicate,
                 refill: MigrationSourceRefill::LastRemaining,
                 default_tiled: true,
-                bindings: &staged_bindings,
                 primary_output: None,
-                domain_outer_gap: PHASE1_OUTER_GAP,
+                gap: PHASE1_GAP,
+                outer_gap: PHASE1_OUTER_GAP,
+                monotonic_ms: 0,
             };
-            Some(build_report(&input))
+            let report = build_report(&mut input);
+            session.auto_asserted = std::mem::take(&mut auto_asserted);
+            Some(report)
         }
         DispatchContext::Synthetic => {
             let key = DomainKey {
                 output: OutputId(PHASE1_OUTPUT.to_owned()),
                 workspace: WorkspaceId(PHASE1_WORKSPACE.to_owned()),
             };
-            let sessions = session.domain_sessions(std::slice::from_ref(&key));
             // Synthetic legacy observations home every retained window to
             // the skeleton domain at ingest (see `note_synthetic_homing`),
             // so membership here is exactly the homed set.
             let members = report_members(retained, std::slice::from_ref(&key));
-            let focused = domain_focused(retained, std::slice::from_ref(&key));
             let ctx = NativeContext {
                 revision: 0,
                 domains: vec![NativeDomain {
@@ -564,7 +636,7 @@ pub(crate) fn build_dispatch_report(
             let owned_command = ticket_command.clone();
             let owned_request = request_id.to_owned();
             let empty_unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
-            let input = ReportInput {
+            let mut input = ReportInput {
                 owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
                 core_generation: PHASE1_GENERATION,
@@ -575,161 +647,110 @@ pub(crate) fn build_dispatch_report(
                 command: owned_command,
                 ctx: &ctx,
                 members: &members,
-                sessions: &sessions,
-                domain_focused: &focused,
+                memory: &memory,
+                auto_asserted: &mut auto_asserted,
                 closed: &closed,
                 minimized: &[],
                 unreadable: &empty_unreadable,
-                feedback: &feedback,
+                frames: &frame_rows,
+                member_attempts: &member_rows,
+                view_attempts: &view_rows,
+                clear_attempts: &[],
+                gesture,
                 focused_global: &focused_global,
                 complete: true,
+                coverage_gap: session.coverage_gap,
                 incomplete_outputs: &[],
                 gesture_barrier: false,
                 predicate: session.predicate,
                 refill: MigrationSourceRefill::LastRemaining,
                 default_tiled: true,
-                // The synthetic skeleton never trails: no bindings invented.
-                bindings: &[],
                 primary_output: None,
                 // Edge-to-edge legacy skeleton parity (the world engine
                 // insets by the carried gap; 0 preserves exact geometry).
-                domain_outer_gap: 0,
+                gap: PHASE1_GAP,
+                outer_gap: 0,
+                monotonic_ms: 0,
             };
-            Some(build_report(&input))
+            let report = build_report(&mut input);
+            session.auto_asserted = std::mem::take(&mut auto_asserted);
+            Some(report)
         }
     }
 }
 
-/// Read-only drag preview through the world route: one
-/// `Operation(DragPreview)` report (never committed, never advancing the
-/// revision), mapped to a pure outcome. Consumes request/command sequences
-/// (at-most-once); the flight clears without sequencer acceptance so the
-/// unchanged revision never self-refuses as stale.
-pub(crate) fn preview_world(
-    session: &mut WorldSession,
-    retained: &RetainedCore,
-    shared: &Arc<Mutex<Shared>>,
-    window: &str,
-    x: i32,
-    y: i32,
-    hover_prior: Option<tiler_core::session::DragHoverPrior>,
+/// Map one applied gesture reply to its read-only preview outcome: a
+/// core-resolved insertion slot shows the filled rect above the
+/// core-resolved target neighbor (never the mover, never an adapter
+/// guess); every other applied reply hides transiently with the gesture
+/// retained for the next sample. The carried sticky hover stays core-side
+/// (the ingress carries no hover prior); the outcome still reports it for
+/// evidence parity with the offline harness, but production never feeds
+/// it back into the next ingress.
+pub(crate) fn map_gesture_preview(
+    reply: &tiler_core::world_report::WorldReply,
 ) -> crate::drag_drop::PreviewOutcome {
     use crate::drag_drop::PreviewOutcome;
-    use tiler_core::boundary::CoreCommand;
-    let native_ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
-    let dispatch = match native_ctx {
-        Some(ctx) => {
-            let Some(key) = retained.window_domains.get(window).cloned() else {
-                return PreviewOutcome::CancelDead {
-                    reason: "unknown-window",
-                };
-            };
-            if !ctx.is_current(&key) {
-                return PreviewOutcome::CancelDead {
-                    reason: "hidden-domain",
-                };
-            }
-            DispatchContext::Native(ctx)
-        }
-        None => DispatchContext::Synthetic,
-    };
-    let command = CoreCommand::DragPreview {
-        window: window.to_owned(),
-        x,
-        y,
-        hover_prior,
-        source: None,
-    };
-    let Some(ticket) = session
-        .sequencer
-        .try_begin_request(Some(WorldCommand::Operation(command)))
-    else {
-        session.sequencer().clear_flight();
-        return PreviewOutcome::CancelDead {
-            reason: "single-flight",
-        };
-    };
-    let report = build_dispatch_report(
-        session,
-        retained,
-        &dispatch,
-        BTreeMap::new(),
-        ticket.observation_seq,
-        ticket.request_seq,
-        ticket.command_seq,
-        ticket.command.clone(),
-        &ticket.request_id,
-    );
-    // The flight always clears without sequencer acceptance (read-only:
-    // the unchanged revision must never self-refuse as stale); the dirty
-    // mark drives a fresh observation dispatch on the next job.
-    session.sequencer().clear_flight();
-    let Some(report) = report else {
-        return PreviewOutcome::CancelDead {
-            reason: "no-context",
-        };
-    };
-    match session.engine_mut().handle_report(&report) {
-        WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
-            match reply.command_result {
-                Some(CommandResult::DragPreview {
-                    rect,
-                    hover,
-                    target,
-                    ..
-                }) => PreviewOutcome::Show {
-                    rect,
-                    hover_prior: hover.map(Box::new),
-                    // Core-resolved insertion neighbor (never the mover):
-                    // the carrier orders above this window.
-                    target,
-                },
-                _ => PreviewOutcome::CancelDead {
-                    reason: "no-preview-result",
-                },
-            }
-        }
-        WorldOutcome::Duplicate(cached) => match cached.command_result {
-            Some(CommandResult::DragPreview {
-                rect,
-                hover,
-                target,
-                ..
-            }) => PreviewOutcome::Show {
-                rect,
-                hover_prior: hover.map(Box::new),
-                target,
-            },
-            _ => PreviewOutcome::CancelDead {
-                reason: "no-preview-result",
-            },
+    use tiler_core::world_report::CommandResult;
+    match &reply.command_result {
+        Some(CommandResult::DragPreview {
+            rect,
+            hover,
+            target,
+            ..
+        }) => PreviewOutcome::Show {
+            rect: *rect,
+            hover_prior: hover.clone().map(Box::new),
+            target: target.clone(),
         },
-        WorldOutcome::Rejected { kind, .. } => map_preview_rejection(kind),
+        _ => PreviewOutcome::HideTransient { reason: "held" },
     }
 }
 
-/// Map one [`AxCompletion`] to its honest attempt outcome: only proven
-/// dispatch stages `Applied`; partial writes and timeouts hold as
-/// possibly-executed (never blindly repeated); proven failures refuse.
-pub(crate) fn completion_outcome(completion: &AxCompletion) -> AttemptOutcome {
+/// Map one [`AxCompletion`] to its honest setter disposition: only a
+/// reported success stages `Accepted` (arrival is never claimed here —
+/// later observations prove it); partial writes and timeouts are
+/// throwing/ambiguous (`Threw`, never blindly repeated); proven failures
+/// are explicit refusals (`Refused`).
+pub(crate) fn completion_setter(completion: &AxCompletion) -> FrameSetter {
     match completion {
-        AxCompletion::Applied { .. } => AttemptOutcome::Applied,
-        AxCompletion::PartialApplied { .. } => AttemptOutcome::PossiblyExecuted,
-        AxCompletion::Failed { .. } => AttemptOutcome::RefusedProven,
-        AxCompletion::Timeout { .. } => AttemptOutcome::PossiblyExecuted,
+        AxCompletion::Applied { .. } => FrameSetter::Accepted,
+        AxCompletion::PartialApplied { .. } => FrameSetter::Threw,
+        AxCompletion::Failed { .. } => FrameSetter::Refused,
+        AxCompletion::Timeout { .. } => FrameSetter::Threw,
     }
 }
 
-/// Track one emitted frame write for proven-outcome feedback: ONLY rows
+/// Immediate post-write readback from one [`AxCompletion`], when the
+/// worker captured it (`None` = unreadable, never guessed).
+pub(crate) fn completion_readback(completion: &AxCompletion) -> Option<Rect> {
+    match completion {
+        AxCompletion::PartialApplied {
+            readback_xywh: Some((x, y, w, h)),
+            ..
+        } => Some(Rect {
+            x: *x,
+            y: *y,
+            w: *w,
+            h: *h,
+        }),
+        _ => None,
+    }
+}
+
+/// Track one emitted frame write for raw-attempt correlation: ONLY rows
 /// carrying an explicit placement token (`frame_operation`) are recorded —
 /// ordinary frame traffic stages nothing core-side (it rides the
 /// completions counters), so it must never occupy correlation space nor
 /// evict a pending placement entry. Bounded (oldest placement evicted).
+/// The attempted target frame rides along as the core's correlation.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn track_write(
     session: &mut WorldSession,
     wpid: u32,
     cmd_id: u64,
     window: &str,
+    target: Rect,
     operation: Option<&str>,
 ) {
     let Some(operation) = operation else {
@@ -740,35 +761,58 @@ pub(crate) fn track_write(
     }
     session.pending_writes.insert(
         (wpid, cmd_id),
-        (window.to_owned(), Some(operation.to_owned())),
+        (window.to_owned(), target, Some(operation.to_owned())),
     );
 }
 
-/// Stage proven frame-write feedback for explicit placement tokens:
-/// only rows carrying a `frame_operation` settle anything core-side, and
-/// only with the recorded outcome (never false success). Ordinary frame
-/// writes stay on the completions counters and logs. Consumes the
-/// correlation entry (one completion per command). Returns whether a
-/// feedback row staged (the caller advances the watermark only then: the
-/// staged row changes the next report).
+/// Stage one raw frame attempt for an explicit placement token: only rows
+/// carrying a `frame_operation` settle anything core-side, and only with
+/// the recorded setter disposition (never false success). `dpi_before` /
+/// `dpi_after` are always `None` (no per-window basis, never guessed);
+/// `prewrite` is always `None` (no pre-write read at completion time —
+/// only an explicit refusal with an unchanged readable preimage would
+/// prove refusal, so a bare refusal latches ambiguity, never a verdict).
+/// Ordinary frame writes stay on the completions counters and logs.
+/// Consumes the correlation entry (one completion per command) and drops
+/// stale generations (a relaunched PID never settles under an old
+/// command). Returns whether an attempt row staged (the caller advances
+/// the watermark only then: the staged row changes the next report).
 pub(crate) fn stage_write_feedback(
     session: &mut WorldSession,
+    retained: &RetainedCore,
     pid: u32,
+    generation: u64,
     cmd_id: u64,
     completion: &AxCompletion,
 ) -> bool {
-    let Some((_, operation)) = session.pending_writes.remove(&(pid, cmd_id)) else {
+    if retained
+        .apps
+        .get(&pid)
+        .is_none_or(|app| app.generation != generation)
+    {
+        session.pending_writes.remove(&(pid, cmd_id));
+        return false;
+    }
+    let Some((window, target, operation)) = session.pending_writes.remove(&(pid, cmd_id)) else {
         return false;
     };
     let Some(operation) = operation else {
         return false;
     };
-    session.stage_feedback(AttemptFeedback {
-        operation_id: operation,
-        kind: AttemptKind::Property,
-        outcome: completion_outcome(completion),
-        hold: None,
-    });
+    session.pending_frames.insert(
+        window.clone(),
+        FrameAttempt {
+            window: WindowId(window),
+            target,
+            setter: completion_setter(completion),
+            readback: completion_readback(completion),
+            dpi_before: None,
+            dpi_after: None,
+            attempt_ms: 0,
+            operation_id: Some(operation),
+            prewrite: None,
+        },
+    );
     true
 }
 

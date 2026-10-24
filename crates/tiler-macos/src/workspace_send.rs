@@ -89,7 +89,7 @@
 use std::path::Path;
 
 use tiler_core::directional::OutputId;
-use tiler_core::world_report::{AttemptKind, AttemptOutcome};
+use tiler_core::world_report::FrameSetter;
 
 use crate::desktop_shortcuts::{ApplyOutcome, DesktopShortcutStore, apply_with_store_to};
 use crate::input_policy::InputPreset;
@@ -449,29 +449,28 @@ pub enum SendDrainOutcome {
     PossiblyExecuted,
 }
 
-/// Wire outcome for one [`SendDrainOutcome`] (pure): transfer kind, never
-/// the view kind (selects settle views; sends settle window transfers).
+/// Setter disposition for one [`SendDrainOutcome`] (pure): only a proven
+/// dispatch stages `Accepted` (arrival is never claimed here); proven
+/// pre-actuation refusals stage `Refused`; ambiguous mid-actuation output
+/// stages `Threw` (never blindly repeated). The core derives every verdict
+/// from the raw row plus the staged observation.
 #[must_use]
-pub const fn attempt_outcome_for(outcome: SendDrainOutcome) -> AttemptOutcome {
+pub const fn setter_for(outcome: SendDrainOutcome) -> FrameSetter {
     match outcome {
-        SendDrainOutcome::Applied => AttemptOutcome::Applied,
-        SendDrainOutcome::Refused => AttemptOutcome::RefusedProven,
-        SendDrainOutcome::PossiblyExecuted => AttemptOutcome::PossiblyExecuted,
+        SendDrainOutcome::Applied => FrameSetter::Accepted,
+        SendDrainOutcome::Refused => FrameSetter::Refused,
+        SendDrainOutcome::PossiblyExecuted => FrameSetter::Threw,
     }
 }
 
-/// Wire kind for a workspace claim action (pure): sends settle transfers,
-/// everything else settles views. Single home for the discard/feedback
-/// kind branch so a dropped send claim never stages a view row. Numbered
-/// sends settle transfers regardless of follow intent (stays transfer the
-/// mover and return the view - never a view switch).
+/// Whether a workspace claim action settles a window transfer (pure):
+/// sends settle transfers, everything else settles views. Single home for
+/// the discard/feedback lane branch so a dropped send claim never stages
+/// a view row. Numbered sends settle transfers regardless of follow intent
+/// (stays transfer the mover and return the view - never a view switch).
 #[must_use]
-pub fn feedback_kind_for(action: &InputSemanticAction) -> AttemptKind {
-    if matches!(action, InputSemanticAction::WorkspaceSend { .. }) {
-        AttemptKind::Transfer
-    } else {
-        AttemptKind::View
-    }
+pub fn is_send_action(action: &InputSemanticAction) -> bool {
+    matches!(action, InputSemanticAction::WorkspaceSend { .. })
 }
 
 /// Classify one send-drain failure for attempt feedback: prefixes naming

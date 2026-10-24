@@ -40,7 +40,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tiler_core::session::DragHoverPrior;
 use tiler_core::visual::VisualRect;
 
 use crate::border_runtime::BorderAppRecord;
@@ -105,12 +104,15 @@ pub struct PressOwner {
     pub pid: u32,
     /// Focused window holding the press.
     pub wid: u32,
-    /// Runtime window token (`pid_wid`) for Engine commands.
+    /// Runtime window token (`pid_wid`) for the gesture ingress.
     pub window: String,
     /// Mover fullscreen state (fullscreen denies at the fence).
     pub fullscreen: bool,
     /// Topology revision read with the snapshot (drift cancels).
     pub revision: u64,
+    /// PRE-gesture frame frozen at press time (never a mid-gesture read):
+    /// the gesture ingress start frame.
+    pub start_frame: tiler_core::geometry::Rect,
 }
 
 /// Resolve the press owner over plain published facts (no AX, no AppKit)
@@ -189,6 +191,12 @@ pub fn resolve_press_owner(
         window: window_id(frontmost_pid, wid),
         fullscreen: window.ax.fullscreen,
         revision: record.revision,
+        start_frame: tiler_core::geometry::Rect {
+            x: frame.x as i32,
+            y: frame.y as i32,
+            w: frame.w as i32,
+            h: frame.h as i32,
+        },
     })
 }
 
@@ -252,12 +260,18 @@ pub enum SampleIntent {
     /// Hide the carrier, keep the gesture (zero movement, transient
     /// refusal, or not-yet-moved posture).
     Hide,
-    /// Moved pointer with live fences: resolve one Engine preview for
-    /// this exact sample.
-    Preview { window: String, x: i32, y: i32 },
+    /// Moved pointer with live fences: resolve one world gesture update
+    /// for this exact sample.
+    Preview {
+        ingress: tiler_core::gesture::GestureIngress,
+    },
     /// Fence refused mid-gesture (or the Engine query died): overlay
-    /// cleared, capture released, dead.
-    Cancelled { reason: &'static str },
+    /// cleared, capture released, dead. Carries the terminal ingress when
+    /// a gesture was held so the core clears its retained session.
+    Cancelled {
+        reason: &'static str,
+        ingress: Option<tiler_core::gesture::GestureIngress>,
+    },
 }
 
 /// Intent of one button release on the main thread. The caller hides the
@@ -267,39 +281,12 @@ pub enum ReleaseIntent {
     /// No gesture held: ignore.
     Ignore,
     /// Final pointer up with the single-flight capture released exactly
-    /// once: resolve one Engine drop at this exact sample. Carries the
-    /// press revision for the worker-side stale check.
+    /// once: resolve one world gesture release at this exact sample.
+    /// Carries the press revision for the engine-side stale check.
     Drop {
-        window: String,
-        x: i32,
-        y: i32,
+        ingress: tiler_core::gesture::GestureIngress,
         press_revision: u64,
     },
-}
-
-/// Engine preview query for one moved sample: the dragged window, the
-/// final pointer snapshot, and the carried sticky prior. The runtime
-/// worker resolves it read-only against the current Engine.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DragPreviewQuery {
-    pub window: String,
-    pub x: i32,
-    pub y: i32,
-    pub hover_prior: Option<DragHoverPrior>,
-}
-
-/// Engine drop submit for one release: same shape as the preview query.
-/// Same-domain only (no source pair: the worker has no target-domain
-/// rows, so cross-output stays explicitly unsupported). `press_revision`
-/// is the topology revision proven at press time; the worker refuses when
-/// its current revision drifted (stale pid_wid reuse never mutates).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DragDropRequest {
-    pub window: String,
-    pub x: i32,
-    pub y: i32,
-    pub hover_prior: Option<DragHoverPrior>,
-    pub press_revision: u64,
 }
 
 /// Main-thread Meta+left drag session: the shared tap controller plus the
@@ -326,12 +313,24 @@ pub enum DragPlan {
     /// Hide the carrier, keep the gesture (zero movement or transient
     /// refusal).
     Hide,
-    /// Resolve one Engine preview, then show or hide by its outcome.
-    Preview(DragPreviewQuery),
-    /// Carrier hidden FIRST by the caller, then resolve one Engine drop.
-    Drop(DragDropRequest),
+    /// Bind one world gesture session (Started, no overlay at the down
+    /// point itself).
+    Start(tiler_core::gesture::GestureIngress),
+    /// Resolve one world gesture update, then show or hide by its outcome.
+    Preview(tiler_core::gesture::GestureIngress),
+    /// Carrier hidden FIRST by the caller, then resolve one world gesture
+    /// release.
+    Drop {
+        ingress: tiler_core::gesture::GestureIngress,
+        press_revision: u64,
+    },
     /// Overlay cleared, capture released, dead: hide, never mutate.
-    Cancelled { reason: &'static str },
+    /// Carries the terminal ingress when a gesture was held so the core
+    /// clears its retained session.
+    Cancelled {
+        reason: &'static str,
+        ingress: Option<tiler_core::gesture::GestureIngress>,
+    },
 }
 
 impl DragSession {
@@ -346,8 +345,17 @@ impl DragSession {
         owner: &Result<PressOwner, &'static str>,
         fences: DragFences,
     ) -> DragPlan {
-        if escape_pressed && self.on_escape() {
-            return DragPlan::Cancelled { reason: "escape" };
+        if escape_pressed && let Some(ingress) = self.on_escape() {
+            return DragPlan::Cancelled {
+                reason: "escape",
+                ingress: Some(ingress),
+            };
+        }
+        if escape_pressed {
+            return DragPlan::Cancelled {
+                reason: "escape",
+                ingress: None,
+            };
         }
         let mut down: Option<DragMouseHit> = None;
         let mut drag: Option<DragMouseHit> = None;
@@ -378,14 +386,26 @@ impl DragSession {
                     if let Some(up_hit) = up {
                         self.on_up(up_hit.x, up_hit.y);
                     }
-                    return DragPlan::Cancelled { reason };
+                    return DragPlan::Cancelled {
+                        reason,
+                        ingress: None,
+                    };
                 }
                 _ => {}
             }
             // Escape pressed with the arming down in the same batch wins
             // over the fresh arm (cancel, never mutate).
-            if escape_pressed && self.on_escape() {
-                return DragPlan::Cancelled { reason: "escape" };
+            if escape_pressed && let Some(ingress) = self.on_escape() {
+                return DragPlan::Cancelled {
+                    reason: "escape",
+                    ingress: Some(ingress),
+                };
+            }
+            if escape_pressed {
+                return DragPlan::Cancelled {
+                    reason: "escape",
+                    ingress: None,
+                };
             }
         }
         // A release in the batch ends the gesture at the final pointer:
@@ -393,12 +413,13 @@ impl DragSession {
         if let Some(up_hit) = up {
             match self.on_up(up_hit.x, up_hit.y) {
                 HitIntent::Release(ReleaseIntent::Drop {
-                    window,
-                    x,
-                    y,
+                    ingress,
                     press_revision,
                 }) => {
-                    return DragPlan::Drop(self.drop_request(window, x, y, press_revision));
+                    return DragPlan::Drop {
+                        ingress,
+                        press_revision,
+                    };
                 }
                 _ => {
                     return DragPlan::Idle;
@@ -407,15 +428,24 @@ impl DragSession {
         }
         if let Some(drag_hit) = drag {
             match self.on_drag(drag_hit.x, drag_hit.y, fences) {
-                HitIntent::Sample(SampleIntent::Preview { window, x, y }) => {
-                    return DragPlan::Preview(self.preview_query(window, x, y));
+                HitIntent::Sample(SampleIntent::Preview { ingress }) => {
+                    return DragPlan::Preview(ingress);
                 }
-                HitIntent::Sample(SampleIntent::Cancelled { reason }) => {
-                    return DragPlan::Cancelled { reason };
+                HitIntent::Sample(SampleIntent::Cancelled { reason, ingress }) => {
+                    return DragPlan::Cancelled { reason, ingress };
                 }
                 HitIntent::Sample(SampleIntent::Hide) => return DragPlan::Hide,
                 _ => {}
             }
+        }
+        // A freshly armed gesture binds its core session before any moved
+        // sample (Started binds only, never previews at the down point).
+        if down.is_some()
+            && up.is_none()
+            && drag.is_none()
+            && let Some(ingress) = self.start_ingress()
+        {
+            return DragPlan::Start(ingress);
         }
         if self.active() {
             return DragPlan::Hide;
@@ -521,6 +551,7 @@ impl DragSession {
             true,
             fences,
             owner.revision,
+            owner.start_frame,
         ) {
             Ok(()) => HitIntent::Down(Downcome::Armed {
                 window: owner.window.clone(),
@@ -530,8 +561,12 @@ impl DragSession {
     }
 
     /// One coalesced motion sample: zero movement hides transiently,
-    /// moved pointers preview, fence refusals cancel dead.
+    /// moved pointers preview through the world gesture route, fence
+    /// refusals cancel dead with a terminal ingress for the held gesture.
     pub fn on_drag(&self, x: i32, y: i32, fences: DragFences) -> HitIntent {
+        // Snapshot the terminal ingress BEFORE motion clears a fenced
+        // gesture: the core must clear the same retained session.
+        let cancelled = self.cancel_ingress();
         let mut controller = self
             .controller
             .lock()
@@ -540,74 +575,95 @@ impl DragSession {
             MotionGate::Ignore => HitIntent::Sample(SampleIntent::Ignore),
             MotionGate::ZeroSnapBack => HitIntent::Sample(SampleIntent::Hide),
             MotionGate::Sample => {
-                // Window token for the query: the held gesture's owner
-                // (armed or dragging). `motion` confirmed a held gesture,
-                // so this always names it; `None` is unreachable and hides
-                // rather than guessing.
-                match controller.held_window() {
-                    Some(window) => HitIntent::Sample(SampleIntent::Preview {
-                        window: window.to_owned(),
-                        x,
-                        y,
-                    }),
-                    None => HitIntent::Sample(SampleIntent::Hide),
+                let held = controller.held_window().map(str::to_owned);
+                let gid = controller.gesture_id();
+                let frame = controller.start_frame();
+                let start = controller.start_cursor();
+                drop(controller);
+                match (held, gid, frame, start) {
+                    (Some(window), Some(id), Some(start_frame), Some(start_cursor)) => {
+                        HitIntent::Sample(SampleIntent::Preview {
+                            ingress: gesture_ingress(
+                                id,
+                                &window,
+                                tiler_core::gesture::GesturePhase::Updated,
+                                Some((x, y)),
+                                start_cursor,
+                                start_frame,
+                            ),
+                        })
+                    }
+                    _ => HitIntent::Sample(SampleIntent::Hide),
                 }
             }
-            MotionGate::CancelDead(reason) => HitIntent::Sample(SampleIntent::Cancelled { reason }),
+            MotionGate::CancelDead(reason) => HitIntent::Sample(SampleIntent::Cancelled {
+                reason,
+                ingress: cancelled,
+            }),
         }
     }
 
     /// One button release: ends the single-flight capture exactly once.
-    /// The caller hides the carrier FIRST, then resolves the drop. The
-    /// press revision proven at arm rides the drop intent for the
-    /// worker-side stale check.
+    /// The caller hides the carrier FIRST, then resolves the world gesture
+    /// release. The press revision proven at arm rides the drop intent for
+    /// the engine-side stale check.
     pub fn on_up(&self, x: i32, y: i32) -> HitIntent {
+        let snapshot = self.gesture_snapshot();
         let mut controller = self
             .controller
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let press_revision = controller.press_revision().unwrap_or(0);
         match controller.release() {
-            Some(window) => HitIntent::Release(ReleaseIntent::Drop {
-                window,
-                x,
-                y,
-                press_revision,
-            }),
+            Some(window) => match snapshot {
+                Some((id, _, start_frame, start_cursor)) => {
+                    HitIntent::Release(ReleaseIntent::Drop {
+                        ingress: gesture_ingress(
+                            id,
+                            &window,
+                            tiler_core::gesture::GesturePhase::Released,
+                            Some((x, y)),
+                            start_cursor,
+                            start_frame,
+                        ),
+                        press_revision,
+                    })
+                }
+                None => HitIntent::Release(ReleaseIntent::Ignore),
+            },
             None => HitIntent::Release(ReleaseIntent::Ignore),
         }
     }
 
     /// Escape while held: cancels with overlay cleared and fail-safe
-    /// release. True when a gesture was cancelled.
-    pub fn on_escape(&self) -> bool {
-        self.controller
+    /// release. Returns the terminal ingress when a gesture was
+    /// cancelled so the core clears the same retained session.
+    pub fn on_escape(&self) -> Option<tiler_core::gesture::GestureIngress> {
+        let ingress = self.cancel_ingress();
+        let cancelled = self
+            .controller
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .escape()
+            .escape();
+        cancelled.then_some(ingress).flatten()
     }
 
     /// Stale scope/focus/revision fence: cancels dead with overlay cleared
-    /// and fail-safe release. True when a gesture was dropped.
-    pub fn on_stale(&self) -> bool {
-        self.controller
+    /// and fail-safe release. Returns the terminal ingress when a gesture
+    /// was dropped so the core clears the same retained session.
+    pub fn on_stale(&self) -> Option<tiler_core::gesture::GestureIngress> {
+        let ingress = self.cancel_ingress();
+        let cancelled = self
+            .controller
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .note_stale()
+            .note_stale();
+        cancelled.then_some(ingress).flatten()
     }
 
-    /// Carried sticky hover prior for the next Engine sample.
-    #[must_use]
-    pub fn hover_prior(&self) -> Option<DragHoverPrior> {
-        self.controller
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .hover_prior()
-            .cloned()
-    }
-
-    /// Record one Engine preview outcome (promotes armed to dragging and
-    /// carries the next sticky prior; dead replies terminate).
+    /// Record one world gesture preview outcome (promotes Armed to
+    /// Dragging; transient refusals keep the gesture; dead replies
+    /// terminate with overlay cleared and fail-safe release).
     pub fn note_preview(&self, outcome: &PreviewOutcome) {
         self.controller
             .lock()
@@ -615,35 +671,50 @@ impl DragSession {
             .note_preview(outcome);
     }
 
-    /// Build the preview query for one moved sample (sticky prior
-    /// carried).
-    #[must_use]
-    pub fn preview_query(&self, window: String, x: i32, y: i32) -> DragPreviewQuery {
-        DragPreviewQuery {
-            window,
-            x,
-            y,
-            hover_prior: self.hover_prior(),
-        }
+    /// Snapshot the held gesture mechanics for one ingress build
+    /// (id, window, frozen START frame/cursor, press revision).
+    fn gesture_snapshot(&self) -> Option<(u64, String, tiler_core::geometry::Rect, (i32, i32))> {
+        let controller = self
+            .controller
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        Some((
+            controller.gesture_id()?,
+            controller.held_window()?.to_owned(),
+            controller.start_frame()?,
+            controller.start_cursor()?,
+        ))
     }
 
-    /// Build the drop submit for one release (sticky prior carried, press
-    /// revision fenced worker-side).
+    /// Build the bind ingress for a freshly armed gesture (Started binds
+    /// only, never previews at the down point itself).
     #[must_use]
-    pub fn drop_request(
-        &self,
-        window: String,
-        x: i32,
-        y: i32,
-        press_revision: u64,
-    ) -> DragDropRequest {
-        DragDropRequest {
-            window,
-            x,
-            y,
-            hover_prior: self.hover_prior(),
-            press_revision,
-        }
+    pub fn start_ingress(&self) -> Option<tiler_core::gesture::GestureIngress> {
+        let (id, window, start_frame, start_cursor) = self.gesture_snapshot()?;
+        Some(gesture_ingress(
+            id,
+            &window,
+            tiler_core::gesture::GesturePhase::Started,
+            Some(start_cursor),
+            start_cursor,
+            start_frame,
+        ))
+    }
+
+    /// Build the terminal ingress for the held gesture (Released uses the
+    /// release point; Cancelled reuses the START point — the core clears
+    /// regardless of cursor).
+    #[must_use]
+    pub fn cancel_ingress(&self) -> Option<tiler_core::gesture::GestureIngress> {
+        let (id, window, start_frame, start_cursor) = self.gesture_snapshot()?;
+        Some(gesture_ingress(
+            id,
+            &window,
+            tiler_core::gesture::GesturePhase::Cancelled,
+            Some(start_cursor),
+            start_cursor,
+            start_frame,
+        ))
     }
 
     /// Overlay intent for a resolved Engine preview rect: the filled slot
@@ -662,6 +733,33 @@ impl DragSession {
             },
             DragOrdering::AboveTarget,
         )
+    }
+}
+
+/// Build one normalized gesture ingress for the held Meta+left gesture:
+/// the stable gesture id minted at press, the exact window lifetime, the
+/// START-sampled move kind, the live cursor plus the immutable START
+/// cursor/frame, and modal truth (a Meta-started drag carries user move
+/// intent). The adapter never mints hover priors or drop targets.
+#[must_use]
+pub fn gesture_ingress(
+    id: u64,
+    window: &str,
+    phase: tiler_core::gesture::GesturePhase,
+    cursor: Option<(i32, i32)>,
+    start_cursor: (i32, i32),
+    start_frame: tiler_core::geometry::Rect,
+) -> tiler_core::gesture::GestureIngress {
+    tiler_core::gesture::GestureIngress {
+        id,
+        window: tiler_core::directional::WindowId(window.to_owned()),
+        kind: tiler_core::gesture::GestureKind::Move,
+        cursor,
+        start_cursor: Some(start_cursor),
+        phase,
+        esc: false,
+        modal_move: true,
+        start_frame,
     }
 }
 
@@ -1162,7 +1260,7 @@ mod live {
     /// tap snapshot, and hide the carrier. Called on the lock/loginwindow
     /// branches that skip the normal turn below.
     pub fn park_drag_for_lock(state: &mut DragRunState) {
-        if state.session.on_stale() {
+        if state.session.on_stale().is_some() {
             state.cancels += 1;
         }
         state.tap_gate.invalidate();
@@ -1255,7 +1353,7 @@ mod live {
         if mouse_dead {
             // Tap thread death: never strand a held gesture. Cancel stale
             // with the overlay cleared and the snapshot invalidated.
-            if state.session.on_stale() {
+            if state.session.on_stale().is_some() {
                 state.cancels += 1;
                 eprintln!("tiler-macos dev drag tap disconnected; cancelled stale");
             }
@@ -1364,6 +1462,14 @@ mod live {
             focus_matches,
         };
         let fences = fences_for(state.session.options().enabled, &guards);
+        // Press revision proven at arm (drives the engine-side stale
+        // fence for Started/Updated; Released carries its own).
+        let press_revision = state
+            .session
+            .controller()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .press_revision();
         match state
             .session
             .plan_batch(&hits, escape_pressed, &owner, fences)
@@ -1372,18 +1478,56 @@ mod live {
             DragPlan::Hide => {
                 state.carrier.hide();
             }
-            DragPlan::Cancelled { reason } => {
+            DragPlan::Cancelled { reason, ingress } => {
                 state.carrier.hide();
+                if let Some(ingress) = ingress {
+                    // Best-effort terminal: the core clears the same
+                    // retained session; a lost reply still cancelled
+                    // main-side exactly once.
+                    let _ = handle.submit_drag_gesture(ingress, None, super::PREVIEW_QUERY_TIMEOUT);
+                }
                 state.cancels += 1;
                 eprintln!("tiler-macos dev drag cancelled reason={reason}");
             }
-            DragPlan::Preview(query) => {
-                match handle.preview_drag(&query, super::PREVIEW_QUERY_TIMEOUT) {
-                    Some(outcome) => {
+            DragPlan::Start(ingress) => {
+                match handle.submit_drag_gesture(
+                    ingress,
+                    press_revision,
+                    super::PREVIEW_QUERY_TIMEOUT,
+                ) {
+                    Some(reply) => {
                         state.previews += 1;
-                        state.session.note_preview(&outcome);
-                        apply_preview_outcome(state, &outcome, reads.primary_h);
-                        if matches!(outcome, crate::drag_drop::PreviewOutcome::CancelDead { .. }) {
+                        state.session.note_preview(&reply.preview);
+                        apply_preview_outcome(state, &reply.preview, reads.primary_h);
+                        if matches!(
+                            reply.preview,
+                            crate::drag_drop::PreviewOutcome::CancelDead { .. }
+                        ) {
+                            state.cancels += 1;
+                        }
+                    }
+                    None => {
+                        state.session.on_stale();
+                        state.carrier.hide();
+                        state.cancels += 1;
+                        eprintln!("tiler-macos dev drag start timed out; cancelled stale");
+                    }
+                }
+            }
+            DragPlan::Preview(ingress) => {
+                match handle.submit_drag_gesture(
+                    ingress,
+                    press_revision,
+                    super::PREVIEW_QUERY_TIMEOUT,
+                ) {
+                    Some(reply) => {
+                        state.previews += 1;
+                        state.session.note_preview(&reply.preview);
+                        apply_preview_outcome(state, &reply.preview, reads.primary_h);
+                        if matches!(
+                            reply.preview,
+                            crate::drag_drop::PreviewOutcome::CancelDead { .. }
+                        ) {
                             state.cancels += 1;
                         }
                     }
@@ -1395,17 +1539,30 @@ mod live {
                     }
                 }
             }
-            DragPlan::Drop(request) => {
+            DragPlan::Drop {
+                ingress,
+                press_revision,
+            } => {
                 // Hide-before-mutation: the overlay clears before the
-                // Engine commits or any native frame moves.
+                // core commits or any native frame moves.
                 state.carrier.hide();
-                match handle.submit_drag_drop(request) {
-                    crate::runtime::SubmitOutcome::Accepted => {
-                        state.drops += 1;
-                    }
-                    other => {
+                match handle.submit_drag_gesture(
+                    ingress,
+                    Some(press_revision),
+                    super::PREVIEW_QUERY_TIMEOUT,
+                ) {
+                    Some(reply) => match reply.settled {
+                        Some(settled) if settled.committed => {
+                            state.drops += 1;
+                        }
+                        _ => {
+                            state.cancels += 1;
+                            eprintln!("tiler-macos dev drag drop settled without commit");
+                        }
+                    },
+                    None => {
                         state.cancels += 1;
-                        eprintln!("tiler-macos dev drag drop refused outcome={other:?}");
+                        eprintln!("tiler-macos dev drag drop timed out; cancelled stale");
                     }
                 }
             }
@@ -1615,6 +1772,12 @@ mod tests {
             window: window_id(4242, 7),
             fullscreen: false,
             revision: 9,
+            start_frame: tiler_core::geometry::Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
         })
     }
 
@@ -1955,7 +2118,7 @@ mod tests {
             session.on_down(down_hit(210, 210), &owner_ok(), fences_ok()),
             HitIntent::Down(Downcome::Ignore)
         ));
-        assert!(session.on_stale());
+        assert!(session.on_stale().is_some());
         assert!(!session.active());
     }
 
@@ -1974,14 +2137,14 @@ mod tests {
             HitIntent::Sample(SampleIntent::Hide)
         ));
         assert!(session.active());
-        // Moved pointer previews with the held owner and exact sample.
+        // Moved pointer previews through the world gesture route with
+        // the session-minted id and frozen START mechanics.
         match session.on_drag(790, 300, fences_ok()) {
-            HitIntent::Sample(SampleIntent::Preview { window, x, y }) => {
-                assert_eq!(window, "4242_7");
-                assert_eq!((x, y), (790, 300));
-                let query = session.preview_query(window.clone(), x, y);
-                assert_eq!(query.window, window);
-                assert!(query.hover_prior.is_none());
+            HitIntent::Sample(SampleIntent::Preview { ingress }) => {
+                assert_eq!(ingress.window.0, "4242_7");
+                assert_eq!(ingress.cursor, Some((790, 300)));
+                assert_eq!(ingress.phase, tiler_core::gesture::GesturePhase::Updated);
+                assert!(ingress.id != 0);
             }
             other => panic!("moved sample must preview, got {other:?}"),
         }
@@ -1994,8 +2157,12 @@ mod tests {
                 ..fences_ok()
             },
         ) {
-            HitIntent::Sample(SampleIntent::Cancelled { reason }) => {
+            HitIntent::Sample(SampleIntent::Cancelled { reason, ingress }) => {
                 assert_eq!(reason, "revision-drift");
+                assert!(
+                    ingress.is_some(),
+                    "fenced cancel clears the core session too"
+                );
             }
             other => panic!("fenced sample must cancel dead, got {other:?}"),
         }
@@ -2014,15 +2181,13 @@ mod tests {
         // Final pointer snapshot rides the drop (single-flight capture).
         match session.on_up(790, 300) {
             HitIntent::Release(ReleaseIntent::Drop {
-                window,
-                x,
-                y,
+                ingress,
                 press_revision,
             }) => {
-                assert_eq!(window, "4242_7");
-                assert_eq!((x, y), (790, 300));
-                let request = session.drop_request(window.clone(), x, y, press_revision);
-                assert_eq!(request.window, window);
+                assert_eq!(ingress.window.0, "4242_7");
+                assert_eq!(ingress.cursor, Some((790, 300)));
+                assert_eq!(ingress.phase, tiler_core::gesture::GesturePhase::Released);
+                assert_eq!(press_revision, 9);
             }
             other => panic!("release must drop once, got {other:?}"),
         }
@@ -2037,11 +2202,11 @@ mod tests {
     #[test]
     fn escape_and_stale_cancel_with_balanced_release() {
         let session = session();
-        assert!(!session.on_escape());
+        assert!(session.on_escape().is_none());
         session.on_down(down_hit(200, 200), &owner_ok(), fences_ok());
-        assert!(session.on_escape());
+        assert!(session.on_escape().is_some());
         assert!(!session.active());
-        assert!(!session.on_escape());
+        assert!(session.on_escape().is_none());
         // Balanced: the consumed down ends through the Escape path, so a
         // trailing release passes through untouched (never a drop).
         assert!(matches!(
@@ -2049,7 +2214,7 @@ mod tests {
             HitIntent::Release(ReleaseIntent::Ignore)
         ));
         session.on_down(down_hit(200, 200), &owner_ok(), fences_ok());
-        assert!(session.on_stale());
+        assert!(session.on_stale().is_some());
         assert!(!session.active());
         assert!(matches!(
             session.on_up(790, 300),
@@ -2067,9 +2232,9 @@ mod tests {
             &owner_ok(),
             fences_ok(),
         ) {
-            DragPlan::Preview(query) => {
-                assert_eq!(query.window, "4242_7");
-                assert_eq!((query.x, query.y), (790, 300));
+            DragPlan::Preview(ingress) => {
+                assert_eq!(ingress.window.0, "4242_7");
+                assert_eq!(ingress.cursor, Some((790, 300)));
             }
             other => panic!("batch must preview latest, got {other:?}"),
         }
@@ -2081,9 +2246,9 @@ mod tests {
             &owner_ok(),
             fences_ok(),
         ) {
-            DragPlan::Drop(request) => {
-                assert_eq!(request.window, "4242_7");
-                assert_eq!((request.x, request.y), (790, 300));
+            DragPlan::Drop { ingress, .. } => {
+                assert_eq!(ingress.window.0, "4242_7");
+                assert_eq!(ingress.cursor, Some((790, 300)));
             }
             other => panic!("batch must drop at release, got {other:?}"),
         }
@@ -2096,7 +2261,7 @@ mod tests {
         session.on_down(down_hit(200, 200), &owner_ok(), fences_ok());
         // Escape plus release on one turn cancels (never mutates).
         match session.plan_batch(&[up_hit(790, 300)], true, &owner_ok(), fences_ok()) {
-            DragPlan::Cancelled { reason } => assert_eq!(reason, "escape"),
+            DragPlan::Cancelled { reason, .. } => assert_eq!(reason, "escape"),
             other => panic!("escape must win, got {other:?}"),
         }
         assert!(!session.active());
@@ -2108,7 +2273,7 @@ mod tests {
         // Down and Escape drained on the same turn: the arm lands, then
         // Escape cancels it (never a preview, never a drop).
         match session.plan_batch(&[down_hit(200, 200)], true, &owner_ok(), fences_ok()) {
-            DragPlan::Cancelled { reason } => assert_eq!(reason, "escape"),
+            DragPlan::Cancelled { reason, .. } => assert_eq!(reason, "escape"),
             other => panic!("same-batch escape must cancel the fresh arm, got {other:?}"),
         }
         assert!(!session.active());
@@ -2120,14 +2285,11 @@ mod tests {
         session.on_down(down_hit(200, 200), &owner_ok(), fences_ok());
         match session.on_up(790, 300) {
             HitIntent::Release(ReleaseIntent::Drop {
-                window,
+                ingress,
                 press_revision,
-                ..
             }) => {
-                assert_eq!(window, "4242_7");
+                assert_eq!(ingress.window.0, "4242_7");
                 assert_eq!(press_revision, 9);
-                let request = session.drop_request(window.clone(), 790, 300, press_revision);
-                assert_eq!(request.press_revision, 9);
             }
             other => panic!("release must drop with revision, got {other:?}"),
         }
@@ -2161,41 +2323,43 @@ mod tests {
                 ..fences_ok()
             },
         ) {
-            DragPlan::Cancelled { reason } => assert_eq!(reason, "fenced"),
+            DragPlan::Cancelled { reason, .. } => assert_eq!(reason, "fenced"),
             other => panic!("fenced batch must cancel, got {other:?}"),
         }
         assert!(!session.active());
     }
 
     #[test]
-    fn preview_query_carries_sticky_prior_after_first_show() {
-        use crate::drag_drop::classify_preview_reply;
-        use tiler_core::boundary::CoreReply;
+    fn gesture_ingress_carries_no_hover_prior() {
+        use crate::drag_drop::map_preview_rejection;
         let session = session();
         session.on_down(down_hit(200, 200), &owner_ok(), fences_ok());
-        assert!(session.hover_prior().is_none());
-        // Centre/outside/self refusals hide transiently with no prior.
+        // Centre/outside/self refusals hide transiently and keep the gesture.
         for kind in [
             "unsupported-capability",
             "unchanged",
             "cross-domain-mismatch",
         ] {
-            session.note_preview(&classify_preview_reply(&CoreReply::Rejected {
-                kind,
-                message: "x",
-            }));
+            session.note_preview(&map_preview_rejection(kind));
             assert!(session.active(), "transient {kind} keeps the gesture");
-            assert!(
-                session.hover_prior().is_none(),
-                "transient {kind} carries no prior"
-            );
+        }
+        // A moved sample offers a gesture Updated ingress with the minted
+        // id and frozen START mechanics (never a hover prior, never a
+        // guessed target).
+        match session.on_drag(790, 300, fences_ok()) {
+            HitIntent::Sample(SampleIntent::Preview { ingress }) => {
+                assert_eq!(ingress.phase, tiler_core::gesture::GesturePhase::Updated);
+                assert!(ingress.id != 0);
+                assert_eq!(ingress.cursor, Some((790, 300)));
+            }
+            other => panic!("moved sample must preview, got {other:?}"),
         }
         // Empty batch on a held gesture hides (carrier stays hidden).
         assert_eq!(
             session.plan_batch(&[], false, &owner_ok(), fences_ok()),
             DragPlan::Hide
         );
-        assert!(session.on_stale());
+        assert!(session.on_stale().is_some());
     }
 
     #[test]

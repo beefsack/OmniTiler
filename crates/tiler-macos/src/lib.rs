@@ -121,9 +121,6 @@ pub mod synth;
 pub mod textedit_post;
 pub mod tile;
 pub mod topology;
-pub(crate) mod trailing_binding;
-#[cfg(test)]
-mod trailing_binding_tests;
 pub mod watchdog;
 pub mod workspace_indicator;
 pub mod workspace_indicator_proof;

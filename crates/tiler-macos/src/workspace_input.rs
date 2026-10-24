@@ -539,8 +539,8 @@ pub const fn is_armed_select_with(action: &InputSemanticAction, trailing_enabled
 /// marks follow rows 0..9 plus stay rows 1..9 `implemented: true` and
 /// [`workspace_unsupported_reason`] / [`workspace_unsupported_outcome`]
 /// consult this predicate (returning `None` here, dispatching). Consumers
-/// are the send lane, the discard/kind classifier
-/// ([`crate::workspace_send::feedback_kind_for`]), and the tests.
+/// are the send lane, the discard lane
+/// ([`crate::workspace_send::is_send_action`]), and the tests.
 /// Everything else - the trailing `index 0` stay, every relative send,
 /// every output send, every
 /// select, and every basic action — is NOT send-shaped.
@@ -601,8 +601,7 @@ pub fn workspace_unsupported_reason_with(
         | InputSemanticAction::MoveStep { .. }
         | InputSemanticAction::ResizeStep { .. }
         | InputSemanticAction::ToggleFloat
-        | InputSemanticAction::ToggleOrientation
-        | InputSemanticAction::DragDrop { .. } => None,
+        | InputSemanticAction::ToggleOrientation => None,
         InputSemanticAction::WorkspaceSelect { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious => Some(
@@ -652,8 +651,7 @@ pub fn workspace_unsupported_outcome_with(
         | InputSemanticAction::MoveStep { .. }
         | InputSemanticAction::ResizeStep { .. }
         | InputSemanticAction::ToggleFloat
-        | InputSemanticAction::ToggleOrientation
-        | InputSemanticAction::DragDrop { .. } => None,
+        | InputSemanticAction::ToggleOrientation => None,
         InputSemanticAction::WorkspaceSelect { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious => Some("refused-workspace-switch-unsupported"),

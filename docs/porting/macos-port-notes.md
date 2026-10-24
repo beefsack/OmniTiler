@@ -5,6 +5,9 @@ How the macOS adapter moves to the strict v2 contract in
 implemented vs approved-not-implemented vs open as of `01a73798`.
 The [v2 migration plan and abstraction-fit review](../changes/macos-world-v2-port.md)
 confirm that inventory at `a0f54105` and record current build failures and gates.
+Update 2026-10-25: the strict-v2 compile cutover is complete offline; macOS
+build/tests/strict clippy/fmt pass. The inventory below describes the starting
+point; policy/native settlement/presentation and live acceptance remain port work.
 Live work stays under [live-macos-testing](../live-macos-testing.md)
 with the fixture-first rules and the signed bundle in
 `crates/tiler-live-fixture/README.md`.
@@ -135,11 +138,11 @@ with the fixture-first rules and the signed bundle in
 - Scoped live tile route: `mise exec -- just tile --user-start
   --scope ... --seconds N`; agent live legs use it fixture-only under
   [live-macos-testing](../live-macos-testing.md).
-- The macOS crate currently fails Linux/Windows CI on pre-existing
+- The starting macOS crate failed Linux/Windows CI on pre-existing
   errors (`AX_ATTRIBUTE_UNSUPPORTED`, `take_trailing_proof`); the port
-  repairs or replaces those paths as part of the v2 move, without
-  masking them.
-- Native macOS compilation also fails at `a0f54105`: 31 errors from retired
+  repaired those cfg leaks in stage 1 without masking them; cross-platform CI
+  must still verify the complete port.
+- Native macOS compilation also failed at `a0f54105`: 31 errors from retired
   world-report/feedback/binding fields, changed command shapes and private
   engine-boundary consumers. These are separate from the non-macOS cfg leaks;
   see the [confirmed state and gates](../changes/macos-world-v2-port.md#confirmed-starting-state).

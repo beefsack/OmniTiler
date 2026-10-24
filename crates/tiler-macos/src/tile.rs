@@ -722,15 +722,17 @@ mod native {
     }
 
     /// Adopt one terminal selection completion into lifecycle ownership on
-    /// BOTH outcomes (the Space persists from the verified append) and
-    /// forward the engine binding when the claim minted a token. Shared by
-    /// the live poll and the cooperative shutdown drain so a late proof is
-    /// never silently lost; the caller logs and reports the outcome.
+    /// Adopt one trailing append proof into lifecycle ownership
+    /// (success or failure — the Space persists from the verified append).
+    /// BOTH outcomes adopt: the drain took the exact-append proof exactly
+    /// once, so lifecycle ownership can never double-adopt. The caller logs
+    /// and reports the outcome.
     fn adopt_select_completion(
         handle: &crate::runtime::RuntimeHandle,
         trailing_lifecycle: &mut crate::workspace_select::TrailingLifecycle,
         completion: &crate::select_owner::SelectCompletion,
     ) {
+        let _ = handle;
         if let Some(proof) = completion.proof.as_ref() {
             if let Err(reason) = trailing_lifecycle.adopt_created(proof.created) {
                 eprintln!(
@@ -738,44 +740,31 @@ mod native {
                     proof.created, reason,
                 );
             }
-            match completion.trailing_token.as_deref() {
-                Some(token) => {
-                    handle.submit_trailing_proof(
-                        token,
-                        &proof.display_id,
-                        proof.created,
-                        &proof.before,
-                        &proof.after,
-                    );
-                    eprintln!(
-                        "tiler-macos dev trailing bound token={} sid={} complete=true",
-                        token, proof.created,
-                    );
-                }
-                None => {
-                    eprintln!(
-                        "tiler-macos dev trailing unbound sid={} complete=true",
-                        proof.created,
-                    );
-                }
-            }
+            eprintln!(
+                "tiler-macos dev trailing adopted sid={} complete=true",
+                proof.created,
+            );
         }
     }
 
     /// Report one terminal selection outcome under the claim's operation
-    /// identity (proven applied vs honest refusal classification). Shared
-    /// by the live poll and the cooperative shutdown drain; the caller owns
-    /// its settle-site log line.
+    /// identity (proven applied vs honest refusal classification). The
+    /// verified Space reads ride the raw attempt row on success (the
+    /// drain-verified before/after Space ids); failures carry no reads.
+    /// Shared by the live poll and the cooperative shutdown drain; the
+    /// caller owns its settle-site log line.
     fn report_select_completion(
         handle: &crate::runtime::RuntimeHandle,
         completion: &crate::select_owner::SelectCompletion,
     ) {
         match completion.result.as_ref() {
-            Ok(_) => {
+            Ok(effect) => {
                 if let Some(operation_id) = completion.operation_id.as_deref() {
                     handle.report_select_outcome(
                         operation_id,
                         crate::runtime::SelectDrainOutcome::Applied,
+                        Some(effect.from),
+                        Some(effect.target),
                     );
                 }
             }
@@ -784,6 +773,8 @@ mod native {
                     handle.report_select_outcome(
                         operation_id,
                         crate::select_feedback::classify_select_drain_error(reason),
+                        None,
+                        None,
                     );
                 }
             }
@@ -2546,39 +2537,24 @@ mod native {
                 }
                 // Owner-verified trailing append: the created SID adopts
                 // into lifecycle ownership here (token or not: the Space
-                // persists even when the drag failed), while the binding
-                // proof forwards verbatim only when the request carried a
-                // token (reuse and tokenless executions bind nothing).
-                if let Some(proof) = settle.trailing.as_ref() {
-                    if let Some(created) = proof.created
-                        && let Err(reason) = trailing_lifecycle.adopt_created(created)
-                    {
-                        eprintln!(
-                            "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
-                        );
-                    }
-                    if let Some(binding) = proof.binding.as_ref() {
-                        handle.submit_trailing_proof(
-                            &binding.token,
-                            &binding.display_id,
-                            binding.created,
-                            &binding.before,
-                            &binding.after,
-                        );
-                        eprintln!(
-                            "tiler-macos dev trailing bound token={} sid={} complete=true",
-                            binding.token, binding.created,
-                        );
-                    } else if let Some(created) = proof.created {
-                        eprintln!("tiler-macos dev trailing unbound sid={created} complete=true",);
-                    }
+                // persists even when the drag failed). The owner-verified
+                // target SID stays drain-side for arrival proof only.
+                if let Some(proof) = settle.trailing.as_ref()
+                    && let Some(created) = proof.created
+                    && let Err(reason) = trailing_lifecycle.adopt_created(created)
+                {
+                    eprintln!(
+                        "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
+                    );
                 }
                 eprintln!(
                     "tiler-macos send settled target={} outcome={:?} complete=true",
                     settle.target.target_sid(),
                     outcome,
                 );
-                handle.report_send_outcome(settle.target.operation_id(), outcome);
+                let post_sid = matches!(outcome, crate::workspace_send::SendDrainOutcome::Applied)
+                    .then(|| settle.target.target_sid());
+                handle.report_send_outcome(settle.target.operation_id(), outcome, post_sid);
             }
             // Proof-less trailing completions (preparation refused or was
             // cancelled before binding): feedback-only settlement under the
@@ -2588,15 +2564,15 @@ mod native {
                     "tiler-macos send trailing refused outcome={:?} complete=true",
                     refusal.outcome,
                 );
-                handle.report_send_outcome(&refusal.operation_id, refusal.outcome);
+                handle.report_send_outcome(&refusal.operation_id, refusal.outcome, None);
             }
             // Dock-swipe select completion poll (nonblocking): reconcile at
             // most one settled select per tick before draining new claims.
             // The selection owner proved arrival event-driven off-main; the
             // trailing append proof adopts into lifecycle ownership here
             // (success or failure — the Space persists from the verified
-            // append) and pairs the engine-minted token, while the proven
-            // outcome reports back under the claim's operation identity.
+            // append), while the proven outcome reports back under the
+            // claim's operation identity.
             if let Some((completion, reaped)) = select_controller.poll() {
                 adopt_select_completion(&handle, &mut trailing_lifecycle, &completion);
                 match completion.result.as_ref() {
@@ -2740,6 +2716,7 @@ mod native {
                                     handle.report_send_outcome(
                                         operation_id,
                                         crate::workspace_send::SendDrainOutcome::Refused,
+                                        None,
                                     );
                                 }
                             }
@@ -2814,6 +2791,7 @@ mod native {
                                     handle.report_send_outcome(
                                         operation_id,
                                         crate::workspace_send::SendDrainOutcome::Refused,
+                                        None,
                                     );
                                 }
                             }
@@ -2885,6 +2863,8 @@ mod native {
                                 handle.report_select_outcome(
                                     operation_id,
                                     crate::select_feedback::classify_select_drain_error(&reason),
+                                    None,
+                                    None,
                                 );
                             }
                         }
@@ -3121,35 +3101,24 @@ mod native {
                     // above), so no later select could observe it.
                     // Terminal trailing creation adopts here too (same
                     // ownership rule as the live settle: the Space
-                    // persists); the binding forwards only with a token.
-                    if let Some(proof) = settle.trailing.as_ref() {
-                        if let Some(created) = proof.created
-                            && let Err(reason) = trailing_lifecycle.adopt_created(created)
-                        {
-                            eprintln!(
-                                "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
-                            );
-                        }
-                        if let Some(binding) = proof.binding.as_ref() {
-                            handle.submit_trailing_proof(
-                                &binding.token,
-                                &binding.display_id,
-                                binding.created,
-                                &binding.before,
-                                &binding.after,
-                            );
-                            eprintln!(
-                                "tiler-macos dev trailing bound token={} sid={} complete=true",
-                                binding.token, binding.created,
-                            );
-                        }
+                    // persists).
+                    if let Some(proof) = settle.trailing.as_ref()
+                        && let Some(created) = proof.created
+                        && let Err(reason) = trailing_lifecycle.adopt_created(created)
+                    {
+                        eprintln!(
+                            "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
+                        );
                     }
                     eprintln!(
                         "tiler-macos send settled at shutdown target={} outcome={:?} complete=true",
                         settle.target.target_sid(),
                         outcome,
                     );
-                    handle.report_send_outcome(settle.target.operation_id(), outcome);
+                    let post_sid =
+                        matches!(outcome, crate::workspace_send::SendDrainOutcome::Applied)
+                            .then(|| settle.target.target_sid());
+                    handle.report_send_outcome(settle.target.operation_id(), outcome, post_sid);
                 }
                 crate::workspace_send::ShutdownOutcome::TrailingRefusal(refusal) => {
                     // Preparation never bound a target: feedback-only
@@ -3158,7 +3127,7 @@ mod native {
                         "tiler-macos send trailing refused at shutdown outcome={:?} complete=true",
                         refusal.outcome,
                     );
-                    handle.report_send_outcome(&refusal.operation_id, refusal.outcome);
+                    handle.report_send_outcome(&refusal.operation_id, refusal.outcome, None);
                 }
             }
         }

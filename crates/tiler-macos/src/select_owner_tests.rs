@@ -110,7 +110,6 @@ impl Script {
                 .expect("scripted job outcome");
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result: out.result,
                 proof: out.proof,
                 base: job.submitted_at,
@@ -222,7 +221,6 @@ fn history_notes_apply_fifo_before_later_selects() {
             let proof = state.take_trailing_proof();
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result,
                 proof,
                 base: job.submitted_at,
@@ -262,7 +260,6 @@ fn cancelled_pending_job_terminal_completes_and_frees_lane() {
             flag.store(true, Ordering::SeqCst);
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result: Err("executor must not run a cancelled job".to_owned()),
                 proof: None,
                 base: job.submitted_at,
@@ -337,7 +334,6 @@ fn cancelled_inflight_job_settles_promptly_through_latch() {
             }
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result: Err(
                     "dock-swipe unproven: cancelled during settlement; no replay".to_owned(),
                 ),
@@ -429,7 +425,6 @@ fn busy_poll_is_nonblocking_while_owner_runs() {
             std::thread::sleep(Duration::from_millis(300));
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result: Ok(effect(1001, 1002)),
                 proof: None,
                 base: job.submitted_at,
@@ -526,7 +521,6 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
             if job.cancel.load(Ordering::SeqCst) || job.latch.cancelled() {
                 return SelectCompletion {
                     operation_id: job.claim.operation_id.clone(),
-                    trailing_token: job.claim.trailing_token.clone(),
                     result: Err("select refused: cancelled before dispatch".to_owned()),
                     proof: None,
                     base: job.submitted_at,
@@ -535,7 +529,6 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
             act.store(true, Ordering::SeqCst);
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result: Err("executor actuated a shutdown job".to_owned()),
                 proof: None,
                 base: job.submitted_at,
@@ -595,7 +588,6 @@ fn shutdown_inflight_failure_proof_adopts_as_owned_residue() {
             std::thread::sleep(Duration::from_millis(200));
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result: Err(
                     "dock-swipe unproven: posted 1 pairs but native current reads None".to_owned(),
                 ),
@@ -664,7 +656,6 @@ fn shutdown_after_create_proof_terminal_orders_cleanup_newest_first() {
             std::thread::sleep(Duration::from_millis(200));
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                trailing_token: job.claim.trailing_token.clone(),
                 result: Ok(effect(1001, 2003)),
                 proof: Some(proof(2003)),
                 base: job.submitted_at,

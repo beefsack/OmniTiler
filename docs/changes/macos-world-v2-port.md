@@ -2,7 +2,7 @@
 
 ## Goal and status
 
-- Stage 0 reviewed; stage 1 in progress. Stage 0 evidence is from `a0f54105`
+- Stage 0 reviewed; stage 1 complete offline. Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
 - Replace the retired macOS contract, not wrap it. One `WorldEngine` owns policy;
@@ -241,6 +241,51 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 | Reuse existing shared policy entry points before proposing richer ingress | Keep the native classifier as policy, or immediately widen core | Consumer-driven fit test; preserves policy ownership while exposing genuine unrepresentable facts |
 | Treat missing native proof as inability/hold, not successful logical settlement | Success-by-dispatch or desired-state echo | Native arrival, visibility and focus must remain independently falsifiable |
 | Interim app-hidden A treats the window as gone, pending the reviewed evidence comparison | B: report minimized; C: neutral kept-but-hidden core state | Preserve current legacy behavior without a new core state; not a final hidden-window product choice |
+| Retain skipped outputs as incomplete screen rows, not absent topology | Omit outputs when native Space homing is unreadable | Avoid treating a transient observation gap as display removal/hotplug displacement |
+| Use the current reply as a live binding/lifetime lookup; temporarily echo only previously asserted automatic-float facts | Read private core sessions or infer automatic provenance from indistinguishable float replies | Preserve the compile-cutover behavior without private API access; stage 2 must remove classification policy/cache ownership, not promote this assertion set to a new policy model |
+| Gesture terminals do not use observation-only dispatch retries; a stale reply hides the preview until a fresh sample | Retry terminal ingress or show stale output | Stable core gesture IDs own terminal consumption; never replay a commit or paint stale shapes |
+| Remove obsolete per-predicate Windows conformance pairs; keep real public classifier comparisons and fixture expectations | Restore removed Windows wrappers or compare core predicates with themselves | Shared predicate tests belong in core; self-comparison cannot establish platform conformance |
+
+## Stage-1 outcome (2026-10-25)
+
+- Strict-v2 macOS build is restored. Builder/runtime/dispatch use public world
+  reports/replies and raw attempt types; old shared minimized/feedback/binding
+  types, private session extraction and `trailing_binding` are deleted. Native
+  creation/execution proof gates remain mechanical; no new host binding owner.
+- Active Meta drag and its offline harness now share Started/Updated/Released/
+  Cancelled ingress with press-minted identity and frozen start samples. Removed
+  direct engine preview/drop helpers and the production operation-command drag
+  route. Public `CoreCommand` remains only for other supported world operations.
+  Passive titlebar drag remains parked.
+- Fixed both cfg leaks: non-macOS FFI exports the actual AX unsupported constant;
+  the cross-platform selection owner can call the portable proof-take method.
+  Native success does not replace the still-needed cross-platform CI run.
+- Review corrections accepted: eliminated vacuous core-vs-core conformance
+  checks; moved empty-context refusal ahead of draining raw evidence/assertions,
+  with a regression that fails under the old ordering; completed production
+  gesture wiring instead of leaving a harness-only lifecycle route.
+- Regression coverage includes native adoption-shaped reports, skipped/incomplete
+  inventory holds, raw-attempt translation/generation fences, no-report evidence
+  retention, current-press/hidden/unknown gesture vetoes, update preview targeting,
+  release exactly once/replay dead, cancellation and stale/generation responses.
+- Gates on the final cutover: `mise exec -- just build`, `just test` (1,269
+  tests, 0 failed), `just clippy` (strict all-target), `just fmt`; locked
+  core/protocol build and tests (1,236 tests, 0 failed), strict all-target
+  core/protocol clippy and ordered acceptance 6/6 all PASS. Retired-boundary
+  audit finds only historical comments, no consumers. No live tests, signed
+  bundle acceptance or cross-target compilation claimed.
+- Remaining later-stage work is explicit: richer native-to-logical observed
+  receipts currently remain empty while core consumes native membership facts;
+  ordinary frame-attempt/readback/clock plumbing, learning/backoff, presentation
+  and policy ownership are not claimed complete by this compiling checkpoint.
+- Stage-3 discriminator: a trailing send on the very first report refuses
+  `send-target-unknown` because the lifecycle spare is minted after command
+  staging. An observation-first sequence passes and matches production startup;
+  no core change or host workaround selected. Test this boundary again with
+  native lifecycle translation; do not broaden bootstrap acceptance implicitly.
+- Stage-2 follow-up: prove lost terminal/timeout cannot leak an orphaned core
+  gesture into the next gesture; native capture release is fail-closed today,
+  but missing-terminal core cleanup has not been established by the current tests.
 
 ## Stage-0 verification
 
@@ -281,5 +326,6 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: complete the atomic stage-1 cutover against the
-  delivered shared contract; keep any new core proposal separate.
+- Remaining exact next step: stage-2 policy/fact ownership and the reviewed
+  hide/unhide, sticky-scope and coordinate evidence/tests. Keep any new core
+  proposal separate.

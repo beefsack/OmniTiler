@@ -434,6 +434,9 @@ mod tests {
             effects: Vec::new(),
             command_result: None,
             gesture_settled: None,
+            operation_settled: Vec::new(),
+            cursor_warp: None,
+            presentation: tiler_core::world_presentation::WorldPresentation::default(),
         }
     }
 
@@ -595,7 +598,9 @@ mod tests {
     fn commands_claim_once_and_survive_transport_loss() {
         let sequencer = WorldSequencer::new(INCARNATION, GENERATION);
         let action = || WorldCommand::SelectTrailing {
-            output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
+            output: Some(tiler_core::directional::OutputId(
+                "macos-display-1".to_owned(),
+            )),
         };
         let ticket = sequencer.try_begin_request(Some(action())).expect("flight");
         let seq = ticket.command_seq.expect("command claims a sequence");

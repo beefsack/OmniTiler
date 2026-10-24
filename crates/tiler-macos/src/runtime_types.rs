@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tiler_core::directional::{OutputId, WorkspaceId};
 use tiler_core::geometry::Rect;
-use tiler_core::session::{DomainKey, DragHoverPrior};
+use tiler_core::session::DomainKey;
 use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use crate::classifier::ExcludeReason;
@@ -25,9 +25,9 @@ use crate::scope::AppScope;
 // One fixed domain stands in for display/Space topology until platform
 // policy extraction lands. These are placeholders, not policy.
 
-/// Skeleton output identity carried into every [`CoreEvent`].
+/// Skeleton output identity for offline world reports.
 pub const PHASE1_OUTPUT: &str = "macos-main";
-/// Skeleton workspace identity carried into every [`CoreEvent`].
+/// Skeleton native workspace identity for offline world reports.
 pub const PHASE1_WORKSPACE: &str = "macos-space-1";
 /// Core owner binding for the skeleton engine.
 pub const PHASE1_OWNER: &str = "macos-phase-1";
@@ -206,10 +206,15 @@ pub struct NativeContext {
 
 /// Display skipped during derivation, with the honest reason (counts and
 /// IDs only). Skipped displays tile nothing: their windows never reach the
-/// engine (omission, never destruction).
+/// engine (omission, never destruction). The last-observed geometry rides
+/// along when the snapshot read it (a skip is about Space homing, never a
+/// blind display): the world builder reports the screen as incomplete
+/// rather than deleting a display it can still see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedDisplay {
     pub cg_id: u32,
+    pub full_rect: Option<Rect>,
+    pub work_area: Option<Rect>,
     pub reason: String,
 }
 
@@ -245,19 +250,18 @@ impl NativeContext {
         let mut domains = Vec::new();
         let mut skipped = Vec::new();
         for display in &snapshot.displays {
+            // Last-observed geometry rides the skip record when the
+            // snapshot read it: a skip is about Space homing, never a
+            // blind display. Geometry failures leave both absent.
+            let observed = snapshot.displays.iter().find(|d| d.cg_id == display.cg_id);
+            let bounds = observed.and_then(|g| g.cg_bounds.and_then(|r| r.to_rect()));
+            let visible = observed.and_then(|g| g.visible.and_then(|r| r.to_rect()));
             let domain = (|| {
-                let geometry = snapshot
-                    .displays
-                    .iter()
-                    .find(|d| d.cg_id == display.cg_id)
+                let _geometry = observed
                     .ok_or_else(|| format!("display {} vanished mid-derive", display.cg_id))?;
-                let bounds = geometry
-                    .cg_bounds
-                    .and_then(|r| r.to_rect())
-                    .ok_or_else(|| format!("display {} bounds unusable", display.cg_id))?;
-                let visible = geometry
-                    .visible
-                    .and_then(|r| r.to_rect())
+                let bounds =
+                    bounds.ok_or_else(|| format!("display {} bounds unusable", display.cg_id))?;
+                let visible = visible
                     .ok_or_else(|| format!("display {} work area unusable", display.cg_id))?;
                 let (spaces, current) = crate::topology::homed_spaces(snapshot, display.cg_id)
                     .ok_or_else(|| format!("display {} Space homing unprovable", display.cg_id))?;
@@ -329,6 +333,8 @@ impl NativeContext {
                 Ok(per_display) => domains.extend(per_display),
                 Err(reason) => skipped.push(SkippedDisplay {
                     cg_id: display.cg_id,
+                    full_rect: bounds,
+                    work_area: visible,
                     reason,
                 }),
             }
@@ -584,27 +590,6 @@ pub enum InputSemanticAction {
         direction: InputDirection,
         follow: bool,
     },
-    /// Meta+left drag drop: commit the press-proven `window` at the final
-    /// pointer snapshot (`x`, `y`, CG top-left points) with the carried
-    /// sticky hover prior. `press_revision` is the topology revision proven
-    /// at press time; the worker refuses when its current revision drifted
-    /// (stale pid_wid reuse never mutates) and when the window left live
-    /// membership. The worker homes the subject to its current domain and
-    /// dispatches [`tiler_core::boundary::CoreCommand::DragDrop`]
-    /// over that domain's full membership — the same converge path as the
-    /// keyboard arms, so the current Engine commits (never an independent
-    /// one) and the returned plan geometry flows to the native backends
-    /// through the existing desired-frame application. Same-domain only:
-    /// no source pair rides along (the worker has no target-domain rows),
-    /// so an outside-domain pointer resolves to `cross-domain-mismatch`
-    /// and snaps back. No additive core API.
-    DragDrop {
-        window: String,
-        x: i32,
-        y: i32,
-        hover_prior: Option<Box<DragHoverPrior>>,
-        press_revision: u64,
-    },
 }
 
 /// One pending product workspace claim awaiting the main-thread drain: the
@@ -668,14 +653,6 @@ pub struct ClaimedSelect {
     /// (selects) or window transfer (sends) - never replayed. `None` until
     /// the engine binds the claim.
     pub operation_id: Option<String>,
-    /// Engine-minted pending trailing token (`wl-N`) from the applied
-    /// dispatch reply for trailing lanes (the engine's unbound workspace
-    /// desire for the admitted output). `None` for non-trailing lanes and
-    /// until the engine binds the claim. The drain pairs it with the exact
-    /// native append proof and reports the binding back (see
-    /// [`crate::trailing_binding`]); never guessed, never an existing
-    /// Space, never carried across claims.
-    pub trailing_token: Option<String>,
 }
 
 impl ClaimedSelect {
@@ -696,7 +673,6 @@ impl ClaimedSelect {
             send_source_focus: None,
             send_source_focus_empty: false,
             operation_id: None,
-            trailing_token: None,
         }
     }
 
@@ -721,7 +697,6 @@ impl ClaimedSelect {
             send_source_focus: None,
             send_source_focus_empty: false,
             operation_id: None,
-            trailing_token: None,
         }
     }
 }

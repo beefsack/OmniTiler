@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
+use tiler_core::gesture::{GestureIngress, GestureSettled};
 use tiler_core::session::DomainKey;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{OneShotEffect, ScopeAuthority, WorldCommand, WorldReply};
@@ -31,8 +32,10 @@ use crate::runtime::{
 };
 use crate::runtime_core::RetainedCore;
 use crate::runtime_thread::{CoherencePending, FocusSlot, FrameSlot, Inbox};
-use crate::runtime_types::{PHASE1_OUTPUT, PHASE1_WORKSPACE, TopologyMode};
-use crate::world_runtime::{DispatchContext, WorldSession, build_dispatch_report, track_write};
+use crate::runtime_types::TopologyMode;
+use crate::world_runtime::{
+    DispatchContext, WorldSession, build_dispatch_report, map_gesture_preview, track_write,
+};
 use crate::world_sequencer::{ReplyVerdict, RequestTicket, command_operation_id};
 
 /// Static reply token for the ring (`emit` needs `&'static str`): every
@@ -60,6 +63,8 @@ fn reply_token(op: &'static str, outcome: &'static str) -> &'static str {
         ("send", "consumed") => "send-consumed",
         ("terminate", "accepted") => "terminate-accepted",
         ("terminate", "consumed") => "terminate-consumed",
+        ("drag-gesture", "accepted") => "drag-gesture-accepted",
+        ("drag-gesture", "consumed") => "drag-gesture-consumed",
         // All production (op, outcome) pairs are enumerated above; the
         // fallback is unreachable defense (debug-checked, never formatted
         // per reply, so diagnostics carry no per-reply allocation).
@@ -93,15 +98,8 @@ pub(crate) enum DispatchVerdict {
     /// A reply applied (frames/focus/transfers consumed). Carries the
     /// mintable select operation identity when the dispatched command was
     /// a planner-owned select (the caller binds the pending claim under
-    /// it); `None` otherwise. Trailing lanes additionally carry the
-    /// engine-minted pending token from the applied reply (the unbound
-    /// workspace desire for the commanded output, if any) so the
-    /// main-thread drain pairs the real token with its exact native
-    /// append proof - never a guess, never a second dispatch.
-    Applied {
-        select_operation: Option<String>,
-        trailing_token: Option<String>,
-    },
+    /// it); `None` otherwise.
+    Applied { select_operation: Option<String> },
     /// Duplicate of the latest reply: no state change, no re-emission.
     Duplicate,
     /// Core or sequencer refusal: counted, no state change — except the
@@ -115,28 +113,6 @@ pub(crate) enum DispatchVerdict {
     },
     /// Nothing reportable (empty context): counted, no state change.
     NoReport,
-}
-
-/// Trailing token for one applied reply: the engine-minted pending token
-/// (`wl-N`) behind the dispatched trailing command, if the reply still
-/// desires it unbound for the commanded output. `SelectTrailing` and
-/// trailing `SendNumbered{index: 0}` both resolve core-side to
-/// reuse-or-create; only the unbound (pending-creation) case yields a
-/// token - a reuse resolves to a bound native and yields `None`, so the
-/// drain records no binding. Pure (never actuates, never guesses).
-fn trailing_token_for(
-    command: Option<&tiler_core::world_report::WorldCommand>,
-    reply: &tiler_core::world_report::WorldReply,
-) -> Option<String> {
-    use tiler_core::world_report::WorldCommand;
-    let output = match command {
-        Some(WorldCommand::SelectTrailing { output }) => output,
-        Some(WorldCommand::SendNumbered {
-            output, index: 0, ..
-        }) => output,
-        _ => return None,
-    };
-    crate::trailing_binding::unbound_trailing_token(reply, output)
 }
 
 /// Dispatch one complete report and consume its reply: the single
@@ -156,6 +132,7 @@ pub(crate) fn dispatch_report(
     dispatch: DispatchContext,
     closed: BTreeMap<DomainKey, Vec<WindowId>>,
     command: Option<WorldCommand>,
+    gesture: Option<GestureIngress>,
     command_is_select: bool,
     op: &'static str,
     pid: u32,
@@ -215,6 +192,7 @@ pub(crate) fn dispatch_report(
             dispatch,
             closed,
             retry,
+            gesture,
             command_is_select,
             true,
             op,
@@ -248,6 +226,7 @@ pub(crate) fn dispatch_report(
         dispatch,
         closed,
         ticket,
+        gesture,
         command_is_select,
         true,
         op,
@@ -255,6 +234,264 @@ pub(crate) fn dispatch_report(
         generation,
         seq,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Gesture lifecycle dispatch: one complete report carrying `ingress`
+/// with no planner command. Mirrors `dispatch_ticket` without retries:
+/// a stale reply actuates nothing and never redispatches observation-only
+/// (a terminal already consumed its id core-side, so a replay stays dead;
+/// queued successors converge next). Returns the verdict plus the
+/// requester-correlated transient outputs: the read-only preview outcome
+/// and the incorporated terminal, if any. Exactly one engine transaction
+/// per call; duplicates never re-emit.
+pub(crate) fn dispatch_gesture_report(
+    session: &mut WorldSession,
+    retained: &mut RetainedCore,
+    shared: &Arc<Mutex<Shared>>,
+    inbox: &Arc<Inbox>,
+    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    focus_capacity: usize,
+    dispatch: DispatchContext,
+    ingress: GestureIngress,
+    op: &'static str,
+    pid: u32,
+    generation: u64,
+    seq: u64,
+) -> (
+    DispatchVerdict,
+    crate::drag_drop::PreviewOutcome,
+    Option<GestureSettled>,
+) {
+    use crate::drag_drop::PreviewOutcome;
+    if let DispatchContext::Native(ctx) = &dispatch
+        && crate::runtime_core::note_dispatch_context(retained, ctx)
+    {
+        emit(
+            shared,
+            pid,
+            generation,
+            seq,
+            "domain",
+            "topology-adopted",
+            ctx.domains.len() as u64,
+        );
+    }
+    let Some(ticket) = session.sequencer().try_begin_request(None) else {
+        session.sequencer().clear_flight();
+        count_token(shared, &format!("{op}-refused-no-flight"));
+        emit(
+            shared,
+            pid,
+            generation,
+            seq,
+            "core-reply",
+            "refused-no-flight",
+            0,
+        );
+        return (
+            DispatchVerdict::Refused {
+                token: "refused-no-flight".to_owned(),
+                select_operation: None,
+            },
+            PreviewOutcome::CancelDead {
+                reason: "single-flight",
+            },
+            None,
+        );
+    };
+    let hook = lock_shared(shared)
+        .midflight_hook
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    if let Some(hook) = hook {
+        hook();
+    }
+    let Some(report) = build_dispatch_report(
+        session,
+        retained,
+        &dispatch,
+        BTreeMap::new(),
+        ticket.observation_seq,
+        ticket.request_seq,
+        ticket.command_seq,
+        ticket.command.clone(),
+        Some(ingress),
+        &ticket.request_id,
+    ) else {
+        session.sequencer().clear_flight();
+        count_token(shared, &format!("{op}-refused-no-context"));
+        emit(
+            shared,
+            pid,
+            generation,
+            seq,
+            "core-reply",
+            "refused-no-context",
+            0,
+        );
+        return (
+            DispatchVerdict::NoReport,
+            PreviewOutcome::CancelDead {
+                reason: "no-context",
+            },
+            None,
+        );
+    };
+    match session.engine_mut().handle_report(&report) {
+        WorldOutcome::Accepted(reply) => match session.sequencer().accept_reply(&reply) {
+            ReplyVerdict::Applied(applied) => {
+                let Some(effects) = spend_if_coherent(
+                    session, retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
+                ) else {
+                    count_token(shared, &format!("{op}-refused-stale-observation"));
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        seq,
+                        "core-reply",
+                        "stale-observation",
+                        0,
+                    );
+                    return (
+                        DispatchVerdict::Refused {
+                            token: "stale-observation".to_owned(),
+                            select_operation: None,
+                        },
+                        PreviewOutcome::HideTransient { reason: "held" },
+                        None,
+                    );
+                };
+                let preview = map_gesture_preview(&applied);
+                let settled = applied.gesture_settled;
+                consume_world_reply(
+                    session,
+                    retained,
+                    shared,
+                    focus_queue,
+                    focus_capacity,
+                    &applied,
+                    &effects,
+                    ticket.command.as_ref(),
+                    ticket.command_seq,
+                    op,
+                    "accepted",
+                    pid,
+                    generation,
+                    seq,
+                );
+                (
+                    DispatchVerdict::Applied {
+                        select_operation: None,
+                    },
+                    preview,
+                    settled,
+                )
+            }
+            ReplyVerdict::Refused { reason } => {
+                count_token(shared, &format!("{op}-refused-{reason}"));
+                emit(shared, pid, generation, seq, "core-reply", reason, 0);
+                session.sequencer().clear_flight();
+                (
+                    DispatchVerdict::Refused {
+                        token: reason.to_owned(),
+                        select_operation: None,
+                    },
+                    PreviewOutcome::HideTransient { reason: "held" },
+                    None,
+                )
+            }
+        },
+        WorldOutcome::CommandConsumed(reply) => match session.sequencer().accept_reply(&reply) {
+            ReplyVerdict::Applied(applied) => {
+                let Some(effects) = spend_if_coherent(
+                    session, retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
+                ) else {
+                    count_token(shared, &format!("{op}-refused-stale-observation"));
+                    emit(
+                        shared,
+                        pid,
+                        generation,
+                        seq,
+                        "core-reply",
+                        "stale-observation",
+                        0,
+                    );
+                    return (
+                        DispatchVerdict::Refused {
+                            token: "stale-observation".to_owned(),
+                            select_operation: None,
+                        },
+                        PreviewOutcome::HideTransient { reason: "held" },
+                        None,
+                    );
+                };
+                let preview = map_gesture_preview(&applied);
+                let settled = applied.gesture_settled;
+                consume_world_reply(
+                    session,
+                    retained,
+                    shared,
+                    focus_queue,
+                    focus_capacity,
+                    &applied,
+                    &effects,
+                    ticket.command.as_ref(),
+                    ticket.command_seq,
+                    op,
+                    "consumed",
+                    pid,
+                    generation,
+                    seq,
+                );
+                (
+                    DispatchVerdict::Applied {
+                        select_operation: None,
+                    },
+                    preview,
+                    settled,
+                )
+            }
+            ReplyVerdict::Refused { reason } => {
+                count_token(shared, &format!("{op}-refused-{reason}"));
+                emit(shared, pid, generation, seq, "core-reply", reason, 0);
+                session.sequencer().clear_flight();
+                (
+                    DispatchVerdict::Refused {
+                        token: reason.to_owned(),
+                        select_operation: None,
+                    },
+                    PreviewOutcome::HideTransient { reason: "held" },
+                    None,
+                )
+            }
+        },
+        WorldOutcome::Duplicate(reply) => {
+            session.sequencer().clear_flight();
+            count_token(shared, &format!("{op}-duplicate"));
+            emit(shared, pid, generation, seq, "core-reply", "duplicate", 0);
+            (
+                DispatchVerdict::Duplicate,
+                map_gesture_preview(&reply),
+                reply.gesture_settled,
+            )
+        }
+        WorldOutcome::Rejected { kind, .. } => {
+            session.sequencer().clear_flight();
+            count_token(shared, &format!("{op}-rejected-{kind}"));
+            emit(shared, pid, generation, seq, "core-reply", kind, 0);
+            (
+                DispatchVerdict::Refused {
+                    token: format!("rejected-{kind}"),
+                    select_operation: None,
+                },
+                crate::drag_drop::map_preview_rejection(kind),
+                None,
+            )
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -268,6 +505,7 @@ fn dispatch_ticket(
     dispatch: DispatchContext,
     closed: BTreeMap<DomainKey, Vec<WindowId>>,
     ticket: RequestTicket,
+    gesture: Option<GestureIngress>,
     command_is_select: bool,
     retry_allowed: bool,
     op: &'static str,
@@ -292,6 +530,7 @@ fn dispatch_ticket(
         ticket.request_seq,
         ticket.command_seq,
         ticket.command.clone(),
+        gesture,
         &ticket.request_id,
     ) else {
         // Empty context: never actuate (KDE null parity).
@@ -363,10 +602,7 @@ fn dispatch_ticket(
                         generation,
                         seq,
                     );
-                    DispatchVerdict::Applied {
-                        select_operation,
-                        trailing_token: trailing_token_for(ticket.command.as_ref(), &applied),
-                    }
+                    DispatchVerdict::Applied { select_operation }
                 }
                 ReplyVerdict::Refused { reason } => {
                     // Newer input landed mid-flight (or a fence tripped):
@@ -470,10 +706,7 @@ fn dispatch_ticket(
                         generation,
                         seq,
                     );
-                    DispatchVerdict::Applied {
-                        select_operation,
-                        trailing_token: trailing_token_for(ticket.command.as_ref(), &applied),
-                    }
+                    DispatchVerdict::Applied { select_operation }
                 }
                 ReplyVerdict::Refused { reason } => {
                     count_token(shared, &format!("{op}-refused-{reason}"));
@@ -570,6 +803,7 @@ fn retry_observation_only(
         dispatch,
         BTreeMap::new(),
         retry,
+        None,
         false,
         false,
         OP_RECONCILE,
@@ -579,12 +813,7 @@ fn retry_observation_only(
     ) {
         // The refused command already executed core-side: a recovered
         // apply still settles under its original operation identity.
-        // A recovered trailing token cannot be re-derived (the retry
-        // reply is not in scope here): the drain proceeds without proof.
-        DispatchVerdict::Applied { .. } => DispatchVerdict::Applied {
-            select_operation,
-            trailing_token: None,
-        },
+        DispatchVerdict::Applied { .. } => DispatchVerdict::Applied { select_operation },
         DispatchVerdict::Refused { token, .. } => DispatchVerdict::Refused {
             token,
             select_operation,
@@ -844,11 +1073,13 @@ fn consume_world_reply(
     generation: u64,
     seq: u64,
 ) {
-    // Trailing creation bookkeeping: bindings the applied reply
-    // acknowledges (bound rows published) release; the rest persist for
-    // the next report. Silent state (no ring line): acknowledgement is
-    // the expected steady state, not an event.
-    let _ = session.note_trailing_ack(reply);
+    // Currently-actuated scopes as (output, LOGICAL workspace) pairs:
+    // native current domains translated through the applied reply's
+    // `native_binding` rows (a current-reply live lookup, never a durable
+    // host table). Desired rows home to core logical workspaces, so the
+    // native ids must translate before the current-scope filter below.
+    // Unmapped natives fall back to their own id (matches nothing: an
+    // unmapped home authorizes no rows).
     let current: BTreeSet<(String, String)> = {
         let guard = lock_shared(shared);
         match guard.native_context.clone() {
@@ -856,10 +1087,29 @@ fn consume_world_reply(
                 .domains
                 .iter()
                 .filter(|d| d.current)
-                .map(|d| (d.output.0.clone(), d.workspace.0.clone()))
+                .map(|d| {
+                    let logical = reply
+                        .workspaces
+                        .iter()
+                        .find(|row| {
+                            row.output == d.output
+                                && row.native_binding.as_deref() == Some(d.workspace.0.as_str())
+                        })
+                        .map(|row| row.id.clone())
+                        .unwrap_or_else(|| d.workspace.0.clone());
+                    (d.output.0.clone(), logical)
+                })
                 .collect(),
-            None => [(PHASE1_OUTPUT.to_owned(), PHASE1_WORKSPACE.to_owned())]
-                .into_iter()
+            // No native context (synthetic skeleton): the reply's own
+            // retained logical views name the actuated scopes.
+            None => reply
+                .outputs
+                .iter()
+                .filter_map(|out| {
+                    out.logical_view
+                        .clone()
+                        .map(|view| (out.output.0.clone(), view))
+                })
                 .collect(),
         }
     };
@@ -1035,6 +1285,7 @@ fn emit_world_frames(
             wpid,
             cmd_id,
             window,
+            *rect,
             frame_op_by_window.get(window.as_str()).copied(),
         );
         by_app.entry(wpid).or_default().push(FrameCommand {
@@ -1283,7 +1534,6 @@ fn settle_select_transfers(
 mod tests {
     use super::*;
     use tiler_core::directional::OutputId;
-    use tiler_core::world_report::{TilingMode, WorkspaceDesire};
 
     fn output() -> OutputId {
         OutputId("macos-display-1".to_owned())
@@ -1307,97 +1557,56 @@ mod tests {
             effects: Vec::new(),
             command_result: None,
             gesture_settled: None,
+            operation_settled: Vec::new(),
             cursor_warp: None,
-        }
-    }
-
-    fn unbound_row(logical: &str) -> WorkspaceDesire {
-        WorkspaceDesire {
-            id: logical.to_owned(),
-            output: output(),
-            native_binding: None,
-            logical_id: Some(logical.to_owned()),
-            scope: "macos-display-1".to_owned(),
-            order: 2,
-            tiling_mode: TilingMode::Tiled,
-            existence: true,
-            hold: None,
+            presentation: tiler_core::world_presentation::WorldPresentation::default(),
         }
     }
 
     #[test]
-    fn trailing_token_rides_only_trailing_commands_with_unbound_desire() {
+    fn v2_command_shapes_carry_no_native_workspace() {
         use tiler_core::directional::WindowId;
-        use tiler_core::world_report::WorldCommand;
-        // No command or no unbound desire: no token (the drain records no
-        // binding on the reuse path).
-        assert_eq!(trailing_token_for(None, &empty_reply()), None);
-        let mut reply = empty_reply();
-        assert_eq!(
-            trailing_token_for(
-                Some(&WorldCommand::SelectTrailing { output: output() }),
-                &reply
+        use tiler_core::world_report::{SendSource, WorldCommand};
+        // Numbered selects are positional over the adopted ring with an
+        // explicit output; trailing resolves core-side to reuse-or-create.
+        // No arm pins a native workspace id into the command.
+        assert!(matches!(
+            crate::world_command_map::select_command(
+                &crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 3 },
+                output(),
             ),
-            None
-        );
-        // Unbound desire behind a trailing select: the real engine token.
-        reply.workspaces.push(unbound_row("wl-3"));
-        assert_eq!(
-            trailing_token_for(
-                Some(&WorldCommand::SelectTrailing { output: output() }),
-                &reply
+            Some(WorldCommand::SelectNumbered {
+                output: Some(_),
+                index: 3
+            })
+        ));
+        assert!(matches!(
+            crate::world_command_map::select_command(
+                &crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 0 },
+                output(),
             ),
-            Some("wl-3".to_owned())
-        );
-        // Trailing send-0 resolves the same way (reuse-or-create
-        // core-side, pending token when unbound).
-        assert_eq!(
-            trailing_token_for(
-                Some(&WorldCommand::SendNumbered {
-                    window: WindowId("4242_7".to_owned()),
-                    output: output(),
-                    index: 0,
-                    follow: true,
-                }),
-                &reply
-            ),
-            Some("wl-3".to_owned())
-        );
-        // Numbered commands never carry a token, even with an unbound row
-        // present (their target binds at admission, never through proof).
-        assert_eq!(
-            trailing_token_for(
-                Some(&WorldCommand::SendNumbered {
-                    window: WindowId("4242_7".to_owned()),
-                    output: output(),
-                    index: 2,
-                    follow: true,
-                }),
-                &reply
-            ),
-            None
-        );
-        assert_eq!(
-            trailing_token_for(
-                Some(&WorldCommand::SelectWorkspace {
-                    output: output(),
-                    workspace: "space-3".to_owned(),
-                }),
-                &reply
-            ),
-            None
-        );
-        // Bound rows never yield a token (reuse path proves nothing).
-        let mut bound = empty_reply();
-        let mut row = unbound_row("wl-3");
-        row.native_binding = Some("space-278".to_owned());
-        bound.workspaces.push(row);
-        assert_eq!(
-            trailing_token_for(
-                Some(&WorldCommand::SelectTrailing { output: output() }),
-                &bound
-            ),
-            None
-        );
+            Some(WorldCommand::SelectTrailing { output: Some(_) })
+        ));
+        // Numbered sends ride the explicit admission-resolved source with a
+        // positional index; the pinned native target stays drain-side for
+        // revalidation only.
+        match crate::world_command_map::send_command(
+            &crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                index: 2,
+                follow: true,
+            },
+            "4242_7",
+            output(),
+        ) {
+            Some(WorldCommand::SendNumbered {
+                window,
+                source: SendSource::Explicit(_),
+                index: 2,
+                follow: true,
+            }) => assert_eq!(window, WindowId("4242_7".to_owned())),
+            other => panic!("send-2 must map to positional SendNumbered, got {other:?}"),
+        }
+        // The empty reply carries no transfers: no pending claim settles.
+        assert!(empty_reply().transfers.is_empty());
     }
 }

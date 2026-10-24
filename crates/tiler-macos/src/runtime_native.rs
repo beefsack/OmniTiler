@@ -367,6 +367,7 @@ pub(crate) fn handle_scoped_observation(
         crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
         std::collections::BTreeMap::new(),
         None,
+        None,
         false,
         crate::world_command_map::OP_RECONCILE,
         pid,

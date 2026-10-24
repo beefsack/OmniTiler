@@ -616,32 +616,15 @@ pub struct SendCompletion {
 
 /// Exact-append proof carried by one trailing completion: the owner's
 /// verified bound target plus the runtime-created SID when an append ran
-/// (`None` on reuse) plus, when that append ran with a token, the
-/// binding rows for the engine store. The main thread adopts `created`
-/// into lifecycle ownership on every proof-bearing completion (token or
-/// not: the Space persists either way) and forwards `binding` verbatim
-/// (never re-derived, never guessed); the engine refuses anything but an
-/// exact same-output append there. Reuse carries neither; tokenless
-/// appends carry creation without binding - their transfers settle on
-/// the target alone.
+/// (`None` on reuse). The main thread adopts `created` into lifecycle
+/// ownership on every proof-bearing completion (token or not: the Space
+/// persists either way). Reuse carries neither; tokenless appends carry
+/// creation — their transfers settle on the target alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrailingCompletionProof {
     pub target_sid: u64,
     pub revision: u64,
     pub created: Option<u64>,
-    pub binding: Option<TrailingBindingProof>,
-}
-
-/// Binding rows for one owner-verified trailing append: the
-/// engine-minted pending token the request carried opaquely, paired with
-/// the exact native rows around the single append.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrailingBindingProof {
-    pub token: String,
-    pub display_id: String,
-    pub created: u64,
-    pub before: Vec<u64>,
-    pub after: Vec<u64>,
 }
 
 /// Owner-side trailing preparation pins: the main-thread-published
@@ -674,14 +657,12 @@ pub struct TrailingPrepProof {
 
 /// One trailing send request for the effect owner: the engine-admitted
 /// original pins (subject, lifetime generation, source domain, operation
-/// identity - never re-sampled) plus the engine-minted pending token
-/// (opaque here; `None` when the dispatch carried no unbound desire) and
-/// the preparation pins. The owner prepares the exact native target,
-/// binds it to these pins (original subject/lifetime/source/operation
-/// fences intact), executes the forward drag, and reports the proof back
-/// on its completion. No second dispatch, no guessed token, no duplicate
-/// native effect: the core drains its pending send on the reported
-/// binding and the single owner drag is the only actuation.
+/// identity - never re-sampled) plus the preparation pins. The owner
+/// prepares the exact native target, binds it to these pins (original
+/// subject/lifetime/source/operation fences intact), executes the forward
+/// drag, and reports the proof back on its completion. No second dispatch,
+/// no guessed token, no duplicate native effect: the single owner drag is
+/// the only actuation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrailingSendRequest {
     pub pid: u32,
@@ -690,7 +671,6 @@ pub struct TrailingSendRequest {
     pub app_generation: u64,
     pub source: tiler_core::session::DomainKey,
     pub operation_id: String,
-    pub token: Option<String>,
     pub pins: TrailingPrepPins,
 }
 
@@ -743,7 +723,6 @@ impl TrailingSendRequest {
             app_generation,
             source,
             operation_id: operation_id.to_owned(),
-            token: claim.trailing_token.clone(),
             pins: TrailingPrepPins {
                 display_index,
                 pinned_cgid,

@@ -67,7 +67,6 @@ pub struct SelectJob {
 #[derive(Debug, Clone)]
 pub struct SelectCompletion {
     pub operation_id: Option<String>,
-    pub trailing_token: Option<String>,
     pub result: Result<SelectionEffect, String>,
     pub proof: Option<TrailingAppendProof>,
     pub base: Instant,
@@ -241,7 +240,6 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
     let proof = state.take_trailing_proof();
     SelectCompletion {
         operation_id: job.claim.operation_id.clone(),
-        trailing_token: job.claim.trailing_token.clone(),
         result,
         proof,
         base: job.submitted_at,
@@ -254,7 +252,6 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
 fn cancelled_completion(job: &SelectJob) -> SelectCompletion {
     SelectCompletion {
         operation_id: job.claim.operation_id.clone(),
-        trailing_token: job.claim.trailing_token.clone(),
         result: Err("select refused: cancelled before dispatch".to_owned()),
         proof: None,
         base: job.submitted_at,

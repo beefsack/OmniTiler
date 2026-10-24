@@ -58,31 +58,43 @@ impl RuntimeHandle {
         lock_shared(&self.shared).select_busy = false;
     }
 
-    /// Proven outcome of one main-thread select drain, staged as attempt
-    /// feedback for the next world report (data lane, best-effort: a full
-    /// or closed queue drops counted, and the retained view target settles
-    /// on the next select or observation instead). Call with the
-    /// `operation_id` of the drained claim (the core ignores ids naming no
-    /// retained target).
-    /// `Applied` settles on observation confirm; `Refused` settles to
-    /// observed without actuation; `PossiblyExecuted` holds the target
-    /// without re-actuation (ambiguous native effect — never blindly
-    /// repeated).
-    pub fn report_select_outcome(&self, operation_id: &str, outcome: SelectDrainOutcome) {
+    /// Proven outcome of one main-thread select drain, staged as a raw
+    /// view-attempt row for the next world report (data lane, best-effort:
+    /// a full or closed queue drops counted, and the retained view target
+    /// settles on the next select or observation instead). Call with the
+    /// `operation_id` of the drained claim (the engine ignores ids naming
+    /// no retained target) plus the drain-verified native Space reads
+    /// around the actuation (`None` where unread — never guessed).
+    /// `Applied` carries the verified before/after Space ids; every other
+    /// outcome carries no reads. The core derives confirmation, refusal,
+    /// ambiguity, and supersession from the row plus the staged
+    /// observation — the adapter never sends verdicts.
+    ///
+    /// [`SelectDrainOutcome`] maps to the setter 1:1 (`Applied` is
+    /// `Accepted`, pre-actuation refusal is `Refused`, ambiguity is
+    /// `Threw`); classification stays in
+    /// [`classify_select_drain_error`].
+    pub fn report_select_outcome(
+        &self,
+        operation_id: &str,
+        outcome: SelectDrainOutcome,
+        pre_sid: Option<u64>,
+        post_sid: Option<u64>,
+    ) {
         if operation_id.is_empty() {
             return;
         }
-        use tiler_core::world_report::{AttemptKind, AttemptOutcome};
-        let outcome = match outcome {
-            SelectDrainOutcome::Applied => AttemptOutcome::Applied,
-            SelectDrainOutcome::Refused => AttemptOutcome::RefusedProven,
-            SelectDrainOutcome::PossiblyExecuted => AttemptOutcome::PossiblyExecuted,
+        use tiler_core::world_report::FrameSetter;
+        let setter = match outcome {
+            SelectDrainOutcome::Applied => FrameSetter::Accepted,
+            SelectDrainOutcome::Refused => FrameSetter::Refused,
+            SelectDrainOutcome::PossiblyExecuted => FrameSetter::Threw,
         };
-        let job = EngineJob::AttemptFeedback {
+        let job = EngineJob::ViewAttempt {
             operation_id: operation_id.to_owned(),
-            kind: AttemptKind::View,
-            outcome,
-            hold: None,
+            setter,
+            pre_sid,
+            post_sid,
         };
         // Bump before enqueue (see `invalidate_clock` in runtime).
         invalidate_clock(&self.shared);
@@ -91,69 +103,32 @@ impl RuntimeHandle {
         }
     }
 
-    /// Proven outcome of one settled live send, staged as attempt
-    /// feedback for the next world report (same data-lane best-effort
-    /// contract as [`RuntimeHandle::report_select_outcome`]). Called by the
-    /// tile for settled effect completions and submit-time refusals
-    /// (unsupported send shapes refuse engine-side and never reach here).
-    /// The kind is
-    /// always transfer (see [`crate::workspace_send::feedback_kind_for`]):
-    /// `Applied` settles the retained explicit-`Send` transfer on
-    /// observation confirm; `Refused` settles to observed without
-    /// actuation; `PossiblyExecuted` holds without re-actuation. Call with
-    /// the `operation_id` of the drained claim (the core ignores ids naming
-    /// no retained target).
+    /// Proven outcome of one settled live send, staged as a raw
+    /// membership-attempt row for the next world report (same data-lane
+    /// best-effort contract as [`RuntimeHandle::report_select_outcome`]).
+    /// Called by the tile for settled effect completions and submit-time
+    /// refusals (unsupported send shapes refuse engine-side and never reach
+    /// here). `post_sid` is the drain-verified arrival Space on `Applied`
+    /// only (`None` otherwise — never guessed); the core settles its
+    /// retained window transfer from this plus the staged observation.
+    /// Call with the `operation_id` of the drained claim (the engine
+    /// ignores ids naming no retained transfer).
     pub fn report_send_outcome(
         &self,
         operation_id: &str,
         outcome: crate::workspace_send::SendDrainOutcome,
+        post_sid: Option<u64>,
     ) {
         if operation_id.is_empty() {
             return;
         }
-        let job = EngineJob::AttemptFeedback {
+        let setter = crate::workspace_send::setter_for(outcome);
+        let job = EngineJob::MemberAttempt {
             operation_id: operation_id.to_owned(),
-            kind: tiler_core::world_report::AttemptKind::Transfer,
-            outcome: crate::workspace_send::attempt_outcome_for(outcome),
-            hold: None,
+            setter,
+            post_sid,
         };
         // Bump before enqueue (see `invalidate_clock` in runtime).
-        invalidate_clock(&self.shared);
-        if !self.inbox.try_send_data(job) {
-            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
-        }
-    }
-
-    /// Proven trailing append proof for one drained trailing claim: the
-    /// claim's engine-minted pending token paired with the exact native
-    /// append rows the drain just verified. Recorded engine-side through
-    /// the session binding store (exact same-output append only - drift,
-    /// guesses, and duplicates refuse without mutation) and carried on
-    /// every full report until the core acknowledges it. Data lane,
-    /// best-effort like the outcome reports above: a full or closed queue
-    /// drops counted, which merely leaves the core pending outstanding -
-    /// never a false resolution, never a replay. Call at most once per
-    /// drained append (the drain takes the proof exactly once).
-    pub fn submit_trailing_proof(
-        &self,
-        logical_id: &str,
-        display_id: &str,
-        created_sid: u64,
-        before: &[u64],
-        after: &[u64],
-    ) {
-        if logical_id.is_empty() || display_id.is_empty() || created_sid == 0 {
-            return;
-        }
-        let job = EngineJob::TrailingProof {
-            logical_id: logical_id.to_owned(),
-            display_id: display_id.to_owned(),
-            created_sid,
-            before: before.to_vec(),
-            after: after.to_vec(),
-        };
-        // Bump before enqueue (see `invalidate_clock` in runtime): the
-        // recorded binding changes the next report.
         invalidate_clock(&self.shared);
         if !self.inbox.try_send_data(job) {
             lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
@@ -163,10 +138,11 @@ impl RuntimeHandle {
     /// Drop a pending (unclaimed) product select without dispatching: the
     /// lock/secure/stale-topology paths refuse narrowly instead of running
     /// a switch under an unsafe context. Returns whether one was dropped.
-    /// Never touches a drain in progress. A dropped bound claim stages
-    /// proven-refusal feedback (best-effort) so the core settles its
-    /// planner-owned target instead of retaining it: view kind for selects,
-    /// transfer kind for sends (see [`crate::workspace_send::feedback_kind_for`]).
+    /// Never touches a drain in progress. A dropped bound claim stages a
+    /// raw refusal row (best-effort) so the core holds its planner-owned
+    /// target instead of retaining it blindly: the row carries no reads
+    /// (the drain never touched the desktop), so the core latches hold
+    /// without re-actuation rather than settling a verdict.
     pub fn discard_select_pending(&self) -> bool {
         let dropped: Option<ClaimedSelect> = {
             let mut guard = lock_shared(&self.shared);
@@ -181,12 +157,23 @@ impl RuntimeHandle {
         if let Some(operation_id) = claim.operation_id.as_deref()
             && !operation_id.is_empty()
         {
-            use tiler_core::world_report::AttemptOutcome;
-            let job = EngineJob::AttemptFeedback {
-                operation_id: operation_id.to_owned(),
-                kind: crate::workspace_send::feedback_kind_for(&claim.action),
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
+            use tiler_core::world_report::FrameSetter;
+            let job = if matches!(
+                claim.action,
+                crate::runtime_types::InputSemanticAction::WorkspaceSend { .. }
+            ) {
+                EngineJob::MemberAttempt {
+                    operation_id: operation_id.to_owned(),
+                    setter: FrameSetter::Refused,
+                    post_sid: None,
+                }
+            } else {
+                EngineJob::ViewAttempt {
+                    operation_id: operation_id.to_owned(),
+                    setter: FrameSetter::Refused,
+                    pre_sid: None,
+                    post_sid: None,
+                }
             };
             // Bump before enqueue (see `invalidate_clock` in runtime).
             invalidate_clock(&self.shared);

@@ -9432,6 +9432,13 @@ mod stub {
     use super::*;
     use std::time::Duration;
 
+    /// Portable `kAXErrorAttributeUnsupported` (`AXError.h`, pinned by
+    /// `tests::ax_error_codes_bind_sdk_constants` against the maintained
+    /// macOS binding): match sites comparing AX result codes compile on
+    /// every target. The stub backend never produces it (all reads fail
+    /// closed with [`AX_NOT_IMPLEMENTED`](super::AX_NOT_IMPLEMENTED)).
+    pub const AX_ATTRIBUTE_UNSUPPORTED: i32 = -25205;
+
     pub struct AxElement {
         _priv: (),
         _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -10481,12 +10488,12 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, AxHitDetail, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow,
-    CgWindowBasic, DisplayChangeGuard, DisplayRect, DockExitWatch, DragMouseHit, DragMouseKind,
-    DragTapSource, GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity,
-    NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback,
-    SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
-    TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
+    AX_ATTRIBUTE_UNSUPPORTED, AxElement, AxFrame, AxHitDetail, BorderCarrier, BorderCarrierFlags,
+    CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, DockExitWatch,
+    DragMouseHit, DragMouseKind, DragTapSource, GroupUnderlayCarrier, HotkeySpi, KeyCounts,
+    MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
+    SegmentReadback, SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols,
+    TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
     activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
     ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
     ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
@@ -10634,6 +10641,10 @@ mod tests {
             assert_eq!(super::AX_ILLEGAL_ARGUMENT, AXError::IllegalArgument.0);
             assert_eq!(super::AX_NOT_IMPLEMENTED, AXError::NotImplemented.0);
         }
+        // The stub carries the same literal on every target (match sites
+        // compare against it cross-platform): pin it here, not only under
+        // the macOS SDK binding above.
+        assert_eq!(super::AX_ATTRIBUTE_UNSUPPORTED, -25205);
         // Classification/formatting for the full table, all platforms.
         for (code, name) in [
             (0, "kAXErrorSuccess"),

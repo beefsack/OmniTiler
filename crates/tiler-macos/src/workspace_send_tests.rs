@@ -9,17 +9,16 @@
 //! (engine facts, per-edge proof, tagged posts, terminal reaper) is proven
 //! separately in `workspace_send_live_tests` over scripted native readers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tiler_core::directional::{OutputId, WindowId};
-use tiler_core::session::{DomainKey, Session};
+use tiler_core::session::DomainKey;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{
-    AttemptKind, AttemptOutcome, HoldReason, WorldCommand, validate_report,
-};
+use tiler_core::world_report::{FrameSetter, HoldReason, WorldCommand, validate_report};
 
 use crate::ffi::{SlsDisplayRow, SlsSpaceType};
+use crate::runtime_core::LifetimeMemory;
 use crate::runtime_types::{NativeContext, ObservedWindow};
 use crate::topology::{PointsRect, TopologySnapshot};
 use crate::world_builder::{ReportInput, build_report};
@@ -212,33 +211,30 @@ fn send_chords_match_settings_ctrl_shift_digits() {
 }
 
 #[test]
-fn send_command_maps_send_shapes_to_explicit_sid_transfers() {
-    // Product send mapping: the engine admits 1..9 and the adapter carries
-    // the admission-resolved native SID as an explicit `Send` target — the
-    // ordinal resolves exactly once at admission against the native row and
-    // is never re-resolved through the scoped ring (whose stable-logical
-    // order need not match native Desktop order).
+fn send_command_maps_send_shapes_to_positional_numbered_sends() {
+    // Product send mapping: numbered sends ride positional
+    // `SendNumbered` for the admission-resolved explicit source — the
+    // ordinal resolves core-side against the adopted ring (native Desktop
+    // order), and the admission pins the native SID drain-side for
+    // revalidation only.
     use crate::world_command_map::{OP_SEND, select_command, send_command};
+    use tiler_core::world_report::SendSource;
     assert_ne!(OP_SEND, crate::world_command_map::OP_SELECT);
     let output = OutputId("macos-display-1".to_owned());
     for index in 1..=9u8 {
-        let target = crate::topology::workspace_key(u64::from(index));
-        let command = send_command(&send(index), "4242_7", output.clone(), &target)
+        let command = send_command(&send(index), "4242_7", output.clone())
             .unwrap_or_else(|| panic!("send {index} has a world route"));
         assert_eq!(
             command,
-            WorldCommand::Send {
+            WorldCommand::SendNumbered {
                 window: tiler_core::directional::WindowId("4242_7".to_owned()),
-                target_output: output.clone(),
-                target_workspace: target,
+                source: SendSource::Explicit(output.clone()),
+                index,
                 follow: true,
             }
         );
         // Sends never ride the select route.
-        assert_eq!(
-            select_command(&send(index), output.clone(), "space-1"),
-            None
-        );
+        assert_eq!(select_command(&send(index), output.clone()), None);
     }
     // Unsupported actions have no send route. Numbered stays 1..9 map
     // with follow:false preserved (armed engine-side, bindable unbound);
@@ -250,13 +246,12 @@ fn send_command_maps_send_shapes_to_explicit_sid_transfers() {
             index,
             follow: false,
         };
-        let target = crate::topology::workspace_key(u64::from(index));
         assert_eq!(
-            send_command(&action, "4242_7", output.clone(), &target),
-            Some(WorldCommand::Send {
+            send_command(&action, "4242_7", output.clone()),
+            Some(WorldCommand::SendNumbered {
                 window: tiler_core::directional::WindowId("4242_7".to_owned()),
-                target_output: output.clone(),
-                target_workspace: target,
+                source: SendSource::Explicit(output.clone()),
+                index,
                 follow: false,
             }),
             "{action:?} maps with follow:false"
@@ -275,7 +270,7 @@ fn send_command_maps_send_shapes_to_explicit_sid_transfers() {
         InputSemanticAction::ToggleFloat,
     ] {
         assert_eq!(
-            send_command(&action, "4242_7", output.clone(), "space-1"),
+            send_command(&action, "4242_7", output.clone()),
             None,
             "{action:?}"
         );
@@ -290,11 +285,10 @@ fn send_command_maps_send_shapes_to_explicit_sid_transfers() {
             },
             "4242_7",
             output.clone(),
-            "space-277"
         ),
         Some(WorldCommand::SendNumbered {
             window: tiler_core::directional::WindowId("4242_7".to_owned()),
-            output: output.clone(),
+            source: SendSource::Explicit(output.clone()),
             index: 0,
             follow: true,
         })
@@ -307,7 +301,6 @@ fn send_command_maps_send_shapes_to_explicit_sid_transfers() {
             },
             "4242_7",
             output.clone(),
-            "space-277",
             false
         ),
         None,
@@ -601,10 +594,10 @@ fn trailing_send_command_and_admission_armed_in_production() {
     // Production (gate `true`): trailing follow maps to the core trailing
     // path with the pinned subject, and the engine admits the shape.
     assert_eq!(
-        send_command(&trailing, "4242_7", output.clone(), "space-277"),
+        send_command(&trailing, "4242_7", output.clone()),
         Some(WorldCommand::SendNumbered {
             window: tiler_core::directional::WindowId("4242_7".to_owned()),
-            output: output.clone(),
+            source: tiler_core::world_report::SendSource::Explicit(output.clone()),
             index: 0,
             follow: true,
         })
@@ -614,7 +607,7 @@ fn trailing_send_command_and_admission_armed_in_production() {
     // Capability-disabled pin through the same production mapping: no
     // send route, engine refuses.
     assert_eq!(
-        send_command_with_capability(&trailing, "4242_7", output.clone(), "space-277", false),
+        send_command_with_capability(&trailing, "4242_7", output.clone(), false),
         None
     );
     assert!(
@@ -630,14 +623,13 @@ fn trailing_send_command_and_admission_armed_in_production() {
     // Explicit local capability through the same production mapping:
     // trailing follow maps to the core trailing path with the pinned
     // subject; stay-0 never maps.
-    let command =
-        send_command_with_capability(&trailing, "4242_7", output.clone(), "space-277", true)
-            .expect("trailing follow has a core route");
+    let command = send_command_with_capability(&trailing, "4242_7", output.clone(), true)
+        .expect("trailing follow has a core route");
     assert_eq!(
         command,
         WorldCommand::SendNumbered {
             window: tiler_core::directional::WindowId("4242_7".to_owned()),
-            output: output.clone(),
+            source: tiler_core::world_report::SendSource::Explicit(output.clone()),
             index: 0,
             follow: true,
         }
@@ -647,7 +639,7 @@ fn trailing_send_command_and_admission_armed_in_production() {
         follow: false,
     };
     assert_eq!(
-        send_command_with_capability(&stay0, "4242_7", output.clone(), "space-277", true),
+        send_command_with_capability(&stay0, "4242_7", output.clone(), true),
         None
     );
     // Explicit local capability admits the trailing shape at the engine gate
@@ -674,11 +666,11 @@ fn trailing_send_target_pin_release_history_semantics() {
     // claim without admission pins refuses instead of actuating.
     use crate::runtime_types::ClaimedSelect;
     use crate::workspace_send::{
-        SendDrainOutcome, attempt_outcome_for, feedback_kind_for, should_note_history,
+        SendDrainOutcome, is_send_action, setter_for, should_note_history,
     };
     use crate::workspace_send_effect::{ManagedSendTarget, SendEffectOutcome};
     use tiler_core::session::DomainKey;
-    use tiler_core::world_report::AttemptOutcome;
+    use tiler_core::world_report::FrameSetter;
     let source = DomainKey {
         output: tiler_core::directional::OutputId("out-1".to_owned()),
         workspace: tiler_core::directional::WorkspaceId("space-1".to_owned()),
@@ -690,26 +682,17 @@ fn trailing_send_target_pin_release_history_semantics() {
     // Release-first/no-replay + history semantics ride the shared outcome
     // mapping: Applied settles transfer and notes history on follows only;
     // proven refusal settles observed; ambiguous holds without replay.
+    assert_eq!(setter_for(SendDrainOutcome::Applied), FrameSetter::Accepted);
+    assert_eq!(setter_for(SendDrainOutcome::Refused), FrameSetter::Refused);
     assert_eq!(
-        attempt_outcome_for(SendDrainOutcome::Applied),
-        AttemptOutcome::Applied
-    );
-    assert_eq!(
-        attempt_outcome_for(SendDrainOutcome::Refused),
-        AttemptOutcome::RefusedProven
-    );
-    assert_eq!(
-        attempt_outcome_for(SendDrainOutcome::PossiblyExecuted),
-        AttemptOutcome::PossiblyExecuted
+        setter_for(SendDrainOutcome::PossiblyExecuted),
+        FrameSetter::Threw
     );
     let follow = InputSemanticAction::WorkspaceSend {
         index: 1,
         follow: true,
     };
-    assert_eq!(
-        feedback_kind_for(&follow),
-        tiler_core::world_report::AttemptKind::Transfer
-    );
+    assert!(is_send_action(&follow));
     assert!(should_note_history(SendDrainOutcome::Applied, true));
     assert!(!should_note_history(SendDrainOutcome::Applied, false));
     assert!(!should_note_history(SendDrainOutcome::Refused, true));
@@ -966,31 +949,22 @@ fn admission_serializes_and_refuses_without_topology() {
 #[test]
 fn feedback_kinds_and_outcomes_reconcile_engine_world() {
     // Sends settle transfers; selects settle views (single home for the
-    // discard/feedback kind branch).
-    assert_eq!(feedback_kind_for(&send(2)), AttemptKind::Transfer);
-    assert_eq!(
-        feedback_kind_for(&InputSemanticAction::WorkspaceSelect { index: 2 }),
-        AttemptKind::View
-    );
-    assert_eq!(
-        feedback_kind_for(&InputSemanticAction::FocusStep {
-            direction: crate::runtime_types::InputDirection::Left
-        }),
-        AttemptKind::View
-    );
+    // discard/feedback lane branch).
+    use crate::workspace_send::is_send_action;
+    assert!(is_send_action(&send(2)));
+    assert!(!is_send_action(&InputSemanticAction::WorkspaceSelect {
+        index: 2
+    }));
+    assert!(!is_send_action(&InputSemanticAction::FocusStep {
+        direction: crate::runtime_types::InputDirection::Left
+    }));
     // Outcome mapping never claims false success: only verified arrival is
     // Applied; pre-actuation is proven refusal; everything else holds.
+    assert_eq!(setter_for(SendDrainOutcome::Applied), FrameSetter::Accepted);
+    assert_eq!(setter_for(SendDrainOutcome::Refused), FrameSetter::Refused);
     assert_eq!(
-        attempt_outcome_for(SendDrainOutcome::Applied),
-        AttemptOutcome::Applied
-    );
-    assert_eq!(
-        attempt_outcome_for(SendDrainOutcome::Refused),
-        AttemptOutcome::RefusedProven
-    );
-    assert_eq!(
-        attempt_outcome_for(SendDrainOutcome::PossiblyExecuted),
-        AttemptOutcome::PossiblyExecuted
+        setter_for(SendDrainOutcome::PossiblyExecuted),
+        FrameSetter::Threw
     );
     // Pre-actuation refusals classify proven (the desktop was never
     // touched), so the core settles instead of retaining forever.
@@ -1111,9 +1085,10 @@ fn tile_bindings_cover_basic_plus_selects_plus_sends() {
 fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
     // Producer-shaped pathway (no live touch): the armed product chord for
     // send-2 carries Ctrl+Shift+digit, the engine admits the tap claim,
-    // the world maps it to an explicit-SID `Send` transfer, and the feedback
-    // classifiers settle transfers (never views). Unsupported shapes still
-    // refuse admission and engine dispatch.
+    // the world maps it to a positional `SendNumbered` transfer for the
+    // explicit source, and the feedback lane settles transfers (never
+    // views). Unsupported shapes still refuse admission and engine
+    // dispatch.
     use crate::config::ProbeModifier;
     use crate::runtime_thread::admit_send_claim;
     use crate::workspace_input::{effective_flags_for, workspace_unsupported_outcome};
@@ -1133,27 +1108,18 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
     let claim = ClaimedSelect::tap(binding.action.clone());
     assert!(admit_send_claim(true, false, false, claim).is_ok());
     let output = OutputId("macos-display-1".to_owned());
-    let command = send_command(
-        &binding.action,
-        "4242_7",
-        output.clone(),
-        &crate::topology::workspace_key(2),
-    )
-    .expect("world route");
+    let command = send_command(&binding.action, "4242_7", output.clone()).expect("world route");
     assert_eq!(
         command,
-        tiler_core::world_report::WorldCommand::Send {
+        tiler_core::world_report::WorldCommand::SendNumbered {
             window: tiler_core::directional::WindowId("4242_7".to_owned()),
-            target_output: output,
-            target_workspace: crate::topology::workspace_key(2),
+            source: tiler_core::world_report::SendSource::Explicit(output),
+            index: 2,
             follow: true,
         }
     );
-    assert_eq!(feedback_kind_for(&binding.action), AttemptKind::Transfer);
-    assert_eq!(
-        attempt_outcome_for(SendDrainOutcome::Applied),
-        AttemptOutcome::Applied
-    );
+    assert!(is_send_action(&binding.action));
+    assert_eq!(setter_for(SendDrainOutcome::Applied), FrameSetter::Accepted);
     // Numbered stays map with follow:false preserved and now dispatch:
     // armed engine-side (bindable unbound, no default chord).
     let stay = InputSemanticAction::WorkspaceSend {
@@ -1162,21 +1128,16 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
     };
     let stay_output = OutputId("macos-display-1".to_owned());
     assert_eq!(
-        send_command(
-            &stay,
-            "4242_7",
-            stay_output.clone(),
-            &crate::topology::workspace_key(2),
-        ),
-        Some(tiler_core::world_report::WorldCommand::Send {
+        send_command(&stay, "4242_7", stay_output.clone()),
+        Some(tiler_core::world_report::WorldCommand::SendNumbered {
             window: tiler_core::directional::WindowId("4242_7".to_owned()),
-            target_output: stay_output,
-            target_workspace: crate::topology::workspace_key(2),
+            source: tiler_core::world_report::SendSource::Explicit(stay_output),
+            index: 2,
             follow: false,
         }),
         "stay maps with follow:false"
     );
-    assert_eq!(feedback_kind_for(&stay), AttemptKind::Transfer);
+    assert!(is_send_action(&stay));
     assert_eq!(
         workspace_unsupported_outcome(&stay),
         None,
@@ -1199,15 +1160,12 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
         "send-0 admitted"
     );
     assert_eq!(
-        send_command(
-            &trailing,
-            "4242_7",
-            OutputId("macos-display-1".to_owned()),
-            "space-277"
-        ),
+        send_command(&trailing, "4242_7", OutputId("macos-display-1".to_owned()),),
         Some(tiler_core::world_report::WorldCommand::SendNumbered {
             window: tiler_core::directional::WindowId("4242_7".to_owned()),
-            output: OutputId("macos-display-1".to_owned()),
+            source: tiler_core::world_report::SendSource::Explicit(OutputId(
+                "macos-display-1".to_owned()
+            )),
             index: 0,
             follow: true,
         }),
@@ -1237,12 +1195,7 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
             "{action:?}"
         );
         assert_eq!(
-            send_command(
-                &action,
-                "4242_7",
-                OutputId("macos-display-1".to_owned()),
-                "space-2"
-            ),
+            send_command(&action, "4242_7", OutputId("macos-display-1".to_owned()),),
             None,
             "{action:?}"
         );
@@ -1279,7 +1232,7 @@ fn stay_shape_stays_unbound_but_armed_in_product() {
             "stay {index}"
         );
         assert!(
-            send_command(&action, "4242_7", output.clone(), "space-1").is_some(),
+            send_command(&action, "4242_7", output.clone()).is_some(),
             "stay {index} maps"
         );
         assert!(
@@ -1314,7 +1267,7 @@ fn stay_shape_stays_unbound_but_armed_in_product() {
             Some("refused-workspace-send-unsupported")
         );
         assert_eq!(
-            send_command(&action, "4242_7", output.clone(), "space-1"),
+            send_command(&action, "4242_7", output.clone()),
             None,
             "stay-0 has no world route"
         );
@@ -1481,20 +1434,15 @@ fn repro_members(
     )])
 }
 
-fn repro_focused(space: u64, pid: u32, wid: u32) -> (BTreeMap<DomainKey, WindowId>, String) {
-    let id = format!("{pid}_{wid}");
-    (
-        BTreeMap::from([(repro_key(space), WindowId(id.clone()))]),
-        id,
-    )
+fn repro_global(_space: u64, pid: u32, wid: u32) -> String {
+    format!("{pid}_{wid}")
 }
 
 #[allow(clippy::too_many_arguments)]
 fn repro_report(
     ctx: &NativeContext,
     members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
-    sessions: &BTreeMap<DomainKey, Session>,
-    focused: &BTreeMap<DomainKey, WindowId>,
+    memory: &LifetimeMemory,
     closed: &BTreeMap<DomainKey, Vec<WindowId>>,
     unreadable: &BTreeMap<DomainKey, HoldReason>,
     focused_global: &str,
@@ -1504,6 +1452,7 @@ fn repro_report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
 ) -> tiler_core::world_report::WorldReport {
+    let mut auto_asserted = BTreeSet::new();
     let mut input = ReportInput::new(
         REPRO_OWNER,
         REPRO_INCARNATION,
@@ -1513,42 +1462,43 @@ fn repro_report(
         req,
         req_id,
         members,
-        sessions,
-        focused,
+        memory,
+        &mut auto_asserted,
         closed,
         unreadable,
         &[],
-        &[],
         focused_global,
+        false,
     );
     input.command_seq = command_seq;
     input.command = command;
-    build_report(&input)
+    build_report(&mut input)
 }
 
-#[allow(clippy::type_complexity)]
 fn repro_empty_maps() -> (
-    BTreeMap<DomainKey, Session>,
+    LifetimeMemory,
     BTreeMap<DomainKey, Vec<WindowId>>,
     BTreeMap<DomainKey, HoldReason>,
 ) {
-    (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+    (LifetimeMemory::empty(), BTreeMap::new(), BTreeMap::new())
 }
 
-/// Native Desktop-N resolves exactly once at admission: a runtime started on
-/// a non-first Space still sends by native ordinal. A startup on 277 with
-/// the subject there sends Desktop-1 to SID 1 (the retained inverse-refusal
-/// shape), and a startup on 1 keeps the proven Desktop-2 path. Same-Space
-/// targets refuse as honest `unchanged` no-ops (shared-core
-/// `RefusalKind::Unchanged`); unknown targets keep their honest
-/// `send-target-unknown` refusals.
+/// Native Desktop-N resolves positionally core-side under adoption: a
+/// runtime started on a non-first Space still sends by native ordinal. A
+/// startup on 277 with the subject there sends Desktop-1 (positional index
+/// 1 over the adopted native-order ring), and a startup on 1 keeps the
+/// proven Desktop-2 path. Same-Space targets refuse as honest `unchanged`
+/// no-ops (shared-core `RefusalKind::Unchanged`); unknown logical targets
+/// keep their honest `send-target-unknown` refusals.
 #[test]
 fn explicit_send_resolves_native_ordinal_once_at_admission() {
     use crate::world_command_map::send_command;
     let output = OutputId(crate::topology::output_key(1));
 
-    // Startup on 277: admission binds the native Desktop-1 SID, and the
-    // production command carries it explicitly — never the ordinal.
+    // Startup on 277: admission pins the native Desktop-1 SID for drain
+    // revalidation, and the production command carries the positional
+    // index — the core resolves it against the adopted ring in the same
+    // report the adoption converges.
     let ctx = repro_ctx(277);
     assert!(
         ctx.domains.iter().any(|d| d.space == 277 && d.current),
@@ -1556,45 +1506,35 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     );
     let sid = context_target_sid(&ctx, &output, 1).expect("Desktop-1 binds");
     assert_eq!(sid, 1, "Desktop-1 is native SID 1");
-    let command = send_command(
-        &send(1),
-        "4242_7",
-        output.clone(),
-        &crate::topology::workspace_key(sid),
-    )
-    .expect("send route");
-    let WorldCommand::Send {
-        target_output,
-        target_workspace,
+    let command = send_command(&send(1), "4242_7", output.clone()).expect("send route");
+    let WorldCommand::SendNumbered {
+        window,
+        source,
+        index,
         follow,
-        ..
     } = command
     else {
-        panic!("send-1 carries an explicit SID target, got {command:?}");
+        panic!("send-1 carries a positional index, got {command:?}");
     };
-    assert_eq!(target_output, output);
-    assert_eq!(
-        target_workspace,
-        crate::topology::workspace_key(sid),
-        "command target == claim.expected_sid workspace"
+    assert_eq!(window, WindowId("4242_7".to_owned()));
+    assert!(
+        matches!(source, tiler_core::world_report::SendSource::Explicit(_)),
+        "admission-resolved source passes through unchanged"
     );
+    assert_eq!(index, 1);
     assert!(follow, "follow semantics unchanged");
-    assert_eq!(
-        feedback_kind_for(&send(1)),
-        AttemptKind::Transfer,
-        "opcode feedback unchanged"
-    );
+    assert!(is_send_action(&send(1)), "opcode feedback unchanged");
 
-    // The admitted transfer retains under the native target, not ring position 1.
+    // The admitted transfer retains under the adopted logical for native
+    // Desktop-1 (ring position 1 in native order), never a guessed id.
     let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
     let members = repro_members(277, 4242, 7);
-    let (focused, global) = repro_focused(277, 4242, 7);
-    let (sessions, closed, unreadable) = repro_empty_maps();
+    let global = repro_global(277, 4242, 7);
+    let (memory, closed, unreadable) = repro_empty_maps();
     let first = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1609,18 +1549,11 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         engine.handle_report(&first),
         WorldOutcome::Accepted(_)
     ));
-    let command = send_command(
-        &send(1),
-        "4242_7",
-        output.clone(),
-        &crate::topology::workspace_key(sid),
-    )
-    .expect("send route");
+    let command = send_command(&send(1), "4242_7", output.clone()).expect("send route");
     let second = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1636,8 +1569,17 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         "Desktop-1 from a 277-started runtime admits"
     );
     let retained = engine.retained_transfers();
-    assert_eq!(retained.len(), 1, "one retained window transfer");
-    assert_eq!(retained[0].target_workspace, "space-1");
+    let windowed: Vec<_> = retained
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.kind,
+                tiler_core::world_report::TransferKind::Window(_)
+            )
+        })
+        .collect();
+    assert_eq!(windowed.len(), 1, "one retained window transfer");
+    assert_eq!(windowed[0].target_workspace, "ws-1");
 
     // Startup-on-1 parity: Desktop-2 from a 1-started runtime still admits.
     let ctx = repro_ctx(1);
@@ -1645,13 +1587,12 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     assert_eq!(sid, 277);
     let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
     let members = repro_members(1, 4242, 8);
-    let (focused, global) = repro_focused(1, 4242, 8);
-    let (sessions, closed, unreadable) = repro_empty_maps();
+    let global = repro_global(1, 4242, 8);
+    let (memory, closed, unreadable) = repro_empty_maps();
     let first = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1666,18 +1607,11 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         engine.handle_report(&first),
         WorldOutcome::Accepted(_)
     ));
-    let command = send_command(
-        &send(2),
-        "4242_8",
-        output.clone(),
-        &crate::topology::workspace_key(sid),
-    )
-    .expect("send route");
+    let command = send_command(&send(2), "4242_8", output.clone()).expect("send route");
     let second = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1693,21 +1627,30 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         "Desktop-2 from a 1-started runtime admits"
     );
     let retained = engine.retained_transfers();
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained[0].target_workspace, "space-277");
+    let windowed: Vec<_> = retained
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.kind,
+                tiler_core::world_report::TransferKind::Window(_)
+            )
+        })
+        .collect();
+    assert_eq!(windowed.len(), 1);
+    assert_eq!(windowed[0].target_workspace, "ws-2");
 
     // Same-Space target is an honest `unchanged` no-op (shared-core
-    // `RefusalKind::Unchanged`): no transfer, no native effect.
+    // `RefusalKind::Unchanged`): the current ordinal resolves to the
+    // source home itself. No transfer, no native effect.
     let ctx = repro_ctx(277);
     let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
     let members = repro_members(277, 4242, 7);
-    let (focused, global) = repro_focused(277, 4242, 7);
-    let (sessions, closed, unreadable) = repro_empty_maps();
+    let global = repro_global(277, 4242, 7);
+    let (memory, closed, unreadable) = repro_empty_maps();
     let first = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1721,18 +1664,11 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         engine.handle_report(&first),
         WorldOutcome::Accepted(_)
     ));
-    let command = send_command(
-        &send(1),
-        "4242_7",
-        output.clone(),
-        &crate::topology::workspace_key(277),
-    )
-    .expect("send route");
+    let command = send_command(&send(2), "4242_7", output.clone()).expect("send route");
     let second = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1750,18 +1686,17 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         }
     ));
 
-    // Unknown native target keeps its honest refusal.
+    // Unknown logical target keeps its honest refusal.
     let command = WorldCommand::Send {
         window: WindowId("4242_7".to_owned()),
         target_output: output,
-        target_workspace: "space-999".to_owned(),
+        target_workspace: "ws-999".to_owned(),
         follow: true,
     };
     let third = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1781,9 +1716,10 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
 }
 
 /// Same-current numbered send is an honest unchanged no-op aligned with the
-/// shared core: the producer ordinal that resolves to the current SID
-/// (Desktop-2 while started on 277) dispatches the explicit `Send` against
-/// the source domain itself, and the world refuses it as `unchanged` - the
+/// shared core: the producer ordinal that resolves to the current home
+/// (Desktop-2 while started on 277) dispatches the positional
+/// `SendNumbered` against the source home itself, and the world refuses it
+/// as `unchanged` - the
 /// [`tiler_core::session::RefusalKind::Unchanged`] verdict the core returns
 /// for same-domain sends - retaining no transfer, binding no claim (so the
 /// drain never submits to the effect owner and posts nothing native), and
@@ -1795,25 +1731,19 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
     let ctx = repro_ctx(277);
     let output = OutputId(crate::topology::output_key(1));
     // The honest producer path: Desktop-2 resolves to SID 277, the current
-    // Space, so the pinned explicit target is the source domain itself.
+    // Space, so the positional target is the source home itself.
     let sid = context_target_sid(&ctx, &output, 2).expect("Desktop-2 binds");
     assert_eq!(sid, 277);
-    let command = crate::world_command_map::send_command(
-        &send(2),
-        "4242_7",
-        output.clone(),
-        &crate::topology::workspace_key(sid),
-    )
-    .expect("send route");
+    let command = crate::world_command_map::send_command(&send(2), "4242_7", output.clone())
+        .expect("send route");
     let members = repro_members(277, 4242, 7);
-    let (focused, global) = repro_focused(277, 4242, 7);
-    let (sessions, closed, unreadable) = repro_empty_maps();
+    let global = repro_global(277, 4242, 7);
+    let (memory, closed, unreadable) = repro_empty_maps();
     let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
     let first = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1833,8 +1763,7 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
     let second = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1860,8 +1789,7 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
     let third = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1887,14 +1815,13 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
     let unknown = WorldCommand::Send {
         window: WindowId("4242_9".to_owned()),
         target_output: output,
-        target_workspace: crate::topology::workspace_key(sid),
+        target_workspace: "ws-2".to_owned(),
         follow: true,
     };
     let fourth = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1913,16 +1840,14 @@ fn same_current_numbered_send_is_honest_unchanged_noop() {
     ));
 }
 
-/// Semantic contrast for the 277-startup repair: the legacy positional
-/// `SendNumbered{index:1}` self-targets through the stable-logical scoped
-/// ring (`[space-277, space-1]`) and refuses as an honest `unchanged`
-/// no-op (shared-core `RefusalKind::Unchanged`), while the fixed explicit
-/// `Send{target_workspace: space-1}` admission-resolved against the native
-/// row (`[1, 277]`) admits — under identical native context, members,
-/// focus, and report shape. Both second reports validate, so the red is a
-/// semantic `unchanged` refusal, never an API/compile oracle.
+/// Positional sends resolve native order under adoption: on a 277-started
+/// runtime the positional `SendNumbered{index: 1}` names native Desktop-1
+/// (SID 1) — the adopted send ring tracks native order, so the mover
+/// targets the adopted logical with stable follow + operation identity and
+/// never self-targets the startup current. Both reports validate, so any
+/// refusal would be semantic, never an API/compile oracle.
 #[test]
-fn legacy_numbered_send_self_targets_under_277_startup() {
+fn positional_send_resolves_native_order_under_adoption() {
     use crate::world_command_map::send_command;
     use tiler_core::world_report::TransferKind;
     let ctx = repro_ctx(277);
@@ -1930,18 +1855,17 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
     let sid = context_target_sid(&ctx, &output, 1).expect("Desktop-1 binds");
     assert_eq!(sid, 1, "native Desktop-1 is SID 1 in this context");
     let members = repro_members(277, 4242, 7);
-    let (focused, global) = repro_focused(277, 4242, 7);
-    let (sessions, closed, unreadable) = repro_empty_maps();
+    let global = repro_global(277, 4242, 7);
+    let (memory, closed, unreadable) = repro_empty_maps();
 
-    // Legacy positional path: SendNumbered index 1 resolves through the
-    // scoped send ring whose stable-logical order is [277, 1] here, so it
-    // names the source itself and refuses as an honest `unchanged` no-op.
-    let mut legacy = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    // Positional path: SendNumbered index 1 resolves through the adopted
+    // send ring in native order, so it names Desktop-1 and admits with a
+    // retained window transfer.
+    let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
     let first = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1953,20 +1877,19 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
     );
     assert!(validate_report(&first));
     assert!(matches!(
-        legacy.handle_report(&first),
+        engine.handle_report(&first),
         WorldOutcome::Accepted(_)
     ));
     let legacy_command = WorldCommand::SendNumbered {
         window: WindowId("4242_7".to_owned()),
-        output: output.clone(),
+        source: tiler_core::world_report::SendSource::Explicit(output.clone()),
         index: 1,
         follow: true,
     };
     let legacy_second = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -1978,32 +1901,36 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
     );
     assert!(
         validate_report(&legacy_second),
-        "legacy report is well-formed wire input"
+        "positional report is well-formed wire input"
+    );
+    let reply = match engine.handle_report(&legacy_second) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => {
+            panic!("positional SendNumbered-1 from a 277-started runtime admits, got {other:?}")
+        }
+    };
+    assert_eq!(
+        reply
+            .transfers
+            .iter()
+            .filter(|target| target.operation_id == "op-2")
+            .count(),
+        1,
+        "positional send retains exactly its window transfer"
     );
     assert!(
-        matches!(
-            legacy.handle_report(&legacy_second),
-            WorldOutcome::Rejected {
-                kind: "unchanged",
-                ..
-            }
-        ),
-        "legacy SendNumbered-1 from a 277-started runtime self-targets and refuses unchanged"
-    );
-    assert!(
-        legacy.retained_transfers().is_empty(),
-        "refused legacy send retains nothing"
+        !engine.retained_transfers().is_empty(),
+        "positional send retains the transfer for the drain"
     );
 
-    // Fixed admission-resolved path: identical context/report shape, but the
-    // command carries the native SID directly and admits with stable
+    // Production admission path: identical context/report shape, but the
+    // command comes from the admission mapping and admits with stable
     // follow + operation identity.
     let mut fixed = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
     let first = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -2018,18 +1945,11 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
         fixed.handle_report(&first),
         WorldOutcome::Accepted(_)
     ));
-    let fixed_command = send_command(
-        &send(1),
-        "4242_7",
-        output.clone(),
-        &crate::topology::workspace_key(sid),
-    )
-    .expect("send route");
+    let fixed_command = send_command(&send(1), "4242_7", output.clone()).expect("send route");
     let fixed_second = repro_report(
         &ctx,
         &members,
-        &sessions,
-        &focused,
+        &memory,
         &closed,
         &unreadable,
         &global,
@@ -2041,30 +1961,28 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
     );
     assert!(
         validate_report(&fixed_second),
-        "fixed report is well-formed wire input"
+        "positional report is well-formed wire input"
     );
     assert!(
         matches!(
             fixed.handle_report(&fixed_second),
             WorldOutcome::Accepted(_)
         ),
-        "explicit Send to space-1 from a 277-started runtime admits"
+        "positional send to Desktop-1 from a 277-started runtime admits"
     );
     let retained = fixed.retained_transfers();
-    assert_eq!(retained.len(), 1, "one retained window transfer");
+    let windowed: Vec<_> = retained
+        .iter()
+        .filter(
+            |target| matches!(&target.kind, TransferKind::Window(window) if window.0 == "4242_7"),
+        )
+        .collect();
+    assert_eq!(windowed.len(), 1, "one retained window transfer");
+    assert_eq!(windowed[0].target_output, output);
+    assert_eq!(windowed[0].target_workspace, "ws-1");
+    assert!(windowed[0].follow, "follow semantics unchanged");
     assert_eq!(
-        retained[0].kind,
-        TransferKind::Window(WindowId("4242_7".to_owned()))
-    );
-    assert_eq!(retained[0].target_output, output);
-    assert_eq!(
-        retained[0].target_workspace,
-        crate::topology::workspace_key(sid)
-    );
-    assert_eq!(retained[0].target_workspace, "space-1");
-    assert!(retained[0].follow, "follow semantics unchanged");
-    assert_eq!(
-        retained[0].operation_id, "op-2",
+        windowed[0].operation_id, "op-2",
         "stable operation identity unchanged"
     );
 }
@@ -2108,7 +2026,6 @@ fn stay_claim_pins_follow_intent_and_refuses_unpinnable_focus() {
             send_source_focus: source_focus.map(str::to_owned),
             send_source_focus_empty: empty,
             operation_id: Some("op-3".to_owned()),
-            trailing_token: None,
         }
     }
     let follow =
@@ -2203,31 +2120,19 @@ fn trailing_request_carries_admitted_pins_and_pinned_display() {
         });
         claim.operation_id = Some("op-2".to_owned());
         claim.topology_revision = Some(4);
-        claim.trailing_token = Some("wl-2".to_owned());
         claim
     }
-    // Fully pinned claims convert with the token carried opaquely; the
-    // claim's own (pre-preparation) SID/revision legs are not trusted.
+    // Fully pinned claims convert; the claim's own (pre-preparation)
+    // SID/revision legs are not trusted.
     let request =
         TrailingSendRequest::from_claim(&claim(), 0, 7, "uuid-7", true).expect("pins convert");
     assert_eq!((request.pid, request.wid), (4242, 7));
     assert_eq!(request.window, "4242_7");
     assert_eq!(request.app_generation, 9);
     assert_eq!(request.operation_id, "op-2");
-    assert_eq!(request.token.as_deref(), Some("wl-2"));
     assert_eq!(request.pins.display_index, 0);
     assert_eq!(request.pins.pinned_cgid, 7);
     assert_eq!(request.pins.pinned_uuid, "uuid-7");
-    // Tokenless claims convert too (reuse or tokenless dispatch proves
-    // nothing to bind, but still sends).
-    let mut tokenless = claim();
-    tokenless.trailing_token = None;
-    assert!(
-        TrailingSendRequest::from_claim(&tokenless, 0, 7, "uuid-7", true)
-            .expect("tokenless converts")
-            .token
-            .is_none()
-    );
     // Non-trailing actions, unpinned subjects/lifetimes/sources/
     // operations, and unpinned displays refuse before any submit.
     let mut numbered = claim();

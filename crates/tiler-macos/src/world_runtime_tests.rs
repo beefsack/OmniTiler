@@ -9,8 +9,6 @@ use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::session::DomainKey;
 
-use tiler_core::world_report::AttemptOutcome;
-
 use crate::runtime::{InputSemanticAction, NativeContext, ObservedWindow, window_id};
 use crate::runtime_core::{RetainedApp, RetainedCore};
 use crate::runtime_types::{
@@ -58,9 +56,9 @@ fn select_commands_cover_exactly_the_armed_subset() {
     use crate::workspace_input::{is_armed_select, workspace_unsupported_outcome};
     let output = OutputId("macos-display-1".to_owned());
     // Every armed select maps to a planner-owned select command. Numbered
-    // selects carry the admission-resolved native workspace explicitly
-    // (never re-resolved core-side through the scoped ring); relative and
-    // previous keep their shared core semantics.
+    // selects ride positional indices over the adopted ring (core resolves
+    // them against native Desktop order); relative and previous keep
+    // their shared core semantics.
     for action in [
         InputSemanticAction::WorkspaceSelect { index: 0 },
         InputSemanticAction::WorkspaceSelect { index: 1 },
@@ -70,14 +68,8 @@ fn select_commands_cover_exactly_the_armed_subset() {
         InputSemanticAction::WorkspacePrevious,
     ] {
         assert!(is_armed_select(&action), "{action:?} is armed");
-        let target = match action {
-            InputSemanticAction::WorkspaceSelect { index } => {
-                crate::topology::workspace_key(u64::from(index))
-            }
-            _ => String::new(),
-        };
         assert!(
-            select_command(&action, output.clone(), &target).is_some(),
+            select_command(&action, output.clone()).is_some(),
             "{action:?} has a planner route"
         );
     }
@@ -97,17 +89,17 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} dispatches"
         );
         assert!(
-            select_command(&action, output.clone(), "space-1").is_none(),
+            select_command(&action, output.clone()).is_none(),
             "{action:?} never selects"
         );
         if index == 0 {
             assert!(
-                send_command(&action, "4242_7", output.clone(), "space-277").is_some(),
+                send_command(&action, "4242_7", output.clone()).is_some(),
                 "{action:?} has the product trailing send route"
             );
         } else {
             assert!(
-                send_command(&action, "4242_7", output.clone(), "space-1").is_some(),
+                send_command(&action, "4242_7", output.clone()).is_some(),
                 "{action:?} has the product send route"
             );
         }
@@ -123,11 +115,11 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{stay:?} dispatches (armed, bindable unbound)"
         );
         assert!(
-            select_command(&stay, output.clone(), "space-1").is_none(),
+            select_command(&stay, output.clone()).is_none(),
             "{stay:?} never selects"
         );
         assert!(
-            send_command(&stay, "4242_7", output.clone(), "space-1").is_some(),
+            send_command(&stay, "4242_7", output.clone()).is_some(),
             "{stay:?} has the product send route"
         );
     }
@@ -140,8 +132,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
     assert!(
         select_command(
             &InputSemanticAction::WorkspaceSelect { index: 0 },
-            output.clone(),
-            "space-1"
+            output.clone()
         )
         .is_some(),
         "select-0 has the planner trailing route"
@@ -162,11 +153,11 @@ fn select_commands_cover_exactly_the_armed_subset() {
     ] {
         assert!(workspace_unsupported_outcome(&action).is_some());
         assert!(
-            select_command(&action, output.clone(), "space-1").is_none(),
+            select_command(&action, output.clone()).is_none(),
             "{action:?} stays refused"
         );
         assert!(
-            send_command(&action, "4242_7", output.clone(), "space-1").is_none(),
+            send_command(&action, "4242_7", output.clone()).is_none(),
             "{action:?} stays refused"
         );
     }
@@ -200,16 +191,6 @@ fn operation_commands_cover_every_supported_tiling_action() {
         (
             InputSemanticAction::ToggleOrientation,
             OP_TOGGLE_ORIENTATION,
-        ),
-        (
-            InputSemanticAction::DragDrop {
-                window: window.to_owned(),
-                x: 100,
-                y: 200,
-                hover_prior: None,
-                press_revision: 7,
-            },
-            OP_DRAG_DROP,
         ),
     ] {
         let (command, token) = operation_command(&action, window, &mut retained)
@@ -394,13 +375,17 @@ fn minimized_close_in_app_and_at_terminate_ride_explicit_closes() {
 }
 
 #[test]
-fn completion_outcomes_never_claim_false_success() {
+fn completion_setters_never_claim_arrival() {
+    use tiler_core::world_report::FrameSetter;
+    // Only a reported success stages `Accepted` (arrival is never claimed
+    // here); partial writes and timeouts are ambiguous (`Threw`, never
+    // blindly repeated); proven failures are explicit refusals.
     assert_eq!(
-        completion_outcome(&AxCompletion::Applied { elapsed_ms: 3 }),
-        AttemptOutcome::Applied
+        completion_setter(&AxCompletion::Applied { elapsed_ms: 3 }),
+        FrameSetter::Accepted
     );
     assert_eq!(
-        completion_outcome(&AxCompletion::PartialApplied {
+        completion_setter(&AxCompletion::PartialApplied {
             elapsed_ms: 3,
             size_first_applied: true,
             position_applied: false,
@@ -408,17 +393,39 @@ fn completion_outcomes_never_claim_false_success() {
             readback_xywh: None,
             readback_unreadable: false,
         }),
-        AttemptOutcome::PossiblyExecuted
+        FrameSetter::Threw
     );
     assert_eq!(
-        completion_outcome(&AxCompletion::Failed {
+        completion_setter(&AxCompletion::Failed {
             reason: "refused".to_owned()
         }),
-        AttemptOutcome::RefusedProven
+        FrameSetter::Refused
     );
     assert_eq!(
-        completion_outcome(&AxCompletion::Timeout { timeout_ms: 50 }),
-        AttemptOutcome::PossiblyExecuted
+        completion_setter(&AxCompletion::Timeout { timeout_ms: 50 }),
+        FrameSetter::Threw
+    );
+    // The immediate post-write readback rides partial completions only;
+    // everything else reports unreadable, never guessed.
+    assert_eq!(
+        completion_readback(&AxCompletion::PartialApplied {
+            elapsed_ms: 3,
+            size_first_applied: true,
+            position_applied: true,
+            size_applied: true,
+            readback_xywh: Some((1, 2, 30, 40)),
+            readback_unreadable: false,
+        }),
+        Some(tiler_core::geometry::Rect {
+            x: 1,
+            y: 2,
+            w: 30,
+            h: 40
+        })
+    );
+    assert_eq!(
+        completion_readback(&AxCompletion::Applied { elapsed_ms: 3 }),
+        None
     );
 }
 
@@ -474,15 +481,44 @@ fn ordinary_frame_traffic_never_occupies_write_correlation() {
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
     );
-    track_write(&mut session, 1001, 1, "1001_1", Some("op-7"));
+    track_write(
+        &mut session,
+        1001,
+        1,
+        "1001_1",
+        tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+        Some("op-7"),
+    );
     for cmd in 2..=5_000u64 {
-        track_write(&mut session, 1001, cmd, "1001_1", None);
+        track_write(
+            &mut session,
+            1001,
+            cmd,
+            "1001_1",
+            tiler_core::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            None,
+        );
     }
-    // The lone placement entry survives unbounded ordinary traffic.
+    // The lone placement entry survives unbounded ordinary traffic. The
+    // retained app generation fences stale completions: the live
+    // generation stages, a relaunched PID drops.
+    let retained = retained_with_window(1001, 7, &domain_key());
     assert!(
         stage_write_feedback(
             &mut session,
+            &retained,
             1001,
+            1,
             1,
             &AxCompletion::Applied { elapsed_ms: 3 }
         ),
@@ -492,110 +528,79 @@ fn ordinary_frame_traffic_never_occupies_write_correlation() {
     assert!(
         !stage_write_feedback(
             &mut session,
+            &retained,
             1001,
+            1,
             9_999,
             &AxCompletion::Applied { elapsed_ms: 3 }
         ),
         "ordinary rows leave no correlation behind"
     );
+    // Stale generations drop even with a live correlation entry: a
+    // relaunched PID never settles under an old command.
+    track_write(
+        &mut session,
+        1001,
+        77,
+        "1001_7",
+        tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+        Some("op-8"),
+    );
+    assert!(
+        !stage_write_feedback(
+            &mut session,
+            &retained,
+            1001,
+            2,
+            77,
+            &AxCompletion::Applied { elapsed_ms: 3 }
+        ),
+        "stale generation drops without staging"
+    );
 }
 
 #[test]
-fn trailing_session_carries_exact_proof_until_core_ack() {
-    use tiler_core::geometry::Rect;
-    use tiler_core::world_report::{TilingMode, WorkspaceDesire, WorldReply};
+fn raw_attempt_staging_drops_unknown_operations_without_evidence() {
+    use tiler_core::world_report::FrameSetter;
 
     use std::sync::Arc;
 
     use crate::focus_route::FocusRoute;
+    use crate::runtime_core::RetainedCore;
     use crate::world_sequencer::ObservationClock;
 
-    const UUID: &str = "A1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6";
-    let output = OutputId("macos-display-1".to_owned());
-    let domain = |space: u64, current: bool| NativeDomain {
-        cg_id: 1,
-        uuid: Some(UUID.to_owned()),
-        output: output.clone(),
-        workspace: WorkspaceId(crate::topology::workspace_key(space)),
-        space,
-        current,
-        readable: true,
-        bounds: Rect {
-            x: 0,
-            y: 0,
-            w: 1440,
-            h: 900,
-        },
-        visible: Rect {
-            x: 0,
-            y: 25,
-            w: 1440,
-            h: 875,
-        },
-    };
-    let created = NativeContext {
-        revision: 10,
-        domains: vec![domain(1, false), domain(277, false), domain(278, true)],
-        skipped: Vec::new(),
-    };
+    // Staging resolves retained transfer targets by operation identity:
+    // unknown operations (forged, retired, or never issued) drop without
+    // evidence — never fabricated rows, never guessed targets.
     let mut session = WorldSession::new(
         tiler_core::size_hints::FixedSizePredicate::BothAxes,
-        true,
+        false,
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
     );
-    // Exact proof records through the production seam.
-    session
-        .adopt_trailing_binding("wl-1", &output, 278, &[1, 277], &[1, 277, 278])
-        .expect("exact append adopts");
-    // Drift refuses without mutating the recorded binding.
+    session.stage_view_attempt("op-404", FrameSetter::Accepted, Some(11), Some(12));
+    session.stage_member_attempt("op-404", FrameSetter::Accepted, Some(12));
+    let retained = RetainedCore::default();
+    let report = build_dispatch_report(
+        &mut session,
+        &retained,
+        &DispatchContext::Synthetic,
+        BTreeMap::new(),
+        1,
+        1,
+        None,
+        None,
+        None,
+        "req-1",
+    )
+    .expect("synthetic report builds");
     assert!(
-        session
-            .adopt_trailing_binding("wl-2", &output, 279, &[1, 277], &[1, 279, 278])
-            .is_err()
+        report.view_attempts.is_empty() && report.member_attempts.is_empty(),
+        "unknown operations stage no raw evidence"
     );
-    // The next full report carries exactly the recorded binding.
-    let staged = session.trailing_report_bindings(&created);
-    assert_eq!(staged.len(), 1);
-    assert_eq!(staged[0].logical_id, "wl-1");
-    assert_eq!(staged[0].native_id, "space-278");
-    assert!(staged[0].managed, "proven owned creation");
-    assert!(!staged[0].pinned, "trailing stays cleanup-eligible");
-    // The unbound desire never acknowledges; the bound row releases.
-    let mut reply = WorldReply {
-        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
-        adapter_incarnation: "adapter-1".to_owned(),
-        core_generation: "gen-1".to_owned(),
-        request_id: "req-0".to_owned(),
-        based_on_observation_seq: 0,
-        state_revision: 0,
-        ready: false,
-        command_consumed: false,
-        scopes: Vec::new(),
-        workspaces: Vec::new(),
-        outputs: Vec::new(),
-        windows: Vec::new(),
-        transfers: Vec::new(),
-        effects: Vec::new(),
-        command_result: None,
-        gesture_settled: None,
-        cursor_warp: None,
-    };
-    reply.workspaces.push(WorkspaceDesire {
-        id: "wl-1".to_owned(),
-        output: output.clone(),
-        native_binding: None,
-        logical_id: Some("wl-1".to_owned()),
-        scope: "macos-display-1".to_owned(),
-        order: 2,
-        tiling_mode: TilingMode::Tiled,
-        existence: true,
-        hold: None,
-    });
-    assert!(session.note_trailing_ack(&reply).is_empty());
-    assert_eq!(session.trailing_report_bindings(&created).len(), 1);
-    reply.workspaces[0].native_binding = Some("space-278".to_owned());
-    reply.workspaces[0].id = "space-278".to_owned();
-    assert_eq!(session.note_trailing_ack(&reply), vec!["wl-1".to_owned()]);
-    assert!(session.trailing_report_bindings(&created).is_empty());
 }
