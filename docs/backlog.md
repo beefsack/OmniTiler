@@ -1049,6 +1049,8 @@ decisions of 2026-09-24 are under
   v2: legacy routes must be replaced together (no dual route), supplying
   truthful native receipts/transport and host-owned bootstrap/outside-change
   adoption (see boundaries item).
+  [Staged v2 plan and abstraction-fit review](changes/macos-world-v2-port.md)
+  record the current build gaps, KDE adoption dependency and acceptance gates.
   **Current 2026-10-16:** basic tiling dogfood preview
   ([guide](changes/macos-dogfood-preview.md)) user-accepted after
   [hardening](changes/archive/macos-dogfood-hardening.md): directional focus

@@ -3,6 +3,8 @@
 How the macOS adapter moves to the strict v2 contract in
 [world-adapter-guide](world-adapter-guide.md). Status below is
 implemented vs approved-not-implemented vs open as of `01a73798`.
+The [v2 migration plan and abstraction-fit review](../changes/macos-world-v2-port.md)
+confirm that inventory at `a0f54105` and record current build failures and gates.
 Live work stays under [live-macos-testing](../live-macos-testing.md)
 with the fixture-first rules and the signed bundle in
 `crates/tiler-live-fixture/README.md`.
@@ -123,6 +125,10 @@ with the fixture-first rules and the signed bundle in
   errors (`AX_ATTRIBUTE_UNSUPPORTED`, `take_trailing_proof`); the port
   repairs or replaces those paths as part of the v2 move, without
   masking them.
+- Native macOS compilation also fails at `a0f54105`: 31 errors from retired
+  world-report/feedback/binding fields, changed command shapes and private
+  engine-boundary consumers. These are separate from the non-macOS cfg leaks;
+  see the [confirmed state and gates](../changes/macos-world-v2-port.md#confirmed-starting-state).
 - Core-only gates stay host-independent (see the generic guide
   section 9); macOS live acceptance additionally needs the native
   hide/reveal checkpoints and the narrow checker ordering, never
