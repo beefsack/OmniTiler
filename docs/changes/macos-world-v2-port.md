@@ -7,6 +7,8 @@
   core correction, separate macOS automatic-float echo removal, born-state policy
   deletion, per-app native lifetime/flat-close path and tentative shared transient
   classifier integration are verified offline.
+  The reply-driven executor/presentation draft described below is not accepted:
+  native creation receipts and selection setter evidence still need correction.
   Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
@@ -698,6 +700,78 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   `E0624` private `WorldEngine::engine`, `E0609`/`E0560` retired fields,
   `E0308` select-output shape, and `E0559`/`E0026` send-output shape. Final output:
   `could not compile tiler-macos (lib) due to 31 previous errors`.
+
+## Reply-driven executor and presentation draft (2026-10-26)
+
+- The current implementation draft removes local selection history/ordinal
+  targeting and admission-time numbered send targets. Ordinary selections use
+  core output resolution; sends use `HomeThenCachedLive`. Reply bindings, native
+  handle lookup, observation-time view baselines and native member pre/post now
+  ride the executor seams. No shared source changed.
+- Positive previous-toggle tests now incorporate native arrival before flipping
+  back and forth. Stale replies retain correlation without an actuatable plan;
+  duplicate creation claims spend once. The diagnostic select batch uses the
+  world engine rather than retaining its own history/targeting policy.
+- Bound-target send execution separates actual setter disposition from arrival
+  verdict: queued native success stays `Accepted` on delayed/unreadable arrival,
+  pre-dispatch refusal is `Refused`, and actual partial/error dispatch is `Threw`.
+  The owner captures native member/current reads; the follow-view operation id
+  comes from a published transfer, not a constructed suffix. Executor-to-report
+  joins cover readable refusal, delayed/unreadable arrival, replay and lifetime
+  fences. This does not close the whole native settlement plan.
+- Review rejects the selection/creation draft despite green tests:
+  `SelectionBackend::select/create` still returns `Result<(), String>`, erasing
+  successful dispatch versus pre-call refusal. The drain converts generic errors
+  to `Threw`. Creation failure/unreadable paths also substitute the before-order
+  (or empty vectors) for an unobserved after-order. Neither is valid raw evidence;
+  the test asserting repeated-before is not an acceptance oracle.
+- Required correction: carry typed dispatch truth from the actual native touch;
+  retain an attempted creation with its real preimage and original stamp until
+  the first readable full post-order. Never stage a guessed after-order, and
+  never replay the create while awaiting that read. Join refusal, delayed arrival
+  and supersession through the actual report/core path, not only a native latch.
+- Trailing sends with an unbound target and an explicit creation desire remain
+  blocked on that corrected creation seam. Their draft refusal is not accepted
+  product behavior and is not the historical first-report `send-target-unknown`
+  discriminator. Desires without bindings must be executable before cutover;
+  bindingless rows without desires must still never create. Removal/pin and
+  full native lifecycle acceptance remain open.
+- The presentation draft consumes the reply's border geometry and carries
+  configured whole-point gap/width through report and reply. Live accent remains
+  native, with fresh focus/lifetime/session/Space vetoes. Review caught and
+  corrected default-only style outsets, fullscreen-as-game pausing, and loss of
+  borderless-full-display/zoom/exclusion fences. Non-default style has a real
+  report -> core -> renderer test. Eligibility normalization remains partial;
+  no Stage-4 completion is claimed.
+- Abstraction-fit item: macOS has no grounded maximization bit in this path;
+  the existing work-area zoom approximation and native exclusions still veto at
+  render time, while report flags remain incomplete. Options: move grounded
+  publisher facts into presentation ingress without changing core, or review a
+  neutral unknown-state ingress if existing facts cannot express the hold.
+  Prefer proving the first option before proposing a shared change. Reuse the
+  [floating-zoom discriminator](../spec/reference-outcomes.md#macos-active-border-discriminators).
+  No new core field or maximization product outcome is selected.
+- No positively grounded game classification is available; ordinary native
+  fullscreen must not masquerade as the game's `paused` lane. Native fullscreen
+  and full-display safety vetoes remain; full game-lane acceptance is unproven.
+- Pager miniatures have no macOS painter; the existing menu-bar indicator is
+  Space-level. Independent highlight overrides/full-strength border/dim same-RGB
+  fill remain unfinished. No no-op public flags or unused painter scaffold is
+  retained. UI options are an extension of the existing indicator versus a new
+  pager carrier; prefer the existing indicator surface, subject to a product
+  decision. Underlay trigger/carrier work remains parked; active drag preview
+  continues consuming the core gesture result.
+- Final offline draft gates: locked macOS/core/protocol build PASS; macOS full
+  tests PASS (1,335: 1,187 library + 148 integration); core/protocol full tests
+  PASS (1,308); strict all-target clippy for all three PASS; workspace fmt,
+  whitespace and ordered acceptance 6/6 PASS. Earlier bounded gate invocations
+  timed out between test binaries; sequential reruns with a larger bound passed.
+  These gates do not waive the identified raw-evidence defects. No live tests,
+  signed-bundle acceptance, cross-target or Windows gates claimed here.
+- Exact next action: repair the native dispatch/creation evidence seam, then
+  consume it for trailing sends and finish the executor/core discriminators
+  before accepting the atomic targeting cutover. Keep pager/underlay/game-lane
+  and sticky/native hide-reveal acceptance explicitly incomplete.
 
 ## Risks and open evidence
 
