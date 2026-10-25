@@ -17,7 +17,11 @@ use crate::dock_swipe_select::{
     assemble_pinned_row, execute_dock_swipe_select,
 };
 use crate::ffi::{LatchWait, SlsDisplayRow, SlsSpaceType, SpaceSelectLatch, SpaceSelectWake};
-use crate::workspace_select::{SelectGates, SelectionBackend, SelectionSnapshot};
+use crate::runtime_types::ClaimedSelect;
+use crate::workspace_select::{
+    DispatchError, SelectGates, SelectionBackend, SelectionSnapshot, SelectionState, drain_claimed_select_with,
+};
+use tiler_core::world_report::FrameSetter;
 
 /// Producer-shaped display identity fixture (managed-UUID shape, never a
 /// machine UUID).
@@ -113,10 +117,10 @@ impl McCreateEffect for FakeCreate {
         cgid: u32,
         uuid: &str,
         _budget: &mut crate::mc_probe::ActionBudget,
-    ) -> Result<(), String> {
+    ) -> Result<(), DispatchError> {
         self.calls.push((display, cgid, uuid.to_owned()));
         self.log.borrow_mut().push("append".to_owned());
-        self.results.pop_front().expect("scripted create result")
+        self.results.pop_front().expect("scripted create result").map_err(DispatchError::threw)
     }
 }
 
@@ -148,13 +152,13 @@ impl FakeExitGate {
 }
 
 impl McExitGate for FakeExitGate {
-    fn arm(&mut self) -> Result<(), String> {
+    fn arm(&mut self) -> Result<(), crate::workspace_select::DispatchError> {
         self.arms += 1;
         self.log.borrow_mut().push("arm".to_owned());
-        self.arm_results.pop_front().expect("scripted arm result")
+        self.arm_results.pop_front().expect("scripted arm result").map_err(DispatchError::refused)
     }
 
-    fn await_exit(&mut self, cancel: &AtomicBool) -> Result<(), String> {
+    fn await_exit(&mut self, cancel: &AtomicBool) -> Result<(), crate::workspace_select::DispatchError> {
         self.awaits += 1;
         self.log.borrow_mut().push("await".to_owned());
         let flag = cancel.load(Ordering::SeqCst);
@@ -163,11 +167,12 @@ impl McExitGate for FakeExitGate {
         // promptly without consuming a scripted outcome, so the test proves
         // the backend actually threads its cancel flag to the gate.
         if flag {
-            return Err("trailing post-create select refused: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched".to_owned());
+            return Err(DispatchError::refused("trailing post-create select refused: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched"));
         }
         self.await_results
             .pop_front()
             .expect("scripted await result")
+            .map_err(DispatchError::refused)
     }
 
     fn disarm(&mut self) {
@@ -490,7 +495,7 @@ fn entry_drift_against_before_refuses_without_posting() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("entry drift refuses");
-    assert!(err.starts_with("dock-swipe refused:"));
+    assert!(err.reason.starts_with("dock-swipe refused:"));
     assert!(poster.posted.is_empty());
 }
 
@@ -526,7 +531,7 @@ fn source_moved_pre_post_refuses_without_posting() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("moved source refuses");
-    assert!(err.contains("moved"));
+    assert!(err.reason.contains("moved"));
     assert!(poster.posted.is_empty());
 }
 
@@ -554,7 +559,7 @@ fn multi_display_refuses_before_any_post() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("multi-display refuses");
-    assert!(err.contains("exactly one native display"));
+    assert!(err.reason.contains("exactly one native display"));
     assert!(poster.posted.is_empty());
 }
 
@@ -599,7 +604,7 @@ fn wrong_sid_arrival_is_unproven_without_replay() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("wrong SID is unproven");
-    assert!(err.starts_with("dock-swipe unproven:"));
+    assert!(err.reason.starts_with("dock-swipe unproven:"));
     assert!(t0.elapsed() < Duration::from_secs(5));
     assert_eq!(poster.posted.len(), 1);
     assert!(poster.released.is_empty());
@@ -647,7 +652,7 @@ fn multiple_wrong_then_deadline_takes_final_read() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("deadline after wrong SIDs is unproven");
-    assert!(err.starts_with("dock-swipe unproven:"));
+    assert!(err.reason.starts_with("dock-swipe unproven:"));
     assert_eq!(poster.posted.len(), 1);
 }
 
@@ -687,7 +692,7 @@ fn no_event_final_read_is_unproven_within_injected_deadline() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("deadline expiry is unproven");
-    assert!(err.starts_with("dock-swipe unproven:"));
+    assert!(err.reason.starts_with("dock-swipe unproven:"));
     assert!(t0.elapsed() < Duration::from_secs(5));
     assert_eq!(poster.posted.len(), 1);
 }
@@ -722,7 +727,7 @@ fn partial_began_without_ended_releases_once_and_never_replays() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("partial is unproven");
-    assert!(err.contains("began-without-ended"));
+    assert!(err.reason.contains("began-without-ended"));
     assert_eq!(poster.posted.len(), 1);
     assert_eq!(poster.released, vec![1.0]);
 }
@@ -760,11 +765,7 @@ fn zero_posted_pairs_refuse_proven_while_partial_holds() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("zero posted refuses");
-    assert!(err.starts_with("dock-swipe refused:"));
-    assert_eq!(
-        crate::select_feedback::classify_select_drain_error(&err),
-        crate::select_feedback::SelectDrainOutcome::Refused
-    );
+    assert!(err.reason.starts_with("dock-swipe refused:"));
 
     let mut topo = topo_row(&[1001, 1002, 1003], 1001);
     topo.rows = vec![
@@ -793,11 +794,7 @@ fn zero_posted_pairs_refuse_proven_while_partial_holds() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("partial posting holds");
-    assert!(err.starts_with("dock-swipe unproven:"));
-    assert_eq!(
-        crate::select_feedback::classify_select_drain_error(&err),
-        crate::select_feedback::SelectDrainOutcome::PossiblyExecuted
-    );
+    assert!(err.reason.starts_with("dock-swipe unproven:"));
     assert_eq!(poster.posted.len(), 1);
     assert!(poster.released.is_empty());
 }
@@ -821,7 +818,7 @@ fn cancelled_job_refuses_without_posting() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("cancel refuses");
-    assert!(err.contains("cancelled"));
+    assert!(err.reason.contains("cancelled"));
     assert!(poster.posted.is_empty());
 }
 
@@ -864,7 +861,7 @@ fn cancellation_wake_settles_promptly_without_deadline() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("cancellation wake refuses");
-    assert!(err.contains("cancelled"));
+    assert!(err.reason.contains("cancelled"));
     assert!(t0.elapsed() < Duration::from_secs(10));
     assert_eq!(poster.posted.len(), 1);
     let _ = handle.join();
@@ -939,7 +936,7 @@ fn cancel_during_settlement_refuses_without_history() {
         },
     )
     .expect_err("cancel during settlement refuses");
-    assert!(err.contains("cancelled"));
+    assert!(err.reason.contains("cancelled"));
 }
 
 #[test]
@@ -986,7 +983,7 @@ fn pre_post_fullscreen_insert_refuses_without_posting() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("fullscreen insert pre-post refuses");
-    assert!(err.contains("drifted pre-post"), "{err}");
+    assert!(err.reason.contains("drifted pre-post"), "{err}");
     assert!(poster.posted.is_empty());
 }
 
@@ -1034,7 +1031,7 @@ fn pre_post_identity_and_user_row_drift_refuse_without_posting() {
             seams(&mut topo, &mut poster, &latch, &cancel, &gates),
         )
         .expect_err("identity/user-row drift pre-post refuses");
-        assert!(err.contains("drifted pre-post"), "{err}");
+        assert!(err.reason.contains("drifted pre-post"), "{err}");
         assert!(poster.posted.is_empty());
     }
 }
@@ -1070,7 +1067,7 @@ fn target_arrival_under_drifted_topology_refuses_without_posting() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("drifted no-post arrival refuses");
-    assert!(err.contains("drifted"), "{err}");
+    assert!(err.reason.contains("drifted"), "{err}");
     assert!(poster.posted.is_empty());
 }
 
@@ -1102,7 +1099,7 @@ fn version_gate_refuses_without_posting() {
         let err =
             execute_dock_swipe_select(req, seams(&mut topo, &mut poster, &latch, &cancel, &gates))
                 .expect_err("new payload refuses");
-        assert!(err.starts_with("dock-swipe refused:"));
+        assert!(err.reason.starts_with("dock-swipe refused:"));
         assert!(poster.posted.is_empty());
     }
     let mut topo = topo_row(&[1001, 1002], 1001);
@@ -1166,7 +1163,7 @@ fn confirmation_drift_refuses_despite_target_current() {
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
     .expect_err("confirmation drift refuses");
-    assert!(err.contains("drifted"));
+    assert!(err.reason.contains("drifted"));
     assert_eq!(poster.posted.len(), 1);
 }
 
@@ -1621,7 +1618,7 @@ fn post_create_select_dispatches_no_gesture_until_exit_observed() {
         .select(&before_row(&[71, 72, 73], 72), 73)
         .expect_err("unobserved exit refuses the post-create select");
     assert!(
-        err.contains("no gesture dispatched"),
+        err.reason.contains("no gesture dispatched"),
         "refusal names the no-dispatch contract: {err}"
     );
     assert!(
@@ -1685,7 +1682,7 @@ fn exit_watch_arm_failure_refuses_create_pre_effect() {
         .create(&before_row(&[71, 72], 72))
         .expect_err("failed arm refuses pre-effect");
     assert!(
-        err.contains("trailing create refused"),
+        err.reason.contains("trailing create refused"),
         "refusal is honest pre-effect: {err}"
     );
     assert_eq!(
@@ -1715,7 +1712,7 @@ fn create_failure_disarms_unawaited_watch() {
     let err = backend
         .create(&before_row(&[71, 72], 72))
         .expect_err("failed append refuses");
-    assert_eq!(err, "mc gone");
+    assert_eq!(err.reason, "mc gone");
     backend
         .select(&before_row(&[71, 72, 73], 72), 73)
         .expect("disarmed watch leaves an ordinary select");
@@ -1786,7 +1783,7 @@ fn post_create_exit_wait_answers_cancellation() {
         .select(&before_row(&[71, 72, 73], 72), 73)
         .expect_err("cancelled exit wait refuses");
     assert!(
-        err.contains("cancelled while awaiting Mission Control exit"),
+        err.reason.contains("cancelled while awaiting Mission Control exit"),
         "cancellation refuses honestly: {err}"
     );
     assert!(
@@ -1893,23 +1890,33 @@ impl SelectionBackend for ProofBackend {
         None
     }
 
+    fn check_output(&mut self, output: &str) -> Result<(), String> {
+        if output == "macos-display-1" {
+            Ok(())
+        } else {
+            Err(format!(
+                "product select refuses: reply target output {output} is not the live display macos-display-1; no actuation"
+            ))
+        }
+    }
+
     fn empty(&mut self, _sid: u64) -> Result<bool, String> {
         Ok(self.empty_result)
     }
 
-    fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), String> {
+    fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
         Ok(())
     }
 
-    fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), String> {
+    fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
         self.selected.push((before.clone(), sid));
-        self.select_result.clone()
+        self.select_result.clone().map_err(DispatchError::refused)
     }
 }
 
 #[test]
 fn execute_preserves_append_proof_when_post_create_select_refuses() {
-    use crate::runtime_types::InputSemanticAction;
+    use crate::runtime_types::{ClaimedSelect, InputSemanticAction};
     use crate::workspace_select::{SelectionState, TrailingAppendProof};
 
     let mut state = SelectionState::default();
@@ -1918,22 +1925,59 @@ fn execute_preserves_append_proof_when_post_create_select_refuses() {
             before_row(&[71, 72], 72),
             before_row(&[71, 72, 73], 72),
             before_row(&[71, 72, 73], 72),
+            before_row(&[71, 72, 73], 72),
         ]
         .into(),
         empty_result: false,
         select_result: Err(EXIT_TIMEOUT.to_owned()),
         selected: Vec::new(),
     };
-    let err = state
-        .execute(
-            &mut backend,
-            InputSemanticAction::WorkspaceSelect { index: 0 },
-        )
-        .expect_err("exit-gate refusal fails the select");
+    // Reply plan authorizes the trailing creation (unbound target plus
+    // explicit desire); the post-create select then refuses via the
+    // scripted exit-gate failure. The verified append proof must still be
+    // adoptable.
+    let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 0 });
+    claim.operation_id = Some("op-9".to_owned());
+    claim.select_target_output = Some("macos-display-1".to_owned());
+    claim.select_target_workspace = Some("ws-new".to_owned());
+    claim.select_native_binding = None;
+    claim.select_creation_operation = Some("op-native-1".to_owned());
+    claim.select_creation_logical = Some("ws-new".to_owned());
+    claim.select_creation_output = Some("macos-display-1".to_owned());
+    claim.select_baseline_sid = Some(72);
+    let failure = crate::workspace_select::drain_claimed_select_with(
+        &mut state,
+        &mut backend,
+        claim,
+        &crate::workspace_select::SelectGates {
+            session_unlocked: true,
+            secure_active: false,
+            lock_screen: false,
+        },
+        true,
+    )
+    .expect_err("exit-gate refusal fails the select");
     assert!(
-        err.contains("created SID Some(73)"),
-        "refusal carries the created SID for adoption: {err}"
+        failure.reason.contains("created SID Some(73)"),
+        "refusal carries the created SID for adoption: {}",
+        failure.reason
     );
+    assert_eq!(
+        failure.setter,
+        tiler_core::world_report::FrameSetter::Threw,
+        "ambiguous post-actuation output holds, never a proven refusal"
+    );
+    assert_eq!(failure.pre, Some(72));
+    assert_eq!(failure.baseline, Some(72));
+    // The creation leg itself verified: its report rides the failure.
+    let creation = failure.creation.expect("append proof rides the failure");
+    assert_eq!(creation.operation_id, "op-native-1");
+    assert_eq!(
+        creation.setter,
+        tiler_core::world_report::FrameSetter::Accepted
+    );
+    assert_eq!(creation.order_after, vec![71, 72, 73]);
+    assert_eq!(creation.created, Some(73));
     assert_eq!(
         backend.selected,
         vec![(before_row(&[71, 72, 73], 72), 73)],
@@ -1948,5 +1992,355 @@ fn execute_preserves_append_proof_when_post_create_select_refuses() {
             created: 73,
         }),
         "append proof survives the select-phase refusal for lifecycle adoption"
+    );
+}
+
+/// Reply-plan claim for the async drain tests below: the engine would bind
+/// these from the accepted reply; tests inject them directly.
+fn drain_plan(
+    action: crate::runtime_types::InputSemanticAction,
+    op: &str,
+    binding: &str,
+    baseline: u64,
+) -> ClaimedSelect {
+    let mut claim = ClaimedSelect::tap(action);
+    claim.operation_id = Some(op.to_owned());
+    claim.select_target_output = Some("macos-display-7".to_owned());
+    claim.select_target_workspace = Some("ws-async".to_owned());
+    claim.select_native_binding = Some(binding.to_owned());
+    claim.select_baseline_sid = Some(baseline);
+    claim
+}
+
+/// Async drain backend over scripted seams: pinned to CG display 7
+/// (`macos-display-7`), so the output fence passes for the async plans.
+fn async_backend(
+    topo: FakeTopo,
+    poster: FakePoster,
+    deadline_ms: u64,
+) -> (OwnerSelectBackend<FakeTopo, FakePoster>, Arc<AtomicBool>) {
+    let wake = SpaceSelectWake::new();
+    let latch = Arc::new(wake.subscribe());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let legs = crate::dock_swipe_select::PinnedLegs {
+        display_index: 0,
+        pinned_cgid: 7,
+        pinned_uuid: FIX_UUID.to_owned(),
+        published_displays: vec![],
+        published_separate: None,
+        settle_deadline: Duration::from_millis(deadline_ms),
+    };
+    let backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
+        legs,
+        latch,
+        cancel: Arc::clone(&cancel),
+        budget_secs: 30,
+        gate_reads: Box::new(FakeGates {
+            gates: vec![open_gates(), open_gates()].into(),
+        }),
+        creator: Box::new(FakeCreate {
+            results: VecDeque::new(),
+            log: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            calls: Vec::new(),
+        }),
+        exit_gate: Box::new(FakeExitGate::new(std::rc::Rc::new(
+            std::cell::RefCell::new(Vec::new()),
+        ))),
+        topo,
+        poster,
+        op: Some("op-async".to_owned()),
+        t_base: Instant::now(),
+    });
+    (backend, cancel)
+}
+
+fn async_row(order: &[u64], current: u64) -> FullRow {
+    FakeTopo::row(FIX_DISPLAY, order, current)
+}
+
+#[test]
+fn drain_delayed_arrival_settles_accepted_without_replay() {
+    // Slow WindowServer: the target appears only on a later settlement
+    // read, after the bounded wait times out once. The production drain
+    // still settles Accepted with genuine reads and posts exactly once -
+    // never an invented Threw, never a replay.
+    let order = vec![1001, 1002, 1003];
+    let topo = FakeTopo {
+        counts: vec![Ok(1), Ok(1), Ok(1)].into(),
+        rows: vec![
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1003)),
+            Ok(async_row(&order, 1003)),
+        ]
+        .into(),
+        revisions: vec![].into(),
+        notify_on_read: vec![],
+        reads: 0,
+    };
+    let poster = FakePoster {
+        reports: vec![PairsPosted {
+            began_posted: 2,
+            ended_posted: 2,
+            pending_sign: None,
+            error: None,
+        }]
+        .into(),
+        releases: vec![].into(),
+        posted: vec![],
+        released: vec![],
+    };
+    let (mut backend, _cancel) = async_backend(topo, poster, 150);
+    let mut state = SelectionState::default();
+    let success = drain_claimed_select_with(
+        &mut state,
+        &mut backend,
+        drain_plan(
+            crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 3 },
+            "op-async-1",
+            "space-1003",
+            1001,
+        ),
+        &open_gates(),
+        true,
+    )
+    .expect("delayed arrival settles");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert_eq!((success.pre, success.post), (Some(1001), Some(1003)));
+    assert_eq!(success.effect.target, 1003);
+    assert!(success.effect.changed);
+    assert_eq!(backend.test_poster().posted, vec![(1.0, 2)]);
+    assert!(backend.test_poster().released.is_empty());
+    assert!(state.take_trailing_proof().is_none());
+}
+
+#[test]
+fn drain_intermediate_notification_confirms_without_replay() {
+    // A non-target intermediate current is normal on nonadjacent swipes:
+    // the notification wakes the settlement loop and the later target
+    // read confirms. One post, no replay.
+    let order = vec![1001, 1002, 1003];
+    let wake = SpaceSelectWake::new();
+    let latch = wake.subscribe();
+    let topo = FakeTopo {
+        counts: vec![Ok(1), Ok(1), Ok(1)].into(),
+        rows: vec![
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1002)),
+            Ok(async_row(&order, 1003)),
+            Ok(async_row(&order, 1003)),
+        ]
+        .into(),
+        revisions: vec![].into(),
+        notify_on_read: vec![(4, latch.clone())],
+        reads: 0,
+    };
+    let poster = FakePoster {
+        reports: vec![PairsPosted {
+            began_posted: 2,
+            ended_posted: 2,
+            pending_sign: None,
+            error: None,
+        }]
+        .into(),
+        releases: vec![].into(),
+        posted: vec![],
+        released: vec![],
+    };
+    // Rebuild with the notifying latch wired into the backend seam: the
+    // topo notifies a clone of the SAME latch the backend waits on
+    // (clones share the latch state; a second subscription would never
+    // observe the notification).
+    let cancel = Arc::new(AtomicBool::new(false));
+    let legs = crate::dock_swipe_select::PinnedLegs {
+        display_index: 0,
+        pinned_cgid: 7,
+        pinned_uuid: FIX_UUID.to_owned(),
+        published_displays: vec![],
+        published_separate: None,
+        settle_deadline: Duration::from_millis(500),
+    };
+    let mut backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
+        legs,
+        latch: Arc::new(latch.clone()),
+        cancel,
+        budget_secs: 30,
+        gate_reads: Box::new(FakeGates {
+            gates: vec![open_gates()].into(),
+        }),
+        creator: Box::new(FakeCreate {
+            results: VecDeque::new(),
+            log: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            calls: Vec::new(),
+        }),
+        exit_gate: Box::new(FakeExitGate::new(std::rc::Rc::new(
+            std::cell::RefCell::new(Vec::new()),
+        ))),
+        topo,
+        poster,
+        op: Some("op-async".to_owned()),
+        t_base: Instant::now(),
+    });
+    let mut state = SelectionState::default();
+    let success = drain_claimed_select_with(
+        &mut state,
+        &mut backend,
+        drain_plan(
+            crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 3 },
+            "op-async-2",
+            "space-1003",
+            1001,
+        ),
+        &open_gates(),
+        true,
+    )
+    .expect("intermediate notification still confirms");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert_eq!((success.pre, success.post), (Some(1001), Some(1003)));
+    assert_eq!(backend.test_poster().posted, vec![(1.0, 2)]);
+}
+
+#[test]
+fn drain_partial_post_holds_unknown_without_replay() {
+    // Began-without-ended partial posting is ambiguous mid-actuation
+    // output: hold as Threw with the genuine pre-write read and an
+    // unreadable post - never a proven refusal, never a replay.
+    let order = vec![1001, 1002, 1003];
+    let topo = FakeTopo {
+        counts: vec![Ok(1), Ok(1), Ok(1)].into(),
+        rows: vec![
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1001)),
+            Ok(async_row(&order, 1001)),
+            Err("post snapshot unreadable".to_owned()),
+        ]
+        .into(),
+        revisions: vec![].into(),
+        notify_on_read: vec![],
+        reads: 0,
+    };
+    let poster = FakePoster {
+        reports: vec![PairsPosted {
+            began_posted: 2,
+            ended_posted: 1,
+            pending_sign: Some(1.0),
+            error: Some("ended event creation returned null".to_owned()),
+        }]
+        .into(),
+        releases: vec![Ok(())].into(),
+        posted: vec![],
+        released: vec![],
+    };
+    let (mut backend, _cancel) = async_backend(topo, poster, 100);
+    let mut state = SelectionState::default();
+    let failure = drain_claimed_select_with(
+        &mut state,
+        &mut backend,
+        drain_plan(
+            crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 3 },
+            "op-async-3",
+            "space-1003",
+            1001,
+        ),
+        &open_gates(),
+        true,
+    )
+    .expect_err("partial posting holds");
+    assert_eq!(failure.setter, FrameSetter::Threw);
+    assert_eq!(failure.pre, Some(1001));
+    assert_eq!(failure.post, None, "unreadable post stays unknown");
+    assert_eq!(failure.baseline, Some(1001));
+    assert_eq!(
+        backend.test_poster().posted.len(),
+        1,
+        "posted once, never replayed"
+    );
+    assert!(state.take_trailing_proof().is_none());
+}
+
+#[test]
+fn drain_newer_switch_supersedes_without_replay() {
+    // Newer input supersedes: the second drain reads the first drain's
+    // arrival as its fresh pre-image and actuates exactly once more. Each
+    // dispatch posts exactly one gesture pair; nothing replays.
+    let topo = FakeTopo {
+        counts: vec![Ok(1), Ok(1), Ok(1), Ok(1), Ok(1), Ok(1)].into(),
+        rows: vec![
+            Ok(async_row(&[1001, 1002], 1001)),
+            Ok(async_row(&[1001, 1002], 1001)),
+            Ok(async_row(&[1001, 1002], 1001)),
+            Ok(async_row(&[1001, 1002], 1002)),
+            Ok(async_row(&[1001, 1002], 1002)),
+            Ok(async_row(&[1001, 1002], 1002)),
+            Ok(async_row(&[1001, 1002], 1002)),
+            Ok(async_row(&[1001, 1002], 1002)),
+            Ok(async_row(&[1001, 1002], 1001)),
+            Ok(async_row(&[1001, 1002], 1001)),
+        ]
+        .into(),
+        revisions: vec![].into(),
+        notify_on_read: vec![],
+        reads: 0,
+    };
+    let poster = FakePoster {
+        reports: vec![
+            PairsPosted {
+                began_posted: 1,
+                ended_posted: 1,
+                pending_sign: None,
+                error: None,
+            },
+            PairsPosted {
+                began_posted: 1,
+                ended_posted: 1,
+                pending_sign: None,
+                error: None,
+            },
+        ]
+        .into(),
+        releases: vec![].into(),
+        posted: vec![],
+        released: vec![],
+    };
+    let (mut backend, _cancel) = async_backend(topo, poster, 100);
+    let mut state = SelectionState::default();
+    let first = drain_claimed_select_with(
+        &mut state,
+        &mut backend,
+        drain_plan(
+            crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 2 },
+            "op-async-4",
+            "space-1002",
+            1001,
+        ),
+        &open_gates(),
+        true,
+    )
+    .expect("first switch actuates");
+    assert_eq!((first.pre, first.post), (Some(1001), Some(1002)));
+    let second = drain_claimed_select_with(
+        &mut state,
+        &mut backend,
+        drain_plan(
+            crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 1 },
+            "op-async-5",
+            "space-1001",
+            1002,
+        ),
+        &open_gates(),
+        true,
+    )
+    .expect("newer switch supersedes");
+    // The newer drain observed the older arrival as its pre-image: exact
+    // supersession, no stale actuation, no replay.
+    assert_eq!((second.pre, second.post), (Some(1002), Some(1001)));
+    assert_eq!(
+        backend.test_poster().posted,
+        vec![(1.0, 1), (-1.0, 1)],
+        "each switch posts exactly once, in order"
     );
 }

@@ -39,7 +39,7 @@
 //!
 //! Safety contract: explicit `--user-start` plus a non-empty bundle
 //! allowlist are mandatory. Ghostty (any case/variant), the own bundle,
-//! protected terminals, and unknown (`None`) bundles never write — at
+//! protected terminals, and unknown (`None`) bundles never write - at
 //! validation AND at the effect boundary. A directly spawned probe-target
 //! helper carries no LaunchServices bundle entry and no launch date, so a
 //! named scope cannot admit it; the signed bundled helper (stable helper
@@ -574,8 +574,8 @@ pub struct HeartbeatState {
 
 /// Trailing-cleanup gate after the cooperative select drain: only a clean
 /// drained/reaped selector (`select_unclean` none) may run MC removal
-/// effects. An unclean drain means the owner is still live — e.g. a hung
-/// MC-create owner that may still actuate — so every owned SID is retained
+/// effects. An unclean drain means the owner is still live - e.g. a hung
+/// MC-create owner that may still actuate - so every owned SID is retained
 /// as explicit residue and ALL cleanup effects are skipped; the hung owner
 /// can never overlap the main-thread remover. Returns the retained-residue
 /// lines on the unclean arm (one per owned SID), or `None` on the clean arm
@@ -723,7 +723,7 @@ mod native {
 
     /// Adopt one terminal selection completion into lifecycle ownership on
     /// Adopt one trailing append proof into lifecycle ownership
-    /// (success or failure — the Space persists from the verified append).
+    /// (success or failure - the Space persists from the verified append).
     /// BOTH outcomes adopt: the drain took the exact-append proof exactly
     /// once, so lifecycle ownership can never double-adopt. The caller logs
     /// and reports the outcome.
@@ -748,33 +748,59 @@ mod native {
     }
 
     /// Report one terminal selection outcome under the claim's operation
-    /// identity (proven applied vs honest refusal classification). The
-    /// verified Space reads ride the raw attempt row on success (the
-    /// drain-verified before/after Space ids); failures carry no reads.
+    /// identity with the drain's typed setter and genuine reads. The
+    /// verified Space reads ride the raw view-attempt row on success
+    /// (drain-verified before/after Space ids plus the observation-time
+    /// baseline); failures carry the drain's genuine pre/post reads too,
+    /// so the core - never a string classifier - derives confirmation,
+    /// refusal, ambiguity, or supersession. A creation attempt rides
+    /// alongside whenever the drain attempted the desired create.
     /// Shared by the live poll and the cooperative shutdown drain; the
     /// caller owns its settle-site log line.
     fn report_select_completion(
         handle: &crate::runtime::RuntimeHandle,
         completion: &crate::select_owner::SelectCompletion,
     ) {
+        let stage_creation =
+            |handle: &crate::runtime::RuntimeHandle,
+             creation: &crate::workspace_select::CreationReport| {
+                handle.report_creation_attempt(
+                    &creation.operation_id,
+                    &creation.logical,
+                    &creation.output.0,
+                    creation.setter,
+                    &creation.order_before,
+                    &creation.order_after,
+                    creation.created,
+                    creation.attempt_ms,
+                );
+            };
         match completion.result.as_ref() {
-            Ok(effect) => {
+            Ok(success) => {
                 if let Some(operation_id) = completion.operation_id.as_deref() {
-                    handle.report_select_outcome(
+                    if let Some(creation) = success.creation.as_ref() {
+                        stage_creation(handle, creation);
+                    }
+                    handle.report_select_attempt(
                         operation_id,
-                        crate::runtime::SelectDrainOutcome::Applied,
-                        Some(effect.from),
-                        Some(effect.target),
+                        success.setter,
+                        success.pre,
+                        success.post,
+                        success.effect.baseline,
                     );
                 }
             }
-            Err(reason) => {
+            Err(failure) => {
                 if let Some(operation_id) = completion.operation_id.as_deref() {
-                    handle.report_select_outcome(
+                    if let Some(creation) = failure.creation.as_ref() {
+                        stage_creation(handle, creation);
+                    }
+                    handle.report_select_attempt(
                         operation_id,
-                        crate::select_feedback::classify_select_drain_error(reason),
-                        None,
-                        None,
+                        failure.setter,
+                        failure.pre,
+                        failure.post,
+                        failure.baseline,
                     );
                 }
             }
@@ -792,17 +818,17 @@ mod native {
     ) {
         adopt_select_completion(handle, trailing_lifecycle, &completion);
         match completion.result.as_ref() {
-            Ok(effect) => {
+            Ok(success) => {
                 eprintln!(
                     "tiler-macos dev select settled at shutdown changed={} caffeinate_reaped={} complete=true",
-                    effect.changed, reaped,
+                    success.effect.changed, reaped,
                 );
                 report_select_completion(handle, &completion);
             }
-            Err(reason) => {
+            Err(failure) => {
                 eprintln!(
                     "tiler-macos dev select refused at shutdown reason={} complete=false",
-                    reason,
+                    failure.reason,
                 );
                 report_select_completion(handle, &completion);
             }
@@ -821,7 +847,7 @@ mod native {
     /// Owned production border carrier on the tile main thread: created on
     /// the first show, updated only on observed change, hidden on every
     /// false/unknown leg, destroyed here at run stop on every path (`Drop`
-    /// runs on all returns past construction — the watchdog forced exit
+    /// runs on all returns past construction - the watchdog forced exit
     /// excepted, where the OS reaps the panel with the process). No app
     /// activation and no activation-policy call happen on this path; the
     /// fixture-accepted create/update/hide/show_above/destroy surface is
@@ -839,7 +865,7 @@ mod native {
         /// Drive one controller effect: at most one panel call. Create and
         /// update failures forget the pushed state (the next tick retries)
         /// and count; transitions log one line each (static tokens plus
-        /// geometry — never titles, bundles, or paths). `engine_placed`
+        /// geometry - never titles, bundles, or paths). `engine_placed`
         /// reports the tick's placement join on show/update lines (live
         /// placement-truth diagnosis); hide-only callers pass false.
         fn drive(
@@ -934,11 +960,11 @@ mod native {
     /// the per-segment AppKit targets forward into. Created only when the
     /// mode is not off; the status item itself exists only while the
     /// projection is visible (single display, provable row). Occupancy
-    /// comes from the engine's retained domains (managed windows only —
+    /// comes from the engine's retained domains (managed windows only -
     /// no independent desktop scan); the icon cache resolves
     /// representative bundles on rebuild only (no added polls). Teardown
     /// removes the item explicitly on every path (`Drop` runs on all
-    /// returns past construction — the watchdog forced exit excepted,
+    /// returns past construction - the watchdog forced exit excepted,
     /// where the OS reaps the item with the process).
     ///
     /// [`IndicatorDriver`]: crate::workspace_indicator::IndicatorDriver
@@ -1023,7 +1049,7 @@ mod native {
 
         /// Apply one fresh snapshot revision plus one retained occupancy
         /// report: rebuild the projection only when the driver trigger
-        /// fires (moved revision, published observation, or empty cache —
+        /// fires (moved revision, published observation, or empty cache -
         /// never a blind per-cadence poll) and push it to the native item
         /// only on a changed render (change-only dedup inside the driver).
         /// Occupancy is retained-engine truth (managed windows only);
@@ -1057,7 +1083,7 @@ mod native {
                     );
                     // The trailing action slot renders only while the
                     // capability gate arms it (production `false`: no extra
-                    // segment, no trailing click binding — disabled and
+                    // segment, no trailing click binding - disabled and
                     // unshown while unarmed, never an enabled-looking slot).
                     // The binding carries the TRUE native row identity
                     // (`row.spaces.last()` over the full native row, never
@@ -1140,7 +1166,7 @@ mod native {
         /// Map one retained occupancy report onto the live revision: the
         /// per-Space retained domains plus whether completeness is proven
         /// (report present AND homed under this exact revision). Anything
-        /// else — no report, timed-out query, revision drift — is
+        /// else - no report, timed-out query, revision drift - is
         /// incomplete, and the summary renders `Unknown` throughout.
         /// Domains whose workspace key does not parse to a SID are
         /// dropped here (the summary names the coverage gap `Unknown`,
@@ -1185,7 +1211,7 @@ mod native {
         /// segment after the existing rows: `"+"` live when the last
         /// Space is proven occupied (pressing appends), `"+?"` disabled
         /// when occupancy is unknown (shown unavailable, never falsely
-        /// empty — the drain refuses unknown instead of appending).
+        /// empty - the drain refuses unknown instead of appending).
         /// Proven-empty last reuses the existing slot with no extra
         /// segment. The trailing click carries kind Trailing with position
         /// `render_len + 1` and the render-time NATIVE last SID
@@ -1509,7 +1535,7 @@ mod native {
     const BORDER_FAST_MIN: Duration = Duration::from_millis(33);
     /// Pure border fast-path gate over explicit inputs (fake-clock
     /// testable): enabled runs re-join only on publisher dirt with the
-    /// throttle satisfied. The caller peeks (never takes) here — the take
+    /// throttle satisfied. The caller peeks (never takes) here - the take
     /// happens only on a joining tick, so a throttled burst never loses
     /// its wakeup (the 250 ms cadence stays the backstop regardless).
     fn border_fast_due(enabled: bool, dirty: bool, elapsed: Duration) -> bool {
@@ -1536,8 +1562,8 @@ mod native {
         elapsed >= CADENCE || display_pending
     }
 
-    /// Current visible work areas in CG top-left points for the zoom
-    /// heuristic (one entry per display with converted geometry).
+    /// Current visible work areas in CG top-left points for the native
+    /// zoom veto (one entry per display with converted geometry).
     fn visibles_of(
         snapshot: &crate::topology::TopologySnapshot,
     ) -> Vec<tiler_core::visual::VisualRect> {
@@ -1555,8 +1581,8 @@ mod native {
     }
 
     /// Current full display bounds in CG top-left points for the
-    /// borderless full-display game fence (one entry per display with
-    /// converted geometry — never work areas).
+    /// borderless full-display fence (one entry per display with
+    /// converted geometry - never work areas).
     fn displays_of(
         snapshot: &crate::topology::TopologySnapshot,
     ) -> Vec<tiler_core::visual::VisualRect> {
@@ -1588,11 +1614,18 @@ mod native {
 
     /// Active-border tick: join the frontmost PID's owner-published facts
     /// with the live session verdict, the product scope gate, the current
-    /// user Spaces plus topology revision, engine-placement truth, and the
-    /// system accent — then drive the one main-thread carrier. The decision
-    /// is pure and change-only (silent on steady state); `snapshot` is the
-    /// last good topology read (`None` hides: no flip height, no work
-    /// areas, no display bounds).
+    /// user Spaces plus topology revision, the last applied reply
+    /// presentation, the fresh native frame plus display geometry, and the
+    /// system accent - then drive the one main-thread carrier. Core shapes
+    /// decide bounds; freshness/lifetime/session joins plus fresh native
+    /// safety vetoes (classifier exclusions, zoom approximation,
+    /// full-display fence) decide visibility. Normalization stays partial:
+    /// the ingress cannot name maximized/cloaked/shell/hidden truthfully
+    /// yet, so the vetoes fail closed instead. `engine_placed` still
+    /// reports the tick's placement join on show/update lines (live
+    /// placement-truth diagnosis, never a gate on its own: the zoom veto
+    /// consults it). `snapshot` is the last good topology read (`None`
+    /// hides: no flip height, no work areas, no display bounds).
     #[allow(clippy::too_many_arguments)]
     fn border_tick_once(
         selection: &crate::dev_selection::TileScope,
@@ -1615,14 +1648,35 @@ mod native {
             }
         });
         // Engine-placement join over the latest plan truth (never AX, never
-        // the classifier): only a plan member reads placed.
-        let engine_placed = match (frontmost.as_ref(), record.as_ref()) {
-            (Some((pid, _)), Some(record)) if *pid > 1 => record.focused_wid.is_some_and(|wid| {
-                engine_places(&handle.last_desired_geometry(), *pid as u32, wid)
-            }),
+        // the classifier): diagnostic only, never a visibility gate.
+        let engine_placed = match frontmost.as_ref() {
+            Some((pid, _)) if *pid > 1 => record
+                .as_ref()
+                .and_then(|record| record.focused_wid)
+                .is_some_and(|wid| {
+                    engine_places(&handle.last_desired_geometry(), *pid as u32, wid)
+                }),
             _ => false,
         };
-        let input = crate::border_runtime::BorderTickInput {
+        let presentation = handle.last_presentation();
+        // Fresh native frame in CG top-left points for the zoom and
+        // full-display vetoes (publisher-side read, never AX on this path).
+        let native_frame_cg = record
+            .as_ref()
+            .and_then(|record| record.window.as_ref())
+            .map(|window| tiler_core::visual::VisualRect {
+                x: window.frame.x,
+                y: window.frame.y,
+                w: window.frame.w,
+                h: window.frame.h,
+            })
+            .unwrap_or(tiler_core::visual::VisualRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            });
+        let input = crate::border_runtime::BorderReplyTick {
             enabled: options.enabled,
             style: options.style,
             accent,
@@ -1641,20 +1695,22 @@ mod native {
             record,
             context_currents,
             context_revision,
-            visibles: snapshot.map(visibles_of).unwrap_or_default(),
-            displays: snapshot.map(displays_of).unwrap_or_default(),
             engine_placed,
+            native_frame_cg,
+            visibles: snapshot.map(visibles_of).unwrap_or_default(),
+            full_displays: snapshot.map(displays_of).unwrap_or_default(),
             primary_h: snapshot
                 .and_then(|s| crate::border_runtime::snapshot_primary_height(&s.displays)),
             now_ms: border_store.now_ms(),
+            presentation: &presentation,
         };
-        let effect = controller.tick(&input);
-        guard.drive(controller, effect, accent, input.engine_placed);
+        let effect = controller.tick_reply(&input);
+        guard.drive(controller, effect, accent, engine_placed);
     }
 
     /// Publish the eligibility current context from a snapshot the main
     /// thread already took: every user-typed current Space (one per
-    /// display — multi-display supported, each display homes its own
+    /// display - multi-display supported, each display homes its own
     /// current) plus the snapshot-revision fingerprint the backends stamp
     /// their records with. Type checks are the only new reads (SLS type
     /// calls the main thread already makes each cadence; no AX anywhere).
@@ -1718,7 +1774,7 @@ mod native {
             Some(_) => {}
         }
         // Exact-run directory (foreground graceful lifecycle): it must
-        // exist when passed — the launcher always creates it, so a missing
+        // exist when passed - the launcher always creates it, so a missing
         // directory is a usage error, never a silent stdout-only run.
         if let Some(dir) = &request.run_dir
             && !dir.is_empty()
@@ -1738,7 +1794,7 @@ mod native {
         // whole product catalogue (basic plus the 19 armed selects plus
         // the 10 armed send-follows),
         // Compatible leaves known conflicting chords to macOS (unarmed,
-        // passing through natively — under the Ctrl role that is the 4
+        // passing through natively - under the Ctrl role that is the 4
         // unshifted arrow basics plus the 10 numbered selects, the latter
         // still switching Spaces natively via Switch to Desktop N).
         let mut catalogue =
@@ -1771,7 +1827,7 @@ mod native {
         // automatic revert on shutdown). Runs once at startup, before any
         // send could dispatch: Desktops 1-9 coverage with preimage
         // published before the first write, resume-safe, external edits
-        // preserved. A refusal logs and proceeds — the per-drain holder
+        // preserved. A refusal logs and proceeds - the per-drain holder
         // leg still refuses disabled/unreadable holders before any post.
         // Compatible performs zero store touch here (no read, no write).
         if request.preset == InputPreset::Authentic {
@@ -1806,7 +1862,7 @@ mod native {
         // Shared per-PID eligibility facts: each per-app AX owner publishes
         // only its own PID from snapshot data it already read; the input
         // owner consults plain snapshots (no AX crosses threads). Built
-        // here before `Runtime::start` and shared with both factories —
+        // here before `Runtime::start` and shared with both factories -
         // no new threads, no new channels.
         let facts_store = Arc::new(crate::input_eligibility::EligibilityFactsStore::new());
         // Border facts ride the same publisher shape: each per-app AX
@@ -1840,7 +1896,7 @@ mod native {
         // Drag-preview Escape wiring exists only while the live acceptance
         // gate is open. While parked (`live-acceptance-pending`) no drag
         // Escape wiring is created at all, and the arm below parks without
-        // installing any mouse tap — regardless of drag_preview
+        // installing any mouse tap - regardless of drag_preview
         // enabled/color settings.
         let (drag_escape_tx, drag_escape_rx) = if matches!(request.input, TileInput::Tap)
             && request.drag.enabled
@@ -2017,6 +2073,10 @@ mod native {
         // The guard owns the active-Space observer for the run lifetime;
         // its shared wake settles off-main Dock-swipe selects event-driven.
         handle.publish_select_wake(guard.select_wake());
+        // Startup-resolved presentation style for the report ingress, so
+        // core shapes use the configured width/gap instead of a default
+        // outset. Startup-only: a running session never re-reads it.
+        handle.publish_presentation_style(&request.border.style, request.border.enabled);
         // Meta+left drag-preview arm (tap route with the startup switch
         // on only): session plus filled carrier plus the mouse-tap owner
         // thread. A spawn denial parks the arm with its reason (keyboard
@@ -2066,15 +2126,13 @@ mod native {
         );
         let mut poll = TopologyPoll::new();
         let mut tracked: BTreeMap<u32, TrackedApp> = BTreeMap::new();
-        // Durable product select history lives coherently in the
-        // serialized Dock-swipe selection owner (previous per display
-        // identifier plus trailing proofs, advancing only on verified
-        // arrivals for the whole run lifetime — never persisted, never
-        // guessed). The main thread submits claims nonblocking and polls
-        // completions nonblocking; it never waits and never touches
-        // history directly, so no concurrent send/select effect can race
-        // it. Follow-history attributions from settled send follows ride
-        // the same lane ahead of later selects.
+        // The core owns product select history and targeting; the
+        // serialized Dock-swipe selection owner holds only trailing
+        // creation proofs (adopted on verified append for the whole run
+        // lifetime - never persisted, never guessed). The main thread
+        // submits claims nonblocking and polls completions nonblocking;
+        // it never waits and never touches core state directly, so no
+        // concurrent send/select effect can race it.
         let mut select_controller = crate::select_owner::SelectController::new();
         // Async live-send controller: the main-thread side of the dedicated
         // managed-send effect owner (spawned lazily on the first submit, so
@@ -2175,7 +2233,7 @@ mod native {
             }
             // Border-only fast path: a publisher publish/invalidation sets
             // the wakeup flag, and this re-runs ONLY the border join (no
-            // topology, no tiling, no AX) — throttled so AX-frequency
+            // topology, no tiling, no AX) - throttled so AX-frequency
             // publishes never spin the join. Idle runs never set the flag
             // (unchanged snapshots don't republish), so this costs two
             // atomic loads per pump. The take happens only on a joining
@@ -2217,7 +2275,7 @@ mod native {
             // Foreground verbosity: lifecycle/recovery lines always stream;
             // verbose adds a counter heartbeat, trace shortens it and adds
             // input forward/ignore counters. Static tokens plus numbers
-            // only — never titles, bundles, or paths. Heartbeats are
+            // only - never titles, bundles, or paths. Heartbeats are
             // change-only: an idle run prints once, then stays quiet until
             // a counter moves.
             if let Some(stride) = heartbeat_stride(request.log)
@@ -2383,7 +2441,7 @@ mod native {
             // Topology: the 250 ms poll still owns the full snapshot; the
             // send display legs publish on screen-parameter notification,
             // plus startup above, plus recovery when the slot stands empty
-            // (a transient unreadable read clears it — the next good
+            // (a transient unreadable read clears it - the next good
             // snapshot restores it without waiting for a notification), so
             // a quiet poll with a populated slot never moves it. The stash
             // take below runs after the lock/secure gates (which `continue`
@@ -2394,6 +2452,7 @@ mod native {
             if display_notified {
                 display_events += 1;
             }
+            let topology_read_started_ms = crate::input_eligibility::now_ms();
             match snapshot_live() {
                 Ok(snapshot) => {
                     if display_publish_due(display_notified, handle.has_display_inputs()) {
@@ -2403,6 +2462,20 @@ mod native {
                     // Trailing bookkeeping reads the row before the move below.
                     let trailing_row =
                         crate::workspace_select::user_row_from_rows(&snapshot.rows, 0).ok();
+                    if let Some(row) = trailing_row.as_ref() {
+                        for receipt in select_controller.observe_creation_receipts(row, topology_read_started_ms) {
+                            handle.report_creation_attempt(
+                                &receipt.operation_id,
+                                &receipt.logical,
+                                &receipt.output.0,
+                                receipt.setter,
+                                &receipt.order_before,
+                                &receipt.order_after,
+                                receipt.created,
+                                receipt.attempt_ms,
+                            );
+                        }
+                    }
                     if !matches!(
                         poll.poll(&snapshot),
                         crate::topology::PollOutcome::Unchanged
@@ -2414,7 +2487,7 @@ mod native {
                         topology_updates += 1;
                         // Trailing bookkeeping on a moved topology: forget
                         // owned SIDs that vanished from the native row
-                        // (externally removed — never re-removed here, never
+                        // (externally removed - never re-removed here, never
                         // replayed). No MC effects run mid-loop; actual
                         // removals wait for the bounded shutdown below.
                         if let Some(row) = trailing_row.as_ref() {
@@ -2431,11 +2504,11 @@ mod native {
                     }
                     // Indicator refresh (event-driven, change-only): the
                     // snapshot revision, engine observation counts, and an
-                    // empty cache are the only rebuild triggers — never a
+                    // empty cache are the only rebuild triggers - never a
                     // blind per-cadence rebuild. Occupancy rides the
                     // engine's retained domains over the control lane
                     // (bounded round-trip; a timeout renders Unknown, never
-                    // a stale report — no independent desktop scan, no
+                    // a stale report - no independent desktop scan, no
                     // steady-state polls: the query and the frontmost read
                     // run only when a rebuild is actually due). Clicks drain
                     // against this same fresh row below.
@@ -2480,13 +2553,13 @@ mod native {
             }
 
             // Focus evidence: workspace frontmost only (plain IDs). The main
-            // thread performs no AX reads under any cadence — a hung app
-            // must never stall the controller — so `ax_focus` stays `None`
+            // thread performs no AX reads under any cadence - a hung app
+            // must never stall the controller - so `ax_focus` stays `None`
             // here: each owning per-app AX thread reads the bounded
             // selected-oracle leg on its own thread and stamps it at send
             // time (never the diagnostic system-wide leg). Stale foreground
             // out of scope clears observed focus engine-side via
-            // disagreement — never guessed here.
+            // disagreement - never guessed here.
             let frontmost = crate::ffi::frontmost_app();
             handle.update_focus_evidence(FocusEvidence {
                 frontmost_pid: frontmost.as_ref().map(|(pid, _)| *pid as u32),
@@ -2495,7 +2568,7 @@ mod native {
             });
 
             // Product workspace drain: one claimed pending workspace action
-            // runs its proven native leg with fresh topology/readback —
+            // runs its proven native leg with fresh topology/readback -
             // the tap callback and the serial engine handed off
             // asynchronously and never block. Selects (action plus, for
             // indicator clicks, the immutable render-time SID/revision
@@ -2505,7 +2578,7 @@ mod native {
             // chord delivers them): the send leg below
             // submits engine-admitted send claims to the dedicated
             // managed-send effect owner (fresh proof, tagged HID posts, and
-            // bounded readback all run there — never on the engine or this
+            // bounded readback all run there - never on the engine or this
             // AppKit thread) and reconciles their completions nonblocking
             // on later ticks. The owner routes on the pinned intent
             // (forward drag for follows, forward drag plus released return
@@ -2524,17 +2597,14 @@ mod native {
             //
             // Live-send completion poll (nonblocking): reconcile at most
             // one settled effect per tick before draining new claims. The
-            // effect owner proved arrival post-release; the follow-history
-            // note (applied follows only) and the transfer feedback under
-            // the claim's operation identity settle the core's retained
-            // transfer here. Focus follows through the observation loop
-            // (the proof held focus on the subject at every edge; no focus
-            // substitution actuation repairs a send).
+            // effect owner proved arrival post-release; the transfer
+            // feedback under the claim's operation identity settles the
+            // core's retained transfer here (core owns select history, so
+            // no send-driven previous-history notes). Focus follows through
+            // the observation loop (the proof held focus on the subject at
+            // every edge; no focus substitution actuation repairs a send).
             if let Some(settle) = send_controller.poll() {
                 let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
-                if crate::workspace_send::should_note_history(outcome, settle.follow) {
-                    select_controller.note_arrival(&settle.display, settle.from);
-                }
                 // Owner-verified trailing append: the created SID adopts
                 // into lifecycle ownership here (token or not: the Space
                 // persists even when the drag failed). The owner-verified
@@ -2552,50 +2622,68 @@ mod native {
                     settle.target.target_sid(),
                     outcome,
                 );
-                let post_sid = matches!(outcome, crate::workspace_send::SendDrainOutcome::Applied)
-                    .then(|| settle.target.target_sid());
-                handle.report_send_outcome(settle.target.operation_id(), outcome, post_sid);
+                // The setter is the owner's raw write-boundary truth, staged
+                // verbatim — never re-derived here from the arrival outcome.
+                handle.report_send_outcome(
+                    settle.target.operation_id(),
+                    settle.setter,
+                    settle.pre_member,
+                    settle.post_member,
+                    settle.pre_view,
+                    settle.post_view,
+                    settle.baseline,
+                    settle.follow_view_operation.as_deref(),
+                );
             }
             // Proof-less trailing completions (preparation refused or was
             // cancelled before binding): feedback-only settlement under the
             // operation identity - no history, no proof, never replayed.
             if let Some(refusal) = send_controller.poll_trailing_refusal() {
                 eprintln!(
-                    "tiler-macos send trailing refused outcome={:?} complete=true",
-                    refusal.outcome,
+                    "tiler-macos send trailing refused setter={:?} complete=true",
+                    refusal.setter,
                 );
-                handle.report_send_outcome(&refusal.operation_id, refusal.outcome, None);
+                handle.report_send_outcome(
+                    &refusal.operation_id,
+                    refusal.setter,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
             }
             // Dock-swipe select completion poll (nonblocking): reconcile at
             // most one settled select per tick before draining new claims.
             // The selection owner proved arrival event-driven off-main; the
             // trailing append proof adopts into lifecycle ownership here
-            // (success or failure — the Space persists from the verified
+            // (success or failure - the Space persists from the verified
             // append), while the proven outcome reports back under the
             // claim's operation identity.
             if let Some((completion, reaped)) = select_controller.poll() {
                 adopt_select_completion(&handle, &mut trailing_lifecycle, &completion);
                 match completion.result.as_ref() {
-                    Ok(effect) => {
+                    Ok(success) => {
                         eprintln!(
                             "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
                             completion
                                 .operation_id
                                 .as_deref()
                                 .unwrap_or("unknown-select"),
-                            effect.changed,
+                            success.effect.changed,
                             reaped,
                         );
                         report_select_completion(&handle, &completion);
                     }
-                    Err(reason) => {
+                    Err(failure) => {
                         eprintln!(
                             "tiler-macos dev select action={} refused reason={} complete=false",
                             completion
                                 .operation_id
                                 .as_deref()
                                 .unwrap_or("unknown-select"),
-                            reason,
+                            failure.reason,
                         );
                         report_select_completion(&handle, &completion);
                     }
@@ -2604,7 +2692,7 @@ mod native {
             // Explicit cross-lane exclusion: the send owner and the select
             // owner never actuate concurrently. While either lane is
             // inflight the pending claim waits for a later tick (the slot
-            // stays pending — never claimed, never dropped here).
+            // stays pending - never claimed, never dropped here).
             let effects_busy = select_controller.is_busy() || send_controller.is_busy();
             if effects_busy {
                 // A send or select effect is inflight: leave the pending
@@ -2638,162 +2726,87 @@ mod native {
                         follow: true,
                     }
                 ) {
-                    let trailing_send = matches!(
-                        claim.action,
-                        crate::runtime_types::InputSemanticAction::WorkspaceSend { index: 0, .. }
-                    );
-                    if trailing_send {
-                        // Owner-side trailing preparation (capability-gated
-                        // inside the owner): the request carries the admitted
-                        // original pins plus the published plain-data display
-                        // legs - never an AppKit read on this thread. The
-                        // owner ensures the target natively (reuse-or-append),
-                        // binds it, and actuates the single drag; this thread
-                        // only polls the completion on later ticks and never
-                        // waits for preparation or settlement. A submit
-                        // refusal reports and releases here (never actuated,
-                        // never replayed).
-                        let row = last_snapshot.as_ref().and_then(|live| {
-                            crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
-                        });
-                        let published = handle.published_display_inputs();
-                        let submit = match (row, published) {
-                            (Some(row), Some(published)) if published.displays.len() == 1 => {
-                                let legs = &published.displays[0];
-                                match (legs.uuid.clone(), legs.cg_id) {
-                                    (Some(uuid), cgid) if cgid != 0 => {
-                                        let handle_clone = handle.clone();
-                                        send_controller.submit_trailing(
-                                            &claim,
-                                            crate::workspace_send::TrailingSubmit {
-                                                display_index: 0,
-                                                pinned_cgid: cgid,
-                                                pinned_uuid: &uuid,
-                                                display: &row.display,
-                                                from: row.current,
-                                                trailing_enabled:
-                                                    crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
-                                            },
-                                            move || {
-                                                crate::workspace_send_native::LiveManagedSendBackend::new(
-                                                    crate::workspace_send_native::OsSendReaders::live(
-                                                        handle_clone,
-                                                    ),
-                                                )
-                                            },
-                                        )
-                                    }
-                                    _ => Err(
-                                        "trailing send refuses: published display legs unpinned"
-                                            .to_owned(),
-                                    ),
-                                }
-                            }
-                            _ => Err(
-                                "trailing send refuses: fresh row or display legs unpublished"
-                                    .to_owned(),
-                            ),
-                        };
-                        handle.release_select_after_drain();
-                        match submit {
-                            Ok(()) => {
-                                eprintln!(
-                                    "tiler-macos send trailing submitted action={} subject={} op={} complete=false",
-                                    id,
-                                    claim.send_subject.as_deref().unwrap_or("none"),
-                                    operation_id.as_deref().unwrap_or("none"),
-                                );
-                            }
-                            Err(reason) => {
-                                eprintln!(
-                                    "tiler-macos dev send action={} refused reason={} complete=false",
-                                    id, reason,
-                                );
-                                if let Some(operation_id) = operation_id.as_deref() {
-                                    // Submit-time refusals never actuated (no
-                                    // post performed): proven refusal settles the
-                                    // transfer without actuation.
-                                    handle.report_send_outcome(
-                                        operation_id,
-                                        crate::workspace_send::SendDrainOutcome::Refused,
-                                        None,
-                                    );
-                                }
-                            }
+                    // Reply-driven sends route to the dedicated effect owner
+                    // with reply-bound native targets (follows and stays
+                    // share the single-flight lane; stays still refused at
+                    // the engine capability gate until a reviewed arming, so
+                    // no product stay reaches here yet). The reply binding
+                    // (accepted transfer target plus its live native
+                    // binding) authorizes the native send through a live SID
+                    // lookup at submit. Unbound targets without an explicit
+                    // creation desire refuse here before any post (missing
+                    // bindings never create); unbound targets WITH a desire
+                    // also refuse here: the desire-gated native creation
+                    // seam is unavailable pending typed truthful receipts
+                    // (prerequisite blocker, not a settled refusal). No
+                    // local reuse-or-append preparation runs on this path.
+                    // Follow-history attribution from this tick's fresh user
+                    // row (single reads, never a poll): the display plus the
+                    // source Space the send follows away from. A row that is
+                    // unreadable here refuses the submit before any post.
+                    let row = last_snapshot.as_ref().and_then(|live| {
+                        crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
+                    });
+                    // Admission trace, formatted before the submit consumes
+                    // the row: pins the exact subject/target/source/op while
+                    // the run lives. Emitted on the submitted path only.
+                    let admitted = row.as_ref().map(|row| {
+                        crate::workspace_send::format_send_admitted_line(
+                            id,
+                            claim.send_subject.as_deref().unwrap_or("none"),
+                            claim.expected_sid.unwrap_or(0),
+                            row.current,
+                            &row.display,
+                            claim.operation_id.as_deref().unwrap_or("none"),
+                            claim.topology_revision,
+                            crate::input_eligibility::now_ms(),
+                        )
+                    });
+                    let submit = match row {
+                        Some(row) => {
+                            let handle_clone = handle.clone();
+                            send_controller.submit(&claim, &row.display, row.current, move || {
+                                crate::workspace_send_native::LiveManagedSendBackend::new(
+                                    crate::workspace_send_native::OsSendReaders::live(handle_clone),
+                                )
+                            })
                         }
-                    } else {
-                        // Numbered sends 1..9 route to the dedicated effect owner
-                        // with admission-pinned native targets (follows and stays
-                        // share the single-flight lane; stays still refused at
-                        // the engine capability gate until a reviewed arming, so
-                        // no product stay reaches here yet).
-                        // Follow-history attribution from this tick's fresh user
-                        // row (single reads, never a poll): the display plus the
-                        // source Space the send follows away from. A row that is
-                        // unreadable here refuses the submit before any post.
-                        let row = last_snapshot.as_ref().and_then(|live| {
-                            crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
-                        });
-                        // Admission trace, formatted before the submit consumes
-                        // the row: pins the exact subject/target/source/op while
-                        // the run lives. Emitted on the submitted path only.
-                        let admitted = row.as_ref().map(|row| {
-                            crate::workspace_send::format_send_admitted_line(
-                                id,
-                                claim.send_subject.as_deref().unwrap_or("none"),
-                                claim.expected_sid.unwrap_or(0),
-                                row.current,
-                                &row.display,
-                                claim.operation_id.as_deref().unwrap_or("none"),
-                                claim.topology_revision,
-                                crate::input_eligibility::now_ms(),
-                            )
-                        });
-                        let submit =
-                            match row {
-                                Some(row) => {
-                                    let handle_clone = handle.clone();
-                                    send_controller.submit(
-                                &claim,
-                                &row.display,
-                                row.current,
-                                move || {
-                                    crate::workspace_send_native::LiveManagedSendBackend::new(
-                                        crate::workspace_send_native::OsSendReaders::live(
-                                            handle_clone,
-                                        ),
-                                    )
-                                },
-                            )
-                                }
-                                None => Err("product send refuses: fresh row unreadable at submit"
-                                    .to_owned()),
-                            };
-                        handle.release_select_after_drain();
-                        match submit {
-                            Ok(()) => {
-                                eprintln!(
-                                    "{}",
-                                    admitted
-                                        .as_deref()
-                                        .unwrap_or("tiler-macos send admitted missing-context")
+                        None => {
+                            Err("product send refuses: fresh row unreadable at submit".to_owned())
+                        }
+                    };
+                    handle.release_select_after_drain();
+                    match submit {
+                        Ok(()) => {
+                            eprintln!(
+                                "{}",
+                                admitted
+                                    .as_deref()
+                                    .unwrap_or("tiler-macos send admitted missing-context")
+                            );
+                        }
+                        Err(reason) => {
+                            eprintln!(
+                                "tiler-macos dev send action={} refused reason={} complete=false",
+                                id, reason,
+                            );
+                            if let Some(operation_id) = operation_id.as_deref() {
+                                // Submit-time refusals never actuated (no
+                                // post performed): stage `Refused` with no
+                                // reads so the transfer holds without
+                                // actuation — never a verdict. The follow
+                                // view (if the reply published one) stages
+                                // under the claim's own bound identity.
+                                handle.report_send_outcome(
+                                    operation_id,
+                                    tiler_core::world_report::FrameSetter::Refused,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    claim.select_baseline_sid,
+                                    claim.send_follow_view_operation.as_deref(),
                                 );
-                            }
-                            Err(reason) => {
-                                eprintln!(
-                                    "tiler-macos dev send action={} refused reason={} complete=false",
-                                    id, reason,
-                                );
-                                if let Some(operation_id) = operation_id.as_deref() {
-                                    // Submit-time refusals never actuated (no
-                                    // post performed): proven refusal settles the
-                                    // transfer without actuation.
-                                    handle.report_send_outcome(
-                                        operation_id,
-                                        crate::workspace_send::SendDrainOutcome::Refused,
-                                        None,
-                                    );
-                                }
                             }
                         }
                     }
@@ -2801,11 +2814,12 @@ mod native {
                     // Product selects ride the serialized Dock-swipe
                     // selection owner: this thread only submits nonblocking
                     // (never waits) and reconciles the completion on a
-                    // later tick above. The owner holds the durable previous
-                    // history and the trailing proof and reads fresh gates
-                    // itself immediately before effecting; this side only
-                    // pins the plain-data display legs. Proof adopts from
-                    // the completion on BOTH outcomes.
+                    // later tick above. The core owns previous history and
+                    // targeting; the owner holds only trailing creation
+                    // proofs and reads fresh gates itself immediately
+                    // before effecting; this side only pins the plain-data
+                    // display legs. Proof adopts from the completion on
+                    // BOTH outcomes.
                     let row = last_snapshot.as_ref().and_then(|live| {
                         crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
                     });
@@ -2859,10 +2873,12 @@ mod native {
                             if let Some(operation_id) = operation_id.as_deref() {
                                 // Submit-time refusals never actuated (the
                                 // owner never took the job): proven refusal
-                                // settles without actuation.
-                                handle.report_select_outcome(
+                                // with no reads settles without actuation.
+                                use tiler_core::world_report::FrameSetter;
+                                handle.report_select_attempt(
                                     operation_id,
-                                    crate::select_feedback::classify_select_drain_error(&reason),
+                                    FrameSetter::Refused,
+                                    None,
                                     None,
                                     None,
                                 );
@@ -2876,7 +2892,7 @@ mod native {
             // revision: rebuilt UI, moved topology, moved rows, and
             // past-nine positions all refuse before any backend touch, and
             // the rest submit through the guarded engine lane with their
-            // immutable binding (same gates, same verified arrival — never
+            // immutable binding (same gates, same verified arrival - never
             // a stale index select). Diagnostic-only trailing-click
             // injection (single-shot): the actual rendered trailing
             // binding loops back through the click channel ahead of this
@@ -3017,7 +3033,7 @@ mod native {
             None => (None, 0, 0, 0),
         };
         // Bounded shutdown independent of blocked AX: only proven exits
-        // join; the rest retain for reap. Windows stay in place — nothing
+        // join; the rest retain for reap. Windows stay in place - nothing
         // restores geometry on any path. The independent stop-file watcher
         // was installed before runtime startup; normal disarm is one slice.
         // Indicator teardown first: remove the status item explicitly (the
@@ -3026,7 +3042,7 @@ mod native {
         indicator.teardown();
         let (indicator_updates, indicator_clicks) = (indicator.updates(), indicator.clicks());
         // Live-select cooperative shutdown drain: new admissions already
-        // stopped with the loop exit above — no claim is submitted past
+        // stopped with the loop exit above - no claim is submitted past
         // this point. An already-staged completion settles inline exactly
         // like the live poll; otherwise the inflight job is cancelled and
         // the main thread keeps pumping its runloop while polling
@@ -3039,12 +3055,12 @@ mod native {
         // deterministic. The bound reuses `SHUTDOWN_BOUND`: a cancelled job
         // settles promptly through its latch, but a wedged owner (hung
         // WindowServer/AX leg inside the off-main MC create) must never
-        // stall the main thread here — expiry reports unclean with the
+        // stall the main thread here - expiry reports unclean with the
         // retained ownership, never clean. Residual bound (no exact hard
         // lifetime claimed beyond the named constants): this drain spends
         // at most `SHUTDOWN_BOUND`, after which trailing cleanup (at most
         // `TRAILING_CLEANUP_BUDGET_SECS`) plus the runtime shutdown
-        // (`SHUTDOWN_BOUND`) still follow — a fully wedged shutdown can
+        // (`SHUTDOWN_BOUND`) still follow - a fully wedged shutdown can
         // therefore overrun the watchdog grace into its forced dirty exit,
         // which stays honest (never a success claim). The common path (no
         // owned SIDs, prompt cancel) settles in milliseconds.
@@ -3096,12 +3112,11 @@ mod native {
             match outcome {
                 crate::workspace_send::ShutdownOutcome::Settle(settle) => {
                     let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
-                    // No follow-history note at shutdown: the run-lifetime
-                    // previous memory ends with the select owner (torn down
-                    // above), so no later select could observe it.
-                    // Terminal trailing creation adopts here too (same
-                    // ownership rule as the live settle: the Space
-                    // persists).
+                    // Core owns select history, so no follow-history notes
+                    // at shutdown (or live): the retained previous-toggle
+                    // resolves core-side. Terminal trailing creation adopts
+                    // here too (same ownership rule as the live settle: the
+                    // Space persists).
                     if let Some(proof) = settle.trailing.as_ref()
                         && let Some(created) = proof.created
                         && let Err(reason) = trailing_lifecycle.adopt_created(created)
@@ -3115,24 +3130,39 @@ mod native {
                         settle.target.target_sid(),
                         outcome,
                     );
-                    let post_sid =
-                        matches!(outcome, crate::workspace_send::SendDrainOutcome::Applied)
-                            .then(|| settle.target.target_sid());
-                    handle.report_send_outcome(settle.target.operation_id(), outcome, post_sid);
+                    handle.report_send_outcome(
+                        settle.target.operation_id(),
+                        settle.setter,
+                        settle.pre_member,
+                        settle.post_member,
+                        settle.pre_view,
+                        settle.post_view,
+                        settle.baseline,
+                        settle.follow_view_operation.as_deref(),
+                    );
                 }
                 crate::workspace_send::ShutdownOutcome::TrailingRefusal(refusal) => {
                     // Preparation never bound a target: feedback-only
                     // settlement under the operation identity, no history.
                     eprintln!(
-                        "tiler-macos send trailing refused at shutdown outcome={:?} complete=true",
-                        refusal.outcome,
+                        "tiler-macos send trailing refused at shutdown setter={:?} complete=true",
+                        refusal.setter,
                     );
-                    handle.report_send_outcome(&refusal.operation_id, refusal.outcome, None);
+                    handle.report_send_outcome(
+                        &refusal.operation_id,
+                        refusal.setter,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
                 }
             }
         }
         // Trailing shutdown cleanup (bounded, main thread only): each
-        // removal re-proves fresh — one fresh native row plus fresh
+        // removal re-proves fresh - one fresh native row plus fresh
         // per-SID emptiness proof per iteration, then at most one verified
         // removal via the verified remover (which itself re-verifies
         // emptiness and row identity per SID) before forgetting it. A row
@@ -3414,7 +3444,7 @@ mod native {
         #[test]
         fn border_fast_gate_needs_enabled_dirty_and_throttle() {
             // Disabled runs never join (but the peek/take protocol still
-            // clears elsewhere — this pure gate only answers).
+            // clears elsewhere - this pure gate only answers).
             assert!(!border_fast_due(false, true, Duration::from_secs(10)));
             assert!(!border_fast_due(true, false, Duration::from_secs(10)));
             // Throttle: a fresh burst waits out the minimum interval.
@@ -3877,8 +3907,8 @@ mod tests {
     #[test]
     fn unclean_select_drain_retains_every_owned_sid_without_cleanup() {
         // Decision path with real lifecycle ownership (never a fake
-        // cleaner/effect): an unclean drain — the owner still live, e.g. a
-        // hung MC-create owner that may still actuate — retains every owned
+        // cleaner/effect): an unclean drain - the owner still live, e.g. a
+        // hung MC-create owner that may still actuate - retains every owned
         // SID as explicit residue so the shutdown path skips ALL cleanup
         // effects; a clean drain proceeds to the preexisting cleanup loop.
         let mut lifecycle = crate::workspace_select::TrailingLifecycle::new(&[1001, 1002]);

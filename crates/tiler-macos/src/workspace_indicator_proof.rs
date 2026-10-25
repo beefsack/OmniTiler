@@ -986,8 +986,9 @@ mod live {
             if let Some(handle) = self.runtime.as_ref() {
                 handle.release_select_after_drain();
             }
-            let (effect, _) = outcome.map_err(|reason| format!("tap drain refused: {reason}"))?;
-            Ok(effect)
+            let (success, _) =
+                outcome.map_err(|failure| format!("tap drain refused: {}", failure.reason))?;
+            Ok(success.effect)
         }
 
         /// Product indicator-click lane through the engine: resolve the
@@ -1042,8 +1043,9 @@ mod live {
             if let Some(handle) = self.runtime.as_ref() {
                 handle.release_select_after_drain();
             }
-            let (effect, _) = outcome.map_err(|reason| format!("click drain refused: {reason}"))?;
-            Ok(effect)
+            let (success, _) =
+                outcome.map_err(|failure| format!("click drain refused: {}", failure.reason))?;
+            Ok(success.effect)
         }
 
         /// Re-render the production guard from scratch (teardown plus tick

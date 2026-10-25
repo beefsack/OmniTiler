@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use tiler_core::directional::{OutputId, WorkspaceId};
 use tiler_core::geometry::Rect;
+use tiler_core::world_report::FrameSetter;
 
 use crate::desktop_shortcuts::{ShortcutEntry, desktop_symbolic_id};
 use crate::runtime_core::EngineFactsRead;
@@ -200,6 +201,14 @@ fn admitted_claim() -> ClaimedSelect {
         send_source_focus: None,
         send_source_focus_empty: false,
         operation_id: Some(OP.to_owned()),
+        select_target_output: None,
+        select_target_workspace: None,
+        select_native_binding: None,
+        select_creation_operation: None,
+        select_creation_logical: None,
+        select_creation_output: None,
+        select_baseline_sid: None,
+        send_follow_view_operation: None,
     }
 }
 
@@ -640,7 +649,8 @@ fn live_applied_path_posts_exact_point_chord_and_reads_back() {
     let readers = FakeReaders::new();
     let log = readers.log();
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let leg = leg.expect("applied carries the leg readback");
     assert_eq!(leg.membership, vec![TARGET_SID]);
@@ -677,7 +687,8 @@ fn verified_arrival_requests_exactly_one_owner_reread() {
     let target = pinned_target();
     let lane = handoff();
     let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     assert_eq!(leg.map(|leg| leg.membership), Some(vec![TARGET_SID]));
     assert_eq!(backend.test_readers().arrival_notes, 1);
@@ -711,7 +722,8 @@ fn live_proof_refuses_pure_focus_swap_with_zero_posts() {
         readers.focus = Some((PID, Some(9)));
         readers
     });
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     let counts = backend.counts();
@@ -738,7 +750,8 @@ fn live_engine_refuses_relaunched_lifetime_and_removed_subject() {
             readers.engine_base = engine.clone();
             readers
         });
-        let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert!(leg.is_none(), "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
@@ -772,7 +785,8 @@ fn live_engine_fullscreen_and_minimized_forbid_despite_healthy_os() {
             readers.engine_base = Some(engine);
             readers
         });
-        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
     }
@@ -797,7 +811,8 @@ fn live_engine_fullscreen_and_minimized_forbid_despite_healthy_os() {
             readers.ax_base = ax;
             readers
         });
-        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
     }
@@ -821,7 +836,8 @@ fn live_proof_refuses_frame_mismatch() {
         readers.ax_base = ax_frame;
         readers
     });
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert_eq!(backend.counts().key_down, 0, "no chord posted");
 }
@@ -840,7 +856,8 @@ fn live_proof_refuses_unmanaged_and_unknown_membership() {
             readers.spaces.insert(WID, spaces);
             readers
         });
-        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
     }
@@ -851,7 +868,8 @@ fn live_proof_refuses_unmanaged_and_unknown_membership() {
         readers.fail_spaces.insert(WID);
         readers
     });
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
 }
 
@@ -866,7 +884,8 @@ fn live_proof_refuses_unknown_topology_and_revision_drift() {
         readers.topo_err_at = Some(0);
         readers
     });
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     // Native fingerprint that no longer joins the engine revision refuses
     // as unknown — never guessed into coherence.
@@ -876,7 +895,8 @@ fn live_proof_refuses_unknown_topology_and_revision_drift() {
         readers.topo_base = topo(vec![20, 3, 7], 20, REVISION + 1);
         readers
     });
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert_eq!(backend.counts().key_down, 0, "no chord posted on drift");
     assert_eq!(backend.counts().mouse_down, 0, "no grab posted on drift");
@@ -891,7 +911,8 @@ fn live_proof_refuses_unknown_topology_and_revision_drift() {
         readers.topo_base = topo(vec![20, 3, 7], 20, REVISION + 1);
         readers
     });
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert_eq!(backend.counts().key_down, 0, "no chord posted on drift");
 }
@@ -914,7 +935,8 @@ fn live_proof_refuses_dual_hit_disagreement() {
             readers.ws_hit = ws_hit;
             readers
         });
-        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
     }
@@ -955,7 +977,8 @@ fn live_proof_skips_control_text_hits_for_plain_window_point() {
     readers.ws_hit = Some(WID);
     let log = readers.log();
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let leg = leg.expect("applied carries the leg readback");
     assert_eq!(leg.membership, vec![TARGET_SID]);
@@ -1023,7 +1046,8 @@ fn live_proof_refuses_when_no_plain_window_point_exists() {
         readers.ws_hit = Some(WID);
         let log = readers.log();
         let mut backend = LiveManagedSendBackend::new(readers);
-        let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert!(leg.is_none(), "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
@@ -1067,7 +1091,8 @@ fn live_proof_still_refuses_plain_offtarget_and_ws_disagreement() {
         readers.ws_hit = ws_hit;
         let log = readers.log();
         let mut backend = LiveManagedSendBackend::new(readers);
-        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
         assert_eq!(backend.counts().mouse_down, 0, "{what}: no grab posted");
@@ -1093,7 +1118,8 @@ fn live_anchor_refuses_midleg_ordinal_reorder() {
     });
     // First fresh_topology call (snapshot) uses the base row [20,3,7];
     // every later call uses the reordered row.
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert_eq!(backend.counts().key_down, 0, "no chord posted on reorder");
     assert_eq!(backend.counts().mouse_down, 0, "no grab posted on reorder");
@@ -1117,7 +1143,8 @@ fn live_grab_drift_between_edges_refuses_before_chord() {
         readers.ax_from_call = Some((1, moved));
         readers
     });
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert_eq!(
         backend.counts().key_down,
@@ -1141,7 +1168,7 @@ fn live_stay_forward_plus_select_back_applies() {
     lane.submit(target.clone()).expect("idle submits");
     lane.take_for_owner().expect("owner takes");
     let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
-    let (outcome, leg) =
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
         execute_managed_send_stay(&target, 20, Some("4242_7"), &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let leg = leg.expect("stay applied carries exact return readback");
@@ -1162,7 +1189,7 @@ fn live_stay_select_back_refusal_holds() {
     let mut readers = FakeReaders::new();
     readers.select_fail = Some("injected select-back refusal".to_owned());
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, leg) =
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
         execute_managed_send_stay(&target, 20, Some("4242_7"), &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
     assert!(leg.is_none());
@@ -1187,7 +1214,8 @@ fn live_cancel_before_effect_refuses_proven_with_zero_posts() {
     assert!(lane.cancel(), "cancel flags the stop while inflight stands");
     assert!(lane.cancel_requested(), "owner observes the stop");
     let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     let counts = backend.counts();
@@ -1220,7 +1248,8 @@ fn live_cancel_during_chord_post_cannot_unpost() {
         .expect("chord-down reached");
     assert!(lane.cancel(), "cancel flags the stop");
     let _ = release_tx.send(());
-    let (outcome, _) = handle.join().expect("owner joins");
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        handle.join().expect("owner joins");
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let log = log.lock().expect("post log");
     assert_eq!(key_count(&log.key_posts, true), 1);
@@ -1255,7 +1284,8 @@ fn live_cancel_during_grab_releases_the_mouse() {
         .expect("dragged edge reached");
     assert!(lane.cancel());
     let _ = release_tx.send(());
-    let (outcome, _) = handle.join().expect("owner joins");
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        handle.join().expect("owner joins");
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     let log = log.lock().expect("post log");
     assert_eq!(mouse_count(&log.mouse_posts, DragStep::MouseDown), 1);
@@ -1294,7 +1324,8 @@ fn live_cancel_after_chord_never_skips_releases() {
         .expect("chord-up reached");
     assert!(lane.cancel());
     let _ = release_tx.send(());
-    let (outcome, _) = handle.join().expect("owner joins");
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        handle.join().expect("owner joins");
     // The chord completed before the stop landed: the verified arrival
     // still reports Applied (the stop only refuses further down-edges,
     // never release edges and never a completed effect).
@@ -1317,6 +1348,8 @@ fn live_mouse_down_failure_still_releases_exactly_once() {
     // Grab-down refusal after a successful move: the release-first
     // executor still runs mouse-up. Nothing was held (Down never posted),
     // so the release is a truthful no-op and the counts stay balanced.
+    // The failed post call itself is native uncertainty, never a proven
+    // pre-actuation refusal: the OS refused the write.
     let target = pinned_target();
     let lane = handoff();
     let mut backend = LiveManagedSendBackend::new({
@@ -1324,8 +1357,11 @@ fn live_mouse_down_failure_still_releases_exactly_once() {
         readers.fail_mouse = Some(DragStep::MouseDown);
         readers
     });
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
-    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    let crate::workspace_send_managed::SendEffect {
+        outcome, setter, ..
+    } = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert_eq!(setter, FrameSetter::Threw);
     let counts = backend.counts();
     assert_eq!((counts.mouse_down, counts.mouse_up), (0, 0));
     assert_eq!(counts.key_down, 0);
@@ -1724,7 +1760,8 @@ fn live_blind_root_discriminates_engine_topology_membership() {
         readers.engine_base = None;
         readers
     });
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsUnmanaged));
@@ -1739,7 +1776,8 @@ fn live_blind_root_discriminates_engine_topology_membership() {
         readers.engine_noreply = true;
         readers
     });
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsNoReply));
@@ -1753,7 +1791,8 @@ fn live_blind_root_discriminates_engine_topology_membership() {
         readers.topo_err_at = Some(1);
         readers
     });
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     assert_eq!(backend.blind_root(), Some(BlindRoot::Topology));
@@ -1767,7 +1806,8 @@ fn live_blind_root_discriminates_engine_topology_membership() {
         readers.fail_spaces.insert(WID);
         readers
     });
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     assert_eq!(backend.blind_root(), Some(BlindRoot::Membership));
@@ -1791,7 +1831,8 @@ fn live_inverse_roundtrip_discriminates_noreply_from_unmanaged() {
     // Outward leg 1->2 with healthy engine authority: applies.
     let lane = handoff();
     let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     assert!(leg.is_some());
     // Inverse leg with an unproven engine read (bound elapsed / engine
@@ -1802,7 +1843,8 @@ fn live_inverse_roundtrip_discriminates_noreply_from_unmanaged() {
         readers.engine_noreply = true;
         readers
     });
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsNoReply));
@@ -1816,7 +1858,8 @@ fn live_inverse_roundtrip_discriminates_noreply_from_unmanaged() {
         readers.engine_base = None;
         readers
     });
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
     assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsUnmanaged));
@@ -1840,6 +1883,14 @@ fn admitted_stay_claim() -> ClaimedSelect {
         send_source_focus: None,
         send_source_focus_empty: false,
         operation_id: Some(OP.to_owned()),
+        select_target_output: None,
+        select_target_workspace: None,
+        select_native_binding: None,
+        select_creation_operation: None,
+        select_creation_logical: None,
+        select_creation_output: None,
+        select_baseline_sid: None,
+        send_follow_view_operation: None,
     }
 }
 
@@ -1966,7 +2017,8 @@ fn live_bridged_fast_posts_no_hid_and_requests_one_reread() {
     let target = pinned_target();
     let lane = handoff();
     let mut backend = fast_live_backend();
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let leg = leg.expect("fast applied carries readback");
     assert_eq!(leg.membership, vec![TARGET_SID]);
@@ -1988,7 +2040,8 @@ fn live_bridged_unavailable_stays_on_drag_with_posts() {
     let target = pinned_target();
     let lane = handoff();
     let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     assert!(backend.test_readers().bridged_calls.is_empty());
     let log = backend.test_readers().log();
@@ -2008,7 +2061,8 @@ fn live_bridged_anchor_drift_refuses_before_dispatch() {
         .topo_script
         .push_back(topo(vec![20, 3, 7], 20, REVISION + 1));
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(backend.test_readers().bridged_calls.is_empty());
     assert!(backend.test_readers().select_calls.is_empty());
@@ -2023,7 +2077,8 @@ fn live_bridged_wrong_focus_holds_without_raise() {
     readers.focus = Some((PID, Some(9)));
     readers.agree = false;
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(
         outcome,
         SendEffectOutcome::RefusedProven,
@@ -2037,7 +2092,8 @@ fn live_bridged_selector_starts_before_settle_membership_poll() {
     let target = pinned_target();
     let lane = handoff();
     let mut backend = fast_live_backend();
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let readers = backend.test_readers();
     let dispatch_at = readers
@@ -2074,7 +2130,8 @@ fn live_bridged_late_completion_applies_after_select() {
         Some(vec![TARGET_SID]),
     ]);
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let leg = leg.expect("late arrival carries readback");
     assert_eq!(leg.membership, vec![TARGET_SID]);
@@ -2091,7 +2148,8 @@ fn live_bridged_missing_completion_holds_without_false_applied() {
     // The async completion never lands: membership stays on the source.
     readers.spaces_sticky = Some(vec![20]);
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
     assert_eq!(
         backend.test_readers().select_calls.len(),
@@ -2156,7 +2214,8 @@ fn live_bridged_follow_pins_front_once_before_single_select() {
     let target = pinned_target();
     let lane = handoff();
     let mut backend = fast_live_backend();
-    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let leg = leg.expect("front-pinned follow carries readback");
     assert_eq!(leg.membership, vec![TARGET_SID]);
@@ -2206,7 +2265,8 @@ fn live_bridged_front_capability_missing_preselects_drag() {
     readers.bridged_enabled = true;
     readers.front_enabled = false;
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let readers = backend.test_readers();
     assert!(
@@ -2229,7 +2289,8 @@ fn live_bridged_front_failure_holds_without_select_or_replay() {
     readers.bridged_enabled = true;
     readers.front_fail = Some("injected front-pin refusal".to_owned());
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
     let readers = backend.test_readers();
     assert_eq!(
@@ -2266,7 +2327,8 @@ fn live_bridged_stale_anchor_withholds_front_pin() {
         .topo_script
         .push_back(topo(vec![20, 3, 7], 20, REVISION + 1));
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
     let readers = backend.test_readers();
     assert_eq!(readers.bridged_calls.len(), 1);
@@ -2293,7 +2355,8 @@ fn live_bridged_locked_session_and_stale_identity_withhold_front_touch() {
         readers.front_gates_open = gates_open;
         readers.front_identity_ok = identity_ok;
         let mut backend = LiveManagedSendBackend::new(readers);
-        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        let crate::workspace_send_managed::SendEffect { outcome, .. } =
+            execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted, "{what}");
         let readers = backend.test_readers();
         assert_eq!(readers.bridged_calls.len(), 1, "{what}");
@@ -2321,7 +2384,8 @@ fn live_bridged_foreign_focus_after_pin_holds_without_raise() {
     readers.bridged_enabled = true;
     readers.focus_after_select = Some((FINDER_PID, Some(FINDER_WID)));
     let mut backend = LiveManagedSendBackend::new(readers);
-    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    let crate::workspace_send_managed::SendEffect { outcome, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
     let readers = backend.test_readers();
     assert_eq!(readers.bridged_calls.len(), 1);

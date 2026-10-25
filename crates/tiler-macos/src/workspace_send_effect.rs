@@ -52,6 +52,7 @@
 use std::sync::Mutex;
 
 use tiler_core::session::DomainKey;
+use tiler_core::world_report::FrameSetter;
 
 use crate::runtime_types::{ClaimedSelect, parse_window_id};
 
@@ -180,10 +181,15 @@ impl ManagedSendTarget {
 
     /// Rebuild the pinned target from an admitted claim. Every admission
     /// pin must be present and consistent (subject parses to the pinned
-    /// PID/WID, generation and source domain pinned at admission, target
-    /// SID and revision bound, operation identity minted): a claim without
-    /// admission pins - e.g. a generation sampled later at dispatch -
-    /// refuses here instead of actuating. The follow intent rides from the
+    /// PID/WID, generation and source domain pinned at admission, the
+    /// reply-bound target SID, revision bound at admission, operation
+    /// identity minted): a claim without bound pins - e.g. a generation
+    /// sampled later at dispatch or an unbound trailing target with no
+    /// creation desire (known send-target-unknown) - refuses here instead
+    /// of actuating. The target SID is the reply-bound live binding (never
+    /// an input-ordinal pin): the owner converts it to the current live
+    /// Desktop-N chord ordinal at dispatch and refuses when the bound SID
+    /// left the live row. The follow intent rides from the
     /// claim action. Stay claims pin the return-leg focus fallback from
     /// admission: the engine pins the core-proven post-send source-MRU
     /// resident (or a proven-empty source) after dispatch and before the
@@ -610,8 +616,29 @@ pub struct SendCompletion {
     pub app_generation: u64,
     pub revision: u64,
     pub follow: bool,
+    /// Raw native setter disposition captured by the owner at the actual
+    /// write boundary (`Accepted` = actuating write reported success even
+    /// when arrival is unproven; `Refused` = nothing posted before the
+    /// refusal; `Threw` = a native post errored or the dispatch only
+    /// partially completed). The core stages this verbatim; it is never
+    /// derived from the arrival outcome.
+    pub setter: FrameSetter,
     pub outcome: SendEffectOutcome,
     pub trailing: Option<TrailingCompletionProof>,
+    /// Genuine pre-write window homing read around the dispatch (`Some`
+    /// only when the owner's membership read named exactly one nonzero
+    /// Space; `None` is unreadable/empty/multi-Space/zero — ambiguous,
+    /// never guessed). Refusal proof needs this unchanged and readable.
+    pub pre_member: Option<u64>,
+    /// Drain-verified arrival Space (`Some` only when the owner proved
+    /// exact arrival there; `None` otherwise - never guessed).
+    pub post_member: Option<u64>,
+    /// Genuine pre-write view-current read around the dispatch (`None`
+    /// when unreadable). Follow views carry these; stays ignore the view
+    /// legs.
+    pub pre_view: Option<u64>,
+    /// Genuine post-actuation view-current read (`None` when unreadable).
+    pub post_view: Option<u64>,
 }
 
 /// Exact-append proof carried by one trailing completion: the owner's
@@ -1341,14 +1368,23 @@ mod tests {
         );
     }
 
-    fn completion_for(pinned: &ManagedSendTarget, outcome: SendEffectOutcome) -> SendCompletion {
+    fn completion_for(
+        pinned: &ManagedSendTarget,
+        setter: FrameSetter,
+        outcome: SendEffectOutcome,
+    ) -> SendCompletion {
         SendCompletion {
             operation_id: pinned.operation_id().to_owned(),
             app_generation: pinned.app_generation(),
             revision: pinned.revision(),
             follow: pinned.follow(),
+            setter,
             outcome,
             trailing: None,
+            pre_member: None,
+            post_member: None,
+            pre_view: None,
+            post_view: None,
         }
     }
 
@@ -1368,7 +1404,11 @@ mod tests {
         // A sent press is never replayed through a second take.
         assert!(lane.is_busy());
         assert!(
-            lane.finish(completion_for(&pinned, SendEffectOutcome::Applied)),
+            lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Accepted,
+                SendEffectOutcome::Applied
+            )),
             "matching finish stages"
         );
         let done = lane
@@ -1390,30 +1430,38 @@ mod tests {
         let pinned = target();
         // Finish with nothing inflight: stale, counted, no completion.
         assert!(
-            !lane.finish(completion_for(&pinned, SendEffectOutcome::Applied)),
+            !lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Accepted,
+                SendEffectOutcome::Applied
+            )),
             "no inflight refuses"
         );
         assert_eq!(lane.stale_dropped(), 1);
         lane.submit(pinned.clone()).expect("submits");
         lane.take_for_owner().expect("takes");
         // Wrong operation identity: another request's completion.
-        let mut stale = completion_for(&pinned, SendEffectOutcome::Applied);
+        let mut stale = completion_for(&pinned, FrameSetter::Accepted, SendEffectOutcome::Applied);
         stale.operation_id = "op-9".to_owned();
         assert!(!lane.finish(stale), "wrong operation is stale");
         assert_eq!(lane.stale_dropped(), 2);
         // Relaunched lifetime under the same PID.
-        let mut stale = completion_for(&pinned, SendEffectOutcome::Applied);
+        let mut stale = completion_for(&pinned, FrameSetter::Accepted, SendEffectOutcome::Applied);
         stale.app_generation = 2;
         assert!(!lane.finish(stale), "wrong lifetime is stale");
         assert_eq!(lane.stale_dropped(), 3);
         // Superseded revision.
-        let mut stale = completion_for(&pinned, SendEffectOutcome::Applied);
+        let mut stale = completion_for(&pinned, FrameSetter::Accepted, SendEffectOutcome::Applied);
         stale.revision = 10;
         assert!(!lane.finish(stale), "wrong revision is stale");
         assert_eq!(lane.stale_dropped(), 4);
         // The inflight request still stands; the correct finish lands.
         assert!(lane.is_busy());
-        assert!(lane.finish(completion_for(&pinned, SendEffectOutcome::RefusedProven)));
+        assert!(lane.finish(completion_for(
+            &pinned,
+            FrameSetter::Refused,
+            SendEffectOutcome::RefusedProven
+        )));
         // A poll for another target's identity drops the stored
         // completion instead of applying it to the wrong target.
         let other = ManagedSendTarget::bind(4242, 7, 1, source_domain(), 3, 9, "op-9")
@@ -1433,7 +1481,11 @@ mod tests {
             lane.submit(pinned.clone()).expect("submits");
             if stage == "completed" {
                 lane.take_for_owner().expect("takes");
-                assert!(lane.finish(completion_for(&pinned, SendEffectOutcome::Applied)));
+                assert!(lane.finish(completion_for(
+                    &pinned,
+                    FrameSetter::Accepted,
+                    SendEffectOutcome::Applied
+                )));
             }
             assert!(lane.is_busy(), "{stage} is busy");
             assert!(lane.cancel(), "{stage} cancels");
@@ -1457,7 +1509,11 @@ mod tests {
             "no concurrent physical effect while inflight stands"
         );
         assert!(
-            lane.finish(completion_for(&pinned, SendEffectOutcome::PossiblyExecuted)),
+            lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Threw,
+                SendEffectOutcome::PossiblyExecuted
+            )),
             "terminal finish still lands after cancel"
         );
         assert!(

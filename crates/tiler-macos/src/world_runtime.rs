@@ -52,11 +52,12 @@ use tiler_core::session::DomainKey;
 use tiler_core::size_hints::FixedSizePredicate;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    FrameAttempt, FrameSetter, HoldReason, MemberAttempt, ViewAttempt, WorldCommand, WorldReport,
+    FrameAttempt, FrameSetter, HoldReason, MemberAttempt, NativeCreationAttempt, ViewAttempt,
+    WorldCommand, WorldReport,
 };
 
 use crate::focus_route::FocusRoute;
-use crate::runtime::{NativeContext, ObservedWindow, window_id};
+use crate::runtime::{NativeContext, ObservedWindow, parse_window_id, window_id};
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, RetainedCore, clear_focus_into};
 use crate::runtime_types::{
     AxCompletion, NativeDomain, PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP,
@@ -91,6 +92,11 @@ pub(crate) struct WorldSession {
     pub(crate) pending_views: BTreeMap<String, ViewAttempt>,
     /// Staged raw membership attempts, latest-wins per (operation, window).
     pub(crate) pending_members: BTreeMap<(String, String), MemberAttempt>,
+    /// Staged raw native creation attempts, latest-wins per creation
+    /// operation id. Drained (cleared) on every dispatch whether or not
+    /// the report is accepted — attempts describe attempted actuation,
+    /// never retry themselves.
+    pub(crate) pending_creations: BTreeMap<String, NativeCreationAttempt>,
     /// Staged raw frame attempts, latest-wins per window. Only explicit
     /// float-placement writes ever stage here; ordinary frame traffic
     /// rides the observation facts.
@@ -110,6 +116,10 @@ pub(crate) struct WorldSession {
     /// Staged on covering roster prune and terminate; drained only on an
     /// applied or duplicate reply, never on NoReport or refusal.
     pub(crate) pending_closes: BTreeSet<WindowId>,
+    /// Startup-resolved presentation style numbers for the report ingress.
+    /// Synced from shared state on every dispatch (the engine thread owns
+    /// this copy; the main thread publishes it once at startup).
+    presentation_style: crate::active_border::PresentationStylePx,
 }
 
 impl WorldSession {
@@ -139,11 +149,13 @@ impl WorldSession {
             focus_route: route,
             pending_views: BTreeMap::new(),
             pending_members: BTreeMap::new(),
+            pending_creations: BTreeMap::new(),
             pending_frames: BTreeMap::new(),
             pending_writes: BTreeMap::new(),
             spent_frame_ops: BTreeSet::new(),
             coverage_gap: false,
             pending_closes: BTreeSet::new(),
+            presentation_style: crate::active_border::PresentationStylePx::default(),
         }
     }
 
@@ -152,23 +164,36 @@ impl WorldSession {
         &self.incarnation
     }
 
+    /// Sync the startup-resolved presentation style numbers from shared
+    /// state. Called on every dispatch before the report builds, so reports
+    /// carry the configured outset even though the engine thread never
+    /// reads startup config directly.
+    pub(crate) fn sync_presentation_style(
+        &mut self,
+        style: crate::active_border::PresentationStylePx,
+    ) {
+        self.presentation_style = style;
+    }
+
     /// Stage one raw view-attempt row for the next dispatched report.
     /// Resolves the retained transfer target by operation identity (logical
     /// target correlation only, never adapter mapping). Native Space reads
-    /// ride the dedicated native keys (`native_pre`/`native_post` via
-    /// [`crate::topology::workspace_key`]); logical `pre`/`post` stay
-    /// `None` because host-owned facts never translate native ids to
+    /// ride the dedicated native keys (`native_pre`/`native_post`/`native_baseline`
+    /// via [`crate::topology::workspace_key`]); logical `pre`/`post`/`baseline`
+    /// stay `None` because host-owned facts never translate native ids to
     /// logical receipts adapter-side. The core translates the native ids
-    /// through its own bindings at settle time. There is no separate
-    /// observation-time read in the drain, so `native_baseline` stays
-    /// unknown. Unknown operations drop without evidence (never forged,
-    /// never guessed). Latest-wins per owning operation.
+    /// through its own bindings at settle time. `native_baseline` is the
+    /// observation-time native current captured at dispatch (the plan's
+    /// baseline); `native_pre`/`native_post` are the real write-time reads
+    /// around the drain actuation. Unknown operations drop without evidence
+    /// (never forged, never guessed). Latest-wins per owning operation.
     pub(crate) fn stage_view_attempt(
         &mut self,
         operation_id: &str,
         setter: FrameSetter,
         pre_sid: Option<u64>,
         post_sid: Option<u64>,
+        baseline_sid: Option<u64>,
     ) {
         let transfer = self
             .engine
@@ -190,7 +215,7 @@ impl WorldSession {
             baseline: None,
             native_pre: pre_sid.map(crate::topology::workspace_key),
             native_post: post_sid.map(crate::topology::workspace_key),
-            native_baseline: None,
+            native_baseline: baseline_sid.map(crate::topology::workspace_key),
             attempt_ms: 0,
         };
         self.pending_views.insert(operation_id.to_owned(), attempt);
@@ -201,13 +226,16 @@ impl WorldSession {
     /// [`WorldSession::stage_view_attempt`]; the retained transfer must be
     /// a window transfer (its subject window and target ride the staged
     /// row — the operation identity already names them core-side, so the
-    /// drain never re-states them). The drain-verified arrival Space rides
-    /// `native_post`; the drain captures no pre-write homing read, so
-    /// `native_pre` stays unknown. Latest-wins per (operation, window).
+    /// drain never re-states them). `native_pre` is the genuine pre-write
+    /// homing read around the drain actuation (refusal proof needs it
+    /// unchanged and readable); `native_post` is the drain-verified
+    /// arrival Space (`None` unless the drain proved arrival there).
+    /// Latest-wins per (operation, window).
     pub(crate) fn stage_member_attempt(
         &mut self,
         operation_id: &str,
         setter: FrameSetter,
+        pre_sid: Option<u64>,
         post_sid: Option<u64>,
     ) {
         let transfer = self
@@ -231,12 +259,58 @@ impl WorldSession {
             setter,
             pre: None,
             post: None,
-            native_pre: None,
+            native_pre: pre_sid.map(crate::topology::workspace_key),
             native_post: post_sid.map(crate::topology::workspace_key),
             attempt_ms: 0,
         };
         self.pending_members
             .insert((operation_id.to_owned(), window.0.clone()), attempt);
+    }
+
+    /// Stage one raw native creation attempt for the next dispatched
+    /// report. Exact correlation on operation id plus logical plus output
+    /// (the core consumes only the first exact-correlated attempt per op;
+    /// changed replays latch ambiguity). `order_before`/`order_after` are
+    /// the genuine native orders around the drain's create leg (mapped to
+    /// workspace keys here; logical ids are never minted adapter-side):
+    /// `order_after` is a genuine full post-order, including a genuinely
+    /// observed unchanged order; unreadable post-orders stay local. The
+    /// `created_native` names the drain-verified appended desktop only
+    /// (`None` on refusal/unknown, never guessed). The drain reports
+    /// exactly one attempt per creation desire. Latest-wins per op.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stage_native_creation(
+        &mut self,
+        operation_id: &str,
+        logical_workspace: &str,
+        target_output: OutputId,
+        setter: FrameSetter,
+        order_before: &[u64],
+        order_after: &[u64],
+        created_sid: Option<u64>,
+        attempt_ms: u64,
+    ) {
+        if operation_id.is_empty() || logical_workspace.is_empty() {
+            return;
+        }
+        let attempt = NativeCreationAttempt {
+            operation_id: operation_id.to_owned(),
+            logical_workspace: logical_workspace.to_owned(),
+            target_output,
+            setter,
+            order_before: order_before
+                .iter()
+                .map(|sid| crate::topology::workspace_key(*sid))
+                .collect(),
+            order_after: order_after
+                .iter()
+                .map(|sid| crate::topology::workspace_key(*sid))
+                .collect(),
+            created_native: created_sid.map(crate::topology::workspace_key),
+            attempt_ms,
+        };
+        self.pending_creations
+            .insert(operation_id.to_owned(), attempt);
     }
 
     /// Mark retained truth as having missed input (refused observation):
@@ -258,6 +332,12 @@ impl WorldSession {
 
     fn take_member_attempts(&mut self) -> Vec<MemberAttempt> {
         std::mem::take(&mut self.pending_members)
+            .into_values()
+            .collect()
+    }
+
+    fn take_creation_attempts(&mut self) -> Vec<NativeCreationAttempt> {
+        std::mem::take(&mut self.pending_creations)
             .into_values()
             .collect()
     }
@@ -314,6 +394,23 @@ pub(crate) fn minimized_entries(retained: &RetainedCore) -> Vec<MinimizedRecord>
     let mut entries: Vec<MinimizedRecord> = retained.minimized.values().cloned().collect();
     entries.sort_by(|a, b| a.window.0.cmp(&b.window.0));
     entries
+}
+
+/// Whether the retained observed-focus window currently reports native
+/// fullscreen (the focused-fullscreen-game lane for the presentation
+/// `paused` flag). Unknown or minimized focus reads false.
+fn is_focused_fullscreen(retained: &RetainedCore, focused_global: &str) -> bool {
+    if focused_global.is_empty() {
+        return false;
+    }
+    let Some((pid, wid)) = parse_window_id(focused_global) else {
+        return false;
+    };
+    retained
+        .apps
+        .get(&pid)
+        .and_then(|app| app.windows.iter().find(|w| w.wid == wid))
+        .is_some_and(|w| w.fullscreen)
 }
 
 /// Whether a classifier exclusion mints a retained minimized lifetime
@@ -471,6 +568,7 @@ pub(crate) fn build_dispatch_report(
     let view_rows = session.take_view_attempts();
     let member_rows = session.take_member_attempts();
     let frame_rows = session.take_frame_attempts();
+    let creation_rows = session.take_creation_attempts();
     let memory = session.lifetime_memory();
     let focused_global = retained
         .observed_focus
@@ -546,6 +644,17 @@ pub(crate) fn build_dispatch_report(
             let incomplete = session.coverage_gap || !ctx.skipped.is_empty();
             let owned_command = ticket_command.clone();
             let owned_request = request_id.to_owned();
+            let minimized = minimized_entries(retained);
+            let focused_fullscreen = is_focused_fullscreen(retained, &focused_global);
+            let style = session.presentation_style;
+            let presentation = crate::world_builder::build_presentation_ingress(
+                &focused_global,
+                &members,
+                &unknown,
+                &minimized,
+                focused_fullscreen,
+                &style,
+            );
             let mut input = ReportInput {
                 owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
@@ -561,13 +670,13 @@ pub(crate) fn build_dispatch_report(
                 closed: &closed_flat,
                 unknown: &unknown,
                 roster_incomplete,
-                minimized: &minimized_entries(retained),
+                minimized: &minimized,
                 unreadable: &unreadable,
                 frames: &frame_rows,
                 member_attempts: &member_rows,
                 view_attempts: &view_rows,
                 clear_attempts: &[],
-                creation_attempts: &[],
+                creation_attempts: &creation_rows,
                 gesture,
                 focused_global: &focused_global,
                 complete: !incomplete,
@@ -580,7 +689,8 @@ pub(crate) fn build_dispatch_report(
                 primary_output: None,
                 gap: PHASE1_GAP,
                 outer_gap: PHASE1_OUTER_GAP,
-                monotonic_ms: 0,
+                monotonic_ms: crate::input_eligibility::now_ms(),
+                presentation,
             };
             let report = build_report(&mut input);
             Some(report)
@@ -623,6 +733,12 @@ pub(crate) fn build_dispatch_report(
                 .into_iter()
                 .collect();
             closed_flat.sort_by(|a, b| a.0.cmp(&b.0));
+            // Same retained facts as the native route: explicit minimized
+            // rows and the retained fullscreen bit ride truthfully here
+            // too, never empty minimized/false fullscreen.
+            let minimized = minimized_entries(retained);
+            let focused_fullscreen = is_focused_fullscreen(retained, &focused_global);
+            let style = session.presentation_style;
             let mut input = ReportInput {
                 owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
@@ -638,13 +754,13 @@ pub(crate) fn build_dispatch_report(
                 closed: &closed_flat,
                 unknown: &[],
                 roster_incomplete: false,
-                minimized: &[],
+                minimized: &minimized,
                 unreadable: &empty_unreadable,
                 frames: &frame_rows,
                 member_attempts: &member_rows,
                 view_attempts: &view_rows,
                 clear_attempts: &[],
-                creation_attempts: &[],
+                creation_attempts: &creation_rows,
                 gesture,
                 focused_global: &focused_global,
                 complete: true,
@@ -659,7 +775,15 @@ pub(crate) fn build_dispatch_report(
                 // insets by the carried gap; 0 preserves exact geometry).
                 gap: PHASE1_GAP,
                 outer_gap: 0,
-                monotonic_ms: 0,
+                monotonic_ms: crate::input_eligibility::now_ms(),
+                presentation: crate::world_builder::build_presentation_ingress(
+                    &focused_global,
+                    &members,
+                    &[],
+                    &minimized,
+                    focused_fullscreen,
+                    &style,
+                ),
             };
             let report = build_report(&mut input);
             Some(report)

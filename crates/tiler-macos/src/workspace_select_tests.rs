@@ -1,12 +1,13 @@
 #![cfg(test)]
-use crate::runtime_types::InputSemanticAction as Action;
-use crate::workspace_input::TRAILING_CAPABILITY_ENABLED;
+use crate::runtime_types::{ClaimedSelect, InputSemanticAction as Action};
 use crate::workspace_select::*;
+use tiler_core::world_report::FrameSetter;
 
 struct Fake {
     row: SelectionSnapshot,
     displays: usize,
     revision: Option<u64>,
+    output: String,
     empty: Result<bool, String>,
     creates: usize,
     selects: Vec<u64>,
@@ -23,6 +24,7 @@ impl Default for Fake {
             },
             displays: 1,
             revision: None,
+            output: "macos-display-1".to_owned(),
             empty: Ok(true),
             creates: 0,
             selects: Vec::new(),
@@ -41,15 +43,22 @@ impl SelectionBackend for Fake {
     fn revision(&mut self) -> Option<u64> {
         self.revision
     }
+    fn check_output(&mut self, output: &str) -> Result<(), String> {
+        if output == self.output {
+            Ok(())
+        } else {
+            Err(format!(
+                "product select refuses: reply target output {output} is not the live display {}; no actuation",
+                self.output
+            ))
+        }
+    }
     fn empty(&mut self, _: u64) -> Result<bool, String> {
         self.empty.clone()
     }
-    fn create(&mut self, _: &SelectionSnapshot) -> Result<(), String> {
+    fn create(&mut self, _: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
         self.creates += 1;
         if self.effect {
-            // Append a fresh SID per leg (21 first, then 22, ...): a second
-            // trailing on an occupied append proves one create per leg
-            // without duplicating the first SID.
             let next = if !self.row.spaces.contains(&21) {
                 21
             } else if !self.row.spaces.contains(&22) {
@@ -64,7 +73,7 @@ impl SelectionBackend for Fake {
         }
         Ok(())
     }
-    fn select(&mut self, _: &SelectionSnapshot, sid: u64) -> Result<(), String> {
+    fn select(&mut self, _: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
         self.selects.push(sid);
         if self.effect {
             self.row.current = sid;
@@ -72,77 +81,464 @@ impl SelectionBackend for Fake {
         Ok(())
     }
 }
-#[test]
-fn numbered_select_is_native_order_existing_only_and_previous_toggles() {
-    let mut fake = Fake::default();
-    let mut state = SelectionState::default();
-    assert!(state.execute(&mut fake, Action::WorkspacePrevious).is_err());
-    assert!(
-        state
-            .execute(&mut fake, Action::WorkspaceSelect { index: 9 })
-            .is_err()
-    );
-    state
-        .execute(&mut fake, Action::WorkspaceSelect { index: 2 })
-        .unwrap();
-    assert_eq!(fake.row.current, 3); // Not sorted numeric SIDs.
-    state.execute(&mut fake, Action::WorkspacePrevious).unwrap();
-    assert_eq!(fake.row.current, 20);
-    state.execute(&mut fake, Action::WorkspacePrevious).unwrap();
-    assert_eq!(fake.row.current, 3);
-    // Selecting current never overwrites the other view.
-    state
-        .execute(&mut fake, Action::WorkspaceSelect { index: 2 })
-        .unwrap();
-    state.execute(&mut fake, Action::WorkspacePrevious).unwrap();
-    assert_eq!(fake.row.current, 20);
-    assert_eq!(fake.creates, 0);
-}
-#[test]
-fn relative_wraps_without_creating() {
-    let mut fake = Fake::default();
-    let mut state = SelectionState::default();
-    state
-        .execute(&mut fake, Action::WorkspaceRelative { prev: true })
-        .unwrap();
-    assert_eq!(fake.row.current, 3);
-    state
-        .execute(&mut fake, Action::WorkspaceRelative { prev: false })
-        .unwrap();
-    assert_eq!(fake.row.current, 20);
-    assert_eq!(fake.creates, 0);
-}
-#[test]
-fn trailing_reuses_empty_but_appends_when_occupied_or_below_shared_floor() {
-    for (spaces, empty, creates, target) in [
-        (vec![20, 3], true, 0, 3),
-        (vec![20, 3], false, 1, 21),
-        (vec![20], true, 1, 21),
-    ] {
-        let mut fake = Fake {
-            row: SelectionSnapshot {
-                spaces,
-                ..Fake::default().row
-            },
-            empty: Ok(empty),
-            ..Fake::default()
-        };
-        let effect = SelectionState::default()
-            .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-            .unwrap();
-        assert_eq!(fake.creates, creates);
-        assert_eq!(effect.target, target);
-        assert_eq!(effect.created, if creates == 0 { None } else { Some(21) });
+
+fn open_gates() -> SelectGates {
+    SelectGates {
+        session_unlocked: true,
+        secure_active: false,
+        lock_screen: false,
     }
 }
 
+/// Reply-plan claim for tests: the engine would bind these from the
+/// accepted reply (retained target, live binding or creation desire,
+/// baseline). Tests inject them directly; production binds them in
+/// `bind_select_plan` and rebinds them from fresh replies only.
+fn plan_claim(
+    action: Action,
+    op: &str,
+    output: &str,
+    workspace: &str,
+    binding: Option<&str>,
+    creation: Option<(&str, &str, &str)>,
+    baseline: Option<u64>,
+) -> ClaimedSelect {
+    let mut claim = ClaimedSelect::tap(action);
+    claim.operation_id = Some(op.to_owned());
+    claim.select_target_output = Some(output.to_owned());
+    claim.select_target_workspace = Some(workspace.to_owned());
+    claim.select_native_binding = binding.map(str::to_owned);
+    if let Some((cop, logical, out)) = creation {
+        claim.select_creation_operation = Some(cop.to_owned());
+        claim.select_creation_logical = Some(logical.to_owned());
+        claim.select_creation_output = Some(out.to_owned());
+    }
+    claim.select_baseline_sid = baseline;
+    claim
+}
+
 #[test]
-fn trailing_failed_select_still_reports_created_for_lifecycle_adoption() {
-    // The append is verified (exact same-display append) but the follow-up
-    // select fails: the Space persists, so `take_trailing_proof` still reports the
-    // exact-created SID for lifecycle ownership (the tile adopts on both
-    // outcomes). The drift here breaks the pre-select topology check after
-    // the verified append — the single append already ran exactly once.
+fn reply_reuse_selects_bound_target_with_baseline() {
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect("bound reuse selects");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert_eq!((success.effect.from, success.effect.target), (20, 3));
+    assert_eq!(success.effect.created, None);
+    assert!(success.effect.changed);
+    assert_eq!(success.effect.baseline, Some(20));
+    assert_eq!((success.pre, success.post), (Some(20), Some(3)));
+    assert_eq!(fake.selects, vec![3]);
+    assert!(state.take_trailing_proof().is_none());
+    assert!(success.creation.is_none());
+}
+
+#[test]
+fn reply_already_there_is_noop_with_accepted_reads() {
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 3],
+            current: 3,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(3),
+    );
+    let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect("already-there noop");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert!(!success.effect.changed);
+    assert_eq!((success.pre, success.post), (Some(3), Some(3)));
+    assert!(fake.selects.is_empty());
+}
+
+#[test]
+fn reply_stale_binding_refuses_with_unchanged_reads_and_no_replay() {
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    // Binding names a SID absent from the live row (reordered/vanished).
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-99"),
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("stale binding refuses");
+    assert!(failure.reason.contains("stale"), "{}", failure.reason);
+    // Untouched desktop, genuinely re-read: proven refusal shape.
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!((failure.pre, failure.post), (Some(20), Some(20)));
+    assert_eq!(failure.baseline, Some(20));
+    assert!(failure.creation.is_none());
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
+}
+
+#[test]
+fn reply_missing_binding_without_desire_never_creates() {
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("missing binding never creates");
+    assert!(
+        failure.reason.contains("never creates") || failure.reason.contains("no creation"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!(fake.creates, 0);
+    assert!(fake.selects.is_empty());
+}
+
+#[test]
+fn reply_creation_authorizes_single_append_with_proof_and_baseline() {
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-new", "macos-display-1")),
+        Some(1),
+    );
+    let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect("creation desire appends once");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert_eq!(success.effect.created, Some(21));
+    assert_eq!(success.effect.target, 21);
+    assert!(success.effect.changed);
+    assert_eq!(success.effect.baseline, Some(1));
+    assert_eq!((success.pre, success.post), (Some(1), Some(21)));
+    assert_eq!(fake.creates, 1);
+    assert_eq!(fake.selects, vec![21]);
+    let creation = success.creation.expect("creation report rides success");
+    assert_eq!(creation.operation_id, "op-native-1");
+    assert_eq!(creation.setter, FrameSetter::Accepted);
+    assert_eq!(creation.order_before, vec![1, 277]);
+    assert_eq!(creation.order_after, vec![1, 277, 21]);
+    assert_eq!(creation.created, Some(21));
+    let proof = state.take_trailing_proof().expect("proof captured");
+    assert_eq!(proof.created, 21);
+    assert_eq!(proof.before, vec![1, 277]);
+    assert_eq!(proof.after, vec![1, 277, 21]);
+    assert!(state.take_trailing_proof().is_none());
+}
+
+#[test]
+fn double_drain_of_same_claim_creates_only_once() {
+    // One authorization creates at most once: the second drain of the
+    // identical claim refuses without touching native - no replay, no
+    // second Space, no second proof.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = || {
+        plan_claim(
+            Action::WorkspaceSelect { index: 0 },
+            "op-9",
+            "macos-display-1",
+            "ws-new",
+            None,
+            Some(("op-native-1", "ws-new", "macos-display-1")),
+            Some(1),
+        )
+    };
+    let first = drain_claimed_select_with(&mut state, &mut fake, claim(), &open_gates(), true)
+        .expect("first drain creates");
+    assert_eq!(first.effect.created, Some(21));
+    assert!(state.take_trailing_proof().is_some());
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim(), &open_gates(), true)
+        .expect_err("second drain refuses without replay");
+    assert!(failure.reason.contains("spent"), "{}", failure.reason);
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!(fake.creates, 1, "exactly one append, never replayed");
+    assert_eq!(fake.selects, vec![21], "exactly one select, never replayed");
+    assert!(state.take_trailing_proof().is_none());
+}
+
+#[test]
+fn reply_creation_mismatch_refuses_without_append() {
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    // Desire names a different logical/output than the retained target.
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-other", "macos-display-1")),
+        Some(1),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("mismatched desire refuses");
+    assert!(failure.reason.contains("mismatch"), "{}", failure.reason);
+    assert_eq!(fake.creates, 0);
+    assert!(failure.creation.is_none());
+}
+
+#[test]
+fn reply_creation_refusal_reports_unknown_without_fabricated_after_order() {
+    struct FailCreate {
+        inner: Fake,
+        post_unreadable: bool,
+    }
+    impl SelectionBackend for FailCreate {
+        fn display_count(&mut self) -> Result<usize, String> {
+            self.inner.display_count()
+        }
+        fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            if self.post_unreadable { Err("post-order unreadable".to_owned()) } else { self.inner.snapshot() }
+        }
+        fn revision(&mut self) -> Option<u64> {
+            self.inner.revision()
+        }
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            self.inner.check_output(output)
+        }
+        fn empty(&mut self, sid: u64) -> Result<bool, String> {
+            self.inner.empty(sid)
+        }
+        fn create(&mut self, _: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+            self.post_unreadable = true;
+            Err(DispatchError::threw("MC open failed mid-leg"))
+        }
+        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), crate::workspace_select::DispatchError> {
+            unreachable!("no select follows a failed create");
+        }
+    }
+    let mut backend = FailCreate {
+        post_unreadable: false,
+        inner: Fake {
+            row: SelectionSnapshot {
+                display: "display-a".to_owned(),
+                spaces: vec![1, 277],
+                current: 1,
+            },
+            ..Fake::default()
+        },
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-new", "macos-display-1")),
+        Some(1),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
+        .expect_err("failed create holds");
+    // Ambiguous mid-actuation output: hold without re-actuation, never a
+    // proven refusal and never a fabricated success.
+    assert_eq!(failure.setter, FrameSetter::Refused, "no view write was attempted");
+    assert_eq!(failure.pre, None);
+    assert_eq!(failure.baseline, Some(1));
+    assert!(failure.creation.is_none(), "unknown after-order must not be substituted");
+    assert_eq!(state.pending_creation_count(), 1);
+    assert!(state.poll_pending_creations(&mut backend).is_empty());
+    backend.post_unreadable = false;
+    let receipts = state.poll_pending_creations(&mut backend);
+    assert_eq!(receipts.len(), 1);
+    let creation = &receipts[0];
+    assert_eq!(creation.operation_id, "op-native-1");
+    assert_eq!(creation.setter, FrameSetter::Threw);
+    assert_eq!(creation.order_before, vec![1, 277]);
+    assert_eq!(creation.order_after, vec![1, 277], "first readable full post-order, even with no delta");
+    assert_eq!(creation.attempt_ms, failure.attempt_ms);
+    assert_eq!(creation.created, None);
+    assert!(state.poll_pending_creations(&mut backend).is_empty(), "receipt completes once");
+    assert!(state.take_trailing_proof().is_none());
+}
+
+#[test]
+fn deferred_creation_never_claims_causal_identity_or_changes_setter() {
+    let pending = PendingCreation {
+        operation_id: "op-native-1".to_owned(), logical: "ws-new".to_owned(),
+        output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
+        display_id: "display-a".to_owned(), order_before: vec![20, 3],
+        setter: FrameSetter::Accepted, attempt_ms: 42,
+    };
+    let row = SelectionSnapshot { display: "display-a".to_owned(), spaces: vec![3, 20, 99, 100], current: 20 };
+    assert!(pending.observe(&row, 42).is_none(), "same-ms capture cannot prove ordering");
+    let report = pending.observe(&row, 43).unwrap();
+    assert_eq!(report.setter, FrameSetter::Accepted, "outside reorders do not change dispatch truth");
+    assert_eq!(report.order_after, row.spaces);
+    assert_eq!(report.created, None, "later additions are uncorrelated");
+    assert_eq!(report.attempt_ms, 42);
+    let foreign = SelectionSnapshot { display: "display-b".to_owned(), ..row };
+    assert!(pending.observe(&foreign, 44).is_none());
+}
+
+#[test]
+fn reply_unparsable_binding_refuses() {
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("desktop-3"),
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("unparsable binding refuses");
+    assert!(failure.reason.contains("unparsable"), "{}", failure.reason);
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert!(fake.selects.is_empty());
+}
+
+#[test]
+fn reply_indicator_mismatch_refuses_stale_click_with_unchanged_reads() {
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    // Indicator rendered Space 20 but the reply binding now names Space 3
+    // (generation moved under the click): refuse, never actuate the new
+    // occupant under the old click. Both reads genuinely name the
+    // untouched current.
+    let mut claim = plan_claim(
+        Action::WorkspaceSelect { index: 1 },
+        "op-1",
+        "macos-display-1",
+        "ws-1",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    claim.expected_sid = Some(20);
+    claim.topology_revision = Some(9);
+    fake.revision = Some(9);
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("indicator mismatch refuses");
+    assert!(
+        failure.reason.contains("no longer names"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!((failure.pre, failure.post), (Some(20), Some(20)));
+    assert!(fake.selects.is_empty());
+}
+
+#[test]
+fn reply_revision_drift_refuses_indicator() {
+    let mut fake = Fake {
+        revision: Some(10),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let mut claim = plan_claim(
+        Action::WorkspaceSelect { index: 1 },
+        "op-1",
+        "macos-display-1",
+        "ws-1",
+        Some("space-20"),
+        None,
+        Some(20),
+    );
+    claim.expected_sid = Some(20);
+    claim.topology_revision = Some(9);
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("revision drift refuses");
+    assert!(
+        failure.reason.contains("revision moved"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert!(fake.selects.is_empty());
+}
+
+#[test]
+fn reply_output_fence_refuses_foreign_display_without_touch() {
+    // The plan names another output while the backend proves only
+    // macos-display-1: refuse before any native touch, never switch the
+    // wrong display.
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-2",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("foreign output refuses");
+    assert!(
+        failure.reason.contains("not the live display") || failure.reason.contains("output"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
+}
+
+#[test]
+fn reply_select_failure_after_append_stages_throw_with_proof() {
+    // Verified append followed by a failed select: the Space persists
+    // (proof adoptable) while the view attempt holds as Threw with
+    // genuine reads - never a false success, never a silent loss.
     struct FailSelect {
         inner: Fake,
     }
@@ -156,14 +552,17 @@ fn trailing_failed_select_still_reports_created_for_lifecycle_adoption() {
         fn revision(&mut self) -> Option<u64> {
             self.inner.revision()
         }
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            self.inner.check_output(output)
+        }
         fn empty(&mut self, sid: u64) -> Result<bool, String> {
             self.inner.empty(sid)
         }
-        fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String> {
+        fn create(&mut self, before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
             self.inner.create(before)
         }
-        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), String> {
-            Err("goto failed".to_owned())
+        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), crate::workspace_select::DispatchError> {
+            Err(DispatchError::threw("goto failed"))
         }
     }
     let mut backend = FailSelect {
@@ -173,132 +572,190 @@ fn trailing_failed_select_still_reports_created_for_lifecycle_adoption() {
                 spaces: vec![1, 277],
                 current: 1,
             },
-            empty: Ok(false),
             ..Fake::default()
         },
     };
     let mut state = SelectionState::default();
-    let err = state
-        .execute(&mut backend, Action::WorkspaceSelect { index: 0 })
-        .expect_err("failed goto refuses");
-    assert!(err.contains("goto failed"), "{err}");
-    assert_eq!(
-        backend.inner.creates, 1,
-        "exactly one append, never replayed"
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-new", "macos-display-1")),
+        Some(1),
     );
-    // Ownership capture even though the effect failed: the created Space
-    // is real and must enter lifecycle tracking, and its exact-append
-    // proof must still bind the engine token.
+    let failure = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
+        .expect_err("failed goto holds");
+    assert!(failure.reason.contains("goto failed"), "{}", failure.reason);
+    assert_eq!(failure.setter, FrameSetter::Threw);
+    assert_eq!(failure.pre, Some(1));
+    assert_eq!(failure.baseline, Some(1));
+    // The verified append is still reported (Accepted create leg) and
+    // adoptable even though the select held.
+    let creation = failure.creation.expect("append proof rides the failure");
+    assert_eq!(creation.setter, FrameSetter::Accepted);
+    assert_eq!(creation.created, Some(21));
+    assert_eq!(creation.order_after, vec![1, 277, 21]);
     let proof = state.take_trailing_proof().expect("proof captured");
     assert_eq!(proof.created, 21);
-    assert_eq!(proof.display_id, "display-a");
-    assert_eq!(proof.before, vec![1, 277]);
-    assert_eq!(proof.after, vec![1, 277, 21]);
-    assert!(
-        state.take_trailing_proof().is_none(),
-        "taking clears the slot"
-    );
+    assert!(state.take_trailing_proof().is_none());
 }
 
 #[test]
-fn trailing_reuse_current_empty_is_same_current_noop() {
-    // Producer-shaped native row `[1, 277]` current on the trailing empty:
-    // selecting trailing reuses last with no create, no dispatch, unchanged.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 277,
-        },
-        empty: Ok(true),
-        ..Fake::default()
-    };
-    let effect = SelectionState::default()
-        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-        .unwrap();
-    assert_eq!(effect.target, 277);
-    assert_eq!(effect.created, None);
-    assert!(!effect.changed);
-    assert_eq!(fake.creates, 0);
-    assert!(fake.selects.is_empty(), "same-current never dispatches");
-}
-
-#[test]
-fn trailing_reuse_noncurrent_empty_selects_without_create() {
-    // `[1, 277]` current 1, last proven empty: reuse 277 with one dispatch.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(true),
-        ..Fake::default()
-    };
-    let effect = SelectionState::default()
-        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-        .unwrap();
-    assert_eq!(effect.target, 277);
-    assert_eq!(effect.created, None);
-    assert!(effect.changed);
-    assert_eq!(fake.creates, 0);
-    assert_eq!(fake.selects, vec![277], "single dispatch, never replayed");
-}
-
-#[test]
-fn trailing_occupied_appends_once_then_subsequent_occupied_appends_again() {
-    // First trailing on occupied `[1, 277]` appends exactly one SID.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(false),
-        ..Fake::default()
-    };
-    let first = SelectionState::default()
-        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-        .unwrap();
-    assert_eq!(first.created, Some(21));
-    assert_eq!(first.target, 21);
-    assert_eq!(fake.creates, 1);
-    // The appended trailing is now occupied too: a second trailing appends
-    // again (exact append, never a guess), proving no double-create per leg.
-    fake.empty = Ok(false);
-    let second = SelectionState::default()
-        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-        .unwrap();
-    assert_eq!(fake.creates, 2, "one create per trailing leg");
-    assert_eq!(second.target, *fake.row.spaces.last().unwrap());
-    assert!(second.created.is_some());
-}
-
-#[test]
-fn trailing_unknown_emptiness_refuses_without_create_or_dispatch() {
-    for empty in [
-        Err("unreadable".to_owned()),
-        Err("trailing emptiness unknown: zero-area/unreadable candidate WID7/PID77".to_owned()),
-    ] {
-        let mut fake = Fake {
-            row: SelectionSnapshot {
-                display: "display-a".to_owned(),
-                spaces: vec![1, 277],
-                current: 1,
-            },
-            empty,
-            ..Fake::default()
-        };
-        let err = SelectionState::default()
-            .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-            .expect_err("unknown refuses");
-        assert!(
-            err.contains("unreadable") || err.contains("unknown"),
-            "{err}"
-        );
-        assert_eq!(fake.creates, 0, "unknown never appends");
-        assert!(fake.selects.is_empty(), "unknown never dispatches");
+fn reply_accepted_with_unreadable_post_stays_accepted() {
+    // Successful dispatch followed by an unreadable post read stays
+    // Accepted with post unknown - never an invented Threw. The core
+    // holds on the genuine pre-write read instead of settling either way.
+    struct UnreadablePost {
+        inner: Fake,
+        reads: usize,
     }
+    impl SelectionBackend for UnreadablePost {
+        fn display_count(&mut self) -> Result<usize, String> {
+            self.inner.display_count()
+        }
+        fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            self.reads += 1;
+            // First read (pre) succeeds; the post-arrival readback is
+            // unreadable.
+            if self.reads <= 1 {
+                self.inner.snapshot()
+            } else {
+                Err("post snapshot unreadable".to_owned())
+            }
+        }
+        fn revision(&mut self) -> Option<u64> {
+            self.inner.revision()
+        }
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            self.inner.check_output(output)
+        }
+        fn empty(&mut self, sid: u64) -> Result<bool, String> {
+            self.inner.empty(sid)
+        }
+        fn create(&mut self, before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+            self.inner.create(before)
+        }
+        fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
+            self.inner.select(before, sid)
+        }
+    }
+    let mut backend = UnreadablePost {
+        inner: Fake::default(),
+        reads: 0,
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    let success = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
+        .expect("unreadable post still Accepted");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert_eq!(success.pre, Some(20));
+    assert_eq!(success.post, None);
+}
+
+#[test]
+fn drain_gates_display_and_unarmed_refuse_without_touch() {
+    for gates in [
+        SelectGates {
+            session_unlocked: false,
+            ..open_gates()
+        },
+        SelectGates {
+            secure_active: true,
+            ..open_gates()
+        },
+        SelectGates {
+            lock_screen: true,
+            ..open_gates()
+        },
+    ] {
+        let mut fake = Fake::default();
+        let mut state = SelectionState::default();
+        let claim = plan_claim(
+            Action::WorkspaceSelect { index: 2 },
+            "op-1",
+            "macos-display-1",
+            "ws-2",
+            Some("space-3"),
+            None,
+            Some(20),
+        );
+        let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &gates, true)
+            .expect_err("gated drain refuses");
+        assert!(failure.reason.contains("gated"), "{}", failure.reason);
+        assert_eq!(failure.setter, FrameSetter::Refused);
+        assert_eq!((failure.pre, failure.post), (None, None));
+        assert!(fake.selects.is_empty());
+        assert_eq!(fake.creates, 0);
+    }
+    // Unarmed actions refuse before any backend touch.
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSend {
+            index: 1,
+            follow: true,
+        },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("unarmed refuses");
+    assert!(failure.reason.contains("unarmed"), "{}", failure.reason);
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert!(fake.selects.is_empty());
+    // Multi-display refuses before any effect.
+    let mut fake = Fake {
+        displays: 2,
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("multi-display refuses");
+    assert!(
+        failure.reason.contains("exactly one native display"),
+        "{}",
+        failure.reason
+    );
+    // Missing operation identity never actuates.
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let mut claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    claim.operation_id = None;
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("unbound refuses");
+    assert!(failure.reason.contains("unbound"), "{}", failure.reason);
+    assert!(fake.selects.is_empty());
 }
 
 #[test]
@@ -356,203 +813,6 @@ fn trailing_lifecycle_owns_only_created_proven_empty_never_baseline() {
 }
 
 #[test]
-fn trailing_drain_armed_offline_proves_gates_display_and_arrival() {
-    // Capability-disabled pin (explicit `false`): trailing refuses with
-    // no backend touch. Production is armed (gate `true`): the same drain
-    // reuses the proven-empty last below.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(true),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let err = drain_claimed_select_with(
-        &mut state,
-        &mut fake,
-        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
-        &open_gates(),
-        false,
-    )
-    .expect_err("capability-disabled trailing refuses");
-    assert!(err.contains("unarmed"), "{err}");
-    assert_eq!(fake.creates, 0);
-    assert!(fake.selects.is_empty());
-    // Production admission (gate const): armed trailing drains through
-    // the same route.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(true),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = drain_claimed_select_with(
-        &mut state,
-        &mut fake,
-        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
-        &open_gates(),
-        TRAILING_CAPABILITY_ENABLED,
-    )
-    .expect("production trailing armed");
-    assert_eq!(effect.target, 277);
-    assert_eq!(fake.selects, vec![277]);
-    // Explicit local capability through the same production drain: reuse
-    // path drains with verified arrival.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(true),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = drain_claimed_select_with(
-        &mut state,
-        &mut fake,
-        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
-        &open_gates(),
-        true,
-    )
-    .expect("armed trailing drains");
-    assert_eq!(effect.target, 277);
-    assert_eq!(fake.selects, vec![277]);
-    // Single-display gate still applies when armed: 2 displays refuse.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        displays: 2,
-        empty: Ok(true),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let err = drain_claimed_select_with(
-        &mut state,
-        &mut fake,
-        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
-        &open_gates(),
-        true,
-    )
-    .expect_err("multi-display refuses even when armed");
-    assert!(err.contains("exactly one native display"), "{err}");
-    assert!(fake.selects.is_empty());
-}
-
-#[test]
-fn trailing_ownership_adopts_appends_and_releases_verified_removal() {
-    // Full production-path orchestration with fakes: armed drain appends
-    // exactly once on occupied trailing, the lifecycle adopts the created
-    // SID, and the cleanup plan removes it once proven empty and releases
-    // it — never touching the preexisting baseline.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(false),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = drain_claimed_select_with(
-        &mut state,
-        &mut fake,
-        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
-        &open_gates(),
-        true,
-    )
-    .expect("occupied trailing appends");
-    let created = effect.created.expect("exact append recorded");
-    let mut life = TrailingLifecycle::new(&[1, 277]);
-    assert!(note_effect_created(&mut life, &effect).expect("adopts"));
-    assert_eq!(life.owned(), &[created]);
-    // Occupied while current work continues: residue, never removed.
-    let (remove, _) = life.cleanup_plan(&fake.row.spaces, 1, &|_| Ok(false));
-    assert!(remove.is_empty());
-    // Proven empty and inactive: the single owned SID removes.
-    let (remove, residue) = life.cleanup_plan(&fake.row.spaces, 1, &|_| Ok(true));
-    assert_eq!(remove, vec![created]);
-    assert!(residue.is_empty(), "{residue:?}");
-    life.release_removed(created)
-        .expect("release verified removal");
-    assert!(life.owned().is_empty());
-    // Baseline SIDs are never adopted through the effect path.
-    let reuse = SelectionEffect {
-        from: 1,
-        target: 277,
-        created: None,
-        changed: true,
-    };
-    assert!(!note_effect_created(&mut life, &reuse).expect("no-op"));
-    assert!(life.owned().is_empty());
-}
-#[test]
-fn unknown_emptiness_create_drift_and_no_effect_refuse_without_replay() {
-    let mut fake = Fake {
-        empty: Err("unreadable".to_owned()),
-        ..Fake::default()
-    };
-    assert!(
-        SelectionState::default()
-            .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-            .is_err()
-    );
-    assert_eq!(fake.creates, 0);
-    let mut fake = Fake {
-        empty: Ok(false),
-        drift: true,
-        ..Fake::default()
-    };
-    assert!(
-        SelectionState::default()
-            .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-            .is_err()
-    );
-    assert_eq!(fake.creates, 1);
-    assert!(fake.selects.is_empty());
-    let mut fake = Fake {
-        effect: false,
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    assert!(
-        state
-            .execute(&mut fake, Action::WorkspaceSelect { index: 2 })
-            .is_err()
-    );
-    assert_eq!(fake.selects, vec![3]);
-    assert!(state.execute(&mut fake, Action::WorkspacePrevious).is_err());
-}
-#[test]
-fn invalid_rows_deleted_previous_and_other_display_fail_narrowly() {
-    let mut fake = Fake::default();
-    let mut state = SelectionState::default();
-    state
-        .execute(&mut fake, Action::WorkspaceSelect { index: 2 })
-        .unwrap();
-    fake.row.spaces = vec![3];
-    assert!(state.execute(&mut fake, Action::WorkspacePrevious).is_err());
-    fake.row.display = "display-b".to_owned();
-    assert!(state.execute(&mut fake, Action::WorkspacePrevious).is_err());
-    fake.row.spaces = vec![3, 3];
-    assert!(
-        state
-            .execute(&mut fake, Action::WorkspaceSelect { index: 1 })
-            .is_err()
-    );
-}
-#[test]
 fn select_subset_contains_only_armed_numbered_and_auxiliary_arms() {
     // Product subset: exactly the 19 armed rows (numbered 1-9, trailing
     // select-0, the 8
@@ -594,18 +854,24 @@ fn select_subset_contains_only_armed_numbered_and_auxiliary_arms() {
             .count(),
         1
     );
+    // Unarmed send shapes never enter the select drain.
     let mut fake = Fake::default();
-    assert!(
-        SelectionState::default()
-            .execute(
-                &mut fake,
-                Action::WorkspaceSend {
-                    index: 1,
-                    follow: true
-                }
-            )
-            .is_err()
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSend {
+            index: 1,
+            follow: true,
+        },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
     );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("send refuses on select lane");
+    assert!(failure.reason.contains("unarmed"), "{}", failure.reason);
     assert!(fake.selects.is_empty());
 }
 
@@ -735,628 +1001,36 @@ fn trailing_probe_line_is_metadata_only() {
     assert!(!empty.contains("blocker="), "{empty}");
 }
 
-fn open_gates() -> SelectGates {
-    SelectGates {
-        session_unlocked: true,
-        secure_active: false,
-        lock_screen: false,
-    }
-}
-
+/// Reply-driven previous toggle through a core-resolved plan (manual plan
+/// standing in for the engine-bound reply): the drain actuates the bound
+/// SID once with a truthful baseline and no local history.
 #[test]
-fn drain_gates_refuse_without_backend_touch_or_history() {
-    for gates in [
-        SelectGates {
-            session_unlocked: false,
-            ..open_gates()
+fn core_previous_drives_reply_drain_without_local_history() {
+    // Previous target `space-20` bound by core (baseline is the
+    // observation-time current 3); the live row contains both SIDs.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 3],
+            current: 3,
         },
-        SelectGates {
-            secure_active: true,
-            ..open_gates()
-        },
-        SelectGates {
-            lock_screen: true,
-            ..open_gates()
-        },
-    ] {
-        let mut fake = Fake::default();
-        let mut state = SelectionState::default();
-        let err = drain_claimed(
-            &mut state,
-            &mut fake,
-            Action::WorkspaceSelect { index: 2 },
-            &gates,
-        )
-        .expect_err("gated drain refuses");
-        assert!(err.contains("gated"), "{err}");
-        assert!(fake.selects.is_empty());
-        assert_eq!(fake.creates, 0);
-        assert!(state.execute(&mut fake, Action::WorkspacePrevious).is_err());
-    }
-}
-
-#[test]
-fn drain_runs_single_dispatch_and_advances_history_only_on_arrival() {
-    let mut fake = Fake::default();
+        ..Fake::default()
+    };
     let mut state = SelectionState::default();
-    let effect = drain_claimed(
-        &mut state,
-        &mut fake,
-        Action::WorkspaceSelect { index: 2 },
-        &open_gates(),
-    )
-    .unwrap();
-    assert!(effect.changed);
-    assert_eq!(fake.selects, vec![3]);
-    drain_claimed(
-        &mut state,
-        &mut fake,
+    let claim = plan_claim(
         Action::WorkspacePrevious,
-        &open_gates(),
-    )
-    .unwrap();
-    assert_eq!(fake.row.current, 20);
-    // No effect: exactly one dispatch (never a replay) and history stays
-    // on the last verified arrival.
-    let mut stuck = Fake {
-        effect: false,
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let err = drain_claimed(
-        &mut state,
-        &mut stuck,
-        Action::WorkspaceSelect { index: 2 },
-        &open_gates(),
-    )
-    .expect_err("unproven effect refuses");
-    assert!(err.contains("unproven"), "{err}");
-    assert_eq!(stuck.selects, vec![3], "single dispatch, never replayed");
-    assert!(
-        state
-            .execute(&mut stuck, Action::WorkspacePrevious)
-            .is_err()
-    );
-}
-
-#[test]
-fn drain_refuses_unarmed_actions_without_backend_touch() {
-    for action in [
-        Action::WorkspaceSend {
-            index: 1,
-            follow: true,
-        },
-        Action::WorkspaceSendRelative {
-            prev: true,
-            follow: false,
-        },
-        Action::WorkspaceOutput {
-            direction: crate::runtime_types::InputDirection::Left,
-            follow: true,
-        },
-    ] {
-        let mut fake = Fake::default();
-        let mut state = SelectionState::default();
-        let err = drain_claimed(&mut state, &mut fake, action, &open_gates())
-            .expect_err("unarmed drain refuses");
-        assert!(err.contains("unarmed"), "{err}");
-        assert!(fake.selects.is_empty());
-        assert_eq!(fake.creates, 0);
-    }
-    // Trailing select-0 is armed in production: the capability-disabled
-    // lane still refuses it with no backend touch.
-    let mut fake = Fake::default();
-    let mut state = SelectionState::default();
-    let err = drain_claimed_select_with(
-        &mut state,
-        &mut fake,
-        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
-        &open_gates(),
-        false,
-    )
-    .expect_err("capability-disabled drain refuses");
-    assert!(err.contains("unarmed"), "{err}");
-    assert!(fake.selects.is_empty());
-    assert_eq!(fake.creates, 0);
-}
-
-#[test]
-fn drain_refuses_without_exactly_one_display_before_any_effect() {
-    // Zero or multiple native display rows refuse before any backend
-    // effect leg and advance no history: first-display guessing could
-    // switch the wrong display, so single-display support is the rule.
-    for displays in [0, 2, 3] {
-        let mut fake = Fake {
-            displays,
-            ..Fake::default()
-        };
-        let mut state = SelectionState::default();
-        let err = drain_claimed(
-            &mut state,
-            &mut fake,
-            Action::WorkspaceSelect { index: 2 },
-            &open_gates(),
-        )
-        .expect_err("multi-display drain refuses");
-        assert!(
-            err.contains("exactly one native display"),
-            "display rule names itself: {err}"
-        );
-        assert!(fake.selects.is_empty());
-        assert_eq!(fake.creates, 0);
-        assert!(state.execute(&mut fake, Action::WorkspacePrevious).is_err());
-    }
-    // Exactly one row drains (control case pins the rule boundary).
-    let mut fake = Fake {
-        displays: 1,
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = drain_claimed(
-        &mut state,
-        &mut fake,
-        Action::WorkspaceSelect { index: 2 },
-        &open_gates(),
-    )
-    .unwrap();
-    assert!(effect.changed);
-    assert_eq!(fake.selects, vec![3]);
-}
-
-use crate::runtime_types::ClaimedSelect;
-
-fn bound_claim(index: u8, sid: u64, revision: u64) -> ClaimedSelect {
-    ClaimedSelect::indicator(
-        Action::WorkspaceSelect { index },
-        sid,
-        7, // UI generation (carried opaquely; the UI side fences it)
-        revision,
-    )
-}
-
-#[test]
-fn bound_drain_dispatches_only_when_ordinal_still_names_its_sid() {
-    // Happy path: the admitted binding (row 2 = SID 3 at revision 9)
-    // still holds at drain time — single dispatch, verified arrival.
-    let mut fake = Fake {
-        revision: Some(9),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
-        .expect("fresh binding dispatches");
-    assert!(effect.changed);
-    assert_eq!(fake.selects, vec![3]);
-    assert_eq!(fake.row.current, 3);
-}
-
-#[test]
-fn bound_drain_refuses_topology_reorder_after_admission_before_drain() {
-    // The engine admitted row 2 = SID 3 at revision 9; the native order
-    // then moved (SID 3 deleted, SID 41 appended) before the main-thread
-    // drain. The drain must refuse instead of selecting the new occupant
-    // of ordinal 2 — with no dispatch and no history advance.
-    let mut fake = Fake {
-        revision: Some(9),
-        ..Fake::default()
-    };
-    let claim = bound_claim(2, 3, 9);
-    fake.row.spaces = vec![20, 41];
-    let mut state = SelectionState::default();
-    let err = drain_claimed_select(&mut state, &mut fake, claim, &open_gates())
-        .expect_err("reordered binding refuses");
-    assert!(err.contains("moved"), "{err}");
-    assert!(fake.selects.is_empty(), "never dispatched");
-    assert!(fake.row.current == 20, "current untouched");
-    assert!(
-        state.execute(&mut fake, Action::WorkspacePrevious).is_err(),
-        "no history advanced"
-    );
-}
-
-#[test]
-fn bound_drain_refuses_revision_drift_after_admission_before_drain() {
-    // Same row contents, but the topology revision moved between
-    // admission (9) and drain (10): the binding is stale and refuses even
-    // though the ordinal still names the same SID.
-    let mut fake = Fake {
-        revision: Some(10),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let err = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
-        .expect_err("drifted revision refuses");
-    assert!(err.contains("revision"), "{err}");
-    assert!(fake.selects.is_empty(), "never dispatched");
-}
-
-#[test]
-fn bound_drain_refuses_vanished_position_and_unbound_revision_skips_leg() {
-    // Vanished ordinal refuses.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![20],
-            current: 20,
-        },
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let err = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
-        .expect_err("vanished row refuses");
-    assert!(err.contains("no longer exists"), "{err}");
-    assert!(fake.selects.is_empty());
-    // A backend that cannot report a revision (None) still fences on the
-    // SID leg: matching SID dispatches, moved SID refuses.
-    let mut fake = Fake::default();
-    let mut state = SelectionState::default();
-    let effect = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
-        .expect("revision-less backend still dispatches fresh bindings");
-    assert!(effect.changed);
-    assert_eq!(fake.selects, vec![3]);
-}
-
-/// Native-ordinal parity shared repro: a single-display synthetic snapshot
-/// with the SLS row `[1, 277]` and `current` naming the startup Space.
-/// Display geometry and UUID are synthetic shapes only (never a live
-/// machine value). Under host-owned adoption the retained ring tracks
-/// native order (`[space-1, space-277]`) however the runtime started, so a
-/// positional `SelectNumbered{index: 1}` names native Desktop-1 (SID 1)
-/// even on a 277-started runtime — no self-target, no adapter-side
-/// logical mapping table.
-#[cfg(test)]
-mod ordinal_parity_repro {
-    use std::collections::BTreeMap;
-
-    use tiler_core::directional::OutputId;
-    use tiler_core::world_engine::WorldOutcome;
-    use tiler_core::world_report::{WorldCommand, validate_report};
-
-    use crate::ffi::{SlsDisplayRow, SlsSpaceType};
-    use crate::runtime_types::NativeContext;
-    use crate::topology::{PointsRect, TopologySnapshot};
-    use crate::world_builder::{ReportInput, build_report};
-
-    pub const OWNER: &str = "macos-phase-1";
-    pub const INCARNATION: &str = "adapter-1";
-    pub const GENERATION: &str = "gen-1";
-    const UUID: &str = "deadbeef-dead-4000-8000-deadbeefdead";
-
-    pub fn ctx(startup_current: u64) -> NativeContext {
-        let snapshot = TopologySnapshot {
-            displays: vec![crate::topology::DisplayGeometry {
-                cg_id: 1,
-                uuid: Some(UUID.to_owned()),
-                cg_bounds: Some(PointsRect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: 2240.0,
-                    h: 1260.0,
-                }),
-                visible: Some(PointsRect {
-                    x: 0.0,
-                    y: 25.0,
-                    w: 2240.0,
-                    h: 1235.0,
-                }),
-                scale: 2.0,
-            }],
-            rows: vec![SlsDisplayRow {
-                identifier: Some(UUID.to_owned()),
-                spaces: vec![1, 277],
-                current: Some(startup_current),
-            }],
-            separate_spaces: Some(true),
-            revision: 0,
-        };
-        let snapshot = TopologySnapshot {
-            revision: crate::topology::fingerprint_snapshot(
-                &snapshot.displays,
-                &snapshot.rows,
-                Some(true),
-            ),
-            ..snapshot
-        };
-        let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
-        assert!(skipped.is_empty(), "nothing skipped: {skipped:?}");
-        let row: Vec<u64> = ctx.domains.iter().map(|d| d.space).collect();
-        assert_eq!(row, vec![1, 277], "derive keeps SLS row order");
-        ctx
-    }
-
-    pub fn output() -> OutputId {
-        OutputId(crate::topology::output_key(1))
-    }
-
-    /// Drive one engine from a commandless first report (establishes the
-    /// retained ring under this startup current) and return the outcome of
-    /// one positional/explicit command report plus the retained transfers.
-    pub fn drive(
-        ctx: &NativeContext,
-        command: WorldCommand,
-    ) -> (WorldOutcome, Vec<tiler_core::world_report::TransferTarget>) {
-        use tiler_core::world_engine::WorldEngine;
-
-        let empty_members = BTreeMap::new();
-        let empty_memory = crate::runtime_core::LifetimeMemory::empty();
-        let empty_unreadable = BTreeMap::new();
-        let build =
-            |obs: u64, req: u64, req_id: &str, seq: Option<u64>, command: Option<WorldCommand>| {
-                let mut input = ReportInput::new(
-                    OWNER,
-                    INCARNATION,
-                    GENERATION,
-                    ctx,
-                    obs,
-                    req,
-                    req_id,
-                    &empty_members,
-                    &empty_memory,
-                    &[],
-                    &empty_unreadable,
-                    &[],
-                    "",
-                    false,
-                );
-                input.command_seq = seq;
-                input.command = command;
-                build_report(&mut input)
-            };
-        let mut engine = WorldEngine::new(GENERATION).expect("generation parses");
-        let first = build(1, 1, "req-1", None, None);
-        assert!(validate_report(&first));
-        assert!(matches!(
-            engine.handle_report(&first),
-            WorldOutcome::Accepted(_)
-        ));
-        let second = build(2, 2, "req-2", Some(2), Some(command));
-        assert!(
-            validate_report(&second),
-            "command report is well-formed wire input"
-        );
-        let outcome = engine.handle_report(&second);
-        let retained = engine.retained_transfers();
-        (outcome, retained)
-    }
-}
-
-/// Positional selects resolve native Desktop order under adoption: a
-/// runtime started on a non-first Space still selects by native ordinal.
-/// `SelectNumbered{index: 1}` on a 277-started runtime names native
-/// Desktop-1 (SID 1) — the adopted ring tracks native order, so positional
-/// resolution never self-targets the startup current. The admission still
-/// pins the native SID plus the live revision, and the drain refuses a
-/// moved ordinal instead of selecting the new occupant.
-#[test]
-fn positional_select_resolves_native_order_under_adoption() {
-    use tiler_core::world_report::WorldCommand;
-
-    use ordinal_parity_repro as repro;
-
-    let ctx = repro::ctx(277);
-    let output = repro::output();
-    let (outcome, retained) = repro::drive(
-        &ctx,
-        WorldCommand::SelectNumbered {
-            output: Some(output.clone()),
-            index: 1,
-        },
-    );
-    assert!(
-        matches!(outcome, tiler_core::world_engine::WorldOutcome::Accepted(_)),
-        "positional numbered select admits"
-    );
-    assert_eq!(retained.len(), 1, "one retained view");
-    assert_eq!(
-        retained[0].target_workspace, "ws-1",
-        "Desktop-1 through the adopted ring names the adopted logical for native SID 1, never the 277-started current"
-    );
-}
-
-/// Native Desktop-N resolves positionally core-side under adoption: a
-/// runtime started on a non-first Space still selects by native ordinal. A
-/// startup on 277 selects Desktop-1 (positional index 1 over the adopted
-/// native-order ring), and a startup on 1 keeps the proven Desktop-2 path.
-/// Same-Space and unknown targets keep their honest refusals, and the
-/// admission pins the native SID plus the live revision so the drain
-/// proves the pinned ordinal instead of interpreting it against a new
-/// generation.
-#[test]
-fn explicit_select_resolves_native_ordinal_once_at_admission() {
-    use tiler_core::world_engine::WorldOutcome;
-    use tiler_core::world_report::{TransferKind, WorldCommand};
-
-    use crate::workspace_send::context_target_sid;
-    use crate::world_command_map::select_command;
-    use ordinal_parity_repro as repro;
-
-    let select = |index: u8| Action::WorkspaceSelect { index };
-    let output = repro::output();
-
-    // Startup on 277: admission pins the native Desktop-1 SID, and the
-    // production command carries the positional index — the core resolves
-    // it against the adopted native-order ring in the same report.
-    let ctx = repro::ctx(277);
-    assert!(
-        ctx.domains.iter().any(|d| d.space == 277 && d.current),
-        "277 is the actuated current"
-    );
-    let sid = context_target_sid(&ctx, &output, 1).expect("Desktop-1 binds");
-    assert_eq!(sid, 1, "Desktop-1 is native SID 1");
-    let command = select_command(&select(1), output.clone()).expect("select route");
-    assert_eq!(
-        command,
-        WorldCommand::SelectNumbered {
-            output: Some(output.clone()),
-            index: 1,
-        },
-        "select-1 carries a positional index, got {command:?}"
-    );
-    let (outcome, retained) = repro::drive(&ctx, command);
-    assert!(
-        matches!(outcome, WorldOutcome::Accepted(_)),
-        "Desktop-1 from a 277-started runtime admits"
-    );
-    assert_eq!(retained.len(), 1, "one retained view");
-    assert_eq!(retained[0].kind, TransferKind::View);
-    assert_eq!(retained[0].target_output, output);
-    assert_eq!(retained[0].target_workspace, "ws-1");
-    assert_eq!(
-        retained[0].operation_id, "op-2",
-        "stable operation identity unchanged"
-    );
-
-    // Admission-bound tap claim pins the SID plus the live revision (the
-    // shape `handle_select_action` stores): the drain proves it against the
-    // fresh row instead of interpreting the ordinal against a new
-    // generation.
-    let mut claim = ClaimedSelect::tap(select(1));
-    claim.expected_sid = Some(sid);
-    claim.topology_revision = Some(ctx.revision);
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 277,
-        },
-        revision: Some(ctx.revision),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = drain_claimed_select(&mut state, &mut fake, claim.clone(), &open_gates())
-        .expect("fresh binding dispatches the pinned SID");
-    assert!(effect.changed);
-    assert_eq!(fake.selects, vec![1], "native effect names SID 1");
-    // A reorder between admission and drain refuses instead of selecting
-    // the new occupant of the ordinal.
-    let mut moved = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![277, 1],
-            current: 277,
-        },
-        revision: Some(ctx.revision),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let err = drain_claimed_select(&mut state, &mut moved, claim, &open_gates())
-        .expect_err("reordered binding refuses");
-    assert!(err.contains("moved"), "{err}");
-    assert!(moved.selects.is_empty(), "never dispatched");
-
-    // Startup-on-1 parity: Desktop-2 from a 1-started runtime still admits.
-    let ctx = repro::ctx(1);
-    let sid = context_target_sid(&ctx, &output, 2).expect("Desktop-2 binds");
-    assert_eq!(sid, 277);
-    let command = select_command(&select(2), output.clone()).expect("select route");
-    let (outcome, retained) = repro::drive(&ctx, command);
-    assert!(
-        matches!(outcome, WorldOutcome::Accepted(_)),
-        "Desktop-2 from a 1-started runtime admits"
-    );
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained[0].target_workspace, "ws-2");
-
-    // Bounds/missing targets refuse narrowly at admission (never guessed).
-    assert_eq!(context_target_sid(&ctx, &output, 0), None);
-    assert_eq!(context_target_sid(&ctx, &output, 10), None);
-    assert_eq!(
-        select_command(&select(0), output.clone()),
-        Some(WorldCommand::SelectTrailing {
-            output: Some(output.clone())
-        }),
-        "trailing select-0 armed through the capability gate"
-    );
-    assert_eq!(
-        crate::world_command_map::select_command_with_capability(&select(0), output.clone(), false),
+        "op-prev",
+        "macos-display-1",
+        "ws-prev",
+        Some("space-20"),
         None,
-        "capability-disabled trailing select-0 has no route"
+        Some(3),
     );
-
-    // Unknown native targets keep their honest core refusal.
-    let (outcome, retained) = repro::drive(
-        &ctx,
-        WorldCommand::SelectWorkspace {
-            output: output.clone(),
-            workspace: "space-999".to_owned(),
-        },
-    );
-    assert!(
-        matches!(
-            outcome,
-            WorldOutcome::Rejected {
-                kind: "view-target-unknown",
-                ..
-            }
-        ),
-        "unknown target refuses, got {outcome:?}"
-    );
-    assert!(retained.is_empty(), "refused select retains nothing");
-
-    // Relative/previous semantics are untouched (binding-free core paths).
-    let relative = select_command(&Action::WorkspaceRelative { prev: true }, output.clone())
-        .expect("relative route");
-    assert_eq!(
-        relative,
-        WorldCommand::SelectRelative {
-            output: Some(output.clone()),
-            delta: -1
-        }
-    );
-    let previous =
-        select_command(&Action::WorkspacePrevious, output.clone()).expect("previous route");
-    assert_eq!(
-        previous,
-        WorldCommand::SelectPrevious {
-            output: Some(output)
-        }
-    );
-}
-
-#[test]
-fn trailing_append_captures_exact_proof_once_and_reuse_proves_nothing() {
-    // Occupied trailing appends: the effect and the single proof take
-    // agree on the exact rows, and the take clears the slot.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(false),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = state
-        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-        .expect("occupied trailing appends and selects");
-    assert_eq!(effect.created, Some(21));
-    let proof = state.take_trailing_proof().expect("proof captured");
-    assert_eq!(proof.created, effect.created.unwrap());
-    assert_eq!(proof.display_id, "display-a");
-    assert_eq!(proof.before, vec![1, 277]);
-    assert_eq!(proof.after, vec![1, 277, proof.created]);
-    assert!(
-        state.take_trailing_proof().is_none(),
-        "taking clears the slot"
-    );
-    // Proven-empty reuse: no append, no proof, no lifecycle adoption.
-    let mut fake = Fake {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![1, 277],
-            current: 1,
-        },
-        empty: Ok(true),
-        ..Fake::default()
-    };
-    let mut state = SelectionState::default();
-    let effect = state
-        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
-        .expect("empty trailing reuses");
-    assert_eq!(effect.created, None);
-    assert!(
-        state.take_trailing_proof().is_none(),
-        "reuse proves nothing"
-    );
+    let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect("previous plan drains");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert_eq!((success.effect.from, success.effect.target), (3, 20));
+    assert_eq!(success.effect.baseline, Some(3));
+    assert!(success.effect.changed);
+    assert_eq!(fake.selects, vec![20]);
 }

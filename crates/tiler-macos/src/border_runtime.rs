@@ -441,6 +441,222 @@ pub fn decide_border(input: &BorderTickInput) -> Result<BorderShowParams, &'stat
     })
 }
 
+/// Reply-driven tick input: the same native joins as [`BorderTickInput`],
+/// the last applied reply presentation, plus the fresh native frame and
+/// display geometry the last-moment safety vetoes read. Core shapes decide
+/// bounds; native legs veto stale/foreign/locked/excluded/zoomed frames.
+/// Eligibility normalization stays partial: the ingress cannot yet name
+/// maximized/cloaked/shell/hidden truthfully, so these fresh-read vetoes
+/// fail closed instead of painting over them.
+#[derive(Debug, Clone)]
+pub struct BorderReplyTick<'a> {
+    /// Master switch (startup config).
+    pub enabled: bool,
+    /// Configured ring style.
+    pub style: ActiveBorderStyle,
+    /// Live system accent (`None` = configured fallback wins).
+    pub accent: Option<SystemAccent>,
+    /// Session unlocked verdict (false hides).
+    pub session_unlocked: bool,
+    /// Workspace frontmost PID (`None` = unreadable, hides).
+    pub frontmost_pid: Option<u32>,
+    /// Workspace frontmost bundle (product scope input).
+    pub frontmost_bundle: Option<String>,
+    /// Product scope gate on the frontmost bundle. False never decorates.
+    pub scope_allowed: bool,
+    /// Publisher record for the frontmost PID (`None` = unknown, hides).
+    pub record: Option<BorderAppRecord>,
+    /// Current user Space IDs across displays (empty denies).
+    pub context_currents: Vec<u64>,
+    /// Live topology revision (record drift hides).
+    pub context_revision: u64,
+    /// Engine-placement truth for the focused window (diagnostic plan join;
+    /// unplaced floats read zoomed, never an adapter policy).
+    pub engine_placed: bool,
+    /// Fresh focused frame in CG top-left points for the zoom and
+    /// full-display vetoes.
+    pub native_frame_cg: VisualRect,
+    /// Current visible work areas in CG top-left points (zoom veto).
+    pub visibles: Vec<VisualRect>,
+    /// Current full display bounds in CG top-left points (borderless
+    /// full-display game fence, never work areas).
+    pub full_displays: Vec<VisualRect>,
+    /// AppKit flip height in points (`None` = conversion refuses, hides).
+    pub primary_h: Option<f64>,
+    /// Millisecond clock for record freshness.
+    pub now_ms: u64,
+    /// Last applied reply presentation (shapes plus tick-time token).
+    pub presentation: &'a tiler_core::world_presentation::WorldPresentation,
+}
+
+/// Map one core border hide reason to the stable tick token. Core-only
+/// reasons the legacy vocabulary never named (cloaked, hidden-workspace,
+/// shell) report as `excluded`; an eligible-but-uncomputable shape (no
+/// reason) reports `bad-geometry`, the same token as a failed flip.
+fn reply_hide_token(reason: Option<tiler_core::visual::BorderHideReason>) -> &'static str {
+    use tiler_core::visual::BorderHideReason;
+    match reason {
+        Some(BorderHideReason::Disabled) => "disabled",
+        Some(BorderHideReason::NoTarget) => "no-target",
+        Some(BorderHideReason::Minimized) => "minimized",
+        Some(BorderHideReason::Maximized) => "maximized",
+        Some(BorderHideReason::Fullscreen) => "fullscreen",
+        Some(BorderHideReason::Cloaked)
+        | Some(BorderHideReason::HiddenWorkspace)
+        | Some(BorderHideReason::Shell) => "excluded",
+        Some(BorderHideReason::Suspended) => "suspended",
+        None => "bad-geometry",
+    }
+}
+
+/// Pure per-tick decision over the reply presentation: the core shape
+/// decides bounds; freshness/lifetime/session joins plus fresh native
+/// safety vetoes decide visibility. Tokens reuse the [`decide_border`]
+/// vocabulary plus `focus-changed` (live focus no longer names the reply
+/// token: the shape is stale) and `suspended` (game lane). The native
+/// vetoes (classifier exclusion, fresh minimized/fullscreen, the
+/// whole-display/work-area zoom approximation, the borderless full-display
+/// fence) stay because the ingress cannot name those states truthfully
+/// yet; they fail closed and never redraw the core shape.
+pub fn decide_border_reply(input: &BorderReplyTick<'_>) -> Result<BorderShowParams, &'static str> {
+    if !input.enabled {
+        return Err("disabled");
+    }
+    if !input.session_unlocked {
+        return Err("locked");
+    }
+    let frontmost = input
+        .frontmost_pid
+        .filter(|pid| *pid > 1)
+        .ok_or("no-frontmost")?;
+    if !input.scope_allowed {
+        return Err("out-of-scope");
+    }
+    let record = input.record.as_ref().ok_or("facts-unknown")?;
+    if record.pid != frontmost {
+        return Err("facts-stale");
+    }
+    if record.bundle.is_none() || record.bundle != input.frontmost_bundle {
+        return Err("facts-stale");
+    }
+    if record.revision != input.context_revision {
+        return Err("revision-stale");
+    }
+    if !is_fresh_at(
+        record.updated_ms,
+        input.now_ms,
+        FACTS_TTL.as_millis() as u64,
+    ) {
+        return Err("facts-stale");
+    }
+    let wid = record.focused_wid.filter(|w| *w != 0).ok_or("no-focus")?;
+    if record.selected != Some((frontmost, Some(wid))) {
+        return Err("selected-disagreement");
+    }
+    let window = record.window.as_ref().ok_or("facts-unknown")?;
+    if window.wid != wid {
+        return Err("facts-stale");
+    }
+    // Current-Space leg of the render fence (fresh membership, exact
+    // single-home on a live current user Space).
+    let on_active_space =
+        window.spaces.len() == 1 && input.context_currents.contains(&window.spaces[0]);
+    if !on_active_space {
+        return Err("not-on-current-space");
+    }
+    let primary_h = input
+        .primary_h
+        .filter(|h| h.is_finite() && *h > 0.0)
+        .ok_or("bad-geometry")?;
+    // Last-moment focus veto: the live focused identity must still name
+    // the reply's tick-time token, or the shape is stale.
+    if input.presentation.foreground.is_empty() {
+        return Err("no-target");
+    }
+    let live_token = format!("{frontmost}_{wid}");
+    if input.presentation.foreground != live_token {
+        return Err("focus-changed");
+    }
+    // Fresh native safety vetoes (classifier exclusions, fresh
+    // minimized/fullscreen, zoom approximation, full-display fence).
+    // Partial-normalization guard: the ingress cannot name these states
+    // truthfully yet, so fresh reads fail closed instead of painting.
+    // Never redraws the core shape: only hide tokens leave here.
+    let frame_appkit = VisualRect {
+        x: input.native_frame_cg.x,
+        y: primary_h - (input.native_frame_cg.y + input.native_frame_cg.h),
+        w: input.native_frame_cg.w,
+        h: input.native_frame_cg.h,
+    };
+    let (zoom_h, zoom_v) = zoom_axes(input.native_frame_cg, &input.visibles, input.engine_placed);
+    let full_display = covers_full_display(input.native_frame_cg, &input.full_displays);
+    let (maximized_h, maximized_v) = (zoom_h || full_display, zoom_v || full_display);
+    let observation = BorderObservation {
+        frame: Some(frame_appkit),
+        ax: window.ax.clone(),
+        cg: window.cg,
+        app: window.app,
+        maximized_h,
+        maximized_v,
+        focused: true,
+        deleted: false,
+    };
+    let target = map_observation_to_target(&observation).ok_or("no-target")?;
+    // Fresh-flag precedence mirrors the legacy decision (minimized, then
+    // fullscreen, then maximized, then excluded): a minimized transient is
+    // still minimized, never mislabeled.
+    if target.minimized {
+        return Err("minimized");
+    }
+    if target.fullscreen {
+        return Err("fullscreen");
+    }
+    if maximized_h || maximized_v {
+        return Err("maximized");
+    }
+    if target.excluded {
+        return Err("excluded");
+    }
+    let border = &input.presentation.border;
+    if !border.visible {
+        return Err(reply_hide_token(border.reason));
+    }
+    let outer = border.outer.ok_or("bad-geometry")?;
+    if outer.w <= 0 || outer.h <= 0 {
+        return Err("bad-geometry");
+    }
+    // Core adapter units are logical points in CG top-left orientation;
+    // the carrier takes AppKit bottom-left points (global flip around the
+    // primary height; x/width pass through untouched).
+    let flipped = VisualRect {
+        x: outer.x as f64,
+        y: primary_h - (outer.y as f64 + outer.h as f64),
+        w: outer.w as f64,
+        h: outer.h as f64,
+    };
+    for v in [flipped.x, flipped.y, flipped.w, flipped.h] {
+        if !v.is_finite() {
+            return Err("bad-geometry");
+        }
+    }
+    if flipped.w <= 0.0 || flipped.h <= 0.0 {
+        return Err("bad-geometry");
+    }
+    // The core outer shape is the carrier frame: no adapter geometry is
+    // recomputed here, only the validated flip above. Single show
+    // authority: the core verdict (target visibility), the Space leg
+    // above, and the unlocked session must ALL hold.
+    if !render_fence(true, on_active_space, input.session_unlocked) {
+        return Err("not-on-current-space");
+    }
+    Ok(BorderShowParams {
+        target_wid: wid,
+        outer: flipped,
+        style: input.style,
+        color: effective_color(&input.style, input.accent),
+    })
+}
+
 /// One carrier effect per tick: at most one panel call, only on change.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BorderEffect {
@@ -503,7 +719,37 @@ impl BorderController {
     /// observed→application lag; denials record their token for the hide
     /// transition log.
     pub fn tick(&mut self, input: &BorderTickInput) -> BorderEffect {
-        let params = match decide_border(input) {
+        let lag_ms = input
+            .record
+            .as_ref()
+            .map(|record| input.now_ms.saturating_sub(record.updated_ms))
+            .unwrap_or(0);
+        self.settle(decide_border(input), lag_ms)
+    }
+
+    /// One reply-driven tick: the core presentation decides visibility and
+    /// bounds; the native legs in [`decide_border_reply`] veto stale,
+    /// foreign, and locked frames. Shares the change-only settling with
+    /// [`Self::tick`]: identical ticks stay silent, lag samples only on
+    /// pushed shows/updates.
+    pub fn tick_reply(&mut self, input: &BorderReplyTick<'_>) -> BorderEffect {
+        let lag_ms = input
+            .record
+            .as_ref()
+            .map(|record| input.now_ms.saturating_sub(record.updated_ms))
+            .unwrap_or(0);
+        self.settle(decide_border_reply(input), lag_ms)
+    }
+
+    /// Settle one decision against the last pushed state: show, update, or
+    /// hide exactly once, sampling `lag_ms` on pushed shows/updates only.
+    /// Silent steady-state ticks never resample.
+    fn settle(
+        &mut self,
+        decision: Result<BorderShowParams, &'static str>,
+        lag_ms: u64,
+    ) -> BorderEffect {
+        let params = match decision {
             Ok(params) => params,
             Err(reason) => {
                 self.last_hide_reason = Some(reason);
@@ -519,13 +765,7 @@ impl BorderController {
         // Observed-frame→tick lag on the shared clock (publisher stamped
         // `updated_ms` when the frame was read; this tick applies it).
         // Saturates at 0 when clocks skew backwards; staleness itself is a
-        // separate denial leg above. Sampled on pushed shows/updates only
-        // (silent steady-state ticks never resample).
-        let lag_ms = input
-            .record
-            .as_ref()
-            .map(|record| input.now_ms.saturating_sub(record.updated_ms))
-            .unwrap_or(0);
+        // separate denial leg above.
         let sample = |controller: &mut Self| {
             controller.last_apply_lag_ms = lag_ms;
             controller.apply_lag_max_ms = controller.apply_lag_max_ms.max(lag_ms);
@@ -1305,5 +1545,389 @@ mod tests {
             scale: 1.0,
         }];
         assert_eq!(snapshot_primary_height(&flat), None);
+    }
+
+    use tiler_core::visual::BorderHideReason as CoreHideReason;
+    use tiler_core::visual::BorderPresentation as CoreBorder;
+    use tiler_core::world_presentation::WorldPresentation;
+
+    fn core_rect(x: i32, y: i32, w: i32, h: i32) -> tiler_core::geometry::Rect {
+        tiler_core::geometry::Rect { x, y, w, h }
+    }
+
+    fn shown_presentation(token: &str, outer: tiler_core::geometry::Rect) -> WorldPresentation {
+        WorldPresentation {
+            foreground: token.to_owned(),
+            border: CoreBorder {
+                visible: true,
+                reason: None,
+                inner: Some(core_rect(100, 500, 400, 300)),
+                outer: Some(outer),
+            },
+            ..WorldPresentation::default()
+        }
+    }
+
+    fn hidden_presentation(token: &str, reason: Option<CoreHideReason>) -> WorldPresentation {
+        WorldPresentation {
+            foreground: token.to_owned(),
+            border: CoreBorder {
+                visible: false,
+                reason,
+                inner: None,
+                outer: None,
+            },
+            ..WorldPresentation::default()
+        }
+    }
+
+    fn reply_tick<'a>(now_ms: u64, presentation: &'a WorldPresentation) -> BorderReplyTick<'a> {
+        BorderReplyTick {
+            enabled: true,
+            style: ActiveBorderStyle::default(),
+            accent: None,
+            session_unlocked: true,
+            frontmost_pid: Some(4242),
+            frontmost_bundle: Some("com.apple.TextEdit".to_owned()),
+            scope_allowed: true,
+            record: Some(record(4242, 7, now_ms)),
+            context_currents: vec![11],
+            context_revision: 9,
+            engine_placed: true,
+            native_frame_cg: VisualRect {
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 300.0,
+            },
+            visibles: vec![VisualRect {
+                x: 0.0,
+                y: 25.0,
+                w: 1440.0,
+                h: 875.0,
+            }],
+            full_displays: vec![VisualRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1440.0,
+                h: 900.0,
+            }],
+            primary_h: Some(900.0),
+            now_ms,
+            presentation,
+        }
+    }
+
+    #[test]
+    fn reply_visible_shows_with_flipped_outer() {
+        // Core outer (100,100,400x300) in CG top-left points flips to
+        // AppKit (100,500,400x300) on a 900pt primary. Token "4242_7"
+        // matches the live focused identity.
+        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        let outcome = decide_border_reply(&reply_tick(10_000, &presentation)).expect("shows");
+        assert_eq!(outcome.target_wid, 7);
+        assert_eq!(
+            outcome.outer,
+            VisualRect {
+                x: 100.0,
+                y: 500.0,
+                w: 400.0,
+                h: 300.0,
+            }
+        );
+        assert_eq!(outcome.color, crate::active_border::DEFAULT_COLOR_RGB);
+    }
+
+    #[test]
+    fn reply_denial_matrix() {
+        let visible = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        assert!(decide_border_reply(&reply_tick(10_000, &visible)).is_ok());
+        type Denial = (&'static str, Box<dyn Fn(&mut BorderReplyTick<'_>)>);
+        let cases: Vec<Denial> = vec![
+            ("disabled", Box::new(|i| i.enabled = false)),
+            ("locked", Box::new(|i| i.session_unlocked = false)),
+            ("no-frontmost", Box::new(|i| i.frontmost_pid = None)),
+            ("no-frontmost", Box::new(|i| i.frontmost_pid = Some(1))),
+            ("out-of-scope", Box::new(|i| i.scope_allowed = false)),
+            ("facts-unknown", Box::new(|i| i.record = None)),
+            (
+                "facts-stale",
+                Box::new(|i| i.record.as_mut().unwrap().pid = 9999),
+            ),
+            (
+                "facts-stale",
+                Box::new(|i| i.record.as_mut().unwrap().bundle = None),
+            ),
+            (
+                "revision-stale",
+                Box::new(|i| i.record.as_mut().unwrap().revision = 10),
+            ),
+            (
+                "facts-stale",
+                Box::new(|i| i.record.as_mut().unwrap().updated_ms = 0),
+            ),
+            (
+                "no-focus",
+                Box::new(|i| i.record.as_mut().unwrap().focused_wid = None),
+            ),
+            (
+                "selected-disagreement",
+                Box::new(|i| i.record.as_mut().unwrap().selected = Some((4242, Some(9)))),
+            ),
+            (
+                "not-on-current-space",
+                Box::new(|i| i.record.as_mut().unwrap().window.as_mut().unwrap().spaces = vec![12]),
+            ),
+            (
+                "not-on-current-space",
+                Box::new(|i| i.context_currents = vec![]),
+            ),
+            ("bad-geometry", Box::new(|i| i.primary_h = None)),
+        ];
+        for (want, mutate) in cases {
+            let presented = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+            let mut probe = reply_tick(10_000, &presented);
+            mutate(&mut probe);
+            assert_eq!(decide_border_reply(&probe).unwrap_err(), want, "token");
+        }
+    }
+
+    #[test]
+    fn reply_stale_or_unknown_focus_hides() {
+        // Live focus moved on: the shape names the old token.
+        let stale = shown_presentation("4242_9", core_rect(100, 100, 400, 300));
+        assert_eq!(
+            decide_border_reply(&reply_tick(10_000, &stale)).unwrap_err(),
+            "focus-changed"
+        );
+        // Empty foreground focuses nothing, never a guess.
+        let empty = shown_presentation("", core_rect(100, 100, 400, 300));
+        assert_eq!(
+            decide_border_reply(&reply_tick(10_000, &empty)).unwrap_err(),
+            "no-target"
+        );
+        // A changed wid under the same PID is stale too.
+        let changed = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        let mut probe = reply_tick(10_000, &changed);
+        probe.record.as_mut().unwrap().focused_wid = Some(9);
+        probe.record.as_mut().unwrap().selected = Some((4242, Some(9)));
+        probe.record.as_mut().unwrap().window.as_mut().unwrap().wid = 9;
+        assert_eq!(decide_border_reply(&probe).unwrap_err(), "focus-changed");
+    }
+
+    #[test]
+    fn reply_core_reasons_pass_through() {
+        for (reason, want) in [
+            (Some(CoreHideReason::Disabled), "disabled"),
+            (Some(CoreHideReason::NoTarget), "no-target"),
+            (Some(CoreHideReason::Minimized), "minimized"),
+            (Some(CoreHideReason::Maximized), "maximized"),
+            (Some(CoreHideReason::Fullscreen), "fullscreen"),
+            (Some(CoreHideReason::Cloaked), "excluded"),
+            (Some(CoreHideReason::HiddenWorkspace), "excluded"),
+            (Some(CoreHideReason::Shell), "excluded"),
+            (Some(CoreHideReason::Suspended), "suspended"),
+            (None, "bad-geometry"),
+        ] {
+            let presentation = hidden_presentation("4242_7", reason);
+            assert_eq!(
+                decide_border_reply(&reply_tick(10_000, &presentation)).unwrap_err(),
+                want,
+                "reason {reason:?}"
+            );
+        }
+        // Core suspended (game lane) hides even with live focus.
+        let mut controller = BorderController::new();
+        let shown = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        assert!(matches!(
+            controller.tick_reply(&reply_tick(10_000, &shown)),
+            BorderEffect::Show { .. }
+        ));
+        let suspended = hidden_presentation("4242_7", Some(CoreHideReason::Suspended));
+        assert_eq!(
+            controller.tick_reply(&reply_tick(10_001, &suspended)),
+            BorderEffect::Hide
+        );
+        assert_eq!(controller.hide_reason(), Some("suspended"));
+    }
+
+    #[test]
+    fn reply_degenerate_outer_hides() {
+        for outer in [
+            core_rect(100, 100, 0, 300),
+            core_rect(100, 100, -5, 300),
+            core_rect(100, 100, 400, 0),
+        ] {
+            let presentation = shown_presentation("4242_7", outer);
+            assert_eq!(
+                decide_border_reply(&reply_tick(10_000, &presentation)).unwrap_err(),
+                "bad-geometry",
+                "outer {outer:?}"
+            );
+        }
+        // Visible flag with no shape fails closed the same way.
+        let mut presentation = hidden_presentation("4242_7", None);
+        presentation.border.visible = true;
+        assert_eq!(
+            decide_border_reply(&reply_tick(10_000, &presentation)).unwrap_err(),
+            "bad-geometry"
+        );
+    }
+
+    #[test]
+    fn reply_zoomed_float_hides_despite_visible_core_shape() {
+        // Partial normalization: the ingress cannot name maximized
+        // truthfully, so the fresh whole-display/work-area zoom
+        // approximation vetoes even when the core shape says visible.
+        // A ToggleFloat-floated window (unplaced) filling the work area
+        // hides; the same frame on an engine-placed tile still shows.
+        let presentation = shown_presentation("4242_7", core_rect(0, 25, 1440, 875));
+        let mut floated = reply_tick(10_000, &presentation);
+        floated.engine_placed = false;
+        floated.native_frame_cg = VisualRect {
+            x: 0.0,
+            y: 25.0,
+            w: 1440.0,
+            h: 875.0,
+        };
+        assert_eq!(decide_border_reply(&floated).unwrap_err(), "maximized");
+        let mut placed = reply_tick(10_000, &presentation);
+        placed.native_frame_cg = VisualRect {
+            x: 0.0,
+            y: 25.0,
+            w: 1440.0,
+            h: 875.0,
+        };
+        assert!(decide_border_reply(&placed).is_ok());
+    }
+
+    #[test]
+    fn reply_full_display_fence_hides_regardless_of_placement() {
+        // Borderless full-display coverage is never a legitimate tile
+        // (tiling truth only ever fills work areas), so the fence hides
+        // even engine-placed provenance with the closed `maximized` token.
+        let presentation = shown_presentation("4242_7", core_rect(0, 0, 1440, 900));
+        for engine_placed in [false, true] {
+            let mut probe = reply_tick(10_000, &presentation);
+            probe.engine_placed = engine_placed;
+            probe.native_frame_cg = VisualRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1440.0,
+                h: 900.0,
+            };
+            assert_eq!(
+                decide_border_reply(&probe).unwrap_err(),
+                "maximized",
+                "placed={engine_placed}"
+            );
+        }
+    }
+
+    #[test]
+    fn reply_transient_exclusion_hides_despite_visible_core_shape() {
+        // The existing classifier entry point vetoes transients the
+        // ingress cannot name: a modal dialog maps excluded and hides.
+        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        let mut probe = reply_tick(10_000, &presentation);
+        probe
+            .record
+            .as_mut()
+            .unwrap()
+            .window
+            .as_mut()
+            .unwrap()
+            .ax
+            .modal = true;
+        assert_eq!(decide_border_reply(&probe).unwrap_err(), "excluded");
+    }
+
+    #[test]
+    fn reply_fresh_minimized_and_fullscreen_veto_first() {
+        // Fresh minimized/fullscreen reads veto even when the fabricated
+        // core shape says visible (production ingress carries these
+        // truthfully, so the veto agrees with the core reason there).
+        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        let mut minimized = reply_tick(10_000, &presentation);
+        minimized
+            .record
+            .as_mut()
+            .unwrap()
+            .window
+            .as_mut()
+            .unwrap()
+            .ax
+            .minimized = true;
+        assert_eq!(decide_border_reply(&minimized).unwrap_err(), "minimized");
+        let mut fullscreen = reply_tick(10_000, &presentation);
+        fullscreen
+            .record
+            .as_mut()
+            .unwrap()
+            .window
+            .as_mut()
+            .unwrap()
+            .ax
+            .fullscreen = true;
+        assert_eq!(decide_border_reply(&fullscreen).unwrap_err(), "fullscreen");
+    }
+
+    #[test]
+    fn reply_accent_default_live_theme_and_override() {
+        use crate::active_border::SystemAccent;
+        let accent = SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        };
+        // Default style (theme on): no accent falls back, live accent wins.
+        let presentation = shown_presentation("4242_7", core_rect(100, 100, 400, 300));
+        assert_eq!(
+            decide_border_reply(&reply_tick(10_000, &presentation))
+                .expect("shows")
+                .color,
+            crate::active_border::DEFAULT_COLOR_RGB
+        );
+        let mut themed = reply_tick(10_000, &presentation);
+        themed.accent = Some(accent);
+        assert_eq!(
+            decide_border_reply(&themed).expect("shows").color,
+            (0xaa, 0xbb, 0xcc)
+        );
+        // Explicit override (theme off): the live accent never applies.
+        let mut explicit = reply_tick(10_000, &presentation);
+        explicit.style.use_theme = false;
+        explicit.style.color = (0x11, 0x22, 0x33);
+        explicit.accent = Some(accent);
+        assert_eq!(
+            decide_border_reply(&explicit).expect("shows").color,
+            (0x11, 0x22, 0x33)
+        );
+        // Live theme update restyles without refocus: same target, no
+        // reorder, new resolved color.
+        let mut controller = BorderController::new();
+        let first = controller.tick_reply(&reply_tick(10_000, &presentation));
+        assert!(matches!(
+            first,
+            BorderEffect::Show {
+                target_wid: 7,
+                reorder_above: true,
+                ..
+            }
+        ));
+        let mut restyled = reply_tick(10_001, &presentation);
+        restyled.accent = Some(accent);
+        match controller.tick_reply(&restyled) {
+            BorderEffect::Show {
+                target_wid,
+                reorder_above,
+                color,
+                ..
+            } => {
+                assert_eq!(target_wid, 7);
+                assert!(!reorder_above);
+                assert_eq!(color, (0xaa, 0xbb, 0xcc));
+            }
+            other => panic!("want restyle show, got {other:?}"),
+        }
     }
 }

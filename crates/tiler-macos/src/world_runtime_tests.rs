@@ -72,7 +72,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
     ] {
         assert!(is_armed_select(&action), "{action:?} is armed");
         assert!(
-            select_command(&action, output.clone()).is_some(),
+            select_command(&action, Some(output.clone())).is_some(),
             "{action:?} has a planner route"
         );
     }
@@ -92,7 +92,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} dispatches"
         );
         assert!(
-            select_command(&action, output.clone()).is_none(),
+            select_command(&action, Some(output.clone())).is_none(),
             "{action:?} never selects"
         );
         if index == 0 {
@@ -118,7 +118,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{stay:?} dispatches (armed, bindable unbound)"
         );
         assert!(
-            select_command(&stay, output.clone()).is_none(),
+            select_command(&stay, Some(output.clone())).is_none(),
             "{stay:?} never selects"
         );
         assert!(
@@ -135,7 +135,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
     assert!(
         select_command(
             &InputSemanticAction::WorkspaceSelect { index: 0 },
-            output.clone()
+            Some(output.clone())
         )
         .is_some(),
         "select-0 has the planner trailing route"
@@ -156,7 +156,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
     ] {
         assert!(workspace_unsupported_outcome(&action).is_some());
         assert!(
-            select_command(&action, output.clone()).is_none(),
+            select_command(&action, Some(output.clone())).is_none(),
             "{action:?} stays refused"
         );
         assert!(
@@ -593,8 +593,14 @@ fn raw_attempt_staging_drops_unknown_operations_without_evidence() {
         FocusRoute::Slps,
         Arc::new(ObservationClock::new()),
     );
-    session.stage_view_attempt("op-404", FrameSetter::Accepted, Some(11), Some(12));
-    session.stage_member_attempt("op-404", FrameSetter::Accepted, Some(12));
+    session.stage_view_attempt(
+        "op-404",
+        FrameSetter::Accepted,
+        Some(11),
+        Some(12),
+        Some(11),
+    );
+    session.stage_member_attempt("op-404", FrameSetter::Accepted, None, Some(12));
     let retained = RetainedCore::default();
     let report = build_dispatch_report(
         &mut session,
@@ -966,7 +972,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         WorldOutcome::Accepted(_) => {}
         other => panic!("switch-view must accept, got {other:?}"),
     }
-    session.stage_view_attempt("op-2", FrameSetter::Accepted, Some(11), Some(12));
+    session.stage_view_attempt("op-2", FrameSetter::Accepted, Some(11), Some(12), Some(11));
     // Window transfer via Send to the hidden logical workspace retains
     // operation `op-3`; its native post must also ride as absence.
     let owned_third = "req-3".to_owned();
@@ -998,10 +1004,16 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         WorldOutcome::Accepted(_) => {}
         other => panic!("send must accept, got {other:?}"),
     }
-    session.stage_member_attempt("op-3", FrameSetter::Accepted, Some(12));
+    session.stage_member_attempt("op-3", FrameSetter::Accepted, Some(11), Some(12));
     // Stage with unknown operation drops (existing fence, unchanged).
-    session.stage_view_attempt("op-404", FrameSetter::Accepted, Some(11), Some(12));
-    session.stage_member_attempt("op-404", FrameSetter::Accepted, Some(12));
+    session.stage_view_attempt(
+        "op-404",
+        FrameSetter::Accepted,
+        Some(11),
+        Some(12),
+        Some(11),
+    );
+    session.stage_member_attempt("op-404", FrameSetter::Accepted, None, Some(12));
     let retained = RetainedCore::default();
     let report = crate::world_runtime::build_dispatch_report(
         &mut session,

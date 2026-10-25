@@ -733,6 +733,12 @@ pub struct LiveManagedSendBackend<R: SendNativeReaders> {
     /// after the fast-path selector runs on this operation). Logging only;
     /// never a gate. Reset per operation in `snapshot`.
     route: &'static str,
+    /// Whether this operation's bridged dispatch reached the OS touch.
+    /// Set immediately before the native move call inside `bridged_move`
+    /// (after the pre-touch anchor fence) and reset per operation in
+    /// `snapshot`, so the caller classifies a dispatch error truthfully
+    /// without parsing error strings.
+    dispatched: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -915,6 +921,7 @@ impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
             phase_op: None,
             phase_revision: None,
             route: SEND_ROUTE_DRAG,
+            dispatched: false,
         }
     }
 
@@ -1030,6 +1037,7 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.phase_op = None;
         self.phase_revision = None;
         self.route = SEND_ROUTE_DRAG;
+        self.dispatched = false;
         // Topology boundary: the joined fresh row plus fingerprint that
         // every down-edge re-fences. `op=none` and route `unselected` - the
         // owner chooses bridged-first with drag fallback only later.
@@ -1304,11 +1312,18 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.settle_prev = None;
         self.route = SEND_ROUTE_BRIDGED;
         self.emit_phase("dispatch");
+        // The OS touch happens here: flag it before the call so a dispatch
+        // error classifies as native uncertainty, while anchor/subject
+        // failures above stay proven pre-dispatch refusals.
+        self.dispatched = true;
         self.readers
             .bridged_move_window(goal, wid)
             .map_err(|e| format!("bridged dispatch refused: {e}"))?;
         let _ = pid;
         Ok(())
+    }
+    fn bridged_dispatched(&self) -> bool {
+        self.dispatched
     }
     fn select_destination(&mut self, sid: u64) -> Result<(), String> {
         // yabai follow shape: exactly one destination front pin to the
@@ -1456,15 +1471,35 @@ impl<R: SendNativeReaders> crate::workspace_select::SelectionBackend
         self.readers.fresh_topology().ok().map(|topo| topo.revision)
     }
 
+    fn check_output(&mut self, output: &str) -> Result<(), String> {
+        if self.pinned_cgid == 0 {
+            return Err(
+                "trailing send refuses: pinned display has no CG display ID; output unprovable"
+                    .to_owned(),
+            );
+        }
+        let pinned = crate::topology::output_key(self.pinned_cgid);
+        if pinned != output {
+            return Err(format!(
+                "trailing send refuses: reply target output {output} is not the pinned display {pinned}; no actuation"
+            ));
+        }
+        Ok(())
+    }
+
     fn empty(&mut self, sid: u64) -> Result<bool, String> {
         crate::workspace_select::probe_trailing_emptiness(sid)
     }
 
-    fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String> {
-        if self.snapshot()? != *before {
-            return Err("pre-create topology drift".to_owned());
+    fn create(&mut self, before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        use crate::workspace_select::DispatchError;
+        if self
+            .snapshot()
+            .map_err(|e| DispatchError::refused(format!("pre-create row unreadable ({e})")))?
+            != *before
+        {
+            return Err(DispatchError::refused("pre-create topology drift"));
         }
-        let raw = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| e.to_string())?;
         let outcome = crate::mc_lifecycle::live::mc_add_space_pinned(
             self.display_index,
             self.pinned_cgid,
@@ -1472,21 +1507,21 @@ impl<R: SendNativeReaders> crate::workspace_select::SelectionBackend
             &mut self.budget,
             false,
         )
-        .map_err(|e| e.to_string())?;
-        let after = crate::mc_lifecycle::live::await_snapshot(&|s| {
-            crate::mc_probe::validate_create_effect(&raw, s, self.display_index).is_ok()
-        })
-        .map_err(|e| e.to_string())?;
-        crate::mc_probe::validate_create_effect(&raw, &after, self.display_index)
-            .map_err(|e| e.to_string())?;
+        .map_err(DispatchError::from_mc)?;
         if let Some(e) = outcome.close_error {
-            return Err(format!("created but MC close unproven: {e}"));
+            eprintln!("tiler-macos trailing create close shortfall accepted ({e})");
         }
         Ok(())
     }
 
-    fn select(&mut self, _before: &SelectionSnapshot, _sid: u64) -> Result<(), String> {
-        Err("owner trailing preparation never selects; refusing".to_owned())
+    fn select(
+        &mut self,
+        _before: &SelectionSnapshot,
+        _sid: u64,
+    ) -> Result<(), crate::workspace_select::DispatchError> {
+        Err(crate::workspace_select::DispatchError::refused(
+            "owner trailing preparation never selects; refusing",
+        ))
     }
 }
 

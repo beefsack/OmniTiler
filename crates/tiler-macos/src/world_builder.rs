@@ -70,6 +70,123 @@ use tiler_core::world_report::{
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, collect_window_facts, minimized_fact};
 use crate::runtime_types::{NativeContext, ObservedWindow, PHASE1_GAP, PHASE1_OUTER_GAP};
 
+/// Build the presentation ingress for one report from retained truth.
+///
+/// Tentative stage-4 mapping (offline, no core change):
+/// - Foreground token is the retained observed-focus id (`""` when none);
+///   the renderer revalidates it live against the reply token, so a stale
+///   token hides instead of painting.
+/// - The foreground frame is the live retained rect for that id (`None`
+///   when unreadable or minimized); minimized/fullscreen ride as truthful
+///   flags, maximized stays false (no native zoom inference adapter-side:
+///   the whole-display/work-area zoom approximation stays a render-side
+///   native veto, never an ingress verdict), cloaked/shell/hidden-workspace
+///   stay false (not yet observed: the render-side classifier veto fails
+///   closed instead). Eligibility normalization is partial; see the
+///   renderer.
+/// - Border enable plus gap/width/extension ride the startup-resolved
+///   style; underlay enable rides false (no production underlay loop yet).
+/// - Chord/move ride silent (no chord source; the drag gesture ingress
+///   rides separately).
+/// - `paused` rides false: no positively grounded native game signal
+///   exists (a focused fullscreen bit alone never proves a game). The
+///   render-side fullscreen fence stays as the last-moment veto.
+/// - Pager order rides empty (core falls back to retained then
+///   deterministic order); pager frames carry one live row per live
+///   member with a positively-sized rect (float/tile snapshots are not
+///   yet retained adapter-side).
+/// - Cursor rides unsampled (core falls back through focused output).
+pub(crate) fn build_presentation_ingress(
+    focused_global: &str,
+    members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+    unknown: &[(u32, ObservedWindow)],
+    minimized: &[MinimizedRecord],
+    focused_fullscreen: bool,
+    style: &crate::active_border::PresentationStylePx,
+) -> tiler_core::world_report::PresentationIngress {
+    use tiler_core::world_report::PresentationIngress;
+    let minimized_set: BTreeSet<&str> = minimized
+        .iter()
+        .map(|entry| entry.window.0.as_str())
+        .collect();
+    let foreground_minimized = !focused_global.is_empty() && minimized_set.contains(focused_global);
+    let mut foreground_frame = None;
+    if !focused_global.is_empty() && !foreground_minimized {
+        'search: for members_of_domain in members.values() {
+            for (pid, window) in members_of_domain {
+                if crate::runtime_types::window_id(*pid, window.wid) == focused_global {
+                    if window.w > 0 && window.h > 0 {
+                        foreground_frame = Some(tiler_core::geometry::Rect {
+                            x: window.x,
+                            y: window.y,
+                            w: window.w,
+                            h: window.h,
+                        });
+                    }
+                    break 'search;
+                }
+            }
+        }
+        if foreground_frame.is_none() {
+            for (pid, window) in unknown {
+                if crate::runtime_types::window_id(*pid, window.wid) == focused_global
+                    && window.w > 0
+                    && window.h > 0
+                {
+                    foreground_frame = Some(tiler_core::geometry::Rect {
+                        x: window.x,
+                        y: window.y,
+                        w: window.w,
+                        h: window.h,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    let mut pager_frames = Vec::new();
+    for members_of_domain in members.values() {
+        for (pid, window) in members_of_domain {
+            if window.w > 0 && window.h > 0 {
+                pager_frames.push(tiler_core::world_report::PresentationPagerFrame {
+                    window: tiler_core::directional::WindowId(crate::runtime_types::window_id(
+                        *pid, window.wid,
+                    )),
+                    live: Some(tiler_core::geometry::Rect {
+                        x: window.x,
+                        y: window.y,
+                        w: window.w,
+                        h: window.h,
+                    }),
+                    float_frame: None,
+                    tile_frame: None,
+                });
+            }
+        }
+    }
+    pager_frames.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+    PresentationIngress {
+        foreground: focused_global.to_owned(),
+        foreground_minimized,
+        foreground_maximized: false,
+        foreground_fullscreen: focused_fullscreen,
+        foreground_cloaked: false,
+        foreground_hidden_workspace: false,
+        foreground_shell: false,
+        foreground_frame,
+        border_enabled: style.border_enabled,
+        underlay_enabled: false,
+        border_gap_px: style.gap_px,
+        border_width_px: style.width_px,
+        underlay_extension_px: style.extension_px,
+        chord_held: false,
+        move_window: String::new(),
+        paused: false,
+        pager_order: Vec::new(),
+        pager_frames,
+    }
+}
+
 /// Complete input for one world report. The caller owns observation truth
 /// (Unit B wires retained homing/lifetime memory); the builder only shapes,
 /// normalizes, and de-overlaps.
@@ -155,6 +272,11 @@ pub(crate) struct ReportInput<'a> {
     /// Adapter monotonic clock in milliseconds (arbitrary process epoch).
     /// `0` means unreported (stage 1: no clock source claimed).
     pub monotonic_ms: u64,
+    /// Presentation ingress facts for the reply presentation shapes (see
+    /// [`build_presentation_ingress`]). Built by the dispatcher from
+    /// retained truth; silent (`disabled`) only when the caller has no
+    /// live focus facts.
+    pub presentation: tiler_core::world_report::PresentationIngress,
 }
 
 impl<'a> ReportInput<'a> {
@@ -214,6 +336,7 @@ impl<'a> ReportInput<'a> {
             gap: PHASE1_GAP,
             outer_gap: PHASE1_OUTER_GAP,
             monotonic_ms: 0,
+            presentation: tiler_core::world_report::PresentationIngress::disabled(),
         }
     }
 }
@@ -481,7 +604,7 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         view_attempts: input.view_attempts.to_vec(),
         clear_attempts: input.clear_attempts.to_vec(),
         creation_attempts: input.creation_attempts.to_vec(),
-        presentation: tiler_core::world_report::PresentationIngress::disabled(),
+        presentation: input.presentation.clone(),
     }
 }
 
@@ -2718,5 +2841,292 @@ mod tests {
             .find(|w| w.lifetime.0 == "1001_3")
             .expect("retained float");
         assert!(desired.floating, "intentional float survives converge");
+    }
+
+    fn ingress_members() -> BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> {
+        let mut members = BTreeMap::new();
+        members.insert(
+            key("macos-display-1", "space-11"),
+            vec![(1001, observed(1, 10, 10, 800, 600))],
+        );
+        members
+    }
+
+    fn style() -> crate::active_border::PresentationStylePx {
+        crate::active_border::PresentationStylePx::default()
+    }
+
+    fn styled(width: f64, gap: f64) -> crate::active_border::PresentationStylePx {
+        crate::active_border::presentation_style(
+            &crate::active_border::ActiveBorderStyle {
+                width,
+                gap,
+                ..crate::active_border::ActiveBorderStyle::default()
+            },
+            true,
+        )
+    }
+
+    #[test]
+    fn presentation_ingress_carries_live_focus_frame_and_pager_row() {
+        let members = ingress_members();
+        let ingress = build_presentation_ingress("1001_1", &members, &[], &[], false, &style());
+        assert_eq!(ingress.foreground, "1001_1");
+        assert_eq!(
+            ingress.foreground_frame,
+            Some(tiler_core::geometry::Rect {
+                x: 10,
+                y: 10,
+                w: 800,
+                h: 600,
+            })
+        );
+        assert!(!ingress.foreground_minimized && !ingress.foreground_fullscreen);
+        assert!(!ingress.foreground_maximized);
+        assert!(ingress.border_enabled);
+        assert!(
+            !ingress.underlay_enabled,
+            "underlay stays parked off: no production loop consumes it"
+        );
+        assert_eq!(
+            (
+                ingress.border_gap_px,
+                ingress.border_width_px,
+                ingress.underlay_extension_px
+            ),
+            (0, 3, 3),
+            "default style resolves verbatim"
+        );
+        assert!(!ingress.chord_held && ingress.move_window.is_empty());
+        assert!(!ingress.paused);
+        assert!(ingress.pager_order.is_empty());
+        assert_eq!(ingress.pager_frames.len(), 1);
+        assert_eq!(ingress.pager_frames[0].window.0, "1001_1");
+        assert!(ingress.pager_frames[0].live.is_some());
+    }
+
+    #[test]
+    fn presentation_ingress_unknown_focus_hides_frame() {
+        let members = ingress_members();
+        let ingress = build_presentation_ingress("", &members, &[], &[], false, &style());
+        assert!(ingress.foreground.is_empty());
+        assert!(ingress.foreground_frame.is_none());
+        let ingress = build_presentation_ingress("1001_9", &members, &[], &[], false, &style());
+        assert_eq!(ingress.foreground, "1001_9");
+        assert!(ingress.foreground_frame.is_none());
+        assert!(
+            ingress.pager_frames.len() == 1,
+            "pager still names live rows"
+        );
+    }
+
+    #[test]
+    fn presentation_ingress_minimized_focus_hides_frame_with_flag() {
+        let members = ingress_members();
+        let minimized = vec![MinimizedRecord {
+            window: tiler_core::directional::WindowId("1001_1".to_owned()),
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
+            sticky: false,
+        }];
+        let ingress =
+            build_presentation_ingress("1001_1", &members, &[], &minimized, false, &style());
+        assert!(ingress.foreground_minimized);
+        assert!(ingress.foreground_frame.is_none());
+    }
+
+    #[test]
+    fn presentation_ingress_focused_fullscreen_never_pauses_without_game_signal() {
+        // Truthful fullscreen flag, but no positively grounded game
+        // classification exists, so the game lane stays off. The
+        // render-side fullscreen fence is the safety veto instead.
+        let members = ingress_members();
+        let ingress = build_presentation_ingress("1001_1", &members, &[], &[], true, &style());
+        assert!(ingress.foreground_fullscreen);
+        assert!(!ingress.paused);
+    }
+
+    #[test]
+    fn presentation_ingress_nondefault_style_resolves_verbatim() {
+        // Non-default configuration (width 5, gap 2) rides the ingress
+        // integers so core shapes use the configured outset.
+        let members = ingress_members();
+        let ingress =
+            build_presentation_ingress("1001_1", &members, &[], &[], false, &styled(5.0, 2.0));
+        assert_eq!(
+            (
+                ingress.border_gap_px,
+                ingress.border_width_px,
+                ingress.underlay_extension_px
+            ),
+            (2, 5, 5)
+        );
+        assert!(ingress.border_enabled);
+    }
+
+    #[test]
+    fn nondefault_style_report_through_core_reply_matches_renderer() {
+        // End to end: configured width 5/gap 2 over a 100x80 frame at
+        // (10,20) publishes core outer (3,13,114,94) through a real engine
+        // reply, and the renderer shows exactly that flipped shape.
+        let report_members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = {
+            let mut map = BTreeMap::new();
+            map.insert(
+                key("macos-display-1", "space-11"),
+                vec![(1001, observed(1, 10, 20, 100, 80))],
+            );
+            map
+        };
+        let ctx = two_display_ctx();
+        let (closed, unreadable) = (Vec::new(), BTreeMap::new());
+        let memory = empty_memory();
+        let owned_id = "req-1".to_owned();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            1,
+            &owned_id,
+            &report_members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_1",
+            false,
+        );
+        input.presentation = build_presentation_ingress(
+            "1001_1",
+            &report_members,
+            &[],
+            &[],
+            false,
+            &styled(5.0, 2.0),
+        );
+        let report = build_report(&mut input);
+        assert!(validate_report(&report));
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&report, &mut engine);
+        let border = &reply.presentation.border;
+        assert!(border.visible, "eligible focus shows");
+        // Gap 2 expands the frame to inner (8,18,104,84); width 5 expands
+        // to outer (3,13,114,94): the configured outset, never the default.
+        assert_eq!(
+            border.outer,
+            Some(tiler_core::geometry::Rect {
+                x: 3,
+                y: 13,
+                w: 114,
+                h: 94
+            })
+        );
+        // Renderer equality over the real reply: matching fresh native
+        // joins show exactly the published outer flipped to AppKit points
+        // on a 900pt primary: (3,793,114,94).
+        let record = crate::border_runtime::BorderAppRecord {
+            pid: 1001,
+            bundle: Some("com.apple.TextEdit".to_owned()),
+            focused_wid: Some(1),
+            selected: Some((1001, Some(1))),
+            window: Some(crate::border_runtime::BorderWindowFacts {
+                wid: 1,
+                frame: crate::ffi::AxFrame {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 80.0,
+                },
+                ax: crate::classifier::AxFacts::standard(),
+                cg: crate::classifier::CgFacts::normal(),
+                app: crate::classifier::AppFacts::regular(),
+                spaces: vec![11],
+            }),
+            revision: 9,
+            updated_ms: 10_000,
+        };
+        let tick = crate::border_runtime::BorderReplyTick {
+            enabled: true,
+            style: crate::active_border::ActiveBorderStyle::default(),
+            accent: None,
+            session_unlocked: true,
+            frontmost_pid: Some(1001),
+            frontmost_bundle: Some("com.apple.TextEdit".to_owned()),
+            scope_allowed: true,
+            record: Some(record),
+            context_currents: vec![11],
+            context_revision: 9,
+            engine_placed: true,
+            native_frame_cg: tiler_core::visual::VisualRect {
+                x: 10.0,
+                y: 20.0,
+                w: 100.0,
+                h: 80.0,
+            },
+            visibles: vec![tiler_core::visual::VisualRect {
+                x: 0.0,
+                y: 25.0,
+                w: 1440.0,
+                h: 875.0,
+            }],
+            full_displays: vec![tiler_core::visual::VisualRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1440.0,
+                h: 900.0,
+            }],
+            primary_h: Some(900.0),
+            now_ms: 10_000,
+            presentation: &reply.presentation,
+        };
+        let shown = crate::border_runtime::decide_border_reply(&tick).expect("shows");
+        assert_eq!(
+            shown.outer,
+            tiler_core::visual::VisualRect {
+                x: 3.0,
+                y: 793.0,
+                w: 114.0,
+                h: 94.0,
+            }
+        );
+    }
+
+    #[test]
+    fn presentation_ingress_rides_the_report() {
+        let ctx = two_display_ctx();
+        let (members, closed, unreadable) = empty_maps();
+        let memory = empty_memory();
+        let mut members = members;
+        members.insert(
+            key("macos-display-1", "space-11"),
+            vec![(1001, observed(1, 10, 10, 800, 600))],
+        );
+        let owned_id = "req-1".to_owned();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            1,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_1",
+            false,
+        );
+        input.presentation =
+            build_presentation_ingress("1001_1", &members, &[], &[], false, &style());
+        let report = build_report(&mut input);
+        assert!(validate_report(&report));
+        assert_eq!(report.presentation.foreground, "1001_1");
+        assert!(report.presentation.foreground_frame.is_some());
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&report, &mut engine);
+        assert_eq!(reply.presentation.foreground, "1001_1");
     }
 }

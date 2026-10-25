@@ -234,7 +234,7 @@ fn send_command_maps_send_shapes_to_positional_numbered_sends() {
             }
         );
         // Sends never ride the select route.
-        assert_eq!(select_command(&send(index), output.clone()), None);
+        assert_eq!(select_command(&send(index), Some(output.clone())), None);
     }
     // Unsupported actions have no send route. Numbered stays 1..9 map
     // with follow:false preserved (armed engine-side, bindable unbound);
@@ -367,10 +367,19 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
         fn revision(&mut self) -> Option<u64> {
             self.revision
         }
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            if output == "macos-display-1" {
+                Ok(())
+            } else {
+                Err(format!(
+                    "product select refuses: reply target output {output} is not the live display macos-display-1; no actuation"
+                ))
+            }
+        }
         fn empty(&mut self, _: u64) -> Result<bool, String> {
             self.empty.clone()
         }
-        fn create(&mut self, _: &SelectionSnapshot) -> Result<(), String> {
+        fn create(&mut self, _: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
             self.creates += 1;
             if !self.no_effect {
                 let next = self.row.spaces.iter().max().copied().unwrap_or(0) + 1;
@@ -381,7 +390,7 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
             }
             Ok(())
         }
-        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), String> {
+        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), crate::workspace_select::DispatchError> {
             unreachable!("send preparation never selects");
         }
     }
@@ -2024,6 +2033,14 @@ fn stay_claim_pins_follow_intent_and_refuses_unpinnable_focus() {
             send_source_focus: source_focus.map(str::to_owned),
             send_source_focus_empty: empty,
             operation_id: Some("op-3".to_owned()),
+            select_target_output: None,
+            select_target_workspace: None,
+            select_native_binding: None,
+            select_creation_operation: None,
+            select_creation_logical: None,
+            select_creation_output: None,
+            select_baseline_sid: None,
+            send_follow_view_operation: None,
         }
     }
     let follow =

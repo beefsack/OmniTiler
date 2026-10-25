@@ -1414,17 +1414,26 @@ mod tests {
         fn snapshot(&mut self) -> Result<crate::workspace_select::SelectionSnapshot, String> {
             Ok(self.row.clone())
         }
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            if output == "macos-display-1" {
+                Ok(())
+            } else {
+                Err(format!(
+                    "product select refuses: reply target output {output} is not the live display macos-display-1; no actuation"
+                ))
+            }
+        }
         fn empty(&mut self, _: u64) -> Result<bool, String> {
             Ok(true)
         }
-        fn create(&mut self, _: &crate::workspace_select::SelectionSnapshot) -> Result<(), String> {
+        fn create(&mut self, _before: &crate::workspace_select::SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
             unreachable!("armed clicks never create");
         }
         fn select(
             &mut self,
             _: &crate::workspace_select::SelectionSnapshot,
             sid: u64,
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.selects.push(sid);
             self.row.current = sid;
             Ok(())
@@ -1452,16 +1461,34 @@ mod tests {
 
     #[test]
     fn click_chain_reaches_verified_dispatch_or_refuses_before_touch() {
-        // Happy path: menu row 2 (SID 3) maps over the fresh row and the
-        // guarded drain verifies arrival with exactly one dispatch.
+        // Happy path: menu row 2 (SID 3) rides a reply plan (core-resolved
+        // target plus live binding) with the rendered SID as a staleness
+        // fence only. The guarded drain verifies arrival with exactly one
+        // dispatch.
+        use crate::runtime_types::ClaimedSelect;
+        fn plan(action: crate::runtime_types::InputSemanticAction, op: &str) -> ClaimedSelect {
+            let mut claim = ClaimedSelect::tap(action);
+            claim.operation_id = Some(op.to_owned());
+            claim.select_target_output = Some("macos-display-1".to_owned());
+            claim.select_target_workspace = Some("ws-2".to_owned());
+            claim.select_native_binding = Some("space-3".to_owned());
+            claim.select_baseline_sid = Some(20);
+            claim.expected_sid = Some(3);
+            claim.topology_revision = None;
+            claim
+        }
         let mut fake = click_fake();
         let mut state = crate::workspace_select::SelectionState::default();
         let action = click_action(2, 3, &fake.row.spaces.clone()).expect("fresh click maps");
-        let effect =
-            crate::workspace_select::drain_claimed(&mut state, &mut fake, action, &open_gates())
-                .expect("guarded drain dispatches");
+        let success = crate::workspace_select::drain_claimed_select(
+            &mut state,
+            &mut fake,
+            plan(action, "op-1"),
+            &open_gates(),
+        )
+        .expect("guarded drain dispatches");
         assert_eq!(fake.selects, vec![3], "single dispatch, never replayed");
-        assert!(effect.changed);
+        assert!(success.effect.changed);
         assert_eq!(fake.row.current, 3, "verified arrival");
         // Stale menu (row moved under the open menu): the mapping refuses
         // before any backend touch — the wrong Space is never selected.
@@ -1495,9 +1522,14 @@ mod tests {
             let mut state = crate::workspace_select::SelectionState::default();
             let action =
                 click_action(2, 3, &fake.row.spaces.clone()).expect("mapping precedes gates");
-            let err = crate::workspace_select::drain_claimed(&mut state, &mut fake, action, &gates)
-                .expect_err("gated drain refuses");
-            assert!(err.contains("gated"), "{err}");
+            let failure = crate::workspace_select::drain_claimed_select(
+                &mut state,
+                &mut fake,
+                plan(action, "op-1"),
+                &gates,
+            )
+            .expect_err("gated drain refuses");
+            assert!(failure.reason.contains("gated"), "{}", failure.reason);
             assert!(fake.selects.is_empty());
         }
     }

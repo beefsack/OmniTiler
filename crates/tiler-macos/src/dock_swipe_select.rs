@@ -43,7 +43,9 @@ use std::time::{Duration, Instant};
 
 use crate::ffi::{LatchWait, SpaceSelectLatch};
 use crate::space_switch_edges::{GesturePairsOutcome, gesture_payload_allowed, swipe_plan};
-use crate::workspace_select::{SelectGates, SelectionBackend, SelectionSnapshot};
+use crate::workspace_select::{
+    DispatchError, SelectGates, SelectionBackend, SelectionSnapshot,
+};
 
 /// Absolute arrival deadline for one Dock-swipe settlement (ms). Async
 /// `SPACE_CHANGED` arrival needs a bound and 3 s is the proven window.
@@ -153,9 +155,10 @@ impl GateReads for LiveGateReads {
 /// leg and never touch the Dock.
 pub(crate) trait McExitGate {
     /// Register Dock `AXExposeExit` BEFORE the create leg opens Mission
-    /// Control, so an exit delivered mid-leg is retained, never lost.
+    /// Control, so an exit delivered any time after registration advances
+    /// it, even before the create leg's close returns.
     /// Failure refuses pre-effect: nothing appended, nothing to adopt.
-    fn arm(&mut self) -> Result<(), String>;
+    fn arm(&mut self) -> Result<(), DispatchError>;
     /// Wait (pumping the owner runloop for deliveries) for the armed exit,
     /// cancellation, or the genuine [`MC_EXIT_WAIT_MS`] bound. One-shot:
     /// disarms before returning on every path. A post-append failure
@@ -163,7 +166,7 @@ pub(crate) trait McExitGate {
     /// proof before `select` runs, so returning `Err` here dispatches no
     /// gesture while keeping ownership adoptable: never a silent loss,
     /// never an automatic replay.
-    fn await_exit(&mut self, cancel: &AtomicBool) -> Result<(), String>;
+    fn await_exit(&mut self, cancel: &AtomicBool) -> Result<(), DispatchError>;
     /// Idempotent teardown for the armed-but-never-awaited path (the
     /// create leg failed, so no select follows).
     fn disarm(&mut self);
@@ -195,13 +198,13 @@ impl LiveMcExitGate {
 }
 
 impl McExitGate for LiveMcExitGate {
-    fn arm(&mut self) -> Result<(), String> {
+    fn arm(&mut self) -> Result<(), DispatchError> {
         self.disarm();
         let pid = crate::mc_lifecycle::live::dock_pid()
-            .map_err(|e| format!("exit watch refused: Dock PID unprovable ({e})"))?;
+            .map_err(|e| DispatchError::refused(format!("exit watch refused: Dock PID unprovable ({e})")))?;
         let bundle = crate::ffi::bundle_id_for_pid(pid).unwrap_or_default();
         crate::mc_probe::require_dock_bundle(&bundle)
-            .map_err(|e| format!("exit watch refused: {e}"))?;
+            .map_err(|e| DispatchError::refused(format!("exit watch refused: {e}")))?;
         // Fresh latch per arm: the generation below is the exact retain
         // point — an exit delivered any time after registration advances
         // it, even before the create leg's close returns.
@@ -212,12 +215,12 @@ impl McExitGate for LiveMcExitGate {
             self.latch.clone(),
             crate::mc_probe::MC_AX_TIMEOUT_SECS,
         )
-        .map_err(|e| format!("exit watch refused pre-effect: {e}"))?;
+        .map_err(|e| DispatchError::refused(format!("exit watch refused pre-effect: {e}")))?;
         self.watch = Some(watch);
         Ok(())
     }
 
-    fn await_exit(&mut self, cancel: &AtomicBool) -> Result<(), String> {
+    fn await_exit(&mut self, cancel: &AtomicBool) -> Result<(), DispatchError> {
         let result = self.await_exit_inner(cancel);
         self.disarm();
         result
@@ -231,9 +234,11 @@ impl McExitGate for LiveMcExitGate {
 }
 
 impl LiveMcExitGate {
-    fn await_exit_inner(&self, cancel: &AtomicBool) -> Result<(), String> {
+    fn await_exit_inner(&self, cancel: &AtomicBool) -> Result<(), DispatchError> {
         if self.watch.is_none() {
-            return Err("exit gate awaited without an armed watch; refusing".to_owned());
+            return Err(DispatchError::refused(
+                "exit gate awaited without an armed watch; refusing",
+            ));
         }
         let deadline = Instant::now() + Duration::from_millis(self.wait_ms);
         loop {
@@ -244,16 +249,18 @@ impl LiveMcExitGate {
                 return Ok(());
             }
             if cancel.load(Ordering::SeqCst) || self.latch.cancelled() {
-                return Err(
-                    "trailing post-create select refused: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched"
-                        .to_owned(),
-                );
+                return Err(DispatchError::refused(
+                    "trailing post-create select refused: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched",
+                ));
             }
             if Instant::now() >= deadline {
-                return Err(format!(
-                    "trailing post-create select refused: Mission Control exit (Dock AXExposeExit) unobserved within {}ms (wedged-Dock guard); created Space retained with proof; no gesture dispatched; a fresh action may reuse it, never an automatic replay",
+                // Wedged-Dock guard: the append is verified and retained
+                // with proof; dispatching nothing is a post-actuation
+                // hold, never a proven refusal.
+                return Err(DispatchError::refused(format!(
+                    "trailing post-create select unproven: Mission Control exit (Dock AXExposeExit) unobserved within {}ms (wedged-Dock guard); created Space retained with proof; no gesture dispatched; a fresh action may reuse it, never an automatic replay",
                     self.wait_ms
-                ));
+                )));
             }
             // Event delivery vehicle: the observer callback fires only
             // while this thread pumps its runloop. Bounded slice; the
@@ -272,16 +279,16 @@ impl LiveMcExitGate {
 pub(crate) trait McCreateEffect {
     /// Run the pinned create on `display` (joined by the exact
     /// `(cgid, managed UUID)` identity) inside `budget`. `Ok` carries the
-    /// verified exact append; `Err` appends nothing adoptable through this
-    /// seam (a live press sent without a verified effect stays refused,
-    /// exactly as before).
+    /// verified exact append (OS accepted, close shortfall folded as
+    /// accepted); `Err(refused)` appends nothing (pre-effect refusal);
+    /// `Err(threw)` ran at or after the touch with an unknown effect.
     fn create_append(
         &mut self,
         display: usize,
         cgid: u32,
         uuid: &str,
         budget: &mut crate::mc_probe::ActionBudget,
-    ) -> Result<(), String>;
+    ) -> Result<(), DispatchError>;
 }
 
 /// Production pinned create: the pre-existing create leg (fresh SLS join,
@@ -296,19 +303,11 @@ impl McCreateEffect for LiveMcCreateEffect {
         cgid: u32,
         uuid: &str,
         budget: &mut crate::mc_probe::ActionBudget,
-    ) -> Result<(), String> {
-        let raw = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| e.to_string())?;
-        let outcome =
-            crate::mc_lifecycle::live::mc_add_space_pinned(display, cgid, uuid, budget, false)
-                .map_err(|e| e.to_string())?;
-        let after = crate::mc_lifecycle::live::await_snapshot(&|s| {
-            crate::mc_probe::validate_create_effect(&raw, s, display).is_ok()
-        })
-        .map_err(|e| e.to_string())?;
-        crate::mc_probe::validate_create_effect(&raw, &after, display)
-            .map_err(|e| e.to_string())?;
+    ) -> Result<(), DispatchError> {
+        let outcome = crate::mc_lifecycle::live::mc_add_space_pinned(display, cgid, uuid, budget, false)
+            .map_err(DispatchError::from_mc)?;
         if let Some(e) = outcome.close_error {
-            return Err(format!("created but MC close unproven: {e}"));
+            eprintln!("tiler-macos select pinned create close shortfall accepted ({e})");
         }
         Ok(())
     }
@@ -586,30 +585,37 @@ pub struct SwipeSeams<'a> {
 pub fn execute_dock_swipe_select(
     req: SwipeRequest<'_>,
     seams: SwipeSeams<'_>,
-) -> Result<bool, String> {
+) -> Result<bool, DispatchError> {
     let op = req.op.unwrap_or("none");
     let elapsed_ms = || req.t_base.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    let refuse = |source: Option<u64>, reason: String| -> String {
+    let refused = |source: Option<u64>, reason: String| -> DispatchError {
         eprintln!(
             "{}",
             format_dock_swipe_refused_line(op, source, req.target, &reason, elapsed_ms())
         );
-        reason
+        DispatchError::refused(reason)
+    };
+    let threw = |source: Option<u64>, reason: String| -> DispatchError {
+        eprintln!(
+            "{}",
+            format_dock_swipe_refused_line(op, source, req.target, &reason, elapsed_ms())
+        );
+        DispatchError::threw(reason)
     };
     if !seams.gates.session_unlocked {
-        return Err(refuse(
+        return Err(refused(
             None,
             "dock-swipe refused: session not unlocked pre-dispatch".to_owned(),
         ));
     }
     if seams.gates.secure_active {
-        return Err(refuse(
+        return Err(refused(
             None,
             "dock-swipe refused: Secure Input active pre-dispatch".to_owned(),
         ));
     }
     if seams.gates.lock_screen {
-        return Err(refuse(
+        return Err(refused(
             None,
             "dock-swipe refused: lock screen pre-dispatch".to_owned(),
         ));
@@ -617,23 +623,23 @@ pub fn execute_dock_swipe_select(
     match seams.topo.display_count() {
         Ok(1) => {}
         Ok(n) => {
-            return Err(refuse(
+            return Err(refused(
                 None,
                 format!("dock-swipe refused: expected exactly one native display, found {n}"),
             ));
         }
         Err(e) => {
-            return Err(refuse(
+            return Err(refused(
                 None,
                 format!("dock-swipe refused: display count unreadable ({e})"),
             ));
         }
     }
     if let Err(e) = gesture_payload_allowed(req.os_major) {
-        return Err(refuse(None, format!("dock-swipe refused: {e}")));
+        return Err(refused(None, format!("dock-swipe refused: {e}")));
     }
     if req.target == 0 {
-        return Err(refuse(
+        return Err(refused(
             None,
             "dock-swipe refused: zero target SID".to_owned(),
         ));
@@ -641,7 +647,7 @@ pub fn execute_dock_swipe_select(
     let row0 = seams
         .topo
         .fresh_full_row()
-        .map_err(|e| refuse(None, format!("dock-swipe refused: {e}")))?;
+        .map_err(|e| refused(None, format!("dock-swipe refused: {e}")))?;
     // Selector-entry drift fence: the fresh user row must equal the
     // claim-time `before` (display identity, mapping, and current).
     if let Some(before) = req.before
@@ -649,14 +655,14 @@ pub fn execute_dock_swipe_select(
             || row0.user_spaces != before.spaces
             || row0.current != before.current)
     {
-        return Err(refuse(
+        return Err(refused(
             Some(row0.current),
             "dock-swipe refused: fresh user row drifted from claim-time row; no swipe dispatched"
                 .to_owned(),
         ));
     }
     if !row0.user_spaces.contains(&req.target) {
-        return Err(refuse(
+        return Err(refused(
             Some(row0.current),
             format!(
                 "dock-swipe refused: target Space {} not in user row",
@@ -665,9 +671,9 @@ pub fn execute_dock_swipe_select(
         ));
     }
     let (sign, pairs) = swipe_plan(&row0.full_order, row0.current, req.target)
-        .map_err(|e| refuse(Some(row0.current), e))?;
+        .map_err(|e| refused(Some(row0.current), e))?;
     if seams.cancel.load(Ordering::SeqCst) || seams.latch.cancelled() {
-        return Err(refuse(
+        return Err(refused(
             Some(row0.current),
             "dock-swipe refused: cancelled before dispatch".to_owned(),
         ));
@@ -701,7 +707,7 @@ pub fn execute_dock_swipe_select(
             return Ok(false);
         }
         Ok(pre) if pre.current == req.target => {
-            return Err(refuse(
+            return Err(refused(
                 Some(pre.current),
                 "dock-swipe unproven: target arrived but topology drifted pre-post; history unchanged; no replay"
                     .to_owned(),
@@ -713,7 +719,7 @@ pub fn execute_dock_swipe_select(
                 && pre.full_order == row0.full_order
                 && pre.user_spaces == row0.user_spaces => {}
         Ok(pre) if pre.current != row0.current => {
-            return Err(refuse(
+            return Err(refused(
                 Some(pre.current),
                 format!(
                     "dock-swipe refused: source Space moved {}->{} pre-post; no swipe dispatched",
@@ -722,20 +728,20 @@ pub fn execute_dock_swipe_select(
             ));
         }
         Ok(pre) => {
-            return Err(refuse(
+            return Err(refused(
                 Some(pre.current),
                 "dock-swipe refused: topology drifted pre-post; no swipe dispatched".to_owned(),
             ));
         }
         Err(e) => {
-            return Err(refuse(
+            return Err(refused(
                 Some(row0.current),
                 format!("dock-swipe refused: pre-post row unreadable ({e})"),
             ));
         }
     }
     if pairs == 0 {
-        return Err(refuse(
+        return Err(refused(
             Some(row0.current),
             format!(
                 "dock-swipe refused: plan is a no-op yet native current reads {}; refusing without posting",
@@ -772,11 +778,11 @@ pub fn execute_dock_swipe_select(
             "{}",
             format_dock_swipe_settled_line(op, row0.current, req.target, None, false, elapsed_ms())
         );
-        return Err(refuse(None, reason));
+        return Err(threw(None, reason));
     }
     if posted.began_posted != pairs || posted.ended_posted != pairs {
         if posted.began_posted == 0 && posted.ended_posted == 0 {
-            return Err(refuse(
+            return Err(refused(
                 Some(row0.current),
                 format!(
                     "dock-swipe refused: posted 0/{pairs} pairs ({:?}); nothing posted, no replay",
@@ -792,11 +798,10 @@ pub fn execute_dock_swipe_select(
             "{}",
             format_dock_swipe_settled_line(op, row0.current, req.target, None, false, elapsed_ms())
         );
-        return Err(refuse(None, reason));
+        return Err(threw(None, reason));
     }
     if seams.cancel.load(Ordering::SeqCst) || seams.latch.cancelled() {
-        return Err(refuse(
-            Some(row0.current),
+        return Err(DispatchError::accepted(
             "dock-swipe unproven: cancelled after posting; no replay".to_owned(),
         ));
     }
@@ -836,21 +841,17 @@ pub fn execute_dock_swipe_select(
             );
             if confirmed {
                 if seams.cancel.load(Ordering::SeqCst) || seams.latch.cancelled() {
-                    return Err(refuse(
-                        Some(row0.current),
+                    return Err(DispatchError::accepted(
                         "dock-swipe unproven: cancelled during settlement; history unchanged; no replay"
                             .to_owned(),
                     ));
                 }
                 return Ok(row0.current != req.target);
             }
-            return Err(refuse(
-                Some(row0.current),
-                format!(
-                    "dock-swipe unproven: posted {pairs} pairs but native current reads {last_current:?} (target {}); history unchanged; no replay",
-                    req.target
-                ),
-            ));
+            // Posted but unproven within the bound (delayed arrival): the OS
+            // accepted the dispatch. Return Accepted and let the drain's
+            // genuine post read hold or settle; never an invented Threw.
+            return Err(DispatchError::accepted("dock-swipe unproven: arrival deadline elapsed after posting; no replay"));
         }
         let probe = seams.topo.fresh_full_row().ok();
         last_current = probe.as_ref().map(|row| row.current);
@@ -878,7 +879,9 @@ pub fn execute_dock_swipe_select(
                                     elapsed_ms()
                                 )
                             );
-                            return Err(refuse(Some(row0.current), reason));
+                            // Posted with an unreadable confirmation leg:
+                            // Accepted with the drain's genuine post read.
+                            return Err(DispatchError::accepted(reason));
                         }
                         Err(e) => {
                             let reason = format!(
@@ -895,7 +898,7 @@ pub fn execute_dock_swipe_select(
                                     elapsed_ms()
                                 )
                             );
-                            return Err(refuse(Some(row0.current), reason));
+                            return Err(DispatchError::accepted(reason));
                         }
                     }
                     eprintln!(
@@ -910,8 +913,7 @@ pub fn execute_dock_swipe_select(
                         )
                     );
                     if seams.cancel.load(Ordering::SeqCst) || seams.latch.cancelled() {
-                        return Err(refuse(
-                            Some(row0.current),
+                        return Err(DispatchError::accepted(
                             "dock-swipe unproven: cancelled during settlement; history unchanged; no replay"
                                 .to_owned(),
                         ));
@@ -919,9 +921,6 @@ pub fn execute_dock_swipe_select(
                     return Ok(row0.current != req.target);
                 }
                 _ => {
-                    let reason =
-                        "dock-swipe unproven: topology drifted during swipe; history unchanged"
-                            .to_owned();
                     eprintln!(
                         "{}",
                         format_dock_swipe_settled_line(
@@ -933,14 +932,13 @@ pub fn execute_dock_swipe_select(
                             elapsed_ms()
                         )
                     );
-                    return Err(refuse(Some(row0.current), reason));
+                    // Posted but topology drifted under the swipe: Accepted
+                    // with the drain's genuine post read, never Threw.
+                    return Err(DispatchError::accepted("dock-swipe unproven: topology changed after posting; no replay"));
                 }
             }
         }
         if seams.cancel.load(Ordering::SeqCst) || seams.latch.cancelled() {
-            let reason =
-                "dock-swipe unproven: cancelled during settlement; history unchanged; no replay"
-                    .to_owned();
             eprintln!(
                 "{}",
                 format_dock_swipe_settled_line(
@@ -952,7 +950,10 @@ pub fn execute_dock_swipe_select(
                     elapsed_ms()
                 )
             );
-            return Err(refuse(Some(row0.current), reason));
+            return Err(DispatchError::accepted(
+                "dock-swipe unproven: cancelled during settlement; history unchanged; no replay"
+                    .to_owned(),
+            ));
         }
         let now = Instant::now();
         match seams
@@ -963,9 +964,6 @@ pub fn execute_dock_swipe_select(
                 observed = next;
             }
             LatchWait::Cancelled => {
-                let reason =
-                    "dock-swipe unproven: cancelled during settlement; history unchanged; no replay"
-                        .to_owned();
                 eprintln!(
                     "{}",
                     format_dock_swipe_settled_line(
@@ -977,7 +975,10 @@ pub fn execute_dock_swipe_select(
                         elapsed_ms()
                     )
                 );
-                return Err(refuse(Some(row0.current), reason));
+                return Err(DispatchError::accepted(
+                    "dock-swipe unproven: cancelled during settlement; history unchanged; no replay"
+                        .to_owned(),
+                ));
             }
             LatchWait::TimedOut => {}
         }
@@ -1120,29 +1121,57 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
         self.topo.revision()
     }
 
+    fn check_output(&mut self, output: &str) -> Result<(), String> {
+        if self.legs.pinned_cgid == 0 {
+            return Err(
+                "product select refuses: pinned display has no CG display ID; output unprovable"
+                    .to_owned(),
+            );
+        }
+        let pinned = crate::topology::output_key(self.legs.pinned_cgid);
+        if pinned != output {
+            return Err(format!(
+                "product select refuses: reply target output {output} is not the pinned display {pinned}; no actuation"
+            ));
+        }
+        Ok(())
+    }
+
     fn empty(&mut self, sid: u64) -> Result<bool, String> {
         crate::workspace_select::probe_trailing_emptiness(sid)
     }
 
-    fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String> {
+    fn create(&mut self, before: &SelectionSnapshot) -> Result<(), DispatchError> {
         // Owner-fresh gates and cancellation fence the create leg itself:
         // a lock, capture, or loginwindow that closed after submission
         // refuses here instead of opening Mission Control into it.
         if self.cancel.load(Ordering::SeqCst) {
-            return Err("trailing create refused: cancelled before dispatch".to_owned());
+            return Err(DispatchError::refused(
+                "trailing create refused: cancelled before dispatch",
+            ));
         }
         let gates = self.gate_reads.read_gates();
         if !gates.session_unlocked {
-            return Err("trailing create refused: session not unlocked pre-dispatch".to_owned());
+            return Err(DispatchError::refused(
+                "trailing create refused: session not unlocked pre-dispatch",
+            ));
         }
         if gates.secure_active {
-            return Err("trailing create refused: Secure Input active pre-dispatch".to_owned());
+            return Err(DispatchError::refused(
+                "trailing create refused: Secure Input active pre-dispatch",
+            ));
         }
         if gates.lock_screen {
-            return Err("trailing create refused: lock screen pre-dispatch".to_owned());
+            return Err(DispatchError::refused(
+                "trailing create refused: lock screen pre-dispatch",
+            ));
         }
-        if self.snapshot()? != *before {
-            return Err("pre-create topology drift".to_owned());
+        if self
+            .snapshot()
+            .map_err(|e| DispatchError::refused(format!("pre-create row unreadable ({e})")))?
+            != *before
+        {
+            return Err(DispatchError::refused("pre-create topology drift"));
         }
         // Arm the Dock exit watch BEFORE the create leg opens Mission
         // Control: an exit delivered mid-leg (even before the leg's close
@@ -1150,7 +1179,7 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
         // failure refuses pre-effect — nothing appended, nothing to adopt.
         self.exit_gate
             .arm()
-            .map_err(|e| format!("trailing create refused: {e}"))?;
+            .map_err(|e| DispatchError::refused(format!("trailing create refused: {e}")))?;
         self.exit_armed = true;
         let append = self.creator.create_append(
             self.legs.display_index,
@@ -1168,7 +1197,7 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
         append
     }
 
-    fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), String> {
+    fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), DispatchError> {
         // Post-create gate: the trailing append left Mission Control
         // open, and the gesture is a no-op while Dock still reports it
         // active (`space_manager_focus_space` refuses under

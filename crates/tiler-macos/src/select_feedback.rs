@@ -8,28 +8,15 @@
 //! submits it nonblocking to the serialized off-main Dock-swipe selection
 //! owner, and reports the polled completion). The proven outcome reports
 //! back under the claim's stable operation identity so the core settles
-//! its planner-owned view target instead of retaining it. Refusals
-//! classify honestly: only pre-actuation refusals (no owner actuation —
-//! the owner never took the job, or gates/drift refused first) settle as
-//! proven refusals — ambiguous mid-actuation output holds without
-//! re-actuation.
+//! its planner-owned view target instead of retaining it. The drain
+//! returns the typed setter disposition plus genuine native reads on every
+//! path - the core owns every verdict from the staged row plus the
+//! observation.
 
 use crate::runtime::{RuntimeHandle, invalidate_clock, lock_shared};
 use crate::runtime_thread::EngineJob;
 use crate::runtime_types::ClaimedSelect;
-
-/// Proven outcome of one main-thread select drain, reported back under
-/// the drained claim's operation identity (see
-/// [`RuntimeHandle::report_select_outcome`]). Only recorded outcomes
-/// cross: pre-actuation refusals (gates, drift, stale binding) report
-/// `Refused`; ambiguous native effects report `PossiblyExecuted` (held,
-/// never blindly repeated); verified switches report `Applied`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectDrainOutcome {
-    Applied,
-    Refused,
-    PossiblyExecuted,
-}
+use tiler_core::world_report::FrameSetter;
 
 impl RuntimeHandle {
     /// Claim one pending product select for the main-thread drain: takes the
@@ -37,7 +24,7 @@ impl RuntimeHandle {
     /// render-time SID/generation/revision binding) and marks the slot busy
     /// so concurrent engine enqueues serialize/refuse instead of overlapping
     /// (`None` when nothing is pending or a drain is already in progress).
-    /// Short critical section only — never held across the blocking effect.
+    /// Short critical section only - never held across the blocking effect.
     /// Pair every `Some` with [`RuntimeHandle::release_select_after_drain`].
     pub fn claim_select_for_drain(&self) -> Option<ClaimedSelect> {
         let mut guard = lock_shared(&self.shared);
@@ -49,9 +36,9 @@ impl RuntimeHandle {
     }
 
     /// Release the select claim after the main-thread drain settles
-    /// (success, gate refusal, drift, or no effect — every path releases
+    /// (success, gate refusal, drift, or no effect - every path releases
     /// exactly once; a sent press is never replayed). Pair with
-    /// [`RuntimeHandle::report_select_outcome`]: the drain reports its
+    /// [`RuntimeHandle::report_select_attempt`]: the drain reports its
     /// proven native outcome under the claim's operation identity so the
     /// core settles the planner-owned view target (never replayed).
     pub fn release_select_after_drain(&self) {
@@ -63,38 +50,29 @@ impl RuntimeHandle {
     /// a full or closed queue drops counted, and the retained view target
     /// settles on the next select or observation instead). Call with the
     /// `operation_id` of the drained claim (the engine ignores ids naming
-    /// no retained target) plus the drain-verified native Space reads
-    /// around the actuation (`None` where unread — never guessed).
-    /// `Applied` carries the verified before/after Space ids; every other
-    /// outcome carries no reads. The core derives confirmation, refusal,
-    /// ambiguity, and supersession from the row plus the staged
-    /// observation — the adapter never sends verdicts.
-    ///
-    /// [`SelectDrainOutcome`] maps to the setter 1:1 (`Applied` is
-    /// `Accepted`, pre-actuation refusal is `Refused`, ambiguity is
-    /// `Threw`); classification stays in
-    /// [`classify_select_drain_error`].
-    pub fn report_select_outcome(
+    /// no retained target) plus the drain's typed setter disposition and
+    /// genuine native Space reads around the actuation (`None` where
+    /// unread - never guessed) and the observation-time baseline (`None`
+    /// where unread at dispatch - never guessed). The core derives
+    /// confirmation, refusal, ambiguity, and supersession from the row
+    /// plus the staged observation - the adapter never sends verdicts.
+    pub fn report_select_attempt(
         &self,
         operation_id: &str,
-        outcome: SelectDrainOutcome,
+        setter: FrameSetter,
         pre_sid: Option<u64>,
         post_sid: Option<u64>,
+        baseline_sid: Option<u64>,
     ) {
         if operation_id.is_empty() {
             return;
         }
-        use tiler_core::world_report::FrameSetter;
-        let setter = match outcome {
-            SelectDrainOutcome::Applied => FrameSetter::Accepted,
-            SelectDrainOutcome::Refused => FrameSetter::Refused,
-            SelectDrainOutcome::PossiblyExecuted => FrameSetter::Threw,
-        };
         let job = EngineJob::ViewAttempt {
             operation_id: operation_id.to_owned(),
             setter,
             pre_sid,
             post_sid,
+            baseline_sid,
         };
         // Bump before enqueue (see `invalidate_clock` in runtime).
         invalidate_clock(&self.shared);
@@ -103,35 +81,98 @@ impl RuntimeHandle {
         }
     }
 
-    /// Proven outcome of one settled live send, staged as a raw
-    /// membership-attempt row for the next world report (same data-lane
-    /// best-effort contract as [`RuntimeHandle::report_select_outcome`]).
-    /// Called by the tile for settled effect completions and submit-time
-    /// refusals (unsupported send shapes refuse engine-side and never reach
-    /// here). `post_sid` is the drain-verified arrival Space on `Applied`
-    /// only (`None` otherwise — never guessed); the core settles its
-    /// retained window transfer from this plus the staged observation.
-    /// Call with the `operation_id` of the drained claim (the engine
-    /// ignores ids naming no retained transfer).
-    pub fn report_send_outcome(
+    /// Proven outcome of one native creation leg, staged as a raw native
+    /// creation attempt row for the next world report (same data-lane
+    /// best-effort contract as [`RuntimeHandle::report_select_attempt`]).
+    /// Call with the desire's operation identity (the core consumes only
+    /// the first exact-correlated attempt per op) plus the create leg's
+    /// typed setter and genuine native orders around it. `order_after`
+    /// is the first readable full post-order, never a substituted preimage.
+    /// `created_sid` names the verified
+    /// appended desktop only (`None` on refusal/unknown, never guessed).
+    /// The core owns binding and settlement over this plus the fresh
+    /// `native[]` readback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn report_creation_attempt(
         &self,
         operation_id: &str,
-        outcome: crate::workspace_send::SendDrainOutcome,
-        post_sid: Option<u64>,
+        logical: &str,
+        output: &str,
+        setter: FrameSetter,
+        order_before: &[u64],
+        order_after: &[u64],
+        created_sid: Option<u64>,
+        attempt_ms: u64,
     ) {
-        if operation_id.is_empty() {
+        use tiler_core::directional::OutputId;
+        if operation_id.is_empty() || logical.is_empty() {
             return;
         }
-        let setter = crate::workspace_send::setter_for(outcome);
-        let job = EngineJob::MemberAttempt {
+        let job = EngineJob::NativeCreation {
             operation_id: operation_id.to_owned(),
+            logical: logical.to_owned(),
+            output: OutputId(output.to_owned()),
             setter,
-            post_sid,
+            order_before: order_before.to_vec(),
+            order_after: order_after.to_vec(),
+            created_sid,
+            attempt_ms,
         };
         // Bump before enqueue (see `invalidate_clock` in runtime).
         invalidate_clock(&self.shared);
         if !self.inbox.try_send_data(job) {
             lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+        }
+    }
+
+    /// Proven outcome of one settled live send, staged as raw
+    /// membership-attempt (plus, for follows, raw follow-view-attempt) rows
+    /// for the next world report (same data-lane best-effort contract as
+    /// [`RuntimeHandle::report_select_attempt`]). Called by the tile for
+    /// settled effect completions and submit-time refusals. `setter` is the
+    /// owner's raw native disposition captured at the actual write boundary
+    /// — staged verbatim, never derived from any arrival outcome.
+    /// `pre_member` is the genuine pre-write homing read around the dispatch
+    /// (`None` unread - never guessed); `post_member` is the
+    /// drain-verified arrival Space (`Some` only on a verified exact
+    /// arrival, `None` otherwise - never guessed). Follows additionally
+    /// stage the genuine view-current reads plus the observation-time
+    /// baseline under `follow_view_operation` — the reply-published follow
+    /// view flight identity carried by the claim (the existing view-attempt
+    /// lane correlates it against that retained View transfer, dropping
+    /// silently when the core minted no follow flight, as for stays);
+    /// `None` stages no view and invents none. The core settles its retained window
+    /// transfer (plus the follow view flight) from this plus the staged
+    /// observation. Call with the `operation_id` of the drained claim (the
+    /// engine ignores ids naming no retained transfer).
+    #[allow(clippy::too_many_arguments)]
+    pub fn report_send_outcome(
+        &self,
+        operation_id: &str,
+        setter: FrameSetter,
+        pre_member: Option<u64>,
+        post_member: Option<u64>,
+        pre_view: Option<u64>,
+        post_view: Option<u64>,
+        baseline_sid: Option<u64>,
+        follow_view_operation: Option<&str>,
+    ) {
+        if operation_id.is_empty() {
+            return;
+        }
+        let job = EngineJob::MemberAttempt {
+            operation_id: operation_id.to_owned(),
+            setter,
+            pre_sid: pre_member,
+            post_sid: post_member,
+        };
+        // Bump before enqueue (see `invalidate_clock` in runtime).
+        invalidate_clock(&self.shared);
+        if !self.inbox.try_send_data(job) {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+        }
+        if let Some(follow_op) = follow_view_operation {
+            self.report_select_attempt(follow_op, setter, pre_view, post_view, baseline_sid);
         }
     }
 
@@ -165,6 +206,7 @@ impl RuntimeHandle {
                 EngineJob::MemberAttempt {
                     operation_id: operation_id.to_owned(),
                     setter: FrameSetter::Refused,
+                    pre_sid: None,
                     post_sid: None,
                 }
             } else {
@@ -173,6 +215,7 @@ impl RuntimeHandle {
                     setter: FrameSetter::Refused,
                     pre_sid: None,
                     post_sid: None,
+                    baseline_sid: None,
                 }
             };
             // Bump before enqueue (see `invalidate_clock` in runtime).
@@ -182,97 +225,5 @@ impl RuntimeHandle {
             }
         }
         true
-    }
-}
-
-/// Classify one select-drain failure for attempt feedback: prefixes naming
-/// pre-actuation refusals (gates, unarmed, display count, stale binding,
-/// unreadable fresh rows — the drain never touched the desktop, most
-/// strings say so explicitly) settle as proven refusals; every other
-/// backend/execute failure is ambiguous mid-actuation output and holds as
-/// possibly-executed (never blindly repeated). Unknown strings fail safe
-/// toward the hold.
-///
-/// macOS-only helper (plus unit tests): the sole production caller lives
-/// in the macOS-gated native tile controller, so other targets exclude
-/// this definition instead of carrying dead code under `-D warnings`.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn classify_select_drain_error(reason: &str) -> SelectDrainOutcome {
-    for prefix in [
-        "select gated:",
-        "product select refuses",
-        "bound select claim",
-        "bound select refuses:",
-        "stale bound select discarded:",
-        "expected exactly one native display",
-        "dock-swipe refused:",
-        "select refused:",
-        "select-busy:",
-    ] {
-        if reason.starts_with(prefix) {
-            return SelectDrainOutcome::Refused;
-        }
-    }
-    SelectDrainOutcome::PossiblyExecuted
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn refusal_prefixes_settle_proven_and_unknown_holds() {
-        // Every known pre-actuation refusal prefix (gates, unarmed,
-        // display count, stale binding/drift, unreadable fresh rows)
-        // settles as a proven refusal: the drain never touched the
-        // desktop.
-        for reason in [
-            "select gated: session not unlocked",
-            "select gated: Secure Input active",
-            "select gated: lock screen",
-            "product select refuses unarmed actions",
-            "product select refuses: expected exactly one native display, found 2",
-            "product select refuses: display count unreadable (row missing)",
-            "product select refuses: caffeinate unspawnable (spawn failed)",
-            "bound select claim carries a non-numbered action; refusing",
-            "bound select refuses: fresh row unreadable (snapshot failed)",
-            "stale bound select discarded: native row moved between admission and drain (row 2 changed); no select dispatched",
-            "stale bound select discarded: topology revision moved between admission and drain (3 != 4); no select dispatched",
-            "dock-swipe refused: session not unlocked pre-dispatch",
-            "dock-swipe refused: expected exactly one native display, found 2",
-            "dock-swipe refused: pinned display UUID no longer names the SLS row",
-            "dock-swipe refused: cancelled before dispatch",
-            "select refused: session not unlocked pre-dispatch",
-            "select-busy: one Dock-swipe select already inflight; refusing overlap",
-        ] {
-            assert_eq!(
-                classify_select_drain_error(reason),
-                SelectDrainOutcome::Refused,
-                "{reason}"
-            );
-        }
-        // Backend/execute failures are ambiguous mid-actuation output and
-        // hold without re-actuation; unknown strings fail safe toward the
-        // hold, never toward a false proven refusal.
-        for reason in [
-            "workspace row/current identity unprovable",
-            "display row missing",
-            "previous workspace no longer exists",
-            "topology drifted during open (was display 1 index 0, now 1/2); refusing stale dispatch",
-            "dock-swipe unproven: posted 2 pairs but native current reads Some(22) (target 33); history unchanged; no replay",
-            "dock-swipe unproven: began-without-ended partial (began=1 ended=0) release=posted; no replay",
-            "dock-swipe unproven: cancelled during settlement; history unchanged; no replay",
-            "",
-            "select gated",
-            "product select",
-            "bound select",
-            "dock-swipe",
-        ] {
-            assert_eq!(
-                classify_select_drain_error(reason),
-                SelectDrainOutcome::PossiblyExecuted,
-                "{reason}"
-            );
-        }
     }
 }

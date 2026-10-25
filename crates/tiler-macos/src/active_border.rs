@@ -68,6 +68,49 @@ impl Default for ActiveBorderStyle {
     }
 }
 
+/// Host-scaled presentation style numbers for the report ingress, in
+/// whole adapter units (logical points rounded to integers). The core
+/// computes border/underlay shapes from exactly these numbers, so the
+/// renderer paints the configured width/gap instead of a default outset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresentationStylePx {
+    /// Ring switch (startup config; render-side veto repeats it).
+    pub border_enabled: bool,
+    /// Gap between target frame and ring inner edge.
+    pub gap_px: i32,
+    /// Ring thickness.
+    pub width_px: i32,
+    /// Resolved underlay extension (the follow-width sentinel already
+    /// resolved, so the outset is literal).
+    pub extension_px: i32,
+}
+
+impl Default for PresentationStylePx {
+    fn default() -> Self {
+        Self {
+            border_enabled: true,
+            gap_px: 0,
+            width_px: 3,
+            extension_px: 3,
+        }
+    }
+}
+
+/// Resolve one configured ring style to report integers: whole-point
+/// rounding of the configured gap/width, with the follow-width underlay
+/// extension resolved to the rounded width. The underlay enable stays
+/// parked off (no production underlay loop consumes it yet).
+#[must_use]
+pub fn presentation_style(style: &ActiveBorderStyle, enabled: bool) -> PresentationStylePx {
+    let width_px = style.width.round() as i32;
+    PresentationStylePx {
+        border_enabled: enabled,
+        gap_px: style.gap.round() as i32,
+        width_px,
+        extension_px: width_px,
+    }
+}
+
 /// Full border switch: default on, explicit off. Windows parity
 /// (`tiler-windows/src/active_border.rs::ActiveBorderOptions`): the border
 /// is independent of Engine tiling/floating membership and on unless
@@ -701,6 +744,36 @@ mod tests {
         assert_eq!(BorderHideReason::Maximized.as_str(), "maximized");
         assert_eq!(BorderHideReason::Fullscreen.as_str(), "fullscreen");
         assert_eq!(BorderHideReason::Excluded.as_str(), "excluded");
+    }
+
+    #[test]
+    fn presentation_style_rounds_configured_width_and_gap() {
+        // Non-default configuration survives to report integers: the core
+        // shapes and the renderer paint this outset, never the default.
+        let style = ActiveBorderStyle {
+            width: 5.0,
+            gap: 2.0,
+            ..ActiveBorderStyle::default()
+        };
+        assert_eq!(
+            presentation_style(&style, true),
+            PresentationStylePx {
+                border_enabled: true,
+                gap_px: 2,
+                width_px: 5,
+                extension_px: 5,
+            }
+        );
+        // Fractional points round to whole units; the switch rides along.
+        let style = ActiveBorderStyle {
+            width: 4.5,
+            gap: 1.5,
+            ..ActiveBorderStyle::default()
+        };
+        let resolved = presentation_style(&style, false);
+        assert_eq!((resolved.gap_px, resolved.width_px), (2, 5));
+        assert!(!resolved.border_enabled);
+        assert_eq!(PresentationStylePx::default().width_px, 3);
     }
 
     fn observed(ax: AxFacts, cg: CgFacts, app: AppFacts) -> BorderObservation {

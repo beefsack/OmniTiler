@@ -156,7 +156,7 @@ pub struct NativeDomain {
     /// CG display ID (stable within the session).
     pub cg_id: u32,
     /// Exact managed display UUID for re-homing live SLS rows (exact-UUID
-    /// match per yabai; `None` when the public lookup failed — re-homing
+    /// match per yabai; `None` when the public lookup failed - re-homing
     /// then refuses rather than guessing positionally).
     pub uuid: Option<String>,
     /// Core output identity (`macos-display-{cg_id}`).
@@ -171,7 +171,7 @@ pub struct NativeDomain {
     pub current: bool,
     /// False for homed-but-unreadable Spaces (type read gap): retained
     /// hidden with an explicit world hold and no write authority, never
-    /// actuated — a transient read gap must not release its layout.
+    /// actuated - a transient read gap must not release its layout.
     pub readable: bool,
     /// Full display rect in integer CG top-left points.
     pub bounds: Rect,
@@ -181,7 +181,7 @@ pub struct NativeDomain {
 
 /// Shared native tile context: the revision-fenced per-display domains the
 /// main-thread supplier derived at snapshot time. Plain data only (IDs plus
-/// integer rects — no titles, no paths, no bundle strings); per-app AX
+/// integer rects - no titles, no paths, no bundle strings); per-app AX
 /// owners and the engine read it through an `Arc`, never mutated in place.
 /// A new snapshot replaces the whole context, so readers always see one
 /// consistent revision.
@@ -191,7 +191,7 @@ pub struct NativeDomain {
 /// manual native switches. Only `current` domains actuate; hidden domains
 /// reconcile without frames or focus, and retire only when their Space
 /// leaves the display (deleted Space, removed display, or a Space that
-/// newly proves non-user) — never on a mere current-Space switch or a
+/// newly proves non-user) - never on a mere current-Space switch or a
 /// transient unreadable type read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeContext {
@@ -235,7 +235,7 @@ impl NativeContext {
     /// independent layouts survive manual native switches. Proven non-user
     /// Spaces (fullscreen, system) never become domains. A homed Space
     /// whose type reads unreadable (`None`) is retained hidden and never
-    /// actuates — a transient read gap must not release its layout; only
+    /// actuates - a transient read gap must not release its layout; only
     /// actual deletion does. Deleted SIDs (absent from the row) and removed
     /// displays retire through the existing absent-key release. Displays
     /// whose rows cannot be homed exactly (or whose rects never converted)
@@ -307,7 +307,7 @@ impl NativeContext {
                             continue;
                         }
                         // Proven user, or homed-but-unreadable (retained
-                        // hidden, never actuated — never called user-typed).
+                        // hidden, never actuated - never called user-typed).
                         _ => {}
                     }
                     per_display.push(NativeDomain {
@@ -392,7 +392,7 @@ pub struct ScopedWindowMeta {
 /// One classifier-omitted window: identity plus the gate that fired.
 /// Diagnostic only (wid plus a status name); never titles, content, or raw
 /// input. The engine still sees omission only through `excluded` counts and
-/// the retained-minimize path — these reasons never gate, stage, or plan.
+/// the retained-minimize path - these reasons never gate, stage, or plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExcludedOmission {
     pub wid: u32,
@@ -426,7 +426,7 @@ pub struct ScopedBackendSnapshot {
     /// claim). The owner never fabricates this from local state: it is a
     /// real selected SLPS+direct read (SLPS front agreeing with the
     /// workspace frontmost before+after, direct per-app focused window with
-    /// CG ownership) — or nothing. The raw system-wide read stays
+    /// CG ownership) - or nothing. The raw system-wide read stays
     /// diagnostic-only and never lands here. Manual submissions attest
     /// their own legs instead (test/controller surface); the live path
     /// always reads.
@@ -593,7 +593,7 @@ pub enum InputSemanticAction {
     /// Explicit directional output send: transfer to the adjacent output's
     /// current workspace in `direction` (Windows `send-output-*` parity;
     /// the chord form rides the approved auxiliary arm). `follow` pins the
-    /// intent (only follow has approved chords). No product execution yet —
+    /// intent (only follow has approved chords). No product execution yet -
     /// cross-display transfer is TBD (see
     /// [`crate::workspace_input::workspace_unsupported_reason`]).
     WorkspaceOutput {
@@ -636,7 +636,7 @@ pub struct ClaimedSelect {
     pub send_generation: Option<u64>,
     /// Admission-pinned source domain homing the subject (`window_domains`
     /// at admission). Fresh proof requires the subject still homed to this
-    /// exact domain and the domain still current — never a moved or hidden
+    /// exact domain and the domain still current - never a moved or hidden
     /// domain. Always `None` for selects.
     pub send_source: Option<DomainKey>,
     /// Admission-pinned source Space SID for send-shaped claims (the native
@@ -663,12 +663,54 @@ pub struct ClaimedSelect {
     /// (selects) or window transfer (sends) - never replayed. `None` until
     /// the engine binds the claim.
     pub operation_id: Option<String>,
+    /// Reply-driven select target output (core-owned logical output id,
+    /// e.g. `macos-display-1`). Set at engine dispatch from the accepted
+    /// reply's retained transfer; `None` until bound. The drain never
+    /// reinterprets ordinals: it actuates exactly this output's bound
+    /// target below.
+    pub select_target_output: Option<String>,
+    /// Reply-driven select target logical workspace id (stable core id).
+    /// Set with `select_target_output` from the retained transfer.
+    pub select_target_workspace: Option<String>,
+    /// Reply-driven native binding for the target logical (`space-<sid>`
+    /// vocabulary, live lookup only). `Some` names the exact native Space
+    /// to actuate (reuse path); `None` with a creation desire authorizes
+    /// exactly one native append, otherwise the drain refuses (missing
+    /// binding never creates).
+    pub select_native_binding: Option<String>,
+    /// Reply-driven trailing creation authorization (core-owned
+    /// `NativeCreationDesire` operation id, `op-native-<n>`). `Some` only
+    /// when the accepted reply carries an outstanding creation desire for
+    /// `select_target_workspace` on `select_target_output`; the drain
+    /// creates at most once under this id. `None` never authorizes creation.
+    pub select_creation_operation: Option<String>,
+    /// Logical workspace the creation desire backs (mirrors the desire's
+    /// logical). Always `Some` when `select_creation_operation` is `Some`.
+    pub select_creation_logical: Option<String>,
+    /// Output the creation desire targets. Always `Some` when
+    /// `select_creation_operation` is `Some`.
+    pub select_creation_output: Option<String>,
+    /// Observation-time native current SID for the target output (the
+    /// report's `current_native` at dispatch). Stages as the view
+    /// attempt's `native_baseline`; `None` when unreadable at dispatch.
+    pub select_baseline_sid: Option<u64>,
+    /// Reply-driven follow view flight identity for `follow=true` sends:
+    /// the retained View flight the accepted reply publishes alongside the
+    /// parent window transfer (same target, distinct operation identity).
+    /// Read verbatim from the reply's published transfers at dispatch; the
+    /// drain stages the follow view attempt under exactly this identity.
+    /// `None` when the reply publishes no distinct view row (stays,
+    /// non-follow) — then no view is staged and none is invented. Always
+    /// `None` for selects and for unbound tap claims before engine
+    /// dispatch binds them.
+    pub send_follow_view_operation: Option<String>,
 }
 
 impl ClaimedSelect {
-    /// Tap/keyboard claim: no render-time binding (the engine admission
-    /// binds numbered selects and offline send-shaped claims; relative and
-    /// previous selects ride binding-free).
+    /// Tap/keyboard claim: no render-time binding (relative and previous
+    /// selects ride binding-free; numbered taps resolve reply-driven
+    /// core-side, never pre-reply ordinal SIDs). Reply plan fields bind at
+    /// engine dispatch from the accepted reply.
     #[must_use]
     pub const fn tap(action: InputSemanticAction) -> Self {
         Self {
@@ -683,11 +725,22 @@ impl ClaimedSelect {
             send_source_focus: None,
             send_source_focus_empty: false,
             operation_id: None,
+            select_target_output: None,
+            select_target_workspace: None,
+            select_native_binding: None,
+            select_creation_operation: None,
+            select_creation_logical: None,
+            select_creation_output: None,
+            select_baseline_sid: None,
+            send_follow_view_operation: None,
         }
     }
 
     /// Menu-bar segment claim: the full immutable render-time binding rides
-    /// through engine admission and the native drain.
+    /// through engine admission and the native drain. The drain still fences
+    /// it fresh (resolved reply binding must name the same SID), but
+    /// targeting itself resolves reply-driven core-side, never from this
+    /// pre-reply SID.
     #[must_use]
     pub const fn indicator(
         action: InputSemanticAction,
@@ -707,6 +760,14 @@ impl ClaimedSelect {
             send_source_focus: None,
             send_source_focus_empty: false,
             operation_id: None,
+            select_target_output: None,
+            select_target_workspace: None,
+            select_native_binding: None,
+            select_creation_operation: None,
+            select_creation_logical: None,
+            select_creation_output: None,
+            select_baseline_sid: None,
+            send_follow_view_operation: None,
         }
     }
 }
@@ -740,7 +801,7 @@ pub struct FrameCommand {
 /// purged on app terminate/shutdown and re-checked for freshness when
 /// drained, so a stale request can never dispatch after relaunch.
 /// `dispatched` means queued for the native dispatcher; `verified` is always
-/// false in the skeleton — only a later [`AxObservation`] can verify focus.
+/// false in the skeleton - only a later [`AxObservation`] can verify focus.
 /// Dispatch must never be read as arrival. `topology_revision` fences
 /// display/Space change mid-plan exactly like [`FrameCommand`]: queued
 /// requests from a superseded revision drain stale instead of dispatching.
@@ -811,7 +872,7 @@ pub fn parse_window_id(value: &str) -> Option<(u32, u32)> {
 /// shrink parity, read-only reference): grow chords carry Alt without Shift,
 /// shrink chords carry Alt with Shift. The Alt bit sits inside the same
 /// exact-match mask, so `Ctrl+H` (focus) and `Ctrl+Alt+H` (grow) are
-/// distinct effective chords — never blanket keycode assumptions. Alt-as-Meta
+/// distinct effective chords - never blanket keycode assumptions. Alt-as-Meta
 /// collapses the resize arm onto focus/move (same effective chord), so the
 /// validator below refuses that Meta for the full catalogue, exactly like
 /// the pre-existing Shift-as-Meta collapse.
@@ -1021,7 +1082,7 @@ pub struct RuntimeDiagnostics {
     pub input_ignored: u64,
     pub input_refused_no_focus: u64,
     /// Recognized-but-unarmed workspace actions refused for missing product
-    /// execution (trailing select-0, all sends/stays, all outputs — see
+    /// execution (trailing select-0, all sends/stays, all outputs - see
     /// [`crate::workspace_input::workspace_unsupported_reason`]). Counted,
     /// never dispatched. The armed select-only subset enqueues instead (see
     /// `input_select_enqueued`).
@@ -1033,7 +1094,7 @@ pub struct RuntimeDiagnostics {
     /// operation identity, settling the retained view target.
     pub input_select_enqueued: u64,
     /// Armed select-only actions refused before enqueue (no published
-    /// native topology yet, or a select already claimed/pending — concurrent
+    /// native topology yet, or a select already claimed/pending - concurrent
     /// presses serialize/refuse instead of overlapping). Counted with
     /// static log tokens, never dispatched, never replayed.
     pub input_select_refused: u64,

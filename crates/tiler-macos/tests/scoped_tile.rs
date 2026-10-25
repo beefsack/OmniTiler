@@ -2848,15 +2848,15 @@ fn unarmed_workspace_rows_refuse_without_dispatch() {
 #[test]
 fn numbered_send_hotkey_claim_settles_transfer_end_to_end() {
     // Producer-shaped pathway with no live touch: the armed Ctrl+Shift+2
-    // hotkey admits engine-side (managed subject, target SID, revision,
-    // lifetime, source, operation identity), claims for the main-thread
-    // drain, and the reported outcome stages transfer feedback for the
-    // next world report — so the core settles the retained transfer. The
-    // dedicated effect owner proves the same pins over injected readers
-    // (see `workspace_send_live_tests`); here the engine half plus the
-    // feedback half run through the real runtime.
+    // hotkey admits engine-side (managed subject, lifetime, source, plus
+    // the reply-bound target plan and operation identity), claims for the
+    // main-thread drain, and the reported outcome stages transfer feedback
+    // for the next world report — so the core settles the retained
+    // transfer. The dedicated effect owner proves the same pins over
+    // injected readers (see `workspace_send_live_tests`); here the engine
+    // half plus the feedback half run through the real runtime.
+    use tiler_core::world_report::FrameSetter;
     use tiler_macos::runtime::InputSemanticAction as Action;
-    use tiler_macos::workspace_send::SendDrainOutcome;
     let mut bindings = select_product_bindings();
     bindings.extend(tiler_macos::workspace_send::bindings());
     assert_eq!(bindings.len(), 63, "34 basic + 19 selects + 10 sends");
@@ -2903,13 +2903,36 @@ fn numbered_send_hotkey_claim_settles_transfer_end_to_end() {
     assert_eq!(claimed.send_subject.as_deref(), Some("1001_1"));
     assert_eq!(claimed.send_generation, Some(gen_a));
     assert_eq!(claimed.topology_revision, Some(revision));
-    assert!(claimed.expected_sid.is_some(), "target SID pinned");
+    assert_eq!(
+        claimed.expected_sid,
+        claimed
+            .select_native_binding
+            .as_deref()
+            .and_then(|binding| binding.strip_prefix("space-")?.parse::<u64>().ok()),
+        "send target SID rides the reply binding, never an input-ordinal pin"
+    );
+    assert!(claimed.expected_sid.is_some(), "target SID bound");
     assert!(claimed.send_source.is_some(), "source domain pinned");
+    assert!(
+        claimed.select_target_output.is_some() && claimed.select_target_workspace.is_some(),
+        "reply plan binds the retained transfer target"
+    );
     let op = claimed.operation_id.clone().expect("bound operation id");
+    let baseline = claimed.select_baseline_sid;
+    let follow_view = claimed.send_follow_view_operation.clone();
     fixture.handle.release_select_after_drain();
-    fixture
-        .handle
-        .report_send_outcome(&op, SendDrainOutcome::Applied, None);
+    // Offline no-touch pathway: no native write fired, so the raw setter is
+    // `Refused` with no reads (holds without actuation — never a verdict).
+    fixture.handle.report_send_outcome(
+        &op,
+        FrameSetter::Refused,
+        None,
+        None,
+        None,
+        None,
+        baseline,
+        follow_view.as_deref(),
+    );
     assert!(fixture.handle.flush(FLUSH));
     assert!(
         fixture
@@ -3497,7 +3520,7 @@ fn select_claim_release_discard_protocol() {
     let fixture = start(select_config(bindings.clone()));
     assert!(fixture.handle.claim_select_for_drain().is_none());
     assert!(!fixture.handle.discard_select_pending());
-    let revision = fixture
+    fixture
         .handle
         .update_topology_with(two_space_snapshot(), &user_space);
     send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 2 });
@@ -3512,22 +3535,34 @@ fn select_claim_release_discard_protocol() {
         .claim_select_for_drain()
         .expect("pending claim");
     assert_eq!(claimed.action, Action::WorkspaceSelect { index: 2 });
+    // Ordinary taps bind no pre-reply SID: targeting resolves core-side
+    // and the command carries no output (cursor/focus resolves it).
     assert_eq!(
-        claimed.expected_sid,
-        Some(12),
-        "numbered tap binds its admission SID"
+        claimed.expected_sid, None,
+        "numbered tap binds no admission SID"
     );
     assert_eq!(claimed.ui_generation, 0);
     assert_eq!(
-        claimed.topology_revision,
-        Some(revision),
-        "numbered tap pins the admission revision for the drain fence"
+        claimed.topology_revision, None,
+        "numbered tap pins no revision; the drain fences nothing pre-reply"
     );
     assert_eq!(
         claimed.operation_id.as_deref(),
         Some("op-1"),
         "claim binds the world operation identity for drain feedback"
     );
+    // The accepted reply binds the plan: retained logical target plus the
+    // live native binding with the observation-time baseline.
+    assert_eq!(
+        claimed.select_target_output.as_deref(),
+        Some("macos-display-1")
+    );
+    assert_eq!(
+        claimed.select_native_binding.as_deref(),
+        Some("space-12"),
+        "numbered tap actuates the live binding, never a pinned ordinal"
+    );
+    assert_eq!(claimed.select_baseline_sid, Some(11));
     assert!(fixture.handle.claim_select_for_drain().is_none());
     assert!(
         !fixture.handle.discard_select_pending(),
@@ -3556,7 +3591,8 @@ fn select_drain_and_discard_outcomes_stage_feedback_end_to_end() {
     // claim, and both land ring-observable as staged feedback for the
     // next world report — so the core settles the planner-owned view
     // target instead of retaining it. No live tap, no Spaces.
-    use tiler_macos::runtime::{InputSemanticAction as Action, SelectDrainOutcome};
+    use tiler_core::world_report::FrameSetter;
+    use tiler_macos::runtime::InputSemanticAction as Action;
     let bindings = select_product_bindings();
     let fixture = start(select_config(bindings.clone()));
     fixture
@@ -3586,7 +3622,7 @@ fn select_drain_and_discard_outcomes_stage_feedback_end_to_end() {
     fixture.handle.release_select_after_drain();
     fixture
         .handle
-        .report_select_outcome(&op, SelectDrainOutcome::Applied, None, None);
+        .report_select_attempt(&op, FrameSetter::Accepted, None, None, None);
     assert!(fixture.handle.flush(FLUSH));
     assert_eq!(staged_count(), 1, "drain outcome must stage exactly once");
     // Discard path: a second pending claim dropped without dispatch still
@@ -3610,12 +3646,12 @@ fn select_drain_and_discard_outcomes_stage_feedback_end_to_end() {
 
 #[test]
 fn stale_select_flight_still_binds_claim_and_never_replays() {
-    // A racing observation mid-select-flight refuses the stale reply, but
-    // the planner-owned command already executed core-side (at-most-once):
-    // the pending claim still binds under its operation identity for drain
-    // feedback (no immediate redispatch from stale retained truth — the
-    // queued successors converge instead), and the racing select refuses
-    // busy instead of replaying. Channel rendezvous only.
+    // Stale command reply refused with no stale emission; the pending
+    // claim still binds under its operation identity exactly once (the
+    // honest observation-only retry recovers under the same identity with
+    // a current reply - never a replay of the consumed command), and the
+    // racing select refuses busy instead of overlapping. Channel
+    // rendezvous only.
     use std::sync::atomic::{AtomicBool, Ordering};
     use tiler_macos::runtime::{InputSemanticAction as Action, MidflightHook};
     let bindings = select_product_bindings();
@@ -3676,6 +3712,15 @@ fn stale_select_flight_still_binds_claim_and_never_replays() {
         Some("op-1"),
         "stale select still binds its operation identity"
     );
+    // The recovered retry reply is current, so the bound plan resolves
+    // against live truth: the binding names a SID in the current native
+    // row - never a stale occupant, never a replay.
+    assert_eq!(
+        claimed.select_native_binding.as_deref(),
+        Some("space-12"),
+        "recovered plan binds the live native, not the stale occupant"
+    );
+    assert_eq!(claimed.select_baseline_sid, Some(11));
     fixture.handle.release_select_after_drain();
     shutdown_clean(&fixture);
 }

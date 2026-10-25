@@ -260,6 +260,17 @@ pub(crate) struct Shared {
     pub(crate) diagnostics: RuntimeDiagnostics,
     pub(crate) log: VecDeque<LifecycleLogEntry>,
     pub(crate) last_desired: Vec<DesiredFrame>,
+    /// Latest applied reply presentation (border/underlay/pager shapes plus
+    /// the tick-time foreground token). The engine publishes exactly the
+    /// applied reply's presentation here; the tile main thread renders only
+    /// these shapes through the existing native carriers, revalidating the
+    /// live foreground against the token before painting.
+    pub(crate) last_presentation: tiler_core::world_presentation::WorldPresentation,
+    /// Startup-resolved presentation style numbers for the report ingress
+    /// (whole-point rounded width/gap plus the ring switch). Published
+    /// once by the tile main thread at startup; the engine copies it into
+    /// every report so core shapes use the configured outset.
+    pub(crate) presentation_style: crate::active_border::PresentationStylePx,
 }
 
 /// Lock the shared state, recovering from poisoning so stop/reap/diagnostics

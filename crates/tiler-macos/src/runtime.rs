@@ -45,10 +45,6 @@ use crate::runtime_lifecycle::{LiveHandle, classify_shutdown, join_exited};
 pub use crate::runtime_lifecycle::{ReapReport, ShutdownOutcome, ShutdownReport};
 use crate::runtime_log::{LogSink, StderrSink, sanitize_backend_reason, spawn_logger};
 use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, Inbox, engine_main};
-/// Stable pre-move path for the product select outcome: the handoff lane
-/// lives in [`crate::select_feedback`]; this re-export keeps drain and
-/// test call sites unchanged.
-pub use crate::select_feedback::SelectDrainOutcome;
 use crate::world_sequencer::ObservationClock;
 
 pub use crate::focus_route::FocusRoute;
@@ -285,6 +281,8 @@ impl Runtime {
                 diagnostics: RuntimeDiagnostics::default(),
                 log: VecDeque::new(),
                 last_desired: Vec::new(),
+                last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+                presentation_style: crate::active_border::PresentationStylePx::default(),
             }));
             let inbox = Arc::new(Inbox::new(config.engine_queue_depth.max(1)));
             let focus_queue = Arc::new(Mutex::new(Vec::<FocusRequest>::new()));
@@ -333,6 +331,8 @@ impl Runtime {
             diagnostics: RuntimeDiagnostics::default(),
             log: VecDeque::new(),
             last_desired: Vec::new(),
+            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation_style: crate::active_border::PresentationStylePx::default(),
         }));
         emit(&shared, 0, 0, 0, "runtime", "starting", 0);
         let inbox = Arc::new(Inbox::new(config.engine_queue_depth));
@@ -931,6 +931,17 @@ impl RuntimeHandle {
         lock_shared(&self.shared).select_wake = Some(wake);
     }
 
+    /// Publish the startup-resolved presentation style numbers for the
+    /// report ingress. Call once at startup from the tile main thread
+    /// (startup-only config, never re-read). Brief lock.
+    pub fn publish_presentation_style(
+        &self,
+        style: &crate::active_border::ActiveBorderStyle,
+        enabled: bool,
+    ) {
+        lock_shared(&self.shared).presentation_style =
+            crate::active_border::presentation_style(style, enabled);
+    }
     /// Shared active-Space wake (`None` until published — both waiters
     /// refuse honestly). Brief lock clone only.
     pub fn select_wake(&self) -> Option<crate::ffi::SpaceSelectWake> {
@@ -1451,6 +1462,15 @@ impl RuntimeHandle {
     /// Snapshot of the last desired geometry the core planned.
     pub fn last_desired_geometry(&self) -> Vec<DesiredFrame> {
         lock_shared(&self.shared).last_desired.clone()
+    }
+
+    /// Snapshot of the last applied reply presentation (border/underlay
+    /// shapes, pager content, tick-time foreground token). The tile main
+    /// thread renders these shapes through the existing native carriers,
+    /// revalidating liveness plus the fresh native safety vetoes before
+    /// painting.
+    pub fn last_presentation(&self) -> tiler_core::world_presentation::WorldPresentation {
+        lock_shared(&self.shared).last_presentation.clone()
     }
 
     /// Current generation for a live app, if any.

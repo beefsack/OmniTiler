@@ -81,6 +81,7 @@ pub enum McError {
     Ownership(String),
     Blocked(String),
     System(String),
+    Dispatch(String),
 }
 
 impl std::fmt::Display for McError {
@@ -89,7 +90,7 @@ impl std::fmt::Display for McError {
             Self::Unsupported(r) => write!(f, "unsupported: {r}"),
             Self::Ownership(r) => write!(f, "ownership refused: {r}"),
             Self::Blocked(r) => write!(f, "blocked: {r}"),
-            Self::System(r) => write!(f, "mission-control probe error: {r}"),
+            Self::System(r) | Self::Dispatch(r) => write!(f, "mission-control probe error: {r}"),
         }
     }
 }

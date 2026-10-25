@@ -423,9 +423,12 @@ pub(crate) mod live {
             Ok(outcome) => Ok(finish_press(outcome)),
             Err(e) => {
                 if opened && let Err(c) = mc_close() {
-                    return Err(McError::System(format!(
-                        "{e}; MC close on error path also failed: {c}"
-                    )));
+                    let reason = format!("{e}; MC close on error path also failed: {c}");
+                    return Err(if matches!(e, McError::Dispatch(_)) {
+                        McError::Dispatch(reason)
+                    } else {
+                        McError::System(reason)
+                    });
                 }
                 Err(e)
             }
@@ -490,7 +493,7 @@ pub(crate) mod live {
         super::spend_leg(budget, cleanup, "add-press")?;
         action_gates()?;
         crate::ffi::ax_perform_action(&add, MC_ACTION_PRESS).map_err(|code| {
-            McError::System(format!(
+            McError::Dispatch(format!(
                 "mc.spaces.add press refused: {}",
                 crate::ffi::ax_error_name(code)
             ))
@@ -563,7 +566,7 @@ pub(crate) mod live {
         super::spend_leg(budget, cleanup, "goto-press")?;
         action_gates()?;
         crate::ffi::ax_perform_action(target, MC_ACTION_PRESS).map_err(|code| {
-            McError::System(format!(
+            McError::Dispatch(format!(
                 "goto press refused: {}",
                 crate::ffi::ax_error_name(code)
             ))

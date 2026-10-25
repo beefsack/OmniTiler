@@ -60,17 +60,15 @@ pub(crate) fn select_output(retained: &RetainedCore, ctx: &NativeContext) -> Opt
 /// under host-owned adoption (initial adoption preserves native order;
 /// outside-created desktops bind at native-order position) — so a
 /// positional resolution names the same Desktop-N the admission pinned
-/// natively, with no adapter-side logical mapping table. The admission
-/// still pins the native target SID plus the live topology revision, and
-/// the drain refuses a moved ordinal instead of selecting the new
-/// occupant. Relative and previous selects keep their shared core
-/// semantics untouched. Trailing `index 0` maps only when
-/// `trailing_enabled` (see [`TRAILING_CAPABILITY_ENABLED`]);
-/// production callers pass the gate const, tests an explicit local. Unarmed
-/// actions have no select route and stay capability-refused by the caller.
+/// natively, with no adapter-side logical mapping table. `output` is
+/// `None` for ordinary tap commands (the core resolves the switch target
+/// from cursor/focus); indicator taps that carry an explicit semantic
+/// output pass `Some`. Relative and previous selects keep their shared core
+/// semantics untouched. Trailing `index 0` resolves core-side to
+/// reuse-or-create (`SelectTrailing`), never to an explicit guess.
 pub(crate) fn select_command(
     action: &InputSemanticAction,
-    output: OutputId,
+    output: Option<OutputId>,
 ) -> Option<WorldCommand> {
     select_command_with_capability(
         action,
@@ -87,26 +85,26 @@ pub(crate) fn select_command(
 /// back under the claim's operation identity.
 pub(crate) fn select_command_with_capability(
     action: &InputSemanticAction,
-    output: OutputId,
+    output: Option<OutputId>,
     trailing_enabled: bool,
 ) -> Option<WorldCommand> {
     match action {
         InputSemanticAction::WorkspaceSelect { index } if (1..=9).contains(index) => {
             Some(WorldCommand::SelectNumbered {
-                output: Some(output),
+                output: output.clone(),
                 index: *index,
             })
         }
         InputSemanticAction::WorkspaceRelative { prev } => Some(WorldCommand::SelectRelative {
-            output: Some(output),
+            output: output.clone(),
             delta: if *prev { -1 } else { 1 },
         }),
         InputSemanticAction::WorkspacePrevious => Some(WorldCommand::SelectPrevious {
-            output: Some(output),
+            output: output.clone(),
         }),
         InputSemanticAction::WorkspaceSelect { index: 0 } if trailing_enabled => {
             Some(WorldCommand::SelectTrailing {
-                output: Some(output),
+                output: output.clone(),
             })
         }
         _ => None,
@@ -114,23 +112,70 @@ pub(crate) fn select_command_with_capability(
 }
 
 /// Map one send-shaped action to its planner-owned world command for the
-/// focused-window `window` subject. Numbered sends (`1..=9`, follow or
-/// stay) and trailing send-0 follow ride positional
-/// [`WorldCommand::SendNumbered`]: the ordinal resolves core-side against
-/// the scoped send ring for the admission-resolved source, whose order
-/// tracks native Desktop order under host-owned adoption — so a positional
-/// resolution names the same Desktop-N the admission pinned natively, with
-/// no adapter-side logical mapping table. The source stays
-/// [`SendSource::Explicit`](tiler_core::world_report::SendSource) (the
-/// admission-resolved semantic output passes through unchanged, never an
-/// adapter output decision beyond the existing resolution). The admission
-/// still pins the native target SID plus the live topology revision, the
-/// claim carries subject/generation/source, and the drain refuses a moved
-/// ordinal instead of sending to the new occupant. Non-send-shaped actions
-/// (relative sends, outputs, selects, basics) have no send route (`None`).
-/// Trailing send-0 follow maps only when `trailing_enabled` (the native
-/// send-0 owner preparation rides the dedicated effect lane); stay-0 never
-/// maps.
+/// focused-window `window` subject, with a core-owned implicit source.
+/// Numbered sends (`1..=9`, follow or stay) and trailing send-0 follow ride
+/// positional [`WorldCommand::SendNumbered`]: the ordinal resolves core-side
+/// against the scoped send ring for the core-resolved source, whose order
+/// tracks native Desktop order under host-owned adoption. The source stays
+/// [`SendSource::HomeThenCachedLive`](tiler_core::world_report::SendSource)
+/// (the keyboard send route: retained pre-observation home first, never an
+/// adapter output decision and never a native-domain default). The adapter
+/// pins only subject lifetime/generation/source freshness natively; targeting
+/// is entirely core-owned. Non-send-shaped actions (relative sends, outputs,
+/// selects, basics) have no send route (`None`). Trailing send-0 follow
+/// maps only when `trailing_enabled`; stay-0 never maps.
+/// Offline test seam over [`send_command_implicit_with_capability`].
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn send_command_implicit(
+    action: &InputSemanticAction,
+    window: &str,
+) -> Option<WorldCommand> {
+    send_command_implicit_with_capability(
+        action,
+        window,
+        crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+    )
+}
+
+/// Capability-explicit implicit-source send mapping: the production route
+/// above with `trailing_enabled` threaded from the single capability gate.
+pub(crate) fn send_command_implicit_with_capability(
+    action: &InputSemanticAction,
+    window: &str,
+    trailing_enabled: bool,
+) -> Option<WorldCommand> {
+    use tiler_core::world_report::SendSource;
+    match action {
+        InputSemanticAction::WorkspaceSend { index, follow } if (1..=9).contains(index) => {
+            Some(WorldCommand::SendNumbered {
+                window: tiler_core::directional::WindowId(window.to_owned()),
+                source: SendSource::HomeThenCachedLive,
+                index: *index,
+                follow: *follow,
+            })
+        }
+        InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true,
+        } if trailing_enabled => Some(WorldCommand::SendNumbered {
+            window: tiler_core::directional::WindowId(window.to_owned()),
+            source: SendSource::HomeThenCachedLive,
+            index: 0,
+            follow: true,
+        }),
+        _ => None,
+    }
+}
+
+/// Map one send-shaped action to its planner-owned world command for the
+/// focused-window `window` subject with an explicit source (offline test
+/// seam: production resolves the source core-side through
+/// [`send_command_implicit`]).
+/// Capability-explicit send mapping: the production route above with
+/// `trailing_enabled` threaded from the single capability gate.
+/// Non-test builds route through the production wrapper below; the
+/// positional form stays as the offline test seam.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn send_command(
     action: &InputSemanticAction,
     window: &str,
@@ -255,10 +300,19 @@ mod trailing_command_tests {
         // to SelectTrailing and send-0 follow to SendNumbered 0, while
         // stay-0 never maps. Numbered selects ride positional
         // SelectNumbered over the adopted ring (Desktop-N order), never a
-        // pinned logical guess.
+        // pinned logical guess. Ordinary taps carry no adapter output
+        // (core resolves cursor/focus); explicit semantic outputs ride
+        // `Some`.
         let select1 = InputSemanticAction::WorkspaceSelect { index: 1 };
         assert_eq!(
-            select_command(&select1, output.clone()),
+            select_command(&select1, None),
+            Some(WorldCommand::SelectNumbered {
+                output: None,
+                index: 1,
+            })
+        );
+        assert_eq!(
+            select_command(&select1, Some(output.clone())),
             Some(WorldCommand::SelectNumbered {
                 output: Some(output.clone()),
                 index: 1,
@@ -266,19 +320,15 @@ mod trailing_command_tests {
         );
         let select0 = InputSemanticAction::WorkspaceSelect { index: 0 };
         assert_eq!(
-            select_command(&select0, output.clone()),
-            Some(WorldCommand::SelectTrailing {
-                output: Some(output.clone())
-            })
+            select_command(&select0, None),
+            Some(WorldCommand::SelectTrailing { output: None })
         );
         assert_eq!(
-            select_command_with_capability(&select0, output.clone(), true),
-            Some(WorldCommand::SelectTrailing {
-                output: Some(output.clone())
-            })
+            select_command_with_capability(&select0, None, true),
+            Some(WorldCommand::SelectTrailing { output: None })
         );
         assert_eq!(
-            select_command_with_capability(&select0, output.clone(), false),
+            select_command_with_capability(&select0, None, false),
             None,
             "capability-disabled select-0 has no route"
         );
@@ -341,5 +391,35 @@ mod trailing_command_tests {
         assert!(crate::workspace_input::is_armed_select_with(&select0, true));
         assert!(crate::workspace_input::is_armed_send_with(&send0, true));
         assert!(!crate::workspace_input::is_armed_send_with(&stay0, true));
+        // Implicit production mapping resolves the source core-side: no
+        // adapter output decision, no native-domain default.
+        assert_eq!(
+            send_command_implicit(&send1, "4242_7"),
+            Some(WorldCommand::SendNumbered {
+                window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                source: SendSource::HomeThenCachedLive,
+                index: 1,
+                follow: true,
+            })
+        );
+        assert_eq!(
+            send_command_implicit_with_capability(&send0, "4242_7", true),
+            Some(WorldCommand::SendNumbered {
+                window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                source: SendSource::HomeThenCachedLive,
+                index: 0,
+                follow: true,
+            })
+        );
+        assert_eq!(
+            send_command_implicit_with_capability(&send0, "4242_7", false),
+            None,
+            "capability-disabled send-0 has no route"
+        );
+        assert_eq!(
+            send_command_implicit_with_capability(&stay0, "4242_7", true),
+            None,
+            "stay-0 never maps"
+        );
     }
 }

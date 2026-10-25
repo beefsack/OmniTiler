@@ -91,6 +91,7 @@ use crate::workspace_send_effect::{
     SendFreshEvidence, SendProofRefusal, SendRequest, TrailingCompletionProof, TrailingPrepPins,
     TrailingPrepProof, TrailingSendRequest, prove_managed_send,
 };
+use tiler_core::world_report::FrameSetter;
 
 /// Injectable managed-send backend for the dedicated effect owner.
 ///
@@ -174,6 +175,15 @@ pub trait ManagedSendBackend: Send {
     fn bridged_move(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String> {
         let _ = (permit, goal);
         Err("bridged route unavailable on this backend; refusing without fallback".to_owned())
+    }
+    /// Whether the current operation's bridged dispatch reached the OS
+    /// touch. The owner reads this to classify a `bridged_move` error
+    /// truthfully: no touch means a proven pre-dispatch refusal
+    /// (`Refused`), a touched-then-errored dispatch means native
+    /// uncertainty (`Threw`), never a guess from the error string. Default
+    /// false (backends that never dispatch report no touch).
+    fn bridged_dispatched(&self) -> bool {
+        false
     }
     /// Follow-only destination select after a dispatched bridged move (the
     /// mover stays on the destination; the view follows). The production
@@ -315,6 +325,12 @@ struct ProvingWithChords<'a, 'h, B: ManagedSendBackend> {
     handoff: &'h SendEffectHandoff,
     chord: (u32, u64),
     pinned_point: Option<(f64, f64)>,
+    /// Latched on the first native post-call failure (the backend's own
+    /// down-edge post returning `Err` after a permit authorized it). Proof
+    /// refusals and stop requests never set this — only an actual post
+    /// call that threw. The terminal mapping reads it to report `Threw`
+    /// instead of claiming a proven pre-actuation refusal.
+    post_failed: bool,
 }
 
 impl<'a, 'h, B: ManagedSendBackend> ProvingWithChords<'a, 'h, B> {
@@ -330,6 +346,7 @@ impl<'a, 'h, B: ManagedSendBackend> ProvingWithChords<'a, 'h, B> {
             handoff,
             chord,
             pinned_point: None,
+            post_failed: false,
         }
     }
 
@@ -382,7 +399,11 @@ impl<B: ManagedSendBackend> DragBackend for ProvingWithChords<'_, '_, B> {
             ));
         }
         let permit = self.authorize(edge)?;
-        self.inner.post_mouse(permit, step)
+        if let Err(e) = self.inner.post_mouse(permit, step) {
+            self.post_failed = true;
+            return Err(e);
+        }
+        Ok(())
     }
     fn post_key(&mut self, down: bool) -> Result<(), String> {
         if !down {
@@ -394,7 +415,11 @@ impl<B: ManagedSendBackend> DragBackend for ProvingWithChords<'_, '_, B> {
             );
         }
         let permit = self.authorize("chord-down")?;
-        self.inner.post_key_down(permit)
+        if let Err(e) = self.inner.post_key_down(permit) {
+            self.post_failed = true;
+            return Err(e);
+        }
+        Ok(())
     }
     fn settle_grab(&mut self) {
         self.inner.settle_grab();
@@ -561,17 +586,35 @@ fn emit_owner_line(line: &str) {
     eprintln!("{line}");
 }
 
+/// Terminal owner-side result for one pinned-target send effect: the
+/// arrival outcome, the verified leg readback (on exact arrival only), and
+/// the raw native setter disposition captured at the actual write boundary
+/// — never derived from the arrival outcome. `Accepted` means the actuating
+/// native write reported success (the caller still settles arrival from the
+/// readback; success alone never proves it). `Refused` means nothing was
+/// posted before the refusal (proof, gate, or pre-touch fence). `Threw`
+/// means a native post call itself errored or the dispatch only partially
+/// completed (uncertain, never replayed). The core receives this setter
+/// verbatim; the arrival outcome never re-derives it.
+#[derive(Debug)]
+pub(crate) struct SendEffect {
+    pub outcome: SendEffectOutcome,
+    pub leg: Option<LegOk>,
+    pub setter: FrameSetter,
+}
+
 /// Proven-refusal terminal for [`execute_managed_send`]: logs the single
 /// bounded token-only owner line, then returns the outcome. `end` is the
 /// backend counts at refusal time (deltas against `start` prove how much
-/// posted this operation — zero on every pre-actuation path below).
+/// posted this operation — zero on every pre-actuation path below, and the
+/// setter is `Refused`: the actuating write never fired).
 fn refuse_proven(
     target: &ManagedSendTarget,
     stage: &'static str,
     reason: &str,
     start: PostCounts,
     end: PostCounts,
-) -> (SendEffectOutcome, Option<LegOk>) {
+) -> SendEffect {
     log_effect_refusal(
         target,
         SendEffectOutcome::RefusedProven,
@@ -580,12 +623,18 @@ fn refuse_proven(
         start,
         end,
     );
-    (SendEffectOutcome::RefusedProven, None)
+    SendEffect {
+        outcome: SendEffectOutcome::RefusedProven,
+        leg: None,
+        setter: FrameSetter::Refused,
+    }
 }
 
 /// Execute one pinned-target managed send on the calling (effect-owner)
-/// thread. Returns the terminal outcome plus the exact leg readback on
-/// success. Never submits, finishes, polls, or releases the handoff — the
+/// thread. Returns the terminal [`SendEffect`]: the arrival outcome, the
+/// exact leg readback on success, and the raw native setter disposition
+/// captured at the actual write boundary (never derived from arrival).
+/// Never submits, finishes, polls, or releases the handoff — the
 /// threaded owner below does that — but honors its stop request between
 /// edges. History is NOT advanced here: the main thread notes arrival after
 /// polling an `Applied` completion.
@@ -598,7 +647,7 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     target: &ManagedSendTarget,
     backend: &mut B,
     handoff: &SendEffectHandoff,
-) -> (SendEffectOutcome, Option<LegOk>) {
+) -> SendEffect {
     // Per-operation post baseline: the backend is reused across requests, so
     // classification below must use deltas from this operation only - never
     // cumulative totals that a prior success would corrupt.
@@ -777,21 +826,37 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     let mut adapter = ProvingWithChords::with_chord(backend, target, handoff, (keycode, flags));
     let mut notes = Vec::new();
     match crate::space_drag_transfer::run_drag_leg(&mut adapter, goal, goal, "send", &mut notes) {
-        Ok(leg) => (SendEffectOutcome::Applied, Some(leg)),
+        Ok(leg) => SendEffect {
+            outcome: SendEffectOutcome::Applied,
+            leg: Some(leg),
+            // The actuating chord post reported success; arrival is proven
+            // by the leg readback, never by this setter alone.
+            setter: FrameSetter::Accepted,
+        },
         Err(LegError::Refused { stage, reason }) if stage != "readback" => {
             // A stop or proof refusal after the chord started is uncertain:
             // the switch may have fired before the refusal. Only a refusal
             // with zero key-down posts *this operation* is proven
             // pre-actuation (delta from the entry baseline, never the
-            // cumulative backend totals).
+            // cumulative backend totals). A native post call that itself
+            // errored is `Threw` even with zero chord posts: the write was
+            // attempted and the OS refused it, which is uncertainty, never
+            // a proven pre-actuation refusal.
             let end = adapter.inner.counts();
-            let outcome = if end.key_down.saturating_sub(start_counts.key_down) > 0 {
-                SendEffectOutcome::PossiblyExecuted
+            let chord_fired = end.key_down.saturating_sub(start_counts.key_down) > 0;
+            let (outcome, setter) = if adapter.post_failed {
+                (SendEffectOutcome::PossiblyExecuted, FrameSetter::Threw)
+            } else if chord_fired {
+                (SendEffectOutcome::PossiblyExecuted, FrameSetter::Accepted)
             } else {
-                SendEffectOutcome::RefusedProven
+                (SendEffectOutcome::RefusedProven, FrameSetter::Refused)
             };
             log_effect_refusal(target, outcome, stage, &reason, start_counts, end);
-            (outcome, None)
+            SendEffect {
+                outcome,
+                leg: None,
+                setter,
+            }
         }
         Err(other) => {
             let (stage, reason) = match &other {
@@ -799,6 +864,22 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
                 LegError::NoEffect { .. } => ("readback", other.describe()),
                 LegError::UnresolvedPending { .. } => ("pending", other.describe()),
                 LegError::ReleaseFailed { .. } => ("release", other.describe()),
+            };
+            // Post-readback phases run only after the chord fired (except a
+            // release-teardown failure, which is uncertainty either way):
+            // the write reported success, so the setter stays `Accepted`
+            // even though arrival is unproven. Only a chord-less teardown
+            // failure throws.
+            let chord_fired = adapter
+                .inner
+                .counts()
+                .key_down
+                .saturating_sub(start_counts.key_down)
+                > 0;
+            let setter = if chord_fired {
+                FrameSetter::Accepted
+            } else {
+                FrameSetter::Threw
             };
             log_effect_refusal(
                 target,
@@ -808,7 +889,11 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
                 start_counts,
                 adapter.inner.counts(),
             );
-            (SendEffectOutcome::PossiblyExecuted, None)
+            SendEffect {
+                outcome: SendEffectOutcome::PossiblyExecuted,
+                leg: None,
+                setter,
+            }
         }
     }
 }
@@ -829,11 +914,13 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
 ///
 /// Sequencing: cancel before dispatch refuses proven (nothing dispatched);
 /// pre-dispatch refusal (proof, anchor, or dispatch error before the OS
-/// touch) refuses proven; `Ok` from [`ManagedSendBackend::bridged_move`]
-/// means dispatched (possibly executed) - every later failure (destination
-/// select, late/unreadable/wrong membership/current, subject focus) holds
-/// as [`SendEffectOutcome::PossiblyExecuted`], never replayed, never a
-/// second select. Cancel before the selector withholds the selector; the
+/// touch — the backend reports the touch fact) refuses proven; an errored
+/// OS touch throws (`Threw`) without replay; `Ok` from
+/// [`ManagedSendBackend::bridged_move`] means dispatched (possibly
+/// executed) - every later failure (destination select, late/unreadable/
+/// wrong membership/current, subject focus) holds as
+/// [`SendEffectOutcome::PossiblyExecuted`] with an `Accepted` setter (the
+/// write reported success), never replayed, never a second select. Cancel before the selector withholds the selector; the
 /// read-only settle await honors cancel for a prompt stop (still
 /// `PossiblyExecuted` - the dispatch already executed). If the native
 /// destination activation does not naturally focus the subject, the follow
@@ -847,7 +934,7 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
     goal: u64,
     chord: (u32, u64),
     start_counts: PostCounts,
-) -> (SendEffectOutcome, Option<LegOk>) {
+) -> SendEffect {
     if handoff.cancel_requested() {
         return refuse_proven(
             target,
@@ -874,8 +961,30 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
         }
     };
     // Fresh anchor immediately at dispatch inside `bridged_move`; a stale
-    // ordinal or moved revision refuses before any OS touch.
+    // ordinal or moved revision refuses before any OS touch. The backend
+    // reports whether the OS touch happened, so a dispatch error
+    // classifies truthfully instead of by error-string parsing: untouched
+    // stays a proven pre-dispatch refusal, a touched-then-errored dispatch
+    // is native uncertainty.
     if let Err(detail) = backend.bridged_move(permit, goal) {
+        if backend.bridged_dispatched() {
+            let reason = format!(
+                "bridged dispatch uncertain: OS touch errored ({detail}); no fallback, no replay"
+            );
+            log_effect_refusal(
+                target,
+                SendEffectOutcome::PossiblyExecuted,
+                "bridged-dispatch",
+                &reason,
+                start_counts,
+                backend.counts(),
+            );
+            return SendEffect {
+                outcome: SendEffectOutcome::PossiblyExecuted,
+                leg: None,
+                setter: FrameSetter::Threw,
+            };
+        }
         return refuse_proven(
             target,
             "bridged-dispatch",
@@ -899,7 +1008,14 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
             start_counts,
             backend.counts(),
         );
-        return (SendEffectOutcome::PossiblyExecuted, None);
+        return SendEffect {
+            outcome: SendEffectOutcome::PossiblyExecuted,
+            leg: None,
+            // The bridged dispatch already fired: the native write
+            // reported success, so the setter stays `Accepted` even
+            // though arrival is unproven.
+            setter: FrameSetter::Accepted,
+        };
     }
     if let Err(detail) = backend.select_destination(goal) {
         let reason =
@@ -912,7 +1028,14 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
             start_counts,
             backend.counts(),
         );
-        return (SendEffectOutcome::PossiblyExecuted, None);
+        return SendEffect {
+            outcome: SendEffectOutcome::PossiblyExecuted,
+            leg: None,
+            // The bridged dispatch already fired: the native write
+            // reported success, so the setter stays `Accepted` even
+            // though arrival is unproven.
+            setter: FrameSetter::Accepted,
+        };
     }
     // Settle the async completion: one immediate exact readback, then the
     // existing poll interval until the genuine effect deadline. The dispatch
@@ -936,7 +1059,14 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
                 start_counts,
                 backend.counts(),
             );
-            return (SendEffectOutcome::PossiblyExecuted, None);
+            return SendEffect {
+                outcome: SendEffectOutcome::PossiblyExecuted,
+                leg: None,
+                // The bridged dispatch already fired: the native write
+                // reported success, so the setter stays `Accepted` even
+                // though arrival is unproven.
+                setter: FrameSetter::Accepted,
+            };
         }
         match (backend.read_membership(), backend.read_current()) {
             (Some(membership), Some(current))
@@ -959,7 +1089,14 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
                 start_counts,
                 backend.counts(),
             );
-            return (SendEffectOutcome::PossiblyExecuted, None);
+            return SendEffect {
+                outcome: SendEffectOutcome::PossiblyExecuted,
+                leg: None,
+                // The bridged dispatch already fired: the native write
+                // reported success, so the setter stays `Accepted` even
+                // though arrival is unproven.
+                setter: FrameSetter::Accepted,
+            };
         }
         std::thread::sleep(std::time::Duration::from_millis(poll_ms));
     }
@@ -975,7 +1112,14 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
                 start_counts,
                 backend.counts(),
             );
-            return (SendEffectOutcome::PossiblyExecuted, None);
+            return SendEffect {
+                outcome: SendEffectOutcome::PossiblyExecuted,
+                leg: None,
+                // The bridged dispatch already fired: the native write
+                // reported success, so the setter stays `Accepted` even
+                // though arrival is unproven.
+                setter: FrameSetter::Accepted,
+            };
         }
     };
     if !crate::space_recovery::membership_is_exact(&membership, goal) || current != goal {
@@ -988,7 +1132,14 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
             start_counts,
             backend.counts(),
         );
-        return (SendEffectOutcome::PossiblyExecuted, None);
+        return SendEffect {
+            outcome: SendEffectOutcome::PossiblyExecuted,
+            leg: None,
+            // The bridged dispatch already fired: the native write
+            // reported success, so the setter stays `Accepted` even
+            // though arrival is unproven.
+            setter: FrameSetter::Accepted,
+        };
     }
     match backend.read_focused() {
         Some(actual) if actual == target.window() => {}
@@ -1002,18 +1153,29 @@ pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
                 start_counts,
                 backend.counts(),
             );
-            return (SendEffectOutcome::PossiblyExecuted, None);
+            return SendEffect {
+                outcome: SendEffectOutcome::PossiblyExecuted,
+                leg: None,
+                // The bridged dispatch already fired: the native write
+                // reported success, so the setter stays `Accepted` even
+                // though arrival is unproven.
+                setter: FrameSetter::Accepted,
+            };
         }
     }
-    (
-        SendEffectOutcome::Applied,
-        Some(LegOk {
+    SendEffect {
+        outcome: SendEffectOutcome::Applied,
+        leg: Some(LegOk {
             membership,
             current,
             pending_recovered: false,
             counts: backend.counts(),
         }),
-    )
+        // The bridged dispatch plus the destination select both reported
+        // success; arrival is proven by the readback, never by this setter
+        // alone.
+        setter: FrameSetter::Accepted,
+    }
 }
 
 /// Numbered send-stay effect (product stays are unarmed in
@@ -1057,7 +1219,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
     source_focus: Option<&str>,
     backend: &mut B,
     handoff: &SendEffectHandoff,
-) -> (SendEffectOutcome, Option<LegOk>) {
+) -> SendEffect {
     let start_counts = backend.counts();
     if source_sid == 0 {
         return refuse_proven(
@@ -1098,10 +1260,15 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             backend.counts(),
         );
     }
-    let (outcome, leg) = execute_managed_send(target, backend, handoff);
-    if outcome != SendEffectOutcome::Applied {
-        return (outcome, leg);
+    let forward_effect = execute_managed_send(target, backend, handoff);
+    if forward_effect.outcome != SendEffectOutcome::Applied {
+        return forward_effect;
     }
+    // The forward write fired (an `Applied` forward always carries an
+    // `Accepted` setter): every return-leg failure below holds with that
+    // same setter, since the member write already reported success.
+    let forward_setter = forward_effect.setter;
+    let leg = forward_effect.leg;
     let forward = match leg {
         Some(leg) => leg,
         None => {
@@ -1111,6 +1278,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
                 "stay return unproven: forward applied without readback",
                 start_counts,
                 backend.counts(),
+                forward_setter,
             );
         }
     };
@@ -1123,6 +1291,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return unproven: forward readback names no exact target",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     // The forward chord posted: every path below holds (never a proven
@@ -1134,6 +1303,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return stopped: managed send cancel requested before select-back",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     let gates = backend.read_gates();
@@ -1144,6 +1314,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return gated: session-locked",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     if gates.secure_active {
@@ -1153,6 +1324,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return gated: secure-active",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     if gates.lock_screen {
@@ -1162,6 +1334,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return gated: lock-screen",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     match backend.display_count() {
@@ -1173,6 +1346,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
                 &format!("stay return refused: single-display rule ({other} displays)"),
                 start_counts,
                 backend.counts(),
+                forward_setter,
             );
         }
         Err(detail) => {
@@ -1182,6 +1356,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
                 &format!("stay return refused: display count unreadable ({detail})"),
                 start_counts,
                 backend.counts(),
+                forward_setter,
             );
         }
     }
@@ -1194,6 +1369,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
                 &format!("stay return refused: fresh row unreadable ({detail})"),
                 start_counts,
                 backend.counts(),
+                forward_setter,
             );
         }
     };
@@ -1204,6 +1380,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return refused: fresh row/current identity unprovable",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     // Return-leg fence without the stale revision fingerprint: display
@@ -1222,6 +1399,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return refused: display identity moved mid-stay",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     if fresh.spaces != forward_row.spaces {
@@ -1231,6 +1409,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return refused: native row moved mid-stay",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     if fresh.current != target.target_sid() {
@@ -1240,6 +1419,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return refused: forward arrival moved before select-back",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     if let Err(detail) = backend.select_back(source_sid) {
@@ -1249,6 +1429,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             &format!("stay return unproven: select-back refused ({detail})"),
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     let (membership, current) = match (backend.read_membership(), backend.read_current()) {
@@ -1260,6 +1441,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
                 "stay return unproven: membership/current unreadable",
                 start_counts,
                 backend.counts(),
+                forward_setter,
             );
         }
     };
@@ -1272,6 +1454,7 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
             "stay return unproven: membership/current not exactly target-on-source",
             start_counts,
             backend.counts(),
+            forward_setter,
         );
     }
     if let Some(expected) = source_focus {
@@ -1284,26 +1467,29 @@ pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
                     "stay return unproven: source focus fallback unproven",
                     start_counts,
                     backend.counts(),
+                    forward_setter,
                 );
             }
         }
     }
-    (
-        SendEffectOutcome::Applied,
-        Some(LegOk {
+    SendEffect {
+        outcome: SendEffectOutcome::Applied,
+        leg: Some(LegOk {
             membership,
             current,
             pending_recovered: forward.pending_recovered,
             counts: backend.counts(),
         }),
-    )
+        setter: forward_setter,
+    }
 }
 
 /// Stay-return hold terminal for [`execute_managed_send_stay`]: the forward
 /// chord already posted, so a failed or uncertain return is ambiguous
 /// mid-actuation output - held without re-actuation, never a proven
 /// refusal, never replayed. Logs the single bounded token-only owner line
-/// like [`refuse_proven`].
+/// like [`refuse_proven`]. Carries the forward write's setter: the member
+/// write already reported success, so the hold never downgrades it.
 #[cfg_attr(not(test), allow(dead_code))]
 fn hold_stay_return(
     target: &ManagedSendTarget,
@@ -1311,7 +1497,8 @@ fn hold_stay_return(
     reason: &str,
     start: PostCounts,
     end: PostCounts,
-) -> (SendEffectOutcome, Option<LegOk>) {
+    setter: FrameSetter,
+) -> SendEffect {
     log_effect_refusal(
         target,
         SendEffectOutcome::PossiblyExecuted,
@@ -1320,7 +1507,11 @@ fn hold_stay_return(
         start,
         end,
     );
-    (SendEffectOutcome::PossiblyExecuted, None)
+    SendEffect {
+        outcome: SendEffectOutcome::PossiblyExecuted,
+        leg: None,
+        setter,
+    }
 }
 
 /// Completion for one executed target: fenced on the same operation,
@@ -1328,19 +1519,67 @@ fn hold_stay_return(
 /// executions attach their exact-append proof (`None` on reuse; tokenless
 /// requests attach creation without binding) so the main thread adopts
 /// owned creation and reports the binding back without re-reading
-/// topology.
+/// topology. The genuine pre/post reads ride alongside (refusal proof
+/// needs the unchanged-readable preimage; arrival proof needs the verified
+/// post): `None` legs are unreadable/ambiguous, never guessed. `setter` is
+/// the owner's raw native disposition captured at the actual write
+/// boundary — the core stages it verbatim, never derived from the arrival
+/// outcome. Documented capture contract: `pre_*` are fresh reads taken
+/// immediately before the effect's first post (only reads precede them);
+/// `post_*` are the leg readback (the first full post-write read) on
+/// success, else a fresh confirming re-read after the effect returns.
+/// Offline test seam over [`completion_for_with_reads`] (the threaded
+/// owner always carries reads).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn completion_for(
     target: &ManagedSendTarget,
+    setter: FrameSetter,
     outcome: SendEffectOutcome,
     trailing: Option<TrailingCompletionProof>,
+) -> SendCompletion {
+    completion_for_with_reads(target, setter, outcome, trailing, None, None, None, None)
+}
+
+/// Completion with the owner's genuine reads around the dispatch (see
+/// [`SendCompletion`] fields). Pure constructor; the threaded owner below
+/// captures the reads around [`execute_managed_send`] and forwards them
+/// here so the main thread stages raw attempt evidence without inventing
+/// verdicts. Eight explicit legs stay readable at the two call sites; no
+/// bundling struct is introduced for the single owner lane.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn completion_for_with_reads(
+    target: &ManagedSendTarget,
+    setter: FrameSetter,
+    outcome: SendEffectOutcome,
+    trailing: Option<TrailingCompletionProof>,
+    pre_member: Option<u64>,
+    post_member: Option<u64>,
+    pre_view: Option<u64>,
+    post_view: Option<u64>,
 ) -> SendCompletion {
     SendCompletion {
         operation_id: target.operation_id().to_owned(),
         app_generation: target.app_generation(),
         revision: target.revision(),
         follow: target.follow(),
+        setter,
         outcome,
         trailing,
+        pre_member,
+        post_member,
+        pre_view,
+        post_view,
+    }
+}
+
+/// One exact-single SID from an owner membership read (`Some` only when
+/// the read named exactly one nonzero Space; `None` is unreadable,
+/// empty, multi-Space, or zero — ambiguous, never guessed). The core
+/// translates the id through its own bindings.
+fn single_sid(membership: Option<Vec<u64>>) -> Option<u64> {
+    match membership {
+        Some(list) if list.len() == 1 && list[0] != 0 => Some(list[0]),
+        _ => None,
     }
 }
 
@@ -1377,22 +1616,47 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
     backend: &mut B,
     handoff: &SendEffectHandoff,
 ) -> (
-    SendEffectOutcome,
+    SendEffect,
     Option<ManagedSendTarget>,
     Option<TrailingCompletionProof>,
 ) {
     if handoff.cancel_requested() {
-        return (SendEffectOutcome::RefusedProven, None, None);
+        return (
+            SendEffect {
+                outcome: SendEffectOutcome::RefusedProven,
+                leg: None,
+                setter: FrameSetter::Refused,
+            },
+            None,
+            None,
+        );
     }
     let prep = match backend.prepare_trailing_target(&request.pins) {
         Ok(prep) => prep,
         Err(reason) => {
             let outcome = crate::workspace_send::classify_trailing_prep_error(&reason);
+            // The member write never fired on this path: a proven
+            // pre-actuation refusal stays `Refused`, anything past a
+            // possibly-sent press throws. The outcome (not the setter)
+            // carries the press ambiguity.
+            let setter = match outcome {
+                SendEffectOutcome::RefusedProven => FrameSetter::Refused,
+                SendEffectOutcome::PossiblyExecuted => FrameSetter::Threw,
+                SendEffectOutcome::Applied => FrameSetter::Threw,
+            };
             emit_owner_line(&format!(
                 "tiler-macos send trailing prep op={} outcome={outcome:?} complete=false",
                 request.operation_id,
             ));
-            return (outcome, None, None);
+            return (
+                SendEffect {
+                    outcome,
+                    leg: None,
+                    setter,
+                },
+                None,
+                None,
+            );
         }
     };
     let proof = || -> Option<TrailingCompletionProof> {
@@ -1420,6 +1684,14 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
         send_source_focus: None,
         send_source_focus_empty: false,
         operation_id: Some(request.operation_id.clone()),
+        select_target_output: None,
+        select_target_workspace: None,
+        select_native_binding: None,
+        select_creation_operation: None,
+        select_creation_logical: None,
+        select_creation_output: None,
+        select_baseline_sid: None,
+        send_follow_view_operation: None,
     };
     let send_prep = crate::workspace_send::TrailingSendPrep {
         target_sid: prep.target_sid,
@@ -1433,7 +1705,18 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
                 "tiler-macos send trailing bind op={} reason={reason} complete=false",
                 request.operation_id,
             ));
-            return (SendEffectOutcome::PossiblyExecuted, None, proof());
+            // The member write never fired (bind precedes the drag):
+            // `Refused` with no reads holds downstream, while the outcome
+            // holds the append ambiguity.
+            return (
+                SendEffect {
+                    outcome: SendEffectOutcome::PossiblyExecuted,
+                    leg: None,
+                    setter: FrameSetter::Refused,
+                },
+                None,
+                proof(),
+            );
         }
     };
     if handoff.cancel_requested() {
@@ -1443,10 +1726,29 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
         } else {
             SendEffectOutcome::RefusedProven
         };
-        return (outcome, Some(target), proof());
+        // The member write never fired on this path: the append
+        // uncertainty lives in the outcome plus the creation proof, while
+        // the member setter stays a proven non-actuation.
+        return (
+            SendEffect {
+                outcome,
+                leg: None,
+                setter: FrameSetter::Refused,
+            },
+            Some(target),
+            proof(),
+        );
     }
-    let (outcome, _) = execute_managed_send(&target, backend, handoff);
-    (outcome, Some(target), proof())
+    let effect = execute_managed_send(&target, backend, handoff);
+    (
+        SendEffect {
+            outcome: effect.outcome,
+            leg: None,
+            setter: effect.setter,
+        },
+        Some(target),
+        proof(),
+    )
 }
 
 /// Dedicated scoped managed-send effect thread.
@@ -1523,7 +1825,19 @@ impl ManagedSendThread {
                                 // never re-sampled). A stay without a pinned source SID selects back to
                                 // zero, which the stay path refuses proven before
                                 // any post.
-                                let (outcome, _) = if target.follow() {
+                                //
+                                // Genuine reads around the dispatch (never
+                                // guessed): the pre-write homing/current pair
+                                // before the effect, the verified post pair
+                                // from the leg readback on success, else a
+                                // fresh confirming re-read. Refusal proof
+                                // needs the unchanged-readable preimage;
+                                // arrival proof needs the verified post. The
+                                // setter below is the effect's own raw
+                                // disposition at the write boundary.
+                                let pre_member = single_sid(backend.read_membership());
+                                let pre_view = backend.read_current();
+                                let effect = if target.follow() {
                                     execute_managed_send(&target, &mut backend, &thread_handoff)
                                 } else {
                                     let sid = target.source_sid().unwrap_or(0);
@@ -1535,8 +1849,26 @@ impl ManagedSendThread {
                                         &thread_handoff,
                                     )
                                 };
-                                let _ =
-                                    thread_handoff.finish(completion_for(&target, outcome, None));
+                                let (post_member, post_view) = match effect.leg.as_ref() {
+                                    Some(leg) => (
+                                        single_sid(Some(leg.membership.clone())),
+                                        Some(leg.current),
+                                    ),
+                                    None => (
+                                        single_sid(backend.read_membership()),
+                                        backend.read_current(),
+                                    ),
+                                };
+                                let _ = thread_handoff.finish(completion_for_with_reads(
+                                    &target,
+                                    effect.setter,
+                                    effect.outcome,
+                                    None,
+                                    pre_member,
+                                    post_member,
+                                    pre_view,
+                                    post_view,
+                                ));
                             }
                             SendRequest::Trailing(request) => {
                                 // Trailing owner flow: prepare the exact
@@ -1547,10 +1879,27 @@ impl ManagedSendThread {
                                 // dispatch, no duplicate effect: this drag
                                 // is the only actuation; the core drains
                                 // its pending send on the reported binding.
-                                let (outcome, target, proof) =
+                                // Reads ride the same contract as the pinned
+                                // path: pre-write pair before, confirming
+                                // re-read after (the trailing leg carries no
+                                // readback of its own).
+                                let pre_member = single_sid(backend.read_membership());
+                                let pre_view = backend.read_current();
+                                let (effect, target, proof) =
                                     execute_trailing_send(&request, &mut backend, &thread_handoff);
+                                let post_member = single_sid(backend.read_membership());
+                                let post_view = backend.read_current();
                                 let completion = match target {
-                                    Some(target) => completion_for(&target, outcome, proof),
+                                    Some(target) => completion_for_with_reads(
+                                        &target,
+                                        effect.setter,
+                                        effect.outcome,
+                                        proof,
+                                        pre_member,
+                                        post_member,
+                                        pre_view,
+                                        post_view,
+                                    ),
                                     None => SendCompletion {
                                         operation_id: request.operation_id.clone(),
                                         app_generation: request.app_generation,
@@ -1559,8 +1908,13 @@ impl ManagedSendThread {
                                         // plus lifetime, never this.
                                         revision: 0,
                                         follow: true,
-                                        outcome,
+                                        setter: effect.setter,
+                                        outcome: effect.outcome,
                                         trailing: proof,
+                                        pre_member: None,
+                                        post_member: None,
+                                        pre_view: None,
+                                        post_view: None,
                                     },
                                 };
                                 let _ = thread_handoff.finish(completion);

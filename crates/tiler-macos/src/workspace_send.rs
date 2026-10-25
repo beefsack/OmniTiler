@@ -48,11 +48,12 @@
 //! lifetime, a removed or excluded subject, or a moved source — instead of
 //! grabbing a different window; native membership, focus, frame, and dual
 //! hit legs supplement engine authority but never replace it. Target: the
-//! ordinal resolves fresh against the joined topology row and must still
-//! name the admission-time SID
-//! ([`crate::runtime_types::ClaimedSelect::expected_sid`]) under the same
-//! engine revision — a reorder between admission and drain refuses instead
-//! of sending to the new occupant. Holder: read fresh through the live
+//! accepted reply's retained window transfer plus its live native binding
+//! names the target SID ([`crate::runtime_types::ClaimedSelect::expected_sid`]
+//! carries the reply-bound SID, never an input-ordinal pin); the owner
+//! converts that binding to the current live Desktop-N ordinal at dispatch
+//! (the native mechanism posts a Desktop-N chord) and refuses when the
+//! bound SID left the live row. Holder: read fresh through the live
 //! readers and resolved through
 //! [`crate::desktop_shortcuts::resolve_numbered_chord`] — disabled,
 //! customized, unreadable, or unmappable holders refuse before any post
@@ -88,7 +89,6 @@
 /// No modifier-plus-drag product trigger exists.
 use std::path::Path;
 
-use tiler_core::directional::OutputId;
 use tiler_core::world_report::FrameSetter;
 
 use crate::desktop_shortcuts::{ApplyOutcome, DesktopShortcutStore, apply_with_store_to};
@@ -127,9 +127,9 @@ pub fn bindings() -> Vec<TileBinding> {
 
 /// Pure ordinal-to-SID resolution over one display's native-order user row:
 /// Desktop-N IS the 1-based position (`None` for 0, past-end, or empty
-/// rows — never guessed). The drain calls this on its fresh snapshot; the
-/// engine admission calls it on the admission-time context row (see
-/// [`context_target_sid`]).
+/// rows — never guessed). The effect owner converts the reply-bound target
+/// SID to its current live ordinal at dispatch (the native mechanism posts
+/// a Desktop-N chord); targeting itself never resolves from an input index.
 #[must_use]
 pub fn send_target_sid(spaces_in_order: &[u64], index: u8) -> Option<u64> {
     if index == 0 {
@@ -142,12 +142,17 @@ pub fn send_target_sid(spaces_in_order: &[u64], index: u8) -> Option<u64> {
 /// `output`: the display's domains in context order name the native row
 /// (see [`crate::runtime_types::NativeContext::derive`]: row order is kept
 /// per display for numbered mapping). `None` when the output has no row or
-/// the ordinal is out of range — the admission refuses instead of binding a
-/// guess.
+/// the ordinal is out of range.
+///
+/// Offline test seam only: production send targeting is reply-driven (the
+/// accepted reply's retained window transfer plus its live native binding
+/// authorizes the native send through a live SID lookup), so no production
+/// path pins an input-ordinal target pre-reply.
+#[cfg(test)]
 #[must_use]
 pub fn context_target_sid(
     ctx: &crate::runtime_types::NativeContext,
-    output: &OutputId,
+    output: &tiler_core::directional::OutputId,
     index: u8,
 ) -> Option<u64> {
     if index == 0 {
@@ -548,10 +553,11 @@ pub const fn send_drain_outcome_for(
 
 /// One settled live send for the main thread to reconcile: the pinned
 /// target plus the follow-history attribution (display plus source Space)
-/// plus the effect verdict and the pinned follow intent. History advances
-/// only on `Applied` follows; every outcome reports transfer feedback
-/// under the claim's operation identity so the core settles its retained
-/// transfer - never replayed.
+/// plus the effect verdict, the owner's raw setter disposition, and the
+/// reply-published follow view identity. History advances only on
+/// `Applied` follows; every outcome reports transfer feedback under the
+/// claim's operation identity so the core settles its retained transfer -
+/// never replayed.
 #[derive(Debug, Clone)]
 pub struct SendSettle {
     pub target: crate::workspace_send_effect::ManagedSendTarget,
@@ -559,12 +565,34 @@ pub struct SendSettle {
     pub from: u64,
     pub follow: bool,
     pub outcome: crate::workspace_send_effect::SendEffectOutcome,
+    /// Owner's raw native setter disposition captured at the actual write
+    /// boundary. The drain stages it verbatim; it is never derived from
+    /// the arrival outcome.
+    pub setter: tiler_core::world_report::FrameSetter,
+    /// Reply-published follow view flight identity for `follow=true`
+    /// sends (read from the reply's own transfers at dispatch). The drain
+    /// stages the follow view attempt under exactly this identity; `None`
+    /// stages no view and invents none.
+    pub follow_view_operation: Option<String>,
     /// Owner-verified exact-append proof for trailing executions that
     /// appended (`None` for numbered sends and trailing reuse). `created`
     /// rides with or without a token so the drain adopts owned creation;
     /// only `binding` is token-gated. The drain forwards the binding to
     /// the engine store verbatim - never re-derived, never guessed.
     pub trailing: Option<crate::workspace_send_effect::TrailingCompletionProof>,
+    /// Genuine owner reads around the dispatch (see
+    /// [`crate::workspace_send_effect::SendCompletion`]): the pre-write
+    /// homing/current pair plus the verified-or-reread post pair. The
+    /// main thread stages them as raw attempt evidence; `None` legs are
+    /// unreadable, never guessed.
+    pub pre_member: Option<u64>,
+    pub post_member: Option<u64>,
+    pub pre_view: Option<u64>,
+    pub post_view: Option<u64>,
+    /// Observation-time native current for the target output captured at
+    /// dispatch. Stages as the follow view attempt's `native_baseline`;
+    /// `None` when unread at dispatch.
+    pub baseline: Option<u64>,
 }
 
 /// Whether one settled send advances per-display previous history (pure):
@@ -613,6 +641,14 @@ struct SendSettleTarget {
     target: crate::workspace_send_effect::ManagedSendTarget,
     display: String,
     from: u64,
+    /// Observation-time native current for the target output captured at
+    /// dispatch (the reply plan baseline). Rides the settle so the main
+    /// thread stages the follow view attempt truthfully.
+    baseline: Option<u64>,
+    /// Reply-published follow view flight identity, copied from the bound
+    /// claim plan at submit. Rides the settle so the drain stages the
+    /// follow view attempt under the reply's own identity.
+    follow_view_operation: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -649,10 +685,10 @@ impl LiveSendController {
     }
 
     /// Nonblocking submit of one engine-admitted send claim: pins the
-    /// target from the claim's admission pins (subject, generation, source,
-    /// target SID, revision, operation identity, follow intent plus the
-    /// stay-only source SID - a claim without admission pins refuses here
-    /// instead of actuating), spawns the owner on first use through
+    /// target from the claim's reply-bound plan (subject, generation,
+    /// source, reply-bound target SID, revision, operation identity, follow
+    /// intent plus the stay-only source SID - a claim without bound pins
+    /// refuses here instead of actuating), spawns the owner on first use through
     /// `factory` (which runs ON the owner thread, so backend construction
     /// stays off the engine/AppKit), and submits through the serialized
     /// lane. `display`/`from` attribute the later follow-history note (read
@@ -692,6 +728,8 @@ impl LiveSendController {
             target,
             display: display.to_owned(),
             from,
+            baseline: claim.select_baseline_sid,
+            follow_view_operation: claim.send_follow_view_operation.clone(),
         }));
         Ok(())
     }
@@ -777,7 +815,14 @@ impl LiveSendController {
                     from: pinned.from,
                     follow,
                     outcome: completion.outcome,
+                    setter: completion.setter,
+                    follow_view_operation: pinned.follow_view_operation,
                     trailing: None,
+                    pre_member: completion.pre_member,
+                    post_member: completion.post_member,
+                    pre_view: completion.pre_view,
+                    post_view: completion.post_view,
+                    baseline: pinned.baseline,
                 })
             }
             SendInflight::Trailing(trailing) => {
@@ -813,7 +858,17 @@ impl LiveSendController {
                     from: trailing.from,
                     follow: true,
                     outcome: completion.outcome,
+                    setter: completion.setter,
+                    // The trailing owner path carries no reply-published
+                    // view identity to the main thread (unbound trailing
+                    // binds none): no view is staged and none is invented.
+                    follow_view_operation: None,
                     trailing: completion.trailing.clone(),
+                    pre_member: completion.pre_member,
+                    post_member: completion.post_member,
+                    pre_view: completion.pre_view,
+                    post_view: completion.post_view,
+                    baseline: None,
                 })
             }
         }
@@ -840,7 +895,7 @@ impl LiveSendController {
         debug_assert_eq!(completion.operation_id, trailing.request.operation_id);
         Some(TrailingRefusal {
             operation_id: trailing.request.operation_id,
-            outcome: send_drain_outcome_for(completion.outcome),
+            setter: completion.setter,
         })
     }
 
@@ -896,6 +951,14 @@ impl LiveSendController {
         } else {
             crate::workspace_send_effect::SendEffectOutcome::RefusedProven
         };
+        // Setter from the busyness fact, not the outcome label: an owner
+        // that may still actuate throws (unknown); a certainly-idle lane
+        // refused (nothing could have posted). No reads exist on this path.
+        let setter = if uncertain {
+            tiler_core::world_report::FrameSetter::Threw
+        } else {
+            tiler_core::world_report::FrameSetter::Refused
+        };
         match inflight {
             Some(SendInflight::Pinned(pinned)) => {
                 Some(ShutdownOutcome::Settle(Box::new(SendSettle {
@@ -904,13 +967,20 @@ impl LiveSendController {
                     from: pinned.from,
                     follow: pinned.target.follow(),
                     outcome,
+                    setter,
+                    follow_view_operation: pinned.follow_view_operation.clone(),
                     trailing: None,
+                    pre_member: None,
+                    post_member: None,
+                    pre_view: None,
+                    post_view: None,
+                    baseline: pinned.baseline,
                 })))
             }
             Some(SendInflight::Trailing(trailing)) => {
                 Some(ShutdownOutcome::TrailingRefusal(TrailingRefusal {
                     operation_id: trailing.request.operation_id.clone(),
-                    outcome: send_drain_outcome_for(outcome),
+                    setter,
                 }))
             }
             None => None,
@@ -919,14 +989,17 @@ impl LiveSendController {
 }
 
 /// One settled trailing refusal for feedback-only reconciliation: the
-/// operation identity plus the drain outcome. No target was ever bound
-/// (preparation refused or was cancelled first), so there is no history to
-/// note and no proof to report - the transfer settles or holds under its
-/// identity alone.
+/// operation identity plus the owner's raw setter disposition (`Refused`
+/// when preparation certainly never actuated, `Threw` when it may still be
+/// running). No target was ever bound (preparation refused or was cancelled
+/// first), so there is no history to note and no proof to report - the
+/// transfer settles or holds under its identity alone. The setter is the
+/// actuation-uncertainty truth, never derived from an arrival verdict
+/// (there is no arrival on this path).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrailingRefusal {
     pub operation_id: String,
-    pub outcome: SendDrainOutcome,
+    pub setter: tiler_core::world_report::FrameSetter,
 }
 
 /// One terminal shutdown settlement for uniform reconciliation: either a

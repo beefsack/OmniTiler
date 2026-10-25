@@ -19,8 +19,8 @@ use crate::select_owner::{
     SelectCompletion, SelectController, SelectJob, SelectSubmit, SelectThread,
 };
 use crate::workspace_select::{
-    SelectGates, SelectionBackend, SelectionEffect, SelectionSnapshot, SelectionState,
-    TrailingAppendProof, TrailingLifecycle,
+    SelectFailure, SelectGates, SelectSuccess, SelectionBackend, SelectionEffect,
+    SelectionSnapshot, SelectionState, TrailingAppendProof, TrailingLifecycle,
 };
 
 const FIX_UUID: &str = "550E8400-E29B-41D4-A716-446655440000";
@@ -57,12 +57,32 @@ fn submit_legs<'a>(
     }
 }
 
-fn effect(from: u64, target: u64) -> SelectionEffect {
-    SelectionEffect {
-        from,
-        target,
-        created: None,
-        changed: from != target,
+fn effect(from: u64, target: u64) -> SelectSuccess {
+    SelectSuccess {
+        effect: SelectionEffect {
+            from,
+            target,
+            created: None,
+            changed: from != target,
+            baseline: None,
+        },
+        setter: tiler_core::world_report::FrameSetter::Accepted,
+        pre: Some(from),
+        post: Some(target),
+        creation: None,
+        attempt_ms: 0,
+    }
+}
+
+fn refusal(reason: &str) -> SelectFailure {
+    SelectFailure {
+        reason: reason.to_owned(),
+        setter: tiler_core::world_report::FrameSetter::Refused,
+        pre: None,
+        post: None,
+        baseline: None,
+        creation: None,
+        attempt_ms: 0,
     }
 }
 
@@ -83,7 +103,7 @@ struct Script {
 }
 
 struct ScriptedOutcome {
-    result: Result<SelectionEffect, String>,
+    result: Result<SelectSuccess, SelectFailure>,
     proof: Option<TrailingAppendProof>,
 }
 
@@ -169,10 +189,10 @@ fn serialized_admission_frees_only_on_poll() {
 }
 
 #[test]
-fn history_notes_apply_fifo_before_later_selects() {
-    // End-to-end through the real owner loop with a stateful scripted
-    // backend: a follow arrival noted before the select must resolve
-    // `workspace-previous` to the noted SID.
+fn reply_plan_previous_actuates_bound_target() {
+    // Reply-driven previous toggle: the claim carries the core-resolved
+    // target plus its live binding and baseline (no owner history). The
+    // drain looks the binding up live and actuates it once.
     struct ScriptBackend {
         current: u64,
     }
@@ -189,15 +209,25 @@ fn history_notes_apply_fifo_before_later_selects() {
             Ok(1)
         }
 
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            if output == "macos-display-7" {
+                Ok(())
+            } else {
+                Err(format!(
+                    "product select refuses: reply target output {output} is not the pinned display macos-display-7; no actuation"
+                ))
+            }
+        }
+
         fn empty(&mut self, _sid: u64) -> Result<bool, String> {
             Ok(true)
         }
 
-        fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), String> {
-            Err("no create in this test".to_owned())
+        fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+            Err(crate::workspace_select::DispatchError::refused("no create in this test"))
         }
 
-        fn select(&mut self, _before: &SelectionSnapshot, sid: u64) -> Result<(), String> {
+        fn select(&mut self, _before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
             self.current = sid;
             Ok(())
         }
@@ -226,11 +256,15 @@ fn history_notes_apply_fifo_before_later_selects() {
                 base: job.submitted_at,
             }
         }));
-    // The follow attribution lands before any select exists; the previous
-    // toggle below must still observe it (FIFO through the lane).
-    thread.note_arrival(FIX_UUID, 4242);
+    // Core-resolved previous target rides the reply plan (binding plus
+    // baseline); no history note is applied anywhere on this path.
+    let mut claim = tap_claim(InputSemanticAction::WorkspacePrevious, "op-prev");
+    claim.select_target_output = Some("macos-display-7".to_owned());
+    claim.select_target_workspace = Some("ws-prev".to_owned());
+    claim.select_native_binding = Some("space-4242".to_owned());
+    claim.select_baseline_sid = Some(7777);
     let job = SelectJob {
-        claim: tap_claim(InputSemanticAction::WorkspacePrevious, "op-prev"),
+        claim,
         display_index: 0,
         pinned_cgid: 7,
         pinned_uuid: FIX_UUID.to_owned(),
@@ -244,9 +278,10 @@ fn history_notes_apply_fifo_before_later_selects() {
     };
     thread.submit(job).expect("previous submits");
     let done = poll_block(&thread);
-    let settled = done.result.expect("previous resolves the noted SID");
-    assert_eq!(settled.target, 4242);
-    assert_eq!(settled.from, 7777);
+    let settled = done.result.expect("previous actuates the bound SID");
+    assert_eq!(settled.effect.target, 4242);
+    assert_eq!(settled.effect.from, 7777);
+    assert_eq!(settled.effect.baseline, Some(7777));
 }
 
 #[test]
@@ -260,7 +295,7 @@ fn cancelled_pending_job_terminal_completes_and_frees_lane() {
             flag.store(true, Ordering::SeqCst);
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                result: Err("executor must not run a cancelled job".to_owned()),
+                result: Err(refusal("executor must not run a cancelled job")),
                 proof: None,
                 base: job.submitted_at,
             }
@@ -287,7 +322,12 @@ fn cancelled_pending_job_terminal_completes_and_frees_lane() {
     assert!(thread.cancel());
     let done = poll_block(&thread);
     assert_eq!(done.operation_id.as_deref(), Some("op-cancel"));
-    assert!(done.result.expect_err("cancelled").contains("cancelled"));
+    assert!(
+        done.result
+            .expect_err("cancelled")
+            .reason
+            .contains("cancelled")
+    );
     assert!(
         !executed.load(Ordering::SeqCst),
         "cancelled pending job never actuates"
@@ -334,9 +374,9 @@ fn cancelled_inflight_job_settles_promptly_through_latch() {
             }
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                result: Err(
-                    "dock-swipe unproven: cancelled during settlement; no replay".to_owned(),
-                ),
+                result: Err(refusal(
+                    "dock-swipe unproven: cancelled during settlement; no replay",
+                )),
                 proof: None,
                 base: job.submitted_at,
             }
@@ -368,7 +408,12 @@ fn cancelled_inflight_job_settles_promptly_through_latch() {
     assert!(thread.cancel());
     let t0 = Instant::now();
     let done = poll_block(&thread);
-    assert!(done.result.expect_err("cancelled").contains("cancelled"));
+    assert!(
+        done.result
+            .expect_err("cancelled")
+            .reason
+            .contains("cancelled")
+    );
     // Prompt: far inside any production deadline.
     assert!(t0.elapsed() < Duration::from_secs(5));
     assert!(!thread.is_busy());
@@ -380,9 +425,9 @@ fn failure_carries_proof_and_later_request_succeeds() {
     let published = displays();
     let script = Script::new(vec![
         ScriptedOutcome {
-            result: Err(
-                "dock-swipe unproven: posted 1 pairs but native current reads None".to_owned(),
-            ),
+            result: Err(refusal(
+                "dock-swipe unproven: posted 1 pairs but native current reads None",
+            )),
             proof: Some(proof(555)),
         },
         ScriptedOutcome {
@@ -521,7 +566,7 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
             if job.cancel.load(Ordering::SeqCst) || job.latch.cancelled() {
                 return SelectCompletion {
                     operation_id: job.claim.operation_id.clone(),
-                    result: Err("select refused: cancelled before dispatch".to_owned()),
+                    result: Err(refusal("select refused: cancelled before dispatch")),
                     proof: None,
                     base: job.submitted_at,
                 };
@@ -529,7 +574,7 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
             act.store(true, Ordering::SeqCst);
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                result: Err("executor actuated a shutdown job".to_owned()),
+                result: Err(refusal("executor actuated a shutdown job")),
                 proof: None,
                 base: job.submitted_at,
             }
@@ -560,6 +605,7 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
     assert!(
         done.result
             .expect_err("shutdown-pending")
+            .reason
             .contains("cancelled")
     );
     assert!(done.proof.is_none());
@@ -588,9 +634,9 @@ fn shutdown_inflight_failure_proof_adopts_as_owned_residue() {
             std::thread::sleep(Duration::from_millis(200));
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                result: Err(
-                    "dock-swipe unproven: posted 1 pairs but native current reads None".to_owned(),
-                ),
+                result: Err(refusal(
+                    "dock-swipe unproven: posted 1 pairs but native current reads None",
+                )),
                 proof: Some(proof(888)),
                 base: job.submitted_at,
             }

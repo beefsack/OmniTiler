@@ -27,7 +27,7 @@ use crate::runtime_log::sanitize_backend_reason;
 use crate::runtime_types::ScopedBackendSnapshot;
 use crate::world_command_map::{
     OP_DRAG_GESTURE, OP_RECONCILE, OP_SELECT, OP_SEND, OP_TERMINATE, operation_command,
-    select_command, select_output, send_command,
+    select_command, select_output,
 };
 use crate::world_dispatch::{DispatchVerdict, dispatch_gesture_report, dispatch_report};
 use crate::world_runtime::{
@@ -85,11 +85,11 @@ pub(crate) enum EngineJob {
     /// publish the engine's current [`EngineManagedFacts`](
     /// crate::runtime_core::EngineManagedFacts) for one runtime window
     /// identity, or `None` when the engine no longer manages it. Control
-    /// lane (never silently dropped — the owner always gets its reply or
+    /// lane (never silently dropped - the owner always gets its reply or
     /// an engine-dead refusal), strict FIFO with observations, so the reply
     /// reflects every observation submitted before the query. The owner
     /// treats a missing/late reply as unknown facts and refuses without
-    /// actuation — native OS reads supplement these facts, never replace
+    /// actuation - native OS reads supplement these facts, never replace
     /// them.
     ManagedFactsQuery {
         window: String,
@@ -99,7 +99,7 @@ pub(crate) enum EngineJob {
     /// snapshot the engine's per-domain managed membership (current and
     /// hidden alike) plus the context revision it was homed under, and
     /// reply with the pure report. Stages nothing, plans nothing, touches
-    /// no reconciler state. Control lane (never silently dropped — the
+    /// no reconciler state. Control lane (never silently dropped - the
     /// main thread always gets its reply or an engine-dead refusal),
     /// strict FIFO with observations, so the reply reflects every
     /// observation submitted before the query.
@@ -111,7 +111,7 @@ pub(crate) enum EngineJob {
     /// Released, or Cancelled) dispatched through the SAME world gesture
     /// lifecycle the offline harness traverses, with the requester-
     /// correlated transient reply (preview outcome plus the incorporated
-    /// terminal, if any). Control lane (never silently dropped — the main
+    /// terminal, if any). Control lane (never silently dropped - the main
     /// thread always gets its reply or an engine-dead refusal), strict
     /// FIFO with observations. A dropped/closed inbox or a dead engine
     /// surfaces as `None` main-side, which cancels the gesture stale.
@@ -132,7 +132,7 @@ pub(crate) enum EngineJob {
     },
     /// Honest focus-dispatch completion from the owning AX worker (the SAME
     /// owner that observed the window). `cmd_id` carries the focus
-    /// `request_id`; dispatch truth only — arrival is verified by later
+    /// `request_id`; dispatch truth only - arrival is verified by later
     /// observations, never claimed here.
     FocusResult {
         pid: u32,
@@ -147,19 +147,27 @@ pub(crate) enum EngineJob {
     /// native SIDs on the report's dedicated native attempt keys (logical
     /// pre/post/baseline stay absent); the core translates them through
     /// its own adoption mapping at settle time (a live core lookup, never
-    /// adapter mapping). Unknown operations drop without evidence.
+    /// adapter mapping). `pre_sid`/`post_sid` are the real write-time
+    /// reads; `baseline_sid` is the observation-time native current
+    /// captured in the reply plan at dispatch. Unknown operations drop
+    /// without evidence.
     /// Staged into the next world report so the core settles its retained
     /// planner-owned view target.
     /// Data lane (drops counted when full, never blocks); a dropped row
-    /// merely delays settlement — retained core targets never re-actuate
+    /// merely delays settlement - retained core targets never re-actuate
     /// without fresh proof.
     ViewAttempt {
         operation_id: String,
         setter: tiler_core::world_report::FrameSetter,
-        /// Native Space id read before the drain actuated (`None` unread).
+        /// Native Space id read immediately before the drain actuated
+        /// (`None` unread).
         pre_sid: Option<u64>,
-        /// Native Space id read after the drain actuated (`None` unread).
+        /// Native Space id read immediately after the drain actuated
+        /// (`None` unread/unproven).
         post_sid: Option<u64>,
+        /// Observation-time native current for the target output captured
+        /// at dispatch (`None` unread).
+        baseline_sid: Option<u64>,
     },
     /// Raw mechanical membership-attempt evidence from one proven
     /// send-drain outcome (never a verdict): the setter disposition plus
@@ -175,9 +183,36 @@ pub(crate) enum EngineJob {
     MemberAttempt {
         operation_id: String,
         setter: tiler_core::world_report::FrameSetter,
+        /// Native Space id read immediately before the drain actuated
+        /// (`None` unread). Proven refusal needs this unchanged-readable
+        /// preimage; anything else holds ambiguous.
+        pre_sid: Option<u64>,
         /// Native Space id of the drain-verified arrival (`None` unless
         /// the drain proved arrival there).
         post_sid: Option<u64>,
+    },
+    /// Raw mechanical native-creation evidence from one select-drain
+    /// creation leg (never a verdict): the create leg's setter disposition
+    /// plus the genuine native orders around it and, only on a verified
+    /// exact append, the host-correlated created desktop id. Correlated by
+    /// the desire's operation id plus logical plus output exactly - the
+    /// core consumes only the first exact-correlated attempt per op and
+    /// latches ambiguity on changed replays, so the drain reports once
+    /// under the desire's identity. `order_after` repeats `order_before`
+    /// when no verified delta was observed (never a fabricated empty
+    /// after-order); `created_sid` is `Some` only for a verified append
+    /// (never guessed). Staged into the next world report so the core
+    /// binds the appended native to its retained trailing logical.
+    /// Data lane (drops counted when full, never blocks).
+    NativeCreation {
+        operation_id: String,
+        logical: String,
+        output: tiler_core::directional::OutputId,
+        setter: tiler_core::world_report::FrameSetter,
+        order_before: Vec<u64>,
+        order_after: Vec<u64>,
+        created_sid: Option<u64>,
+        attempt_ms: u64,
     },
     /// Rendezvous for deterministic tests: processed in FIFO order, so a
     /// completed barrier proves every earlier job was processed.
@@ -189,7 +224,7 @@ pub(crate) enum EngineJob {
 
 /// Coherence-relevant pending input: a queued job whose truth the next
 /// report may not incorporate. Only observations (legacy/scoped) and
-/// terminates qualify — commands and feedback change planned state, not
+/// terminates qualify - commands and feedback change planned state, not
 /// observed truth, and launches register empty apps that change no plan.
 /// Cloned out of the inbox under one lock for the emission gate to
 /// classify (see `emission_coherent` in [`crate::world_runtime`]).
@@ -224,6 +259,7 @@ impl EngineJob {
                 | Self::IndicatorSelect { .. }
                 | Self::ViewAttempt { .. }
                 | Self::MemberAttempt { .. }
+                | Self::NativeCreation { .. }
                 | Self::AxResult { .. }
                 | Self::FocusResult { .. }
         )
@@ -327,7 +363,7 @@ impl Inbox {
     /// terminates) as small descriptors under one lock. The engine-thread
     /// emission gate classifies each as will-incorporate (blocks actuation)
     /// or will-drop (ignored): stale queued truth must never suppress an
-    /// honest snapshot, and a drop never dispatches a successor — so
+    /// honest snapshot, and a drop never dispatches a successor - so
     /// blocking on it would stall convergence with no recovery. Reads only;
     /// the queue is untouched.
     pub(crate) fn coherence_pending(&self) -> Vec<CoherencePending> {
@@ -369,7 +405,7 @@ impl Inbox {
 
 /// Latest-wins frame slot for one app worker. `set_latest` overwrites the
 /// whole pending desired set so rapid re-plans coalesce but never lose the
-/// final desired state — including a whole EMPTY desired set, which supersedes
+/// final desired state - including a whole EMPTY desired set, which supersedes
 /// pending state when windows are removed/closed. Every overwrite bumps a
 /// revision token so a worker holding a taken batch can drop commands the
 /// newer desired state already superseded. Stopping drops the pending set
@@ -443,7 +479,7 @@ impl FrameSlot {
     /// returns `None` so the caller can poll its backend and retry. Command
     /// wake is still immediate (`set_latest` notifies); the bound only caps
     /// observation cadence and stop latency. A `None` is ambiguous by
-    /// design — the caller re-checks `stop`/`is_stopped` to tell a quiet
+    /// design - the caller re-checks `stop`/`is_stopped` to tell a quiet
     /// slice from teardown.
     pub(crate) fn wait_versioned_timeout(
         &self,
@@ -481,7 +517,7 @@ impl FrameSlot {
 }
 
 /// Latest-wins focus slot for one app worker: at most one pending focus
-/// command (a newer desired focus supersedes — refocusing an already
+/// command (a newer desired focus supersedes - refocusing an already
 /// superseded target would fight the plan). Stopping drops the pending
 /// command (queued focus is invalidated on terminate). Unlike [`FrameSlot`]
 /// there is no revision token or blocking take: the worker polls once per
@@ -540,9 +576,11 @@ use crate::runtime_native::handle_scoped_observation;
 
 /// Store one admitted select claim under its world operation identity.
 /// The claim reaches the main-thread drain with the stable `op-<seq>` id
-/// so the drain reports its proven native outcome back under the same id.
-/// `None` (duplicate path) stores the claim unbound: the earlier dispatch
-/// already retains the transfer.
+/// plus the reply-derived target plan (logical target, live native
+/// binding or explicit creation desire, observation-time baseline) so the
+/// drain actuates exactly the core-resolved target and reports its proven
+/// native outcome back under the same id. `None` (duplicate path) stores
+/// the claim unbound: the drain refuses without actuation.
 fn store_select_claim(
     shared: &Arc<Mutex<Shared>>,
     claim: crate::runtime_types::ClaimedSelect,
@@ -570,11 +608,173 @@ fn store_select_claim(
     emit(shared, 0, 0, 0, "input", token, 0);
 }
 
+/// Bind the reply-derived select plan into a claim for one operation id:
+/// the retained view target (output plus logical workspace) from the
+/// engine, the live native binding for that logical from the accepted
+/// reply's workspace rows (live lookup only, never a durable table), the
+/// explicit trailing creation desire for that logical when the target is
+/// unbound, and the observation-time native current for the target output
+/// as the attempt baseline. Missing transfers leave every plan field
+/// `None` so the drain refuses without actuation (a prior no-op such as
+/// previous-without-history binds nothing). Never invents a binding and
+/// never reinterprets ordinals: numbered taps resolve core-side.
+/// Call only with the currently applied reply's operation identity - never
+/// on a sequencer-stale path, where `last_reply` is not current.
+pub(crate) fn bind_select_plan(
+    session: &mut WorldSession,
+    ctx: &Arc<crate::runtime_types::NativeContext>,
+    claim: &mut crate::runtime_types::ClaimedSelect,
+    operation_id: &str,
+) {
+    let transfer = session
+        .engine_mut()
+        .retained_transfers()
+        .into_iter()
+        .find(|target| {
+            target.operation_id == operation_id
+                && matches!(target.kind, tiler_core::world_report::TransferKind::View)
+        });
+    let Some(transfer) = transfer else {
+        return;
+    };
+    let target_output = transfer.target_output.0.clone();
+    let target_workspace = transfer.target_workspace.clone();
+    let reply = session.sequencer().last_reply();
+    let native_binding = reply.as_ref().and_then(|reply| {
+        reply
+            .workspaces
+            .iter()
+            .find(|row| row.output.0 == target_output && row.id == target_workspace)
+            .and_then(|row| row.native_binding.clone())
+    });
+    let creation = reply.as_ref().and_then(|reply| {
+        reply.native_creations.iter().find(|desire| {
+            desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
+        })
+    });
+    let baseline_sid = ctx
+        .domains
+        .iter()
+        .find(|domain| domain.output.0 == target_output && domain.current)
+        .map(|domain| domain.space);
+    claim.select_target_output = Some(target_output.clone());
+    claim.select_target_workspace = Some(target_workspace.clone());
+    claim.select_native_binding = native_binding;
+    if let Some(desire) = creation {
+        claim.select_creation_operation = Some(desire.operation_id.clone());
+        claim.select_creation_logical = Some(desire.logical_workspace.clone());
+        claim.select_creation_output = Some(desire.target_output.0.clone());
+    }
+    claim.select_baseline_sid = baseline_sid;
+}
+
+/// Parse one `space-<sid>` reply native binding to its live SID (`None` on
+/// any malformed, zero, or unparsable binding - never guessed). The drain
+/// converts the bound SID to the current live Desktop-N ordinal at dispatch
+/// (the native mechanism posts a Desktop-N chord); targeting itself never
+/// resolves from an input index.
+fn parse_send_binding(binding: &str) -> Option<u64> {
+    binding
+        .strip_prefix("space-")?
+        .parse::<u64>()
+        .ok()
+        .filter(|sid| *sid != 0)
+}
+
+/// Bind the reply-derived send plan into a claim for one operation id: the
+/// retained window transfer target (output plus logical workspace) from the
+/// the explicit creation desire for that logical when the target is
+/// unbound, the follow view flight identity for `follow=true` transfers,
+/// the reply-bound target SID as `expected_sid` for the pinned-target
+/// owner, and the observation-time native current for the target output as
+/// the attempt baseline. Missing transfers leave every plan field `None` so
+/// the drain refuses without actuation. Unbound targets with no creation
+/// desire bind no SID (missing bindings never create); unbound targets
+/// WITH a desire bind the desire but no SID, and the drain refuses them
+/// pending the desire-gated native creation seam (prerequisite blocker,
+/// not a settled refusal). Never reinterprets ordinals: the numbered index
+/// resolved core-side from the dispatched `SendNumbered` command.
+/// Call only with the currently applied reply's operation identity - never
+/// on a sequencer-stale path, where `last_reply` is not current.
+pub(crate) fn bind_send_plan(
+    session: &mut WorldSession,
+    ctx: &Arc<crate::runtime_types::NativeContext>,
+    claim: &mut crate::runtime_types::ClaimedSelect,
+    operation_id: &str,
+) {
+    let transfer = session
+        .engine_mut()
+        .retained_transfers()
+        .into_iter()
+        .find(|target| {
+            target.operation_id == operation_id
+                && matches!(
+                    target.kind,
+                    tiler_core::world_report::TransferKind::Window(_)
+                )
+        });
+    let Some(transfer) = transfer else {
+        return;
+    };
+    let target_output = transfer.target_output.0.clone();
+    let target_workspace = transfer.target_workspace.clone();
+    let reply = session.sequencer().last_reply();
+    let native_binding = reply.as_ref().and_then(|reply| {
+        reply
+            .workspaces
+            .iter()
+            .find(|row| row.output.0 == target_output && row.id == target_workspace)
+            .and_then(|row| row.native_binding.clone())
+    });
+    let creation = reply.as_ref().and_then(|reply| {
+        reply.native_creations.iter().find(|desire| {
+            desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
+        })
+    });
+    let baseline_sid = ctx
+        .domains
+        .iter()
+        .find(|domain| domain.output.0 == target_output && domain.current)
+        .map(|domain| domain.space);
+    claim.select_target_output = Some(target_output.clone());
+    claim.select_target_workspace = Some(target_workspace.clone());
+    claim.select_native_binding = native_binding.clone();
+    if let Some(desire) = creation {
+        claim.select_creation_operation = Some(desire.operation_id.clone());
+        claim.select_creation_logical = Some(desire.logical_workspace.clone());
+        claim.select_creation_output = Some(desire.target_output.0.clone());
+    }
+    claim.select_baseline_sid = baseline_sid;
+    // Follow view flight identity, read from the reply's own published
+    // transfers: the retained View flight naming the same target as the
+    // parent window transfer. The drain stages the follow view attempt
+    // under exactly this identity; when the reply publishes no distinct
+    // view row (stays, non-follow), nothing is staged and nothing is
+    // invented.
+    claim.send_follow_view_operation = reply.as_ref().and_then(|reply| {
+        reply
+            .transfers
+            .iter()
+            .find(|flight| {
+                matches!(flight.kind, tiler_core::world_report::TransferKind::View)
+                    && flight.target_output.0 == target_output
+                    && flight.target_workspace == target_workspace
+                    && flight.operation_id != operation_id
+            })
+            .map(|flight| flight.operation_id.clone())
+    });
+    // Reply-bound target SID for the pinned-target owner: parsed from the
+    // live binding only. Unbound targets bind no SID even under a creation
+    // desire - the desire-gated creation seam is a prerequisite blocker, so
+    // the drain refuses as unbound instead of guessing.
+    claim.expected_sid = native_binding.as_deref().and_then(parse_send_binding);
+}
+
 /// Pure engine admission verdict for one armed select claim (pure
 /// unit-testable core of the product handoff): unarmed actions refuse
 /// (trailing stay-0, unsupported sends,
 /// outputs), then a missing native context, an in-progress drain, or an
-/// already-pending claim refuses narrowly — concurrent presses
+/// already-pending claim refuses narrowly - concurrent presses
 /// serialize/refuse instead of overlapping, and a sent press is never
 /// replayed. Returns the claim to store on success. Numbered taps bind at
 /// dispatch (admission-time SID plus live revision); indicator clicks ride
@@ -627,7 +827,7 @@ pub(crate) fn admit_select_claim_with(
 /// shapes (relative sends, trailing stay-0) refuse; trailing send-0
 /// follow admits through the capability gate; armed
 /// send-follow 0..9 plus stay 1..9 refuses without native context, while busy, or while
-/// a claim pends — concurrent presses serialize/refuse instead of
+/// a claim pends - concurrent presses serialize/refuse instead of
 /// overlapping, and a sent press is never replayed. Returns the claim to
 /// bind (target SID, revision, subject) on success. The shape check is
 /// [`is_armed_send`] (single source with the catalogue `implemented`
@@ -848,7 +1048,7 @@ pub(crate) fn engine_main(
 /// owner only): per known domain (current and hidden alike) the
 /// exactly-homed retained `(pid, wid)` members, sorted, plus the context
 /// presence/revision the homing was derived under. No planning, no
-/// staging, no reconciler writes — a pure read over retained state plus
+/// staging, no reconciler writes - a pure read over retained state plus
 /// the shared context flags. Memberless known domains ride with empty
 /// membership (honestly empty only when the caller proves completeness by
 /// matching `context_revision` against its live snapshot revision).
@@ -1237,8 +1437,8 @@ fn process_job(
             // Armed select actions dispatch with no focused-window
             // subject (empty Spaces navigate): one planner-owned world
             // command plus one pending claim for the main-thread tile
-            // drain. Numbered taps bind at dispatch (see
-            // [`handle_select_action`]).
+            // drain. Targeting resolves core-side; the accepted reply
+            // binds the drain plan.
             if is_armed_select(&action) {
                 handle_select_action(
                     session,
@@ -1351,20 +1551,52 @@ fn process_job(
             setter,
             pre_sid,
             post_sid,
+            baseline_sid,
         } => {
             // Raw drain evidence staged for the next report (never a
             // verdict: the core derives confirmation, refusal, ambiguity,
             // and supersession). Unknown operations drop without evidence.
-            // The ring line makes staging observable end to end.
-            session.stage_view_attempt(&operation_id, setter, pre_sid, post_sid);
+            // A follow send's view evidence arrives under the core-derived
+            // `{op}-follow` identity (the retained follow view flight the
+            // reply publishes); the standalone stage below correlates it
+            // against that retained View target exactly like any other
+            // view. The ring line makes staging observable end to end.
+            session.stage_view_attempt(&operation_id, setter, pre_sid, post_sid, baseline_sid);
             emit(shared, 0, 0, 0, "feedback", "staged", 1);
         }
         EngineJob::MemberAttempt {
             operation_id,
             setter,
+            pre_sid,
             post_sid,
         } => {
-            session.stage_member_attempt(&operation_id, setter, post_sid);
+            session.stage_member_attempt(&operation_id, setter, pre_sid, post_sid);
+            emit(shared, 0, 0, 0, "feedback", "staged", 1);
+        }
+        EngineJob::NativeCreation {
+            operation_id,
+            logical,
+            output,
+            setter,
+            order_before,
+            order_after,
+            created_sid,
+            attempt_ms,
+        } => {
+            // Raw creation-leg evidence staged for the next report (never
+            // a verdict: the core owns binding and settlement). One row
+            // per desire op; exact correlation happens core-side.
+            // The ring line makes staging observable end to end.
+            session.stage_native_creation(
+                &operation_id,
+                &logical,
+                output,
+                setter,
+                &order_before,
+                &order_after,
+                created_sid,
+                attempt_ms,
+            );
             emit(shared, 0, 0, 0, "feedback", "staged", 1);
         }
         EngineJob::DragGesture {
@@ -1374,7 +1606,7 @@ fn process_job(
         } => {
             // One gesture phase through the world gesture lifecycle
             // (Started/Updated/Released/Cancelled). Every refusal maps to
-            // a pure reply — never a dropped reply — so the main thread
+            // a pure reply - never a dropped reply - so the main thread
             // always unblocks by its timeout.
             let outcome = handle_drag_gesture(
                 session,
@@ -1397,7 +1629,7 @@ fn process_job(
             note_completion(shared, "ax-result", pid, generation, cmd_id, &completion);
             // A staged placement row changes the next report: advance the
             // shared mark now (the completion itself is already
-            // incorporated). Ordinary writes stage nothing — no mark moves.
+            // incorporated). Ordinary writes stage nothing - no mark moves.
             if stage_write_feedback(session, retained, pid, generation, cmd_id, &completion) {
                 crate::runtime::invalidate_clock(shared);
             }
@@ -1452,7 +1684,7 @@ fn process_job(
         EngineJob::WorkspaceOccupancyQuery { reply } => {
             // Read-only retained snapshot: per-domain managed membership
             // (current and hidden alike) plus the context revision it was
-            // homed under. Stages nothing, plans nothing — the main thread
+            // homed under. Stages nothing, plans nothing - the main thread
             // proves completeness by comparing the revision against its
             // live snapshot and renders Unknown on any drift.
             let report = occupancy_report(retained, shared);
@@ -1480,16 +1712,18 @@ fn dispatch_context(shared: &Arc<Mutex<Shared>>, session: &WorldSession) -> Disp
 }
 
 /// Armed-select lane (tap and indicator): admission gates, planner-owned
-/// world command, and — when the reply applies, or when a stale-observation
-/// refusal proves the command already executed core-side — one pending
-/// claim bound under the stable operation identity for the main-thread
-/// drain. Other core refusals drop the claim (never actuated, never
-/// replayed). Numbered selects resolve their native target SID exactly once
-/// here under the admission topology and dispatch it as an explicit
-/// `SelectWorkspace` (never re-resolved core-side through the scoped ring);
-/// the bound claim pins the SID plus the live revision so the drain
-/// revalidates instead of interpreting the ordinal against a different
-/// generation. Relative/previous selects keep their shared core semantics.
+/// world command, and — only when the reply applies against the current
+/// watermark — one pending claim bound under the stable operation identity
+/// for the main-thread drain, carrying the reply-derived target plan.
+/// Sequencer-stale refusals still carry the operation identity (the command
+/// already executed core-side at-most-once) but bind NO plan: the stored
+/// claim keeps the op for feedback while the drain refuses without
+/// actuation rather than executing on the previous reply's bindings.
+/// Other core refusals drop the claim (never actuated, never replayed).
+/// Ordinary tap commands resolve their output core-side (`None`: cursor /
+/// focus target); indicator taps that carry an explicit semantic output
+/// pass `Some`. The adapter never mints logical ids or re-resolves
+/// ordinals.
 fn handle_select_action(
     session: &mut WorldSession,
     retained: &mut RetainedCore,
@@ -1514,9 +1748,14 @@ fn handle_select_action(
 /// Capability-explicit select lane: the production route above with
 /// `trailing_enabled` threaded from the single capability gate (tests pass
 /// an explicit local). Trailing `index 0` admits and dispatches
-/// `SelectTrailing` only when enabled; the applied reply's unbound token
-/// rides the stored claim so the drain pairs the real token with its
-/// exact native append proof.
+/// `SelectTrailing` only when enabled. Only the accepted reply's retained
+/// view target plus its live native binding (or its explicit creation
+/// desire) ride the stored claim, so the drain actuates exactly the
+/// core-resolved target through a live SID lookup - never a pre-reply
+/// ordinal reinterpretation. No adapter-side ordinal-to-SID pinning
+/// happens here: numbered taps ride binding-free like
+/// relative/previous/trailing, and the core owns targeting, history, and
+/// reuse-vs-create.
 #[allow(clippy::too_many_arguments)]
 fn handle_select_action_with(
     session: &mut WorldSession,
@@ -1538,7 +1777,7 @@ fn handle_select_action_with(
             trailing_enabled,
         )
     };
-    let mut claim = match verdict {
+    let claim = match verdict {
         Ok(claim) => claim,
         Err(token) => {
             refuse_select_claim(shared, token);
@@ -1549,33 +1788,28 @@ fn handle_select_action_with(
         refuse_select_claim(shared, "refused-select-no-topology");
         return;
     };
-    let Some(output) = select_output(retained, &ctx) else {
-        refuse_select_claim(shared, "refused-select-no-view");
-        return;
+    // Ordinary taps resolve their output core-side (`None`); indicator
+    // taps that already carry a render-time binding keep their explicit
+    // semantic output (`Some`). No pre-reply ordinal claims: every armed
+    // select dispatches its positional core command and only the accepted
+    // reply resolves the target. Indicator taps keep their immutable
+    // render-time SID only as a drain-side staleness fence - never as the
+    // actuation target.
+    let tap = claim.expected_sid.is_none();
+    let command_output: Option<tiler_core::directional::OutputId> = if tap {
+        None
+    } else {
+        let Some(output) = select_output(retained, &ctx) else {
+            refuse_select_claim(shared, "refused-select-no-view");
+            return;
+        };
+        Some(output)
     };
-    // Bind the admission-time target SID plus the live revision for numbered
-    // selects: the ordinal resolves exactly once here against the native row
-    // — never re-resolved core-side through the scoped ring, whose
-    // stable-logical order need not match native Desktop order — and the
-    // dispatched command carries the pinned native workspace directly.
-    // Indicator claims already ride their immutable render-time SID; tap
-    // claims bind here. Relative/previous selects keep their shared core
-    // semantics and ride binding-free. The drain revalidates the pinned
-    // target instead of interpreting the ordinal against a different
-    // generation (a moved ordinal refuses instead of selecting the new
-    // occupant). The dispatched command is positional (`SelectNumbered`
-    // over the adopted ring, whose order tracks native Desktop order):
-    // Desktop-N resolves core-side in the same report the adoption
-    // converges, so no adapter-side logical mapping is pinned.
-    // Trailing `index 0` rides binding-free (no ordinal SID to pin: the
-    // native drain ensures reuse-or-append first); the dispatched
-    // `SelectTrailing` command resolves core-side. Admission already gated
-    // it on the same explicit capability.
     let command = match &claim.action {
         crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 0 } => {
             match crate::world_command_map::select_command_with_capability(
                 &claim.action,
-                output.clone(),
+                command_output.clone(),
                 trailing_enabled,
             ) {
                 Some(command) => command,
@@ -1588,16 +1822,7 @@ fn handle_select_action_with(
         crate::runtime_types::InputSemanticAction::WorkspaceSelect { index }
             if (1..=9).contains(index) =>
         {
-            if claim.expected_sid.is_none() {
-                let Some(sid) = crate::workspace_send::context_target_sid(&ctx, &output, *index)
-                else {
-                    refuse_select_claim(shared, "refused-select-no-target");
-                    return;
-                };
-                claim.expected_sid = Some(sid);
-                claim.topology_revision = Some(ctx.revision);
-            }
-            match select_command(&claim.action, output.clone()) {
+            match select_command(&claim.action, command_output.clone()) {
                 Some(command) => command,
                 None => {
                     refuse_select_claim(shared, "refused-select-unarmed");
@@ -1605,7 +1830,7 @@ fn handle_select_action_with(
                 }
             }
         }
-        _ => match select_command(&claim.action, output.clone()) {
+        _ => match select_command(&claim.action, command_output.clone()) {
             Some(command) => command,
             None => {
                 refuse_select_claim(shared, "refused-select-unarmed");
@@ -1631,25 +1856,36 @@ fn handle_select_action_with(
         0,
     ) {
         DispatchVerdict::Applied { select_operation } => {
-            // The applied reply's operation identity rides the stored
-            // claim so the drain reports its native outcome under that
-            // identity (raw attempt evidence, never a verdict).
+            // Only the currently applied reply binds a plan: its operation
+            // identity plus its retained view target, live native binding
+            // (or explicit creation desire), and observation-time baseline
+            // ride the stored claim so the drain actuates exactly the
+            // core-resolved target through a live SID lookup - never a
+            // pre-reply ordinal reinterpretation (raw attempt evidence,
+            // never a verdict).
+            let mut claim = claim;
+            if let Some(op) = select_operation.as_deref() {
+                bind_select_plan(session, &ctx, &mut claim, op);
+            }
             store_select_claim(shared, claim, select_operation.as_deref());
         }
         DispatchVerdict::Duplicate => {
             // Identical latest resend (unreachable for fresh command
-            // sequences): keep the transfer the earlier dispatch retained
-            // and let the drain actuate once.
+            // sequences): no new plan binds; the drain refuses without
+            // actuation rather than reinterpreting an ordinal.
             store_select_claim(shared, claim, None);
         }
         DispatchVerdict::Refused {
             token,
             select_operation,
         } => {
-            // A stale-observation refusal still carries the operation
-            // identity: the command already executed core-side
-            // (at-most-once), so the claim binds for drain feedback and
-            // the racing successor refuses busy instead of replaying.
+            // A sequencer-stale refusal still carries the operation
+            // identity (the command already executed core-side
+            // at-most-once) but binds NO plan: the sequencer retains the
+            // previous reply, so binding here would execute on stale
+            // bindings/creations. The claim stores the op for feedback
+            // while the drain refuses without actuation; a later honest
+            // reply rebinds the plan (see `settle_select_transfers`).
             // Every other refusal binds nothing (the core never ran).
             if let Some(operation) = select_operation {
                 store_select_claim(shared, claim, Some(&operation));
@@ -1666,7 +1902,7 @@ fn handle_select_action_with(
 }
 
 /// Refuse one send claim narrowly (counted on the shared select-refused
-/// counter — one pending slot for both lanes — never dispatched, never
+/// counter - one pending slot for both lanes - never dispatched, never
 /// replayed).
 fn refuse_send_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
     lock_shared(shared).diagnostics.input_select_refused += 1;
@@ -1704,20 +1940,24 @@ pub(crate) fn pin_stay_claim(
 /// Armed-send lane (numbered sends 1..9 product path plus the
 /// capability-gated trailing send-0 follow): admission, a positional
 /// planner-owned `SendNumbered` world command for the explicit source, and
-/// — when the reply applies, or when a stale-observation refusal proves the
+/// when the reply applies, or when a stale-observation refusal proves the
 /// command already executed core-side — one bound pending claim for the
 /// main-thread send drain. Other core refusals drop the claim (never actuated, never
 /// replayed). The subject is observed truth (never planned focus): the
 /// focused window must be homed to a currently-actuated domain and must
 /// not read native fullscreen (game/fullscreen foregrounds never drag).
-/// Numbered target ordinals bind to their admission-time SID plus the current
-/// topology revision so the drain revalidates instead of interpreting the
-/// ordinal against a different generation; the dispatched command resolves
-/// the ordinal core-side against the adopted ring for the explicit source.
-/// The trailing `index 0` follow binds NO admission SID (the Space may not
-/// exist yet): the drain ensures it natively (reuse-or-append) and binds
-/// the exact ensured SID with the post-preparation revision through
-/// [`crate::workspace_send::bind_trailing_send_target`]. The subject lifetime
+/// No admission-time ordinal-to-SID pin and no adapter output decision:
+/// the dispatched command resolves the ordinal core-side against the
+/// adopted ring for the core-owned implicit source, and the accepted
+/// reply's retained window transfer plus its live native binding (or
+/// explicit creation desire when unbound) binds the claim plan through
+/// [`bind_send_plan`] — the drain actuates exactly that core-resolved
+/// target through a live SID lookup, never an input-ordinal
+/// reinterpretation. Unbound trailing without a creation desire binds no
+/// SID (missing bindings never create); unbound trailing WITH a desire
+/// binds the desire but no SID, refused pending the desire-gated native
+/// creation seam (prerequisite blocker, not a settled refusal). The
+/// subject lifetime
 /// (`send_generation`) and source domain (`send_source`) pin here from
 /// retained engine truth - never re-sampled at dispatch. Stay claims pin
 /// the core-proven post-send source focus after dispatch and before the
@@ -1762,7 +2002,7 @@ fn handle_send_action_with(
 ) {
     use crate::runtime_types::InputSemanticAction;
     use crate::workspace_input::is_armed_send_with;
-    let InputSemanticAction::WorkspaceSend { index, .. } = claim.action.clone() else {
+    let InputSemanticAction::WorkspaceSend { .. } = claim.action.clone() else {
         refuse_send_claim(shared, "refused-send-unarmed");
         return;
     };
@@ -1799,7 +2039,7 @@ fn handle_send_action_with(
     // unmapped subject refuses instead of planning the skeleton, and a
     // hidden-domain subject never dispatches (no drag out of an off-current
     // Space). The fullscreen, minimized-exclusion, and lifetime pins ride
-    // the same publication — never cached topology, static scope, or
+    // the same publication - never cached topology, static scope, or
     // dispatch-time re-sampling.
     let Some((subject_pid, _)) = crate::runtime_types::parse_window_id(&window.0) else {
         refuse_send_claim(shared, "refused-send-bad-subject");
@@ -1818,7 +2058,7 @@ fn handle_send_action_with(
         refuse_send_claim(shared, "refused-send-hidden-domain");
         return;
     }
-    // Fullscreen refusal: a fullscreen subject owns its Space — dragging
+    // Fullscreen refusal: a fullscreen subject owns its Space - dragging
     // it would tear the Space. A classifier-excluded minimized subject has
     // no input-reaching titlebar. Both read from retained observation
     // truth (the drain re-proves them fresh before any post).
@@ -1830,23 +2070,25 @@ fn handle_send_action_with(
         refuse_send_claim(shared, "refused-send-minimized");
         return;
     }
-    let Some(output) = select_output(retained, &ctx) else {
-        refuse_send_claim(shared, "refused-send-no-view");
+    // The trailing `index 0` follow binds NO admission SID (the Space may
+    // not exist yet): only an accepted reply's retained transfer plus its
+    // live binding binds a plan through `bind_send_plan`. Unbound trailing
+    // without an explicit creation desire binds nothing (missing bindings
+    // never create); unbound trailing WITH a desire binds the desire but no
+    // SID, and the drain refuses it pending the desire-gated native creation
+    // seam (prerequisite blocker, not a settled refusal — see the drain).
+    let Some(command) = crate::world_command_map::send_command_implicit_with_capability(
+        &claim.action,
+        &window.0,
+        trailing_enabled,
+    ) else {
+        refuse_send_claim(shared, "refused-send-unarmed");
         return;
     };
-    // Bind the admission-time target SID plus the live revision: the drain
-    // refuses a moved ordinal instead of sending to the new occupant, and
-    // the dispatched command carries the pinned native workspace directly
-    // (the ordinal resolves exactly once here against the native row —
-    // never re-resolved core-side through the scoped ring, whose
-    // stable-logical order need not match native Desktop order).
-    // Admission pins the subject lifetime and source domain from retained
-    // engine truth (never re-sampled at dispatch: a PID reuse after
-    // relaunch must refuse instead of grabbing the new lifetime's
-    // window, and a moved subject must refuse instead of dragging from
-    // the wrong domain). Stay execution selects back to the pinned source
-    // SID below (exact native SID of the source domain under this
-    // admission topology - never a drain-time guess).
+    // Stay-return pin: the exact native SID of the admission-pinned source
+    // domain under this admission topology (never a drain-time guess). This
+    // is native freshness for the return-leg actuation pin, not a policy
+    // decision: targeting itself resolved core-side above.
     let Some(source_sid) = ctx
         .domains
         .iter()
@@ -1856,88 +2098,7 @@ fn handle_send_action_with(
         refuse_send_claim(shared, "refused-send-no-source");
         return;
     };
-    // Bind the admission-time target: numbered ordinals resolve exactly once
-    // here against the native row (the drain revalidates the pinned SID
-    // plus the topology revision instead of interpreting the ordinal
-    // against a different generation). The dispatched command is positional
-    // (`SendNumbered` over the scoped send ring for the explicit source,
-    // whose order tracks native Desktop order) — the pinned native SID
-    // stays drain-side for revalidation only, never a logical guess. The
-    // trailing `index 0` follow binds NO admission SID (the Space may not
-    // exist yet): the drain ensures it natively (reuse-or-append) and binds
-    // the exact ensured SID with the post-preparation revision through
-    // [`crate::workspace_send::bind_trailing_send_target`].
-    let trailing = index == 0;
-    if trailing {
-        let Some(command) = crate::world_command_map::send_command_with_capability(
-            &claim.action,
-            &window.0,
-            output.clone(),
-            trailing_enabled,
-        ) else {
-            refuse_send_claim(shared, "refused-send-unarmed");
-            return;
-        };
-        claim.expected_sid = None;
-        claim.topology_revision = Some(ctx.revision);
-        claim.send_subject = Some(window.0.clone());
-        claim.send_generation = Some(facts.generation);
-        claim.send_source = Some(key.clone());
-        claim.send_source_sid = Some(source_sid);
-        // Trailing follows store directly (no stay focus pin: stay-0 never
-        // admits). A stale-observation refusal still carries the operation
-        // identity like the numbered lane; every other refusal binds
-        // nothing (the core never ran).
-        match dispatch_report(
-            session,
-            retained,
-            shared,
-            inbox,
-            focus_queue,
-            focus_capacity,
-            DispatchContext::Native(Arc::clone(&ctx)),
-            Vec::new(),
-            Some(command),
-            None,
-            true,
-            OP_SEND,
-            0,
-            0,
-            0,
-        ) {
-            DispatchVerdict::Applied { select_operation } => {
-                store_select_claim(shared, claim, select_operation.as_deref());
-            }
-            DispatchVerdict::Duplicate => {
-                store_select_claim(shared, claim, None);
-            }
-            DispatchVerdict::Refused {
-                token,
-                select_operation,
-            } => {
-                if let Some(operation) = select_operation {
-                    store_select_claim(shared, claim, Some(&operation));
-                } else {
-                    lock_shared(shared).diagnostics.input_select_refused += 1;
-                    emit(shared, 0, 0, 0, "input", "send-refused", 0);
-                    let _ = token;
-                }
-            }
-            DispatchVerdict::NoReport => {
-                refuse_send_claim(shared, "refused-send-no-topology");
-            }
-        }
-        return;
-    }
-    let Some(target_sid) = crate::workspace_send::context_target_sid(&ctx, &output, index) else {
-        refuse_send_claim(shared, "refused-send-no-target");
-        return;
-    };
-    let Some(command) = send_command(&claim.action, &window.0, output.clone()) else {
-        refuse_send_claim(shared, "refused-send-unarmed");
-        return;
-    };
-    claim.expected_sid = Some(target_sid);
+    claim.expected_sid = None;
     claim.topology_revision = Some(ctx.revision);
     claim.send_subject = Some(window.0.clone());
     claim.send_generation = Some(facts.generation);
@@ -1969,12 +2130,20 @@ fn handle_send_action_with(
         0,
     ) {
         DispatchVerdict::Applied { select_operation } => {
-            // The applied reply's operation identity rides the stored
-            // claim so the drain reports its native outcome under that
-            // identity (raw attempt evidence, never a verdict).
+            // The applied reply's operation identity plus its retained
+            // transfer plan ride the stored claim so the drain actuates
+            // exactly the core-resolved target through a live SID lookup
+            // and reports its native outcome under that identity (raw
+            // attempt evidence, never a verdict).
             if !stay {
+                let mut claim = claim;
+                if let Some(op) = select_operation.as_deref() {
+                    bind_send_plan(session, &ctx, &mut claim, op);
+                }
                 store_select_claim(shared, claim, select_operation.as_deref());
             } else if let Some(op) = select_operation.as_deref() {
+                let mut claim = claim;
+                bind_send_plan(session, &ctx, &mut claim, op);
                 let focus = session.engine_mut().stay_source_focus(op, &key);
                 match pin_stay_claim(claim, focus) {
                     Ok(pinned) => store_select_claim(shared, pinned, Some(op)),
@@ -2181,7 +2350,7 @@ mod tests {
                 .expect_err("bound busy refuses");
             assert_eq!(err, "refused-select-busy");
         }
-        // Open lane admits both lanes verbatim — the indicator binding
+        // Open lane admits both lanes verbatim - the indicator binding
         // rides through untouched for the drain to fence.
         assert_eq!(
             admit_select_claim(true, false, false, tap_claim()),
@@ -2348,6 +2517,8 @@ mod trailing_join_tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }
 
@@ -2470,22 +2641,373 @@ mod trailing_join_tests {
     }
 
     #[test]
+    fn previous_toggle_binds_core_history_and_drains_reply_driven() {
+        // Core previous outcome exercised end to end: dispatch numbered 2
+        // (moves the view), drain it reply-driven, stage the proven
+        // attempt, settle the moved observation (history records the
+        // proven arrival - never the dispatch), then dispatch previous
+        // (flips back through core history) and drain that too, then
+        // previous again (flips forward). No local history, no ordinal
+        // reinterpretation - every drain actuates the reply-issued
+        // bindings with truthful baselines.
+        use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with};
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        // Numbered 2 first (binds the second adopted logical).
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 }),
+            true,
+        );
+        let first = lock_shared(&shared)
+            .select_pending
+            .clone()
+            .expect("numbered claim stored");
+        let first_op = first.operation_id.clone().expect("operation rides");
+        assert!(
+            first.select_native_binding.is_some(),
+            "numbered binds a live native"
+        );
+        assert_eq!(first.select_baseline_sid, Some(1));
+        // Drain the numbered move through the scripted native row.
+        let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+        let mut state = SelectionState::default();
+        let gates = SelectGates {
+            session_unlocked: true,
+            secure_active: false,
+            lock_screen: false,
+        };
+        let moved = drain_claimed_select_with(&mut state, &mut backend, first, &gates, true)
+            .expect("numbered drains to its binding");
+        assert_eq!(moved.setter, FrameSetter::Accepted);
+        assert!(moved.effect.changed);
+        assert_eq!(moved.effect.baseline, Some(1));
+        assert_eq!((moved.pre, moved.post), (Some(1), Some(277)));
+        // Stage the proven raw attempt and settle the moved observation
+        // through the production dispatch path: the native echo (current
+        // 277) confirms the view and records core history. The shared
+        // topology publishes first, exactly like the main-thread pump,
+        // so the dispatch snapshot is honestly fenced.
+        process_job(
+            EngineJob::ViewAttempt {
+                operation_id: first_op,
+                setter: FrameSetter::Accepted,
+                pre_sid: moved.pre,
+                post_sid: moved.post,
+                baseline_sid: moved.effect.baseline,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let moved_ctx = Arc::new(NativeContext {
+            revision: 10,
+            domains: vec![domain(1, false), domain(277, true)],
+            skipped: Vec::new(),
+        });
+        lock_shared(&shared).native_context = Some(Arc::clone(&moved_ctx));
+        lock_shared(&shared).topology_revision = moved_ctx.revision;
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&moved_ctx)),
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("moved observation must apply, got {other:?}"),
+        }
+        assert!(
+            session.engine_mut().retained_transfers().is_empty(),
+            "native echo settles the numbered transfer"
+        );
+        // Previous flips back through proven core history (not local
+        // state): the plan binds the original Space with the moved
+        // observation-time baseline.
+        lock_shared(&shared).select_pending = None;
+        lock_shared(&shared).select_busy = false;
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspacePrevious),
+            true,
+        );
+        let prev = lock_shared(&shared)
+            .select_pending
+            .clone()
+            .expect("previous claim stored with proven history");
+        let prev_op = prev.operation_id.clone().expect("operation rides");
+        assert_eq!(
+            prev.select_native_binding.as_deref(),
+            Some(crate::topology::workspace_key(1).as_str()),
+            "previous binds the proven prior Space"
+        );
+        assert_eq!(prev.select_baseline_sid, Some(277));
+        let back = drain_claimed_select_with(&mut state, &mut backend, prev, &gates, true)
+            .expect("previous drains to its binding");
+        assert_eq!((back.effect.from, back.effect.target), (277, 1));
+        assert_eq!(back.effect.baseline, Some(277));
+        // Settle the return arrival, then previous again flips forward -
+        // history advances only on proven arrivals, both directions.
+        process_job(
+            EngineJob::ViewAttempt {
+                operation_id: prev_op,
+                setter: FrameSetter::Accepted,
+                pre_sid: back.pre,
+                post_sid: back.post,
+                baseline_sid: back.effect.baseline,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let home_ctx = Arc::new(NativeContext {
+            revision: 11,
+            domains: vec![domain(1, true), domain(277, false)],
+            skipped: Vec::new(),
+        });
+        lock_shared(&shared).native_context = Some(Arc::clone(&home_ctx));
+        lock_shared(&shared).topology_revision = home_ctx.revision;
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&home_ctx)),
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("return observation must apply, got {other:?}"),
+        }
+        assert!(
+            session.engine_mut().retained_transfers().is_empty(),
+            "native echo settles the previous transfer"
+        );
+        lock_shared(&shared).select_pending = None;
+        lock_shared(&shared).select_busy = false;
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspacePrevious),
+            true,
+        );
+        let again = lock_shared(&shared)
+            .select_pending
+            .clone()
+            .expect("second previous claim stored");
+        assert_eq!(
+            again.select_native_binding.as_deref(),
+            Some(crate::topology::workspace_key(277).as_str()),
+            "previous again binds the forward Space"
+        );
+        let fwd = drain_claimed_select_with(&mut state, &mut backend, again, &gates, true)
+            .expect("second previous drains to its binding");
+        assert_eq!((fwd.effect.from, fwd.effect.target), (1, 277));
+        assert!(state.take_trailing_proof().is_none());
+    }
+
+    #[test]
+    fn stale_dispatch_binds_no_plan_and_drain_touches_nothing() {
+        // Watermark-move regression: a racing input advances the shared
+        // watermark between acceptance and emission, so the emission gate
+        // refuses the reply as stale-observation even though the sequencer
+        // applied it. The command already executed core-side, so the claim
+        // stores with its operation identity - but binds NO plan from any
+        // reply: a stale path must never execute using old (or even fresh
+        // but superseded) bindings/creations. The drain then refuses
+        // without any native effect or creation, and the staged refusal
+        // holds (never a false settle).
+        use crate::workspace_select::{SelectGates, SelectionState};
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        // Queue a live terminate ahead of the dispatch so the deferred
+        // observation-only retry is not worthwhile (its truth is missing
+        // from the stale snapshot): the stale refusal stays plain.
+        assert!(inbox.send_control(EngineJob::Terminate {
+            pid: 4242,
+            generation: 1
+        }));
+        // Between acceptance and emission, a racing input advances the
+        // shared watermark: the accepted reply no longer incorporates
+        // every submitted input, so emission refuses it as stale even
+        // though the sequencer applied it. The command already executed
+        // core-side, so the claim stores with its operation identity -
+        // but binds NO plan.
+        let hook: crate::runtime_shared::PostAcceptHook = Arc::new({
+            let shared = Arc::clone(&shared);
+            move || {
+                crate::runtime::lock_shared(&shared).clock.invalidate();
+            }
+        });
+        lock_shared(&shared)
+            .post_accept_hook
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .replace(hook);
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 }),
+            true,
+        );
+        lock_shared(&shared)
+            .post_accept_hook
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        let stale = lock_shared(&shared)
+            .select_pending
+            .clone()
+            .expect("stale command still binds its operation identity");
+        assert!(
+            stale
+                .operation_id
+                .as_deref()
+                .is_some_and(|op| op.starts_with("op-")),
+            "at-most-once identity rides for feedback"
+        );
+        assert!(
+            stale.select_target_output.is_none()
+                && stale.select_native_binding.is_none()
+                && stale.select_creation_operation.is_none(),
+            "stale refusal binds no plan from the previous reply: {:?}",
+            (
+                &stale.select_target_output,
+                &stale.select_native_binding,
+                &stale.select_creation_operation
+            )
+        );
+        // The plan-less drain refuses before any native touch: no select
+        // posts, no Space is created, nothing replays.
+        let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+        let mut state = SelectionState::default();
+        let gates = SelectGates {
+            session_unlocked: true,
+            secure_active: false,
+            lock_screen: false,
+        };
+        let failure = crate::workspace_select::drain_claimed_select_with(
+            &mut state,
+            &mut backend,
+            stale.clone(),
+            &gates,
+            true,
+        )
+        .expect_err("plan-less stale claim refuses");
+        assert!(
+            failure.reason.contains("no retained view target"),
+            "{}",
+            failure.reason
+        );
+        assert_eq!(failure.setter, FrameSetter::Refused);
+        assert!(backend.selects.is_empty(), "no native select posted");
+        assert_eq!(backend.creates, 0, "no native creation");
+        assert!(state.take_trailing_proof().is_none());
+        // Staging the drain's honest refusal (no reads - the drain never
+        // touched the desktop) holds the retained transfer: the core
+        // settles nothing on unreadable evidence.
+        process_job(
+            EngineJob::ViewAttempt {
+                operation_id: stale.operation_id.clone().expect("operation rides"),
+                setter: FrameSetter::Refused,
+                pre_sid: None,
+                post_sid: None,
+                baseline_sid: None,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let report = build_dispatch_report(
+            &mut session,
+            &retained,
+            &crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            &[],
+            3,
+            3,
+            None,
+            None,
+            None,
+            "req-3",
+        )
+        .expect("nonempty context reports");
+        match session.engine_mut().handle_report(&report) {
+            WorldOutcome::Accepted(_) => {}
+            other => panic!("hold observation must accept, got {other:?}"),
+        }
+        assert_eq!(
+            session.engine_mut().retained_transfers().len(),
+            1,
+            "unreadable refusal holds the transfer instead of settling it"
+        );
+    }
+
+    #[test]
     fn raw_attempt_jobs_stage_only_against_retained_operations() {
         let ctx = ctx();
         let (mut session, mut retained, shared, inbox, focus_queue) =
             harness(Arc::clone(&ctx), RetainedCore::default());
         // Unknown operations (forged, retired, or never issued) drop
-        // without evidence — never fabricated rows, never guessed targets.
+        // without evidence - never fabricated rows, never guessed targets.
         for job in [
             EngineJob::ViewAttempt {
                 operation_id: "op-404".to_owned(),
                 setter: FrameSetter::Accepted,
                 pre_sid: Some(1),
                 post_sid: Some(277),
+                baseline_sid: Some(1),
             },
             EngineJob::MemberAttempt {
                 operation_id: "op-404".to_owned(),
                 setter: FrameSetter::Accepted,
+                pre_sid: None,
                 post_sid: Some(277),
             },
         ] {
@@ -3054,7 +3576,7 @@ mod trailing_join_tests {
     /// spare with full staged state, exactly like production observations
     /// precede input. A trailing send dispatched as the very first report
     /// would refuse (the lifecycle-minted spare has no staged domain yet
-    /// in the same pass) — reported core gap, not an adapter guess.
+    /// in the same pass) - reported core gap, not an adapter guess.
     fn bootstrap_observation(
         session: &mut WorldSession,
         retained: &mut RetainedCore,
@@ -3177,6 +3699,8 @@ mod trailing_join_tests {
         revision: u64,
         occupied: BTreeSet<u64>,
         next_sid: u64,
+        selects: Vec<u64>,
+        creates: usize,
     }
 
     impl FakeBackend {
@@ -3188,6 +3712,8 @@ mod trailing_join_tests {
                 revision: 9,
                 occupied: occupied.iter().copied().collect(),
                 next_sid: spaces.iter().copied().max().unwrap_or(0) + 1,
+                selects: Vec::new(),
+                creates: 0,
             }
         }
     }
@@ -3209,11 +3735,22 @@ mod trailing_join_tests {
             Some(self.revision)
         }
 
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            if output == "macos-display-1" {
+                Ok(())
+            } else {
+                Err(format!(
+                    "product select refuses: reply target output {output} is not the live display macos-display-1; no actuation"
+                ))
+            }
+        }
+
         fn empty(&mut self, sid: u64) -> Result<bool, String> {
             Ok(!self.occupied.contains(&sid))
         }
 
-        fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), String> {
+        fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+            self.creates += 1;
             let sid = self.next_sid;
             self.next_sid += 1;
             self.spaces.push(sid);
@@ -3221,10 +3758,11 @@ mod trailing_join_tests {
             Ok(())
         }
 
-        fn select(&mut self, _before: &SelectionSnapshot, sid: u64) -> Result<(), String> {
+        fn select(&mut self, _before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
             if !self.spaces.contains(&sid) {
-                return Err("scripted select of absent Space".to_owned());
+                return Err(crate::workspace_select::DispatchError::refused("scripted select of absent Space"));
             }
+            self.selects.push(sid);
             self.current = sid;
             self.revision += 1;
             Ok(())
@@ -3308,25 +3846,61 @@ mod trailing_join_tests {
                 .find(|desire| desire.target_output == output())
                 .expect("trailing creation desired");
 
-            // Real native leg through the injected backend only.
+            // Real native leg through the injected backend only, driven by
+            // the reply plan the engine just bound (no ordinal
+            // reinterpretation, single authorized creation).
             let mut backend = FakeBackend::new(&[1, 277], 1, &[277]);
             let mut select_state = crate::workspace_select::SelectionState::default();
-            let effect = select_state
-                .execute(
-                    &mut backend,
-                    InputSemanticAction::WorkspaceSelect { index: 0 },
-                )
-                .expect("native append+select proves");
-            assert_eq!((effect.created, effect.target), (Some(278), 278));
+            let success = crate::workspace_select::drain_claimed_select_with(
+                &mut select_state,
+                &mut backend,
+                claim.clone(),
+                &crate::workspace_select::SelectGates {
+                    session_unlocked: true,
+                    secure_active: false,
+                    lock_screen: false,
+                },
+                true,
+            )
+            .expect("native append+select proves");
+            assert_eq!(
+                (success.effect.created, success.effect.target),
+                (Some(278), 278)
+            );
+            assert_eq!(success.setter, FrameSetter::Accepted);
+            let creation = success.creation.as_ref().expect("creation reported");
+            assert_eq!(creation.operation_id, desire.operation_id);
+            assert_eq!(creation.created, Some(278));
 
             // Actual same-tick handoff into the session: the drain-verified
-            // before/after native reads ride the raw attempt row.
+            // before/after native reads ride the raw attempt row, plus the
+            // drain's creation report rides the creation row - exactly once
+            // under the desire's identity.
             process_job(
                 EngineJob::ViewAttempt {
                     operation_id: op.clone(),
-                    setter: FrameSetter::Accepted,
-                    pre_sid: Some(effect.from),
-                    post_sid: Some(effect.target),
+                    setter: success.setter,
+                    pre_sid: success.pre,
+                    post_sid: success.post,
+                    baseline_sid: success.effect.baseline,
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+            process_job(
+                EngineJob::NativeCreation {
+                    operation_id: creation.operation_id.clone(),
+                    logical: creation.logical.clone(),
+                    output: creation.output.clone(),
+                    setter: creation.setter,
+                    order_before: creation.order_before.clone(),
+                    order_after: creation.order_after.clone(),
+                    created_sid: creation.created,
+                    attempt_ms: creation.attempt_ms,
                 },
                 &mut session,
                 &mut retained,
@@ -3337,13 +3911,15 @@ mod trailing_join_tests {
             );
             let created = settled_ctx();
 
-            // One dispatched observation carries the staged row with the
+            // One dispatched observation carries the staged rows with the
             // drain-verified native reads on the dedicated native keys:
             // the known source read and the not-yet-adopted append ride
             // `native_pre`/`native_post` (logical pre/post stay absent,
-            // never translated or guessed adapter-side). The core
-            // translates them through its own bindings at settle time.
-            let mut report = build_dispatch_report(
+            // never translated or guessed adapter-side), and the drain's
+            // creation report rides the creation row exactly once under
+            // the desire's identity. The core translates them through its
+            // own bindings at settle time.
+            let report = build_dispatch_report(
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
@@ -3356,28 +3932,42 @@ mod trailing_join_tests {
                 "req-3",
             )
             .expect("nonempty context reports");
-            // Stage1b creation proof for the pending authorization: the
-            // scripted backend created exactly `effect.target` from the
-            // minted before-image to the fresh readback order, staged here
-            // because the adapter drain reports no creation rows yet.
-            report.creation_attempts.push(NativeCreationAttempt {
-                operation_id: desire.operation_id.clone(),
-                logical_workspace: desire.logical_workspace.clone(),
-                target_output: output(),
-                setter: FrameSetter::Accepted,
-                order_before: ctx
+            // The drain's creation report rides the creation row: exactly
+            // one exact-correlated receipt for the pending authorization
+            // (operation plus logical plus output, named created desktop).
+            assert_eq!(
+                report.creation_attempts.len(),
+                1,
+                "report carries exactly one creation attempt"
+            );
+            assert_eq!(
+                report.creation_attempts[0].operation_id,
+                desire.operation_id
+            );
+            assert_eq!(
+                report.creation_attempts[0].logical_workspace, desire.logical_workspace,
+                "receipt names the authorized logical, never a guess"
+            );
+            assert_eq!(
+                report.creation_attempts[0].created_native.as_deref(),
+                Some(workspace_key(success.effect.target).as_str()),
+                "receipt names the verified appended desktop"
+            );
+            assert_eq!(
+                report.creation_attempts[0].order_before,
+                ctx.domains
+                    .iter()
+                    .map(|domain| domain.workspace.0.clone())
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                report.creation_attempts[0].order_after,
+                created
                     .domains
                     .iter()
                     .map(|domain| domain.workspace.0.clone())
-                    .collect(),
-                order_after: created
-                    .domains
-                    .iter()
-                    .map(|domain| domain.workspace.0.clone())
-                    .collect(),
-                created_native: Some(workspace_key(effect.target)),
-                attempt_ms: 0,
-            });
+                    .collect::<Vec<_>>(),
+            );
             assert_eq!(report.view_attempts.len(), 1, "report carries the attempt");
             assert_eq!(report.view_attempts[0].operation_id, op);
             assert_eq!(
@@ -3390,12 +3980,12 @@ mod trailing_join_tests {
             );
             assert_eq!(
                 report.view_attempts[0].native_pre.as_deref(),
-                Some(workspace_key(effect.from).as_str()),
+                Some(workspace_key(success.pre.expect("pre read")).as_str()),
                 "drain-verified before read rides the native pre key"
             );
             assert_eq!(
                 report.view_attempts[0].native_post.as_deref(),
-                Some(workspace_key(effect.target).as_str()),
+                Some(workspace_key(success.post.expect("post read")).as_str()),
                 "drain-verified after read rides the native post key"
             );
             let reply = match session.engine_mut().handle_report(&report) {
@@ -3523,6 +4113,7 @@ mod trailing_join_tests {
                 EngineJob::MemberAttempt {
                     operation_id: op.clone(),
                     setter: FrameSetter::Accepted,
+                    pre_sid: None,
                     post_sid: Some(prep.target_sid),
                 },
                 &mut session,
@@ -3597,7 +4188,7 @@ mod trailing_join_tests {
             // The window transfer settles on proven arrival: the correlated
             // receipt binds the appended native to the retained target, and
             // the staged arrival homing proves the mover there (exact host
-            // proof — never a false confirm, never a blind repeat). The
+            // proof - never a false confirm, never a blind repeat). The
             // follow view settles to the native echo with no separate
             // flight.
             let held: Vec<_> = session
@@ -3813,6 +4404,8 @@ mod drag_gesture_handoff_tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }
 

@@ -3,7 +3,8 @@
 //! Serialized Dock-swipe selection owner (single-flight, off-main).
 //!
 //! One dedicated owner thread holds the run-lifetime [`SelectionState`]
-//! (previous history plus trailing proofs) and executes one [`SelectJob`]
+//! (trailing creation proofs only - core owns previous history,
+//! targeting, and reuse-vs-create) and executes one [`SelectJob`]
 //! at a time through [`execute_select_job`]. The main thread submits
 //! nonblocking via [`SelectController`] and polls completions nonblocking;
 //! it never waits and never touches history, so no concurrent send/select
@@ -21,7 +22,7 @@
 //! pumping its runloop while polling nonblocking until the terminal
 //! completion stages (adopting its trailing proof exactly like the live
 //! poll). Only then does it stop the owner, reap it once finished, and run
-//! the preexisting main-thread trailing cleanup — Mission Control removal
+//! the preexisting main-thread trailing cleanup - Mission Control removal
 //! keeps its main-thread semantics (never an off-main remover). A drain
 //! that outlasts its bound reports unclean with the retained ownership,
 //! never clean.
@@ -38,12 +39,12 @@ use crate::dock_swipe_select::{
 };
 use crate::ffi::{SpaceSelectLatch, SpaceSelectWake};
 use crate::runtime_types::ClaimedSelect;
-use crate::workspace_select::{SelectionEffect, SelectionState, TrailingAppendProof};
+use crate::workspace_select::{SelectFailure, SelectSuccess, SelectionState, TrailingAppendProof};
 
 /// One selection job for the owner: the claimed action plus the pinned
 /// plain-data display legs (never an AppKit read on the owner), the
 /// capability flag, the per-job settle latch (created at submit from the
-/// guard wake — retained for inflight cancellation), and submit-time
+/// guard wake - retained for inflight cancellation), and submit-time
 /// bookkeeping for chained timing logs.
 #[derive(Debug, Clone)]
 pub struct SelectJob {
@@ -60,14 +61,15 @@ pub struct SelectJob {
     pub submitted_at: Instant,
 }
 
-/// One owner completion: the job identity plus the proven outcome plus the
-/// single-take trailing proof (present on BOTH success and failure when
-/// the job appended — the main side adopts it exactly once) plus the
-/// submit instant for completion-observed timing.
+/// One owner completion: the job identity plus the typed drain outcome
+/// (setter plus genuine reads on every path) plus the single-take
+/// trailing proof (present on BOTH outcomes when the job appended - the
+/// main side adopts it exactly once) plus the submit instant for
+/// completion-observed timing.
 #[derive(Debug, Clone)]
 pub struct SelectCompletion {
     pub operation_id: Option<String>,
-    pub result: Result<SelectionEffect, String>,
+    pub result: Result<SelectSuccess, SelectFailure>,
     pub proof: Option<TrailingAppendProof>,
     pub base: Instant,
 }
@@ -101,10 +103,7 @@ impl SelectLane {
 
 pub(crate) struct SelectHandoff {
     lane: std::sync::Mutex<SelectLane>,
-    /// Follow-history attributions from settled send follows, applied by
-    /// the owner to its `SelectionState` before the next select job (FIFO,
-    /// serialized with selects — never a cross-thread history race).
-    notes: std::sync::Mutex<Vec<(String, u64)>>,
+    pending_creations: std::sync::Mutex<Vec<crate::workspace_select::PendingCreation>>,
 }
 
 impl SelectHandoff {
@@ -115,7 +114,7 @@ impl SelectHandoff {
                 inflight: None,
                 completion: None,
             }),
-            notes: std::sync::Mutex::new(Vec::new()),
+            pending_creations: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -176,17 +175,6 @@ impl SelectHandoff {
         had
     }
 
-    fn note_arrival(&self, display: &str, from: u64) {
-        self.notes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((display.to_owned(), from));
-    }
-
-    fn take_notes(&self) -> Vec<(String, u64)> {
-        std::mem::take(&mut *self.notes.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
     fn is_busy(&self) -> bool {
         self.lane
             .lock()
@@ -205,11 +193,12 @@ impl SelectHandoff {
 }
 
 /// Execute one selection job on the calling (owner) thread with
-/// owner-fresh gates: the armed and single-display rules, the bound-claim
-/// fence, then one [`SelectionState::execute`] (single dispatch,
-/// event-driven settlement, never a replay; history advances only on
-/// verified arrival). The trailing proof is taken on BOTH outcomes so the
-/// main side adopts an append even when its post-create select failed.
+/// owner-fresh gates: the armed and single-display rules, the live binding
+/// lookup for the reply-derived target (or the single authorized creation
+/// under an explicit creation desire), then one event-driven settlement
+/// (single dispatch, never a replay; core owns targeting and history).
+/// The trailing proof is taken on BOTH outcomes so the main side adopts an
+/// append even when its post-create select failed.
 pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) -> SelectCompletion {
     let mut gate_reads = LiveGateReads;
     let fresh = gate_reads.read_gates();
@@ -247,12 +236,20 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
 }
 
 /// Terminal cancelled completion for a job the owner never actuated
-/// (cancelled while pending). Carries the job identity with no proof —
-/// nothing was created, so there is nothing to adopt.
+/// (cancelled while pending). Carries the job identity with no reads and
+/// no proof - nothing was created, so there is nothing to adopt.
 fn cancelled_completion(job: &SelectJob) -> SelectCompletion {
     SelectCompletion {
         operation_id: job.claim.operation_id.clone(),
-        result: Err("select refused: cancelled before dispatch".to_owned()),
+        result: Err(crate::workspace_select::SelectFailure {
+            reason: "select refused: cancelled before dispatch".to_owned(),
+            setter: tiler_core::world_report::FrameSetter::Refused,
+            pre: None,
+            post: None,
+            baseline: job.claim.select_baseline_sid,
+            creation: None,
+            attempt_ms: crate::input_eligibility::now_ms(),
+        }),
         proof: None,
         base: job.submitted_at,
     }
@@ -287,13 +284,10 @@ impl SelectThread {
             .spawn(move || {
                 let mut state = SelectionState::default();
                 loop {
-                    // Serialized follow-history attribution: settled send
-                    // follows land here before the next select job runs, so
-                    // `workspace-previous` flips back to the followed-from
-                    // Space with no cross-thread history race.
-                    for (display, from) in thread_handoff.take_notes() {
-                        state.note_arrival(&display, from);
-                    }
+                    // Core owns selection history: the owner holds no
+                    // previous-view memory and applies no send-follow
+                    // attributions. Each job actuates exactly its reply
+                    // plan through a live lookup.
                     if let Some(job) = thread_handoff.take_for_owner() {
                         // Cancellation prevents new create/select work: a
                         // flagged job terminal-completes without actuation.
@@ -302,6 +296,9 @@ impl SelectThread {
                             continue;
                         }
                         let completion = executor(&job, &mut state);
+                        thread_handoff.pending_creations
+                            .lock().unwrap_or_else(|e| e.into_inner())
+                            .extend(state.take_pending_creations());
                         let _ = thread_handoff.finish(completion);
                         continue;
                     }
@@ -355,14 +352,6 @@ impl SelectThread {
         had
     }
 
-    /// Record a verified send-follow arrival for the owner-held previous
-    /// history (applied follows only — stays never note). Serialized
-    /// through the lane ahead of later selects.
-    pub fn note_arrival(&self, display: &str, from: u64) {
-        self.handoff.note_arrival(display, from);
-        let _ = self.wake_tx.send(());
-    }
-
     /// Whether a job is pending, inflight, or completed-but-unpolled.
     #[must_use]
     pub fn is_busy(&self) -> bool {
@@ -378,7 +367,7 @@ impl SelectThread {
     }
 
     /// Nonblocking shutdown request: signal stop, cancel the lane, wake.
-    /// Never joins — pair with cooperative drain (poll until the terminal
+    /// Never joins - pair with cooperative drain (poll until the terminal
     /// completion stages) then [`SelectThread::try_reap`].
     pub fn request_shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -419,7 +408,7 @@ impl Drop for SelectThread {
 /// thread polls [`SelectController::poll`] until the terminal completion
 /// stages, then [`SelectController::request_shutdown`] plus
 /// [`SelectController::try_reap`] once finished. No detached settler, no
-/// off-main remover — the preexisting main-thread trailing cleanup runs
+/// off-main remover - the preexisting main-thread trailing cleanup runs
 /// after the reap.
 //
 // Main-side async select controller: the nonblocking submit/poll
@@ -432,10 +421,6 @@ pub struct SelectController {
     thread: Option<SelectThread>,
     inflight: Option<SelectInflight>,
     awake: Option<crate::mc_lifecycle::live::CaffeinateGuard>,
-    /// Follow-history attributions recorded before the owner exists (runs
-    /// that send before their first select): flushed into the lane on the
-    /// next submit, FIFO before the job, so no attribution is lost.
-    pending_notes: Vec<(String, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -444,6 +429,25 @@ struct SelectInflight {
 }
 
 impl SelectController {
+    pub(crate) fn observe_creation_receipts(
+        &self,
+        row: &crate::workspace_select::SelectionSnapshot,
+        read_started_ms: u64,
+    ) -> Vec<crate::workspace_select::CreationReport> {
+        let Some(thread) = self.thread.as_ref() else { return Vec::new(); };
+        let mut pending = thread.handoff.pending_creations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ready = Vec::new();
+        pending.retain(|receipt| {
+            if let Some(report) = receipt.observe(row, read_started_ms) {
+                ready.push(report);
+                false
+            } else {
+                true
+            }
+        });
+        ready
+    }
+
     /// Empty controller (no thread, no inflight).
     #[must_use]
     pub fn new() -> Self {
@@ -487,10 +491,6 @@ impl SelectController {
         let Some(thread) = self.thread.as_ref() else {
             return Err("select-busy: no select owner; refusing".to_owned());
         };
-        // Flush pre-owner follow-history attributions FIFO before the job.
-        for (display, from) in std::mem::take(&mut self.pending_notes) {
-            thread.note_arrival(&display, from);
-        }
         thread.submit(job).map_err(|e| e.to_owned())?;
         self.inflight = Some(SelectInflight {
             operation_id: claim.operation_id.clone(),
@@ -534,22 +534,10 @@ impl SelectController {
         self.thread.as_ref().is_some_and(|t| t.cancel())
     }
 
-    /// Record a verified send-follow arrival for the owner-held previous
-    /// history (applied follows only — stays never note). Before the owner
-    /// exists the attribution parks here and flushes FIFO on the next
-    /// submit; afterwards it rides the lane ahead of later selects.
-    pub fn note_arrival(&mut self, display: &str, from: u64) {
-        if let Some(thread) = self.thread.as_ref() {
-            thread.note_arrival(display, from);
-        } else {
-            self.pending_notes.push((display.to_owned(), from));
-        }
-    }
-
     /// Nonblocking terminal shutdown request: stop the caffeinate
     /// companion first (so no companion outlives the handoff), then signal
     /// owner stop, cancel the lane, and wake the owner. Never blocks, never
-    /// joins — the caller drains cooperatively (poll until the terminal
+    /// joins - the caller drains cooperatively (poll until the terminal
     /// completion stages, adopting its proof exactly like the live poll),
     /// then pumps until [`SelectController::is_finished`] and
     /// [`SelectController::try_reap`]. Never panics.

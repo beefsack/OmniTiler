@@ -93,6 +93,7 @@ fn is_retained_fullscreen(retained: &RetainedCore, window: &str) -> bool {
 
 /// Dispatch outcome for one engine job: what the caller counts and whether
 /// a select claim may be stored.
+#[derive(Debug)]
 pub(crate) enum DispatchVerdict {
     /// A reply applied (frames/focus/transfers consumed). Carries the
     /// mintable select operation identity when the dispatched command was
@@ -144,6 +145,10 @@ pub(crate) fn dispatch_report(
     // moves the shared clock (submit lanes and staged completions), so the
     // ticket below stamps submitted input and a mid-flight arrival refuses
     // as stale instead of actuating over it.
+    // The startup-resolved presentation style syncs here too, so every
+    // report carries the configured outset without the engine thread
+    // reading startup config directly.
+    session.sync_presentation_style(lock_shared(shared).presentation_style);
     if let DispatchContext::Native(ctx) = &dispatch {
         // The engine adopts a new topology revision through this full
         // report (core-internally retiring vanished domains and seeding
@@ -263,6 +268,7 @@ pub(crate) fn dispatch_gesture_report(
     Option<GestureSettled>,
 ) {
     use crate::drag_drop::PreviewOutcome;
+    session.sync_presentation_style(lock_shared(shared).presentation_style);
     if let DispatchContext::Native(ctx) = &dispatch
         && crate::runtime_core::note_dispatch_context(retained, ctx)
     {
@@ -1190,6 +1196,14 @@ fn consume_world_reply(
         }
         frames.push((row.lifetime.0.clone(), frame));
     }
+    // Applied-reply presentation publish: exactly the applied reply's
+    // shapes ride shared state for the tile main thread, which renders
+    // these shapes with liveness plus fresh native safety vetoes before
+    // painting. Duplicates and refusals never reach here (no clobber).
+    {
+        let mut guard = lock_shared(shared);
+        guard.last_presentation = reply.presentation.clone();
+    }
     emit_world_frames(
         session,
         retained,
@@ -1217,7 +1231,7 @@ fn consume_world_reply(
         generation,
         seq,
     );
-    settle_select_transfers(shared, reply, pid, generation, seq);
+    settle_select_transfers(session, shared, reply, pid, generation, seq);
 }
 
 /// Frame emission from world rows: per-app latest-wins slots, per-app
@@ -1509,8 +1523,14 @@ fn dispatch_focus_effects(
 /// Settle pending select claims against retained view transfers: a held
 /// target (possibly-executed) drops the pending claim so the drain never
 /// re-actuates it — holds preserve native state. Live targets stay for
-/// the main-thread drain with its own fresh fences.
+/// the main-thread drain with its own fresh fences. A pending claim that
+/// carries an operation identity but no plan (stored from a
+/// sequencer-stale refusal, so no stale binding was bound) rebinds its
+/// plan here from the currently applied reply — never from a previous
+/// one — while the lane is idle. A claim already taken for drain
+/// (`select_busy`) is never touched.
 fn settle_select_transfers(
+    session: &mut WorldSession,
     shared: &Arc<Mutex<Shared>>,
     reply: &WorldReply,
     pid: u32,
@@ -1532,7 +1552,73 @@ fn settle_select_transfers(
     if held {
         lock_shared(shared).select_pending = None;
         emit(shared, pid, generation, seq, "input", "select-held", 0);
+        return;
     }
+    // Rebind a plan-less claim (stale-refusal store) from this applied
+    // reply: resolve the retained View transfer by operation identity,
+    // then the live native binding (or explicit creation desire) plus the
+    // observation-time baseline from the current native context. Never
+    // invents a binding; missing targets leave the claim unbound so the
+    // drain refuses without actuation.
+    let needs_plan = lock_shared(shared)
+        .select_pending
+        .as_ref()
+        .is_some_and(|claim| {
+            claim.operation_id.as_deref() == Some(operation_id.as_str())
+                && claim.select_target_output.is_none()
+        });
+    if !needs_plan {
+        return;
+    }
+    let busy = lock_shared(shared).select_busy;
+    if busy {
+        return;
+    }
+    let transfer = session
+        .engine_mut()
+        .retained_transfers()
+        .into_iter()
+        .find(|target| {
+            target.operation_id == operation_id
+                && matches!(target.kind, tiler_core::world_report::TransferKind::View)
+        });
+    let Some(transfer) = transfer else {
+        return;
+    };
+    let target_output = transfer.target_output.0.clone();
+    let target_workspace = transfer.target_workspace.clone();
+    let native_binding = reply
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == target_output && row.id == target_workspace)
+        .and_then(|row| row.native_binding.clone());
+    let creation = reply.native_creations.iter().find(|desire| {
+        desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
+    });
+    let baseline_sid = lock_shared(shared).native_context.clone().and_then(|ctx| {
+        ctx.domains
+            .iter()
+            .find(|domain| domain.output.0 == target_output && domain.current)
+            .map(|domain| domain.space)
+    });
+    let mut guard = lock_shared(shared);
+    let Some(claim) = guard.select_pending.as_mut() else {
+        return;
+    };
+    if claim.operation_id.as_deref() != Some(operation_id.as_str())
+        || claim.select_target_output.is_some()
+    {
+        return;
+    }
+    claim.select_target_output = Some(target_output.clone());
+    claim.select_target_workspace = Some(target_workspace.clone());
+    claim.select_native_binding = native_binding;
+    if let Some(desire) = creation {
+        claim.select_creation_operation = Some(desire.operation_id.clone());
+        claim.select_creation_logical = Some(desire.logical_workspace.clone());
+        claim.select_creation_output = Some(desire.target_output.0.clone());
+    }
+    claim.select_baseline_sid = baseline_sid;
 }
 
 #[cfg(test)]
@@ -1573,25 +1659,26 @@ mod tests {
     fn v2_command_shapes_carry_no_native_workspace() {
         use tiler_core::directional::WindowId;
         use tiler_core::world_report::{SendSource, WorldCommand};
-        // Numbered selects are positional over the adopted ring with an
-        // explicit output; trailing resolves core-side to reuse-or-create.
-        // No arm pins a native workspace id into the command.
+        // Numbered selects are positional over the adopted ring with no
+        // adapter output (core resolves cursor/focus); trailing resolves
+        // core-side to reuse-or-create. No arm pins a native workspace id
+        // into the command.
         assert!(matches!(
             crate::world_command_map::select_command(
                 &crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 3 },
-                output(),
+                None,
             ),
             Some(WorldCommand::SelectNumbered {
-                output: Some(_),
+                output: None,
                 index: 3
             })
         ));
         assert!(matches!(
             crate::world_command_map::select_command(
                 &crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 0 },
-                output(),
+                None,
             ),
-            Some(WorldCommand::SelectTrailing { output: Some(_) })
+            Some(WorldCommand::SelectTrailing { output: None })
         ));
         // Numbered sends ride the explicit admission-resolved source with a
         // positional index; the pinned native target stays drain-side for
