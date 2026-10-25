@@ -47,7 +47,7 @@
 - Existing retained-session tests prove remembered tiled focus survives a view
   roundtrip, but do not assert a return-focus effect. Actual remembered leaves
   and pager highlight payloads are not recorded in the supplied trace.
-- Draft correction emits core remembered-focus intent for explicit selection;
+- The correction emits core remembered-focus intent for explicit selection;
   Windows re-reads a baseline-hidden target after the same-pass view reveal.
   No first-window fallback is added. These changes are not accepted as a
   complete fix: native focus landing remains unproven.
@@ -58,11 +58,11 @@
 - Pager diagnosis: `world_presentation.rs` retains report-time foreground but
   builds pager rows over post-command views. A departing WS2 foreground and
   a newly current WS1 can coexist in one reply, showing WS2 focused until a
-  fresh desktop/destination observation clears or replaces it. The draft now
+  fresh desktop/destination observation clears or replaces it. The core now
   marks focus only on a current workspace. Regression covers stale departing
   focus, native destination catch-up and foreign focus; it never substitutes
-  desired remembered focus for observed foreground. Live pager-cell payloads
-  remain unverified; existing logs carry pager lifecycle, not cell data.
+  desired remembered focus for observed foreground. The Windows mapper also
+  needed correction; actual renderer-payload evidence is recorded below.
 
 ## Verification and blocker (2026-10-25)
 
@@ -85,7 +85,7 @@
   setter's non-consuming pending-event veto intact. A consuming fake had hidden
   that veto. The added production-contract regression proves pending edges keep
   stopping until drained; no exemption, watermark reset, queue filtering or
-  delayed focus replay remains in the draft.
+  delayed focus replay is implemented.
 - A subsequent fixture-only diagnostic used the real owner and exact-owner
   numbered selection, with no synthetic input. Both fixture windows occupied
   WS1; selecting empty WS2 hid them, then returning revealed both without
@@ -96,7 +96,7 @@
   This is not occupied-workspace acceptance in both directions. Stop/restore
   released the owner, cleaned the ledger and shut down the fixture; no owned
   processes remained.
-- Latest offline gates: `mise exec -- cargo test -p tiler-core --locked`
+- Earlier offline gates: `mise exec -- cargo test -p tiler-core --locked`
   (844 library tests plus integration suites), Windows equivalent (963 passing
   library tests, one existing ignored test, integration suites and doc tests),
   strict all-target clippy for both crates, workspace fmt and
@@ -126,8 +126,10 @@
   no focus. Trace-only `pager-cells` records the actual renderer payload,
   bounded with honest omission counts and change-only emission.
 - Full core tests pass: 847 library tests and 436 integration tests. Full
-  Windows tests pass: 1,385 tests, one existing ignored test. Strict all-target
-  clippy passes for both crates. Native focus acceptance remains blocked.
+  Windows tests pass: 973 library tests, one existing ignored test, and all
+  integration suites. Strict package-scoped all-target clippy passes for core,
+  Windows and the fixture; workspace fmt and `git diff --check` pass. Native
+  focus acceptance remains blocked.
 - Hook wakes now preserve exact foreground/create/destroy/show/hide/location
   kinds, native thread/time fields, and a delivery-time PID/member-tag read.
   Destroy stays unknown. A bounded, non-consuming diagnostic joins a token
@@ -142,17 +144,56 @@
   particular, a foreground transition after hiding the active window cannot
   simply be assumed to be a self-generated fallback.
 
+## Occupied native diagnostic (2026-10-25)
+
+- At `c6d7dd38`, a fixture-only, single-output run used exact-owner selection
+  controls and fixture focus requests, without synthetic input. A was observed
+  focused on WS1; B then C were observed focused on WS2. Returning to WS1
+  emitted A; selecting WS2 emitted C. Visibility switched correctly both ways,
+  but both trailing effects stopped `stale` without dispatch. Foreground moved
+  to an unrelated pre-existing application during hiding and stayed there.
+- Actual `pager-cells` payloads corroborated the view switches: departed cells
+  retained their miniature windows but no focus marks. Current cells also
+  carried no marks, truthfully matching native foreground. This verifies the
+  departing-highlight repair, not successful remembered-focus landing.
+- Exact pending rows identify fixture hide/show notifications and unmanaged
+  taskbar location notifications; one switch also delivered the unrelated-app
+  foreground notification. Row caps honestly omitted seven and five edges,
+  respectively, so not every show notification is individually attested.
+  A matching delivery-time PID/tag still does not identify the initiating
+  operation. The foreground notification does not distinguish hide-induced
+  host fallback from an independently initiated user/app focus change.
+- Graceful stop and independent restore completed; fixture readbacks showed
+  every owned window visible before shutdown. Settings bytes and sampled
+  taskbar/Mouse Snap state matched their preimages. No owned process, recovery
+  ledger or pending request remained. Raw restore reported zero windows;
+  visibility readbacks, not that count, establish the final visible state.
+- Genuine competing focus during the switch was not deterministically staged;
+  supersession acceptance remains unverified. The universal pending-event veto
+  is unchanged and is not evidence of a selective self-event mechanism.
+- CI [40187337758](https://github.com/beefsack/OmniTiler/actions/runs/40187337758)
+  is not green. Linux Rust repeats the prior KDE settings catalog partition
+  failure (19 mapped fields versus 23). Windows repeats four prior macOS
+  dock-swipe tests refusing an unreadable macOS version, plus one additional
+  scripted-topology exhaustion in `wrong_sid_arrival_is_unproven_without_replay`.
+  The latter is unclassified, not a proven new regression or proven flake;
+  macOS source is unchanged by these repairs. The native macOS, KWin, native,
+  shell, licenses and notices jobs pass. These failures remain outside this
+  Windows focus repair; package-scoped local gates are not full-CI acceptance.
+
 ## Remaining work
 
-- Resolve same-pass view-event/focus freshness ordering without losing genuine
-  intervening-change protection or violating at-most-once focus. Preserve event
-  kind and window-lifetime attribution before attempting any self-event
-  classification; per-HWND wake removal alone is insufficient. Add a desired-
-  behavior regression against the non-consuming native contract before another
-  fix attempt. Cross-reply focus replay would change the one-shot contract and
-  is not selected here.
-- Verify foreground, visibility and actual pager-cell data on occupied workspace
-  switches both ways, including the second destination arrival. Pager lifecycle
-  traces and the current empty-workspace diagnostic do not meet that acceptance.
+- The current WinEvent/async-visibility mechanism lacks a proven causal
+  discriminator for the required self-event exemption. Resolve that mechanism
+  before changing freshness gates; matching HWND/kind/timing/final state alone
+  is insufficient. Do not substitute per-HWND suppression, a blanket exemption,
+  or cross-reply replay. Any new contract or core behavior needs a separate
+  decision; none is introduced by these partial repairs.
+- After a mechanism is established, add the desired-behavior regression against
+  the non-consuming native contract, then prove occupied native focus landing
+  both ways and genuine supersession. Departing pager marks are now verified;
+  current-target catch-up still needs successful native focus.
 - Global-swap focus intent has offline regressions; shared variants and
   floating remembered-focus coverage remain outside demonstrated acceptance.
+- Physical shortcuts and ordinary-application dogfooding remain user-owned;
+  the blocked native fixture focus check is not a physical-input-only remainder.

@@ -71,9 +71,14 @@ decisions of 2026-09-24 are under
   terminal and returning does not refocus firefox, contrary to
   [R-WS-09](spec/reference-outcomes/workspaces.md#r-ws-09-select-ws2-select-ws1-return-focus-and-viewport);
   after adding a second WS2 terminal, the overview sometimes still shows a WS2
-  terminal focused after switching to WS1. Open policy questions needing Tier 1
-  evidence: arrival with no remembered focus (focus first window?), directional
-  focus with no focused window, and whether Tier 1 WMs allow no active window.
+  terminal focused after switching to WS1. Core remembered-focus intent,
+  same-pass reveal eligibility and departing pager marks repaired; actual pager
+  payloads verified. Still P0: occupied native switches emit the correct target
+  but hold focus `stale` on pumped hook events. A causal self-event discriminator
+  preserving genuine supersession is unproven; no exemption or replay added
+  ([record](changes/windows-workspace-focus-restore.md)). No-remembered-focus
+  fallback remains undecided ([Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
+  Physical shortcut/application checks remain user-owned after native repair.
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every

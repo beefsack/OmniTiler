@@ -295,6 +295,8 @@ pub(super) fn drain_hook_edges(
     if state.trace && super::observe::hook_edges_pending() {
         let (rows, omitted) = super::observe::pending_edge_rows(
             |hwnd, snapshot| {
+                // Latest visible observation, not retained membership: a
+                // just-revealed token can match while this is still false.
                 let managed = state.managed.contains(&hwnd);
                 let views: Vec<super::observe::MemberJoinView<'_>> = state
                     .member_tokens
