@@ -1228,3 +1228,49 @@
   stale-open and fast-Esc discriminators, then replace the unaccepted transport.
   N5/N6 and the existing fullscreen/game, hint-bound, native-order, sticky,
   Activities/configure and directional product questions remain parked.
+
+### Single-source gesture investigation (2026-10-26)
+
+- Tentative transport boundary: one native source owns start, phases, cancellation
+  and finish under one immutable gesture identity. The broker folds script
+  `workspace.cursorPos`/`workspace.windowAt` facts into that identity; script
+  signals never mint a second lifecycle or bind a delayed native witness.
+  Native effect capture is the candidate because scripting cannot observe Esc.
+  The complete cancellation source is not yet proven; no replacement is landed.
+- At KWin `v6.7.4`, `src/window.h:1512-1514` exposes no cancellation parameter;
+  `src/effect/effectwindow.cpp:83-91` only re-emits those signals. Geometry
+  equality and missing steps do not prove Esc. The native keyboard spy runs
+  before filters (`src/keyboard_input.cpp:328-329`); the move/resize filter
+  forwards Esc synchronously to `finishInteractiveMoveResize(true)`
+  (`src/input.cpp:698-711`, `src/window.cpp:2484-2516,1069-1110`). This establishes
+  observation-before-finish, even for a fast gesture, not proof that every
+  observed Esc reaches that filter: earlier shortcut/effect filters can consume
+  it. A sticky key flag alone therefore needs a causal-delivery fence.
+- Non-keyboard cancellation is a separate blocker: Xwayland
+  `_NET_WM_MOVERESIZE` cancel calls the same indistinguishable finish
+  (`src/events.cpp:614-621`). RootInfo's X11 filter is registered before effects
+  and filters run in registration order (`src/netinfo.cpp:131-137`,
+  `src/x11eventfilter.cpp`, `src/main.cpp:340-460`). An effect's late filter sees
+  the message only after finish. Deferring finish with a zero-delay callback
+  does not supply dispatch identity: Xwayland drains multiple messages before
+  returning to the event loop (`src/xwayland/xwayland.cpp:382-405`). An earlier
+  normal finish followed by a no-op cancel for the same window can bind falsely.
+  Qt native-event filters are not this socket-notifier dispatch path.
+- Independent source review confirmed these boundaries. No geometry-inferred
+  cancellation, deferred same-window correlation, production gesture deletion,
+  core change or live smoke is accepted by this investigation. Offline/native
+  implementation gates have not been rerun; Stage 4 remains partial.
+- **Cancellation contract parked:** options are a proven native per-dispatch
+  capture mechanism, a KWin signal carrying explicit cancellation, or explicitly
+  reduced host coverage with unsupported completions held. Recommendation:
+  retain the existing route until causal cancellation evidence is available;
+  do not silently narrow Xwayland coverage. `GestureIngress` has no unknown
+  terminal: omission retains a core session, whereas `Cancelled` asserts a fact.
+  Neutrality concern: definite terminal facts required by the existing ingress
+  must not become an assumed Windows-equivalent host capability for KDE, macOS,
+  GNOME or ChromeOS. Any shared unknown-terminal semantics require a separate
+  decision, not a broker-side outcome owner.
+- Exact next action: resolve the native cancellation boundary before implementing
+  transport or deleting the oracle route. N5/N6, game/fullscreen suspension and
+  the other parked product questions remain unchanged; cursor warp remains
+  unsupported and is never reported applied.

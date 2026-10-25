@@ -169,6 +169,18 @@ request fixtures pin the JS producer, including populated raw attempts.
 
 ## KWin API facts the port relies on
 
+- Gesture source proof at `v6.7.4`: scripting's finish has no cancellation
+  argument (`src/window.h:1512-1514`), and the effect merely re-emits it
+  (`src/effect/effectwindow.cpp:83-91`). An effect input spy observes Esc before
+  input filters (`src/keyboard_input.cpp:328-329`), but an earlier filter may
+  consume that key; observing the key is not by itself causal cancellation.
+  Xwayland's native cancel executes in RootInfo's earlier X11 filter
+  (`src/events.cpp:614-621`, `src/netinfo.cpp:131-137`, `src/main.cpp:340-460`).
+  A later effect filter plus deferred same-window matching cannot prove which
+  terminal it cancels: multiple X events drain in one activation
+  (`src/xwayland/xwayland.cpp:382-405`). A single native lifecycle/identity is
+  tentative; the complete source is [parked](../changes/kde-world-v2-port.md#single-source-gesture-investigation-2026-10-26).
+  Never infer Esc from geometry or claim unsupported completion as release.
 - `workspace.cursorPos` (declared in `kwin/src/kwin-globals.d.ts`,
   backed by `src/scripting/workspace_wrapper.h` at the pin) is the
   cursor sample, and the script side can also call the script-visible
