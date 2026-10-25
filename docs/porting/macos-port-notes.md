@@ -112,6 +112,10 @@ with the fixture-first rules and the signed bundle in
   `0b65cad5` preserves automatic floats in core without a native floating echo;
   the separate macOS checkpoint removes its automatic assertion cache and
   first-sight hint-policy copy. The unchanged D2 integration test passes.
+  Synthetic born-fullscreen floating and adapter slot/member inference are also
+  removed; native fullscreen facts now use core's own slotless/first-exit policy.
+  Shared classifier integration remains open: selected transient float members
+  cannot simply become shared eligibility refusals without changing behavior.
   [Mechanical coverage, blocker and sticky verification plan](../changes/macos-world-v2-port.md#stage-2-mechanical-evidence-and-policy-blocker-2026-10-25).
 - Activities default stays tentative pending KDE evidence (see
   [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):

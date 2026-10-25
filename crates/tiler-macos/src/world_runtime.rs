@@ -257,10 +257,9 @@ impl WorldSession {
     }
 
     /// Adapter-side core-delivery lifetime memory for wire-flag
-    /// normalization: the last applied reply's rows plus the
-    /// native-to-logical home map (a live reply lookup, never a durable
-    /// host table). Empty before the first applied reply (pre-adoption
-    /// first-sight, matching the old empty-session read).
+    /// normalization: the last applied reply's rows (a live reply lookup,
+    /// never a durable host table). Empty before the first applied reply
+    /// (pre-adoption first-sight, matching the old empty-session read).
     fn lifetime_memory(&self) -> LifetimeMemory {
         self.sequencer
             .last_reply()

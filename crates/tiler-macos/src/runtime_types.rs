@@ -65,13 +65,14 @@ pub enum LifecycleEvent {
 /// `floating` carries normalized float exceptions (dialogs, sheets, modals);
 /// `fullscreen` carries the native overlay flag truthfully on every shape;
 /// `hints` carries the current size-hint vector for the core's
-/// admission-only fixed classifier (D1/D2/D5 freshness). The wire layer
-/// holds born fullscreen arrivals slotless (synthetic floating, never
-/// automatic) and asserts first-sight fixed origins; retained overlays keep
-/// their reserved slot/allocation in plan truth with no geometry writes.
-/// Minimized, hidden-app, policy/own-bundle, and layer exclusions never
-/// reach this shape: the classifier omits them from the submission instead
-/// (the core folds absence into minimize/restore, never into close).
+/// admission-only fixed classifier (D1/D2/D5 freshness). The core holds
+/// born fullscreen arrivals slotless off the truthful flag (no synthetic
+/// floating, never automatic) and asserts first-sight fixed origins;
+/// retained overlays keep their reserved slot/allocation in plan truth
+/// with no geometry writes. Minimized, hidden-app, policy/own-bundle, and
+/// layer exclusions never reach this shape: the classifier omits them
+/// from the submission instead (the core folds absence into
+/// minimize/restore, never into close).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedWindow {
     pub wid: u32,

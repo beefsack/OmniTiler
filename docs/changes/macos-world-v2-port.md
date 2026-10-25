@@ -406,6 +406,30 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   native executor integration remain unfinished; this checkpoint claims only
   the automatic-float policy-copy removal.
 
+## Born-state ownership and remaining classification fit (2026-10-25)
+
+- Removed adapter synthetic born-fullscreen floating and retained slot/member
+  inference. Reports carry the native fullscreen flag; core alone keeps born
+  arrivals slotless and handles their plain/fixed first exits. Removed the
+  native-to-logical home lookup used solely by that policy copy. Intentional
+  placed-float echo remains unchanged for the parked post-port review.
+- Production classifier/fact-builder/world-engine tests preserve standard,
+  transient, fullscreen and fixed-hint shapes, minimized/hidden omissions plus
+  explicit kept facts, born-fullscreen slotless hold/first exit and ToggleFloat
+  persistence. No synthetic automatic or fullscreen float flag is needed.
+- Full macOS tests PASS (1,288 tests); strict all-target clippy and fmt PASS.
+  This is policy-copy deletion, not a completed shared-classifier integration.
+- Shared classifier fit remains open: `window_policy.rs:46-56,127-166` exposes
+  safety booleans and eligibility refusals; native `classifier.rs:354-373`
+  admits sheets/dialogs/modals as untouched float members. Treating a shared
+  `Dialog` refusal as exclusion would change the selected native behavior, and
+  inventing a shared float verdict would change the core interface. Native
+  role/subrole/layer/app-policy normalization also has no lossless raw world
+  ingress today. No speculative flag, precedence change or diagnostic rename
+  was introduced. A neutral classification interface needs review before that
+  remaining policy can leave the adapter; platform fact mapping alone is the
+  alternative, not an implicitly approved core change.
+
 ## Stage-2 mechanical evidence and policy blocker (2026-10-25)
 
 - Added fake-native tests through production `apply_scoped_frame` for a first

@@ -249,10 +249,9 @@ pub enum Disposition {
     /// [`ClassifiedWindow::fullscreen`]).
     Float(FloatReason),
     /// Native fullscreen overlay without a float origin: submitted with the
-    /// fullscreen flag set and no float so the core holds born arrivals
-    /// slotless. The wire layer adds synthetic floating for unknown windows
-    /// (core-session lifetime); retained members stay exactly this shape so
-    /// the reserved slot survives with no writes.
+    /// fullscreen flag set and no float. The core holds born arrivals
+    /// slotless off the truthful flag and keeps retained members' reserved
+    /// slot with no writes.
     Fullscreen,
     /// Omitted from the submitted observation (never a close report).
     Excluded(ExcludeReason),
@@ -283,8 +282,8 @@ pub struct ClassifiedWindow {
 impl ClassifiedWindow {
     /// Render into the existing engine observation shape. `None` for
     /// excluded windows (the caller omits them from the submission).
-    /// Fullscreen rides truthfully on every admitted shape; the wire hold
-    /// may add synthetic floating for unknown windows later.
+    /// Fullscreen rides truthfully on every admitted shape; the core
+    /// holds born arrivals slotless off that flag.
     #[must_use]
     pub fn to_observed(&self) -> Option<ObservedWindow> {
         let floating = match self.disposition {
@@ -392,9 +391,9 @@ pub fn classify_window(
     if ax.subrole.as_deref() != Some(SUBROLE_STANDARD) {
         return base(Disposition::Excluded(ExcludeReason::UnknownRole));
     }
-    // 9. Native fullscreen without a float origin: the wire layer holds
-    //    born arrivals slotless off the truthful overlay flag (shared gate)
-    //    and keeps retained members' reserved slot with no writes.
+    // 9. Native fullscreen without a float origin: submitted with the
+    //    truthful overlay flag and no float. The core holds born arrivals
+    //    slotless and keeps retained members' reserved slot with no writes.
     if ax.fullscreen {
         return base(Disposition::Fullscreen);
     }
@@ -500,7 +499,7 @@ mod tests {
     #[test]
     fn fullscreen_without_float_origin_reaches_hold_gate() {
         // Plain fullscreen arrives unfloated with the overlay flag set; the
-        // wire hold keys off the flag plus core-session lifetime.
+        // core holds born arrivals slotless off that flag.
         let (mut ax, cg, app) = facts();
         ax.fullscreen = true;
         let out = classify(&ax, &cg, &app);
@@ -727,8 +726,8 @@ mod tests {
     fn fullscreen_fact_survives_on_every_admitted_shape() {
         // Independent overlay fact: a dialog/sheet reporting fullscreen
         // renders BOTH flags, and a plain fullscreen arrival renders the
-        // overlay flag with no float. The wire hold may add synthetic
-        // floating later, but the fact itself is never dropped here.
+        // overlay flag with no float. The fact itself is never dropped
+        // here; the core converges the hold.
         let (mut ax, cg, app) = facts();
         ax.subrole = Some(SUBROLE_DIALOG.to_owned());
         ax.fullscreen = true;

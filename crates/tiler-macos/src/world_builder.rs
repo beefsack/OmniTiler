@@ -30,7 +30,7 @@
 //!   is stage-3 work, never a durable host table.
 //! - Window rows reuse [`collect_window_facts`](crate::runtime_core::collect_window_facts)
 //!   over adapter-side [`LifetimeMemory`](crate::runtime_core::LifetimeMemory)
-//!   (last applied reply rows plus the native-to-logical home map): the
+//!   (last applied reply rows): the
 //!   same wire-flag normalization as the retired session-read path, with no
 //!   private engine-boundary access.
 //! - Minimized lifetimes are explicit [`WindowFact`](tiler_core::world_report::WindowFact)
@@ -87,8 +87,8 @@ pub(crate) struct ReportInput<'a> {
     /// Member windows per native domain as `(pid, window)` pairs (exact-Space
     /// homing decided by the caller, never geometry here).
     pub members: &'a BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
-    /// Adapter-side core-delivery lifetime memory (last applied reply rows
-    /// plus the native-to-logical home map) for wire-flag normalization.
+    /// Adapter-side core-delivery lifetime memory (last applied reply rows)
+    /// for wire-flag normalization.
     pub memory: &'a LifetimeMemory,
     /// Explicit closes per native domain (always honored, even incomplete).
     pub closed: &'a BTreeMap<DomainKey, Vec<WindowId>>,
@@ -2272,5 +2272,371 @@ mod tests {
                 "{label}: follow-up mints no focus for hidden"
             );
         }
+    }
+
+    fn classified(wid: u32, frame_ax: crate::classifier::AxFacts) -> ObservedWindow {
+        use crate::classifier::{AppFacts, CgFacts, WindowFrame, classify_window};
+        let out = classify_window(
+            WindowFrame {
+                wid,
+                x: 10,
+                y: 10,
+                w: 640,
+                h: 480,
+            },
+            &frame_ax,
+            &CgFacts::normal(),
+            &AppFacts::regular(),
+        );
+        out.to_observed().expect("admitted shape submits")
+    }
+
+    fn collected(pid: u32, window: &ObservedWindow) -> WindowFact {
+        let domain = key("macos-display-1", "space-11");
+        let mut facts = Vec::new();
+        collect_window_facts(
+            &mut facts,
+            pid,
+            std::slice::from_ref(window),
+            &domain,
+            &empty_memory(),
+        );
+        assert_eq!(facts.len(), 1, "one admitted window yields one fact");
+        facts.pop().expect("fact")
+    }
+
+    #[test]
+    fn native_ax_dispatch_seam_preserves_admission_shapes() {
+        use crate::classifier::{AxFacts, SUBROLE_DIALOG, SUBROLE_UNKNOWN};
+        // Ordinary standard window: plain tile, everything truthful.
+        let fact = collected(4242, &classified(1, AxFacts::standard()));
+        assert_eq!(fact.window.0, "4242_1");
+        assert!(!fact.floating && !fact.fullscreen && !fact.fixed_auto);
+        assert!(!fact.maximized && !fact.sticky && !fact.minimized);
+        assert_eq!(fact.hints, WindowSizeHints::none());
+        assert_eq!(fact.native_workspace.as_deref(), Some("space-11"));
+        assert_eq!(fact.observed_workspace, None);
+        // Transient dialog + modal: normalized float exceptions.
+        let mut dialog = AxFacts::standard();
+        dialog.subrole = Some(SUBROLE_DIALOG.to_owned());
+        let fact = collected(4242, &classified(2, dialog));
+        assert!(fact.floating, "dialog rides as float exception");
+        assert!(!fact.fullscreen && !fact.fixed_auto);
+        let mut modal = AxFacts::standard();
+        modal.modal = true;
+        assert!(collected(4242, &classified(3, modal)).floating);
+        // Fullscreen standard: truthful overlay, no synthetic float.
+        let mut fullscreen = AxFacts::standard();
+        fullscreen.fullscreen = true;
+        let fact = collected(4242, &classified(4, fullscreen));
+        assert!(!fact.floating && fact.fullscreen && !fact.fixed_auto);
+        // Fullscreen transient: both flags truthful, origin kept.
+        let mut overlay_dialog = AxFacts::standard();
+        overlay_dialog.subrole = Some(SUBROLE_DIALOG.to_owned());
+        overlay_dialog.fullscreen = true;
+        let fact = collected(4242, &classified(5, overlay_dialog));
+        assert!(fact.floating && fact.fullscreen);
+        // Unknown subrole at a nonzero layer: excluded (never a fact).
+        let mut unknown = AxFacts::standard();
+        unknown.subrole = Some(SUBROLE_UNKNOWN.to_owned());
+        {
+            use crate::classifier::{AppFacts, CgFacts, WindowFrame, classify_window};
+            let out = classify_window(
+                WindowFrame {
+                    wid: 6,
+                    x: 0,
+                    y: 0,
+                    w: 10,
+                    h: 10,
+                },
+                &unknown,
+                &CgFacts {
+                    layer: 3,
+                    onscreen: true,
+                },
+                &AppFacts::regular(),
+            );
+            assert!(out.to_observed().is_none(), "layer-unknown omits");
+        }
+        // Fixed hints ride carried, never asserted.
+        let mut fixed = AxFacts::standard();
+        fixed.hints = WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(480),
+        };
+        let fact = collected(4242, &classified(7, fixed));
+        assert!(!fact.floating && !fact.fixed_auto);
+        assert_eq!(fact.hints.min_w, Some(640));
+    }
+
+    #[test]
+    fn native_ax_dispatch_seam_omits_minimized_hidden_and_policy() {
+        use crate::classifier::{
+            ActivationPolicy, AppFacts, AxFacts, CgFacts, WindowFrame, classify_window,
+        };
+        let frame = WindowFrame {
+            wid: 1,
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        // Genuine minimized cause: omitted, never a close report.
+        let mut ax = AxFacts::standard();
+        ax.minimized = true;
+        assert!(
+            classify_window(frame, &ax, &CgFacts::normal(), &AppFacts::regular())
+                .to_observed()
+                .is_none()
+        );
+        // Owner-hidden cause: omitted through the same minimized path.
+        ax.minimized = false;
+        let mut app = AppFacts::regular();
+        app.hidden = true;
+        assert!(
+            classify_window(frame, &ax, &CgFacts::normal(), &app)
+                .to_observed()
+                .is_none()
+        );
+        // Activation policy gates stay native: no guessed SafetyFacts map.
+        app.hidden = false;
+        for policy in [ActivationPolicy::Accessory, ActivationPolicy::Prohibited] {
+            app.activation_policy = policy;
+            assert!(
+                classify_window(frame, &ax, &CgFacts::normal(), &app)
+                    .to_observed()
+                    .is_none(),
+                "{policy:?} excludes"
+            );
+        }
+        // The omitted minimized lifetime reports explicitly core-side.
+        let record = MinimizedRecord {
+            window: WindowId("4242_1".to_owned()),
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("space-11".to_owned()),
+            sticky: false,
+        };
+        let fact = minimized_fact(&record);
+        assert!(fact.minimized && !fact.floating && !fact.fullscreen);
+        assert_eq!(fact.native_workspace.as_deref(), Some("space-11"));
+    }
+
+    #[test]
+    fn born_fullscreen_truthful_wire_holds_slotless_in_engine() {
+        // Wire contract: a born fullscreen arrival reports truthfully
+        // (floating=false, fullscreen=true) with no synthetic float and
+        // no automatic marker. The core holds it slotless (D5) itself.
+        use crate::classifier::AxFacts;
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let mut arrival = AxFacts::standard();
+        arrival.fullscreen = true;
+        let observed = classified(1, arrival);
+        assert!(!observed.floating && observed.fullscreen);
+        let (mut members, closed, unreadable) = empty_maps();
+        members.insert(d1.clone(), vec![(1001, observed)]);
+        let first = assemble(
+            &ctx,
+            &members,
+            &empty_memory(),
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&first));
+        let wire = first
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_1")
+            .expect("live row");
+        assert!(!wire.floating && wire.fullscreen && !wire.fixed_auto);
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&first, &mut engine);
+        assert!(reply.ready);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_1")
+            .expect("held row");
+        assert!(desired.floating, "born fullscreen holds as exception");
+        assert!(desired.allocation.is_none(), "born hold takes no tile slot");
+        // A repeat fullscreen observation keeps the slotless hold with a
+        // still-truthful wire (no synthetic echo needed).
+        let memory = LifetimeMemory::from_reply(&reply);
+        let second = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
+        let wire = second
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_1")
+            .expect("live row");
+        assert!(!wire.floating && wire.fullscreen, "repeat stays truthful");
+        let reply = accepted(&second, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_1")
+            .expect("held row");
+        assert!(desired.floating && desired.allocation.is_none());
+        // First exit classifies fresh: a plain exit tiles with a slot.
+        let exited = classified(1, AxFacts::standard());
+        let (mut members, closed, unreadable) = empty_maps();
+        members.insert(d1.clone(), vec![(1001, exited)]);
+        let memory = LifetimeMemory::from_reply(&reply);
+        let third = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 3, 3);
+        let reply = accepted(&third, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_1")
+            .expect("exited row");
+        assert!(
+            !desired.floating && desired.allocation.is_some(),
+            "plain exit tiles with a reserved slot"
+        );
+    }
+
+    #[test]
+    fn born_fullscreen_fixed_exit_floats_automatic_through_seam() {
+        // D5 freshness: a born fullscreen arrival carrying fixed hints
+        // exits into an automatic float, never a tile.
+        use crate::classifier::AxFacts;
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let fixed = WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(480),
+        };
+        let mut arrival = AxFacts::standard();
+        arrival.fullscreen = true;
+        arrival.hints = fixed;
+        let observed = classified(2, arrival);
+        assert!(!observed.floating && observed.fullscreen);
+        assert_eq!(observed.hints, fixed);
+        let (mut members, closed, unreadable) = empty_maps();
+        members.insert(d1.clone(), vec![(1001, observed)]);
+        let first = assemble(
+            &ctx,
+            &members,
+            &empty_memory(),
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&first));
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&first, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_2")
+            .expect("held row");
+        assert!(desired.floating && desired.allocation.is_none());
+        // Exit keeps the fixed hints: the core admits the automatic float
+        // from current hints (never an adapter fixed_auto echo).
+        let mut exit = AxFacts::standard();
+        exit.hints = fixed;
+        let exited = classified(2, exit);
+        assert!(!exited.floating && !exited.fullscreen);
+        let (mut members, closed, unreadable) = empty_maps();
+        members.insert(d1.clone(), vec![(1001, exited)]);
+        let memory = LifetimeMemory::from_reply(&reply);
+        let second = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
+        let wire = second
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_2")
+            .expect("live row");
+        assert!(!wire.floating && !wire.fixed_auto);
+        let reply = accepted(&second, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_2")
+            .expect("exited row");
+        assert!(desired.floating, "fixed exit floats automatic core-side");
+    }
+
+    #[test]
+    fn toggle_float_persists_through_placed_echo() {
+        // Intentional float persistence: ToggleFloat admits a placed
+        // exception; the next observation still classifies tiled (macOS
+        // has no AX float state), so the wire re-asserts floating from
+        // the core-published placement and the exception survives.
+        use tiler_core::boundary::CoreCommand;
+        use tiler_core::world_report::WorldCommand;
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let (mut members, closed, unreadable) = empty_maps();
+        members.insert(d1.clone(), vec![(1001, observed(3, 10, 10, 640, 480))]);
+        let first = assemble(
+            &ctx,
+            &members,
+            &empty_memory(),
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&first));
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&first, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_3")
+            .expect("tiled row");
+        assert!(!desired.floating && desired.allocation.is_some());
+        // ToggleFloat command on the tiled member.
+        let memory = LifetimeMemory::from_reply(&reply);
+        let mut second = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
+        second.command_seq = Some(2);
+        second.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "1001_3".to_owned(),
+            float_rect: None,
+        }));
+        assert!(validate_report(&second));
+        let reply = accepted(&second, &mut engine);
+        assert!(reply.ready);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_3")
+            .expect("floated row");
+        assert!(desired.floating, "toggle floats the member");
+        assert!(
+            desired.effective_frame.is_some(),
+            "toggled float carries a session placement"
+        );
+        // Next observation classifies tiled; the placed echo re-asserts.
+        let memory = LifetimeMemory::from_reply(&reply);
+        let third = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 3, 3);
+        let wire = third
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_3")
+            .expect("live row");
+        assert!(
+            wire.floating && !wire.fixed_auto,
+            "placed echo re-asserts without provenance"
+        );
+        let reply = accepted(&third, &mut engine);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_3")
+            .expect("retained float");
+        assert!(desired.floating, "intentional float survives converge");
     }
 }
