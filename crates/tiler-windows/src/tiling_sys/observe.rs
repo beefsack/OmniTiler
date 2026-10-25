@@ -16,9 +16,116 @@ const OBJID_WINDOW: i32 = 0;
 // versus `Unrelated` (wait again on the same fixed deadline): state alone
 // confirms, never the event. Unrelated hook edges never bump it, so they can
 // neither confirm nor reset the deadline nor spin the wait.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HookCause {
+    Foreground,
+    Visibility,
+    Other,
+    Unknown,
+}
+
+impl HookCause {
+    /// Closed trace vocabulary for hook invalidation causes. No HWND,
+    /// titles, or identity: counts only.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Foreground => "foreground",
+            Self::Visibility => "visibility",
+            Self::Other => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Delivery-time read attached to one queued wake edge. `Unknown` means no
+/// usable read (destroy, unreadable, or double-absent); `DeliveryRead`
+/// carries the pid plus the visible-membership tag as observed when the
+/// out-of-context callback delivered, before the owner drain. Delivery can
+/// predate HWND reuse, so this never proves the original generation and
+/// never decides gates, membership, or causality: it is a diagnostic hint
+/// the drain-time join validates against current member state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DeliverySnapshot {
+    Unknown,
+    DeliveryRead {
+        pid: Option<u32>,
+        tag: Option<String>,
+    },
+}
+
+impl DeliverySnapshot {
+    pub(super) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::DeliveryRead { .. } => "delivery-read",
+        }
+    }
+
+    pub(super) fn has_tag(&self) -> bool {
+        matches!(self, Self::DeliveryRead { tag: Some(_), .. })
+    }
+}
+
+/// One preserved window wake edge: the exact native event plus a
+/// delivery-time HWND read. `cause` keeps the unchanged gate vocabulary
+/// (foreground/visibility/other/unknown); `event` keeps the exact kind
+/// (create vs destroy vs location) and `delivery` keeps the uncertain
+/// delivery read. Destroy always reads `Unknown`: the window is gone and
+/// the number may already be reused, so a delivery read must never bind the
+/// edge to a new generation. `thread`/`time` ride along for exactness and
+/// never enter product logs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WakeEdge {
+    pub hwnd: isize,
+    pub cause: HookCause,
+    pub event: u32,
+    pub id_object: i32,
+    pub thread: u32,
+    pub time: u32,
+    pub delivery: DeliverySnapshot,
+}
+
+impl WakeEdge {
+    pub(super) fn kind_str(&self) -> &'static str {
+        edge_kind_str(self.event)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test(hwnd: isize, cause: HookCause) -> Self {
+        let event = match cause {
+            HookCause::Foreground => EVENT_SYSTEM_FOREGROUND,
+            HookCause::Visibility => EVENT_OBJECT_SHOW,
+            HookCause::Other => EVENT_OBJECT_LOCATIONCHANGE,
+            HookCause::Unknown => 0x800A,
+        };
+        Self {
+            hwnd,
+            cause,
+            event,
+            id_object: OBJID_WINDOW,
+            thread: 0,
+            time: 0,
+            delivery: DeliverySnapshot::Unknown,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_with_event(hwnd: isize, event: u32, delivery: DeliverySnapshot) -> Self {
+        Self {
+            hwnd,
+            cause: wake_cause(event),
+            event,
+            id_object: OBJID_WINDOW,
+            thread: 7,
+            time: 9,
+            delivery,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(super) enum HookEvent {
-    Wake(isize),
+    Wake(WakeEdge),
     /// Esc sequence captured at WinEvent delivery time in the event
     /// callback, carried to START. The pump only carries it to the START
     /// snapshot and never re-reads it later, so an Esc that arrives
@@ -92,6 +199,74 @@ pub(super) fn window_edge_wakes(event: u32, id_object: i32) -> bool {
         )
 }
 
+/// Pure wake-cause rule: which cause one delivered WinEvent carries.
+/// Total over the [`window_edge_wakes`] set: foreground stays distinct,
+/// SHOW/HIDE carry visibility, CREATE/DESTROY/LOCATIONCHANGE fold to other
+/// (semantically equivalent topology edges), and anything outside the set
+/// (unreachable through the sink) reads unknown without waking.
+pub(super) fn wake_cause(event: u32) -> HookCause {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        HookCause::Foreground
+    } else if matches!(event, EVENT_OBJECT_SHOW | EVENT_OBJECT_HIDE) {
+        HookCause::Visibility
+    } else if matches!(
+        event,
+        EVENT_OBJECT_CREATE | EVENT_OBJECT_DESTROY | EVENT_OBJECT_LOCATIONCHANGE
+    ) {
+        HookCause::Other
+    } else {
+        HookCause::Unknown
+    }
+}
+
+/// Exact per-event kind vocabulary for trace-only pending-edge rows.
+/// Distinct from [`wake_cause`]: create/destroy/location never coalesce
+/// here, and the strings never gate or reconcile anything.
+pub(super) fn edge_kind_str(event: u32) -> &'static str {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        "foreground"
+    } else if event == EVENT_OBJECT_CREATE {
+        "create"
+    } else if event == EVENT_OBJECT_DESTROY {
+        "destroy"
+    } else if event == EVENT_OBJECT_SHOW {
+        "show"
+    } else if event == EVENT_OBJECT_HIDE {
+        "hide"
+    } else if event == EVENT_OBJECT_LOCATIONCHANGE {
+        "location"
+    } else {
+        "unknown"
+    }
+}
+
+/// Delivery-time read for one window edge. Destroy short-circuits to
+/// `Unknown` without reading: the window is gone and the number may already
+/// be reused, so any successful read could belong to a new generation.
+/// Other edges read only the two synchronous USER reads safe in the
+/// callback (`GetWindowThreadProcessId` pid plus the visible-membership tag
+/// property via the existing safe getter); both fail closed to `None`, and
+/// a double-absent read stays `Unknown` rather than fabricating identity.
+/// The returned pid/tag is the delivery observation only: out-of-context
+/// delivery can predate HWND reuse, so it never proves the original
+/// generation and never drives gates or membership. Callback cost is one
+/// bounded USER pid read plus one bounded property read (small fixed-size
+/// 16-hex render, no heap growth beyond the row itself, no new `unsafe`);
+/// both reads run before the queue lock, never while holding it.
+fn snapshot_delivery(event: u32, hwnd_u64: u64) -> DeliverySnapshot {
+    if event == EVENT_OBJECT_DESTROY {
+        return DeliverySnapshot::Unknown;
+    }
+    let pid = crate::ffi::window_pid(hwnd_u64);
+    let tag = crate::product_hide::sys::read_member_tag(hwnd_u64);
+    let pid = (pid != 0).then_some(pid);
+    if pid.is_none() && tag.is_none() {
+        DeliverySnapshot::Unknown
+    } else {
+        DeliverySnapshot::DeliveryRead { pid, tag }
+    }
+}
+
 /// Owner-loop hook-event sink: the `extern` trampoline lives in
 /// `crate::ffi` and forwards here; this filtering (which edges become
 /// wakes, event-time cursor/sequence capture) is unchanged policy.
@@ -123,10 +298,23 @@ impl crate::ffi::WinEventSink for LoopEventSink {
             // generation (the `Wake` push below is unchanged). All other edges -
             // including foreground/create/destroy/location - leave it alone, so
             // only genuine visibility notifications can wake a joint batch wait.
-            if matches!(ev.event, EVENT_OBJECT_SHOW | EVENT_OBJECT_HIDE) {
+            // The cause rides along for trace-only diagnostics; drain and gate
+            // semantics treat every wake identically.
+            let cause = wake_cause(ev.event);
+            if matches!(cause, HookCause::Visibility) {
                 bump_visibility_generation();
             }
-            push_hook(HookEvent::Wake(ev.hwnd as isize));
+            let hwnd_u64 = ev.hwnd;
+            let delivery = snapshot_delivery(ev.event, hwnd_u64);
+            push_hook(HookEvent::Wake(WakeEdge {
+                hwnd: ev.hwnd as isize,
+                cause,
+                event: ev.event,
+                id_object: ev.id_object,
+                thread: ev.thread,
+                time: ev.time,
+                delivery,
+            }));
         }
     }
 }
@@ -147,6 +335,188 @@ pub(super) fn hook_edges_pending() -> bool {
         .lock()
         .map(|queue| !queue.is_empty())
         .unwrap_or(false)
+}
+
+/// Trace-only pending-cause peek: per-cause counts over the queued edges
+/// without draining them, so the poll gate and the drain below observe the
+/// identical queue. Fixed order (foreground, visibility, other, gesture,
+/// unknown), nonzero causes only, at most five entries: bounded by the
+/// closed cause vocabulary. No HWND, titles, content, or identity: counts
+/// only. Gesture START/END fold to one `gesture` bucket (semantically
+/// equivalent movement edges); every wake cause stays distinct and no two
+/// causes ever coalesce.
+pub(super) fn hook_cause_summary() -> Vec<(&'static str, u64)> {
+    let (mut foreground, mut visibility, mut other, mut gesture, mut unknown) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
+    if let Ok(queue) = hook_queue().lock() {
+        for event in queue.iter() {
+            match event {
+                HookEvent::Wake(edge) => match edge.cause {
+                    HookCause::Foreground => {
+                        foreground = foreground.saturating_add(1);
+                    }
+                    HookCause::Visibility => {
+                        visibility = visibility.saturating_add(1);
+                    }
+                    HookCause::Other => {
+                        other = other.saturating_add(1);
+                    }
+                    HookCause::Unknown => {
+                        unknown = unknown.saturating_add(1);
+                    }
+                },
+                HookEvent::MoveSizeStart(..) | HookEvent::MoveSizeEnd(..) => {
+                    gesture = gesture.saturating_add(1);
+                }
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(5);
+    for (cause, count) in [
+        (HookCause::Foreground.as_str(), foreground),
+        (HookCause::Visibility.as_str(), visibility),
+        (HookCause::Other.as_str(), other),
+        ("gesture", gesture),
+        (HookCause::Unknown.as_str(), unknown),
+    ] {
+        if count > 0 {
+            out.push((cause, count));
+        }
+    }
+    out
+}
+
+/// Max trace-only pending-edge rows per diagnostic emission: compact and
+/// bounded; the remainder folds into an honest omitted count.
+pub(super) const MAX_PENDING_EDGE_ROWS: usize = 8;
+
+/// One current member candidate for delivery-join validation: the live
+/// `(hwnd, pid)` plus the stored visible-membership tag and the opaque
+/// session token. The production drain builds these from `member_tokens`
+/// plus `member_tags`; tests build them by hand. Creation is deliberately
+/// absent: the callback cannot read it, so the join validates pid plus the
+/// reuse-discriminating tag only and says so on mismatch.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MemberJoinView<'a> {
+    pub hwnd: u64,
+    pub pid: u32,
+    pub token: &'a str,
+    pub stored_tag: Option<&'a str>,
+}
+
+/// Validate one queued delivery read against current member state. Returns
+/// the opaque token on an exact single-candidate pid-plus-tag match and
+/// `None` with a bounded reason otherwise: `no-member`, `ambiguous`
+/// (several generations share the number), `unknown-delivery` (destroy or
+/// an unreadable delivery read, never proof), `pid-mismatch`, or
+/// `tag-mismatch` (absent or different stored tag, including a delivery
+/// read that predates reuse). No silent bind: a lone candidate still needs
+/// the full match, and the reason never carries identity values.
+pub(super) fn join_delivery_token(
+    hwnd: u64,
+    snapshot: &DeliverySnapshot,
+    members: &[MemberJoinView<'_>],
+) -> (Option<String>, &'static str) {
+    let mut candidate: Option<&MemberJoinView<'_>> = None;
+    let mut count = 0u32;
+    for member in members {
+        if member.hwnd == hwnd {
+            count += 1;
+            candidate = Some(member);
+        }
+    }
+    let Some(single) = (count == 1).then_some(candidate).flatten() else {
+        return if count == 0 {
+            (None, "no-member")
+        } else {
+            (None, "ambiguous")
+        };
+    };
+    let DeliverySnapshot::DeliveryRead { pid, tag } = snapshot else {
+        return (None, "unknown-delivery");
+    };
+    let Some(pid) = pid else {
+        return (None, "unknown-delivery");
+    };
+    if *pid != single.pid {
+        return (None, "pid-mismatch");
+    }
+    let Some(tag) = tag else {
+        return (None, "unknown-delivery");
+    };
+    if single.stored_tag != Some(tag.as_str()) {
+        return (None, "tag-mismatch");
+    }
+    (Some(single.token.to_owned()), "matched")
+}
+
+/// Trace-only pending-edge peek: one compact row per queued wake edge
+/// without draining, so the poll gate and the drain below observe the
+/// identical queue. Each row carries the exact edge kind (create vs
+/// destroy vs location never coalesce), the unchanged gate cause, the
+/// caller-joined managed flag plus the validated token/join reason, the
+/// class, and the abstract delivery read (`unknown` vs `delivery-read`
+/// plus whether a tag was present). No HWND, pid, thread, time, titles,
+/// paths, or tag values: opaque tokens, classes, and bounded vocabulary
+/// only. Rows cap at [`MAX_PENDING_EDGE_ROWS`] with the queue lock held
+/// only for the bounded copy plus an honest total; native class reads run
+/// after the lock is released. Gesture edges are skipped here (they ride
+/// the cause summary `gesture` bucket); wake causes never coalesce. No
+/// causal claim: rows are pending notifications only, never proof of what
+/// changed.
+pub(super) fn pending_edge_rows(
+    join: impl Fn(u64, &DeliverySnapshot) -> (bool, Option<String>, &'static str),
+    class_of: impl Fn(u64) -> Option<String>,
+) -> (Vec<serde_json::Value>, usize) {
+    let (edges, total) = hook_queue()
+        .lock()
+        .map(|queue| {
+            let total = queue
+                .iter()
+                .filter(|event| matches!(event, HookEvent::Wake(_)))
+                .count();
+            let edges: Vec<WakeEdge> = queue
+                .iter()
+                .filter_map(|event| match event {
+                    HookEvent::Wake(edge) => Some(edge.clone()),
+                    HookEvent::MoveSizeStart(..) | HookEvent::MoveSizeEnd(..) => None,
+                })
+                .take(MAX_PENDING_EDGE_ROWS)
+                .collect();
+            (edges, total)
+        })
+        .unwrap_or_default();
+    let mut rows = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let hwnd_u64 = edge.hwnd as u64;
+        let (managed, token, join_reason) = join(hwnd_u64, &edge.delivery);
+        let class = class_of(hwnd_u64);
+        let mut row = serde_json::json!({
+            "kind": edge.kind_str(),
+            "cause": edge.cause.as_str(),
+            "managed": managed,
+            "join": join_reason,
+            "delivery": edge.delivery.as_str(),
+            "tagged": edge.delivery.has_tag(),
+        });
+        if let Some(token) = token {
+            row["token"] = serde_json::Value::from(token);
+        } else {
+            row["token"] = serde_json::Value::Null;
+        }
+        if let Some(class) = class {
+            if class.is_empty() {
+                row["class"] = serde_json::Value::Null;
+            } else {
+                row["class"] = serde_json::Value::from(class);
+            }
+        } else {
+            row["class"] = serde_json::Value::Null;
+        }
+        rows.push(row);
+    }
+    let omitted = total.saturating_sub(rows.len());
+    (rows, omitted)
 }
 
 /// Product outer wait: pump loop-thread messages (delivering hook callbacks)
@@ -649,4 +1019,330 @@ pub(super) fn observe_window(
         facts,
         member_tag: crate::product_hide::sys::read_member_tag(hwnd_u64),
     })
+}
+
+#[cfg(test)]
+mod cause_tests {
+    use super::*;
+
+    fn clear_queue() {
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.clear();
+        }
+    }
+
+    #[test]
+    fn wake_causes_classify_distinctly() {
+        // Pure rule: foreground, visibility, topology, and unknown never
+        // share a cause. The wake filter itself is unchanged (asserted
+        // alongside so a cause edit cannot widen the hook scope).
+        assert!(window_edge_wakes(EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW));
+        assert_eq!(wake_cause(EVENT_SYSTEM_FOREGROUND), HookCause::Foreground);
+        for event in [EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE] {
+            assert!(window_edge_wakes(event, OBJID_WINDOW));
+            assert_eq!(wake_cause(event), HookCause::Visibility);
+        }
+        for event in [
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_DESTROY,
+            EVENT_OBJECT_LOCATIONCHANGE,
+        ] {
+            assert!(window_edge_wakes(event, OBJID_WINDOW));
+            assert_eq!(wake_cause(event), HookCause::Other);
+        }
+        assert!(!window_edge_wakes(EVENT_OBJECT_SHOW, OBJID_WINDOW + 1));
+        assert_eq!(wake_cause(EVENT_SYSTEM_MOVESIZESTART), HookCause::Unknown);
+    }
+
+    #[test]
+    fn every_cause_survives_summary_and_still_invalidates() {
+        // Each cause pushed alone: the non-consuming production poll
+        // (`hook_edges_pending`) reads true without draining, and the peek
+        // still reports that same cause afterwards. Every cause therefore
+        // still trips the pre-setter gate exactly like the old bare wake.
+        for (hwnd, cause) in [
+            (1, HookCause::Foreground),
+            (2, HookCause::Visibility),
+            (3, HookCause::Other),
+            (4, HookCause::Unknown),
+        ] {
+            clear_queue();
+            push_hook(HookEvent::Wake(WakeEdge::test(hwnd, cause)));
+            assert!(hook_edges_pending(), "{cause:?} must invalidate");
+            let summary = hook_cause_summary();
+            assert_eq!(summary, vec![(cause.as_str(), 1)], "{cause:?} survives");
+            assert!(hook_edges_pending(), "{cause:?} peek must not drain");
+            clear_queue();
+        }
+        // Gesture edges fold to one `gesture` bucket and invalidate too;
+        // mixed batches keep every wake cause distinct (coalescing only the
+        // semantically equivalent movement edges).
+        clear_queue();
+        push_hook(HookEvent::Wake(WakeEdge::test(11, HookCause::Foreground)));
+        push_hook(HookEvent::Wake(WakeEdge::test(12, HookCause::Visibility)));
+        push_hook(HookEvent::MoveSizeStart(13, 7));
+        push_hook(HookEvent::MoveSizeEnd(13, None, 7));
+        assert!(hook_edges_pending());
+        assert_eq!(
+            hook_cause_summary(),
+            vec![("foreground", 1), ("visibility", 1), ("gesture", 2)]
+        );
+        assert!(hook_edges_pending(), "summary peek must not drain");
+        clear_queue();
+        assert!(!hook_edges_pending());
+        assert!(hook_cause_summary().is_empty());
+    }
+
+    #[test]
+    fn exact_event_kind_survives_without_coalescing() {
+        // CREATE/DESTROY/LOCATION share the gate cause but keep distinct
+        // exact kinds plus exact native fields; the cause summary still
+        // folds them to `other` so the gate is unchanged. The join runs
+        // the production validator with no members, hence `no-member`.
+        fn join(hwnd: u64, snapshot: &DeliverySnapshot) -> (bool, Option<String>, &'static str) {
+            let (token, reason) = join_delivery_token(hwnd, snapshot, &[]);
+            (false, token, reason)
+        }
+        clear_queue();
+        let create = WakeEdge::test_with_event(
+            21,
+            EVENT_OBJECT_CREATE,
+            DeliverySnapshot::DeliveryRead {
+                pid: Some(101),
+                tag: Some("aa".to_owned()),
+            },
+        );
+        let destroy =
+            WakeEdge::test_with_event(21, EVENT_OBJECT_DESTROY, DeliverySnapshot::Unknown);
+        let location = WakeEdge::test_with_event(
+            21,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            DeliverySnapshot::DeliveryRead {
+                pid: Some(101),
+                tag: Some("aa".to_owned()),
+            },
+        );
+        assert_eq!(create.cause, HookCause::Other);
+        assert_eq!(destroy.cause, HookCause::Other);
+        assert_eq!(location.cause, HookCause::Other);
+        assert_eq!(create.kind_str(), "create");
+        assert_eq!(destroy.kind_str(), "destroy");
+        assert_eq!(location.kind_str(), "location");
+        assert_ne!(create, destroy);
+        assert_ne!(create, location);
+        push_hook(HookEvent::Wake(create.clone()));
+        push_hook(HookEvent::Wake(destroy.clone()));
+        push_hook(HookEvent::Wake(location.clone()));
+        assert_eq!(hook_cause_summary(), vec![("other", 3)]);
+        assert!(hook_edges_pending(), "peek must not drain");
+        let (rows, omitted) = pending_edge_rows(join, |_| None);
+        assert_eq!(omitted, 0);
+        let kinds: Vec<&str> = rows
+            .iter()
+            .map(|row| row["kind"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(kinds, vec!["create", "destroy", "location"]);
+        for row in &rows {
+            assert_eq!(row["token"], serde_json::Value::Null);
+            assert_eq!(row["join"], serde_json::json!("no-member"));
+        }
+        // Exact native fields survive the queue round-trip.
+        assert_eq!(create.event, EVENT_OBJECT_CREATE);
+        assert_eq!(create.id_object, OBJID_WINDOW);
+        assert_eq!((create.thread, create.time), (7, 9));
+        clear_queue();
+    }
+
+    #[test]
+    fn same_hwnd_distinct_deliveries_never_conflate() {
+        // One HWND number, two member-tag generations: both delivery reads
+        // stay ambiguous through the production validator, even when a
+        // read exactly matches one generation's stored tag.
+        let members = [
+            MemberJoinView {
+                hwnd: 31,
+                pid: 201,
+                token: "wA",
+                stored_tag: Some("tag-a"),
+            },
+            MemberJoinView {
+                hwnd: 31,
+                pid: 201,
+                token: "wB",
+                stored_tag: Some("tag-b"),
+            },
+        ];
+        let join = |hwnd: u64, snapshot: &DeliverySnapshot| {
+            let (token, reason) = join_delivery_token(hwnd, snapshot, &members);
+            (true, token, reason)
+        };
+        let first = WakeEdge::test_with_event(
+            31,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            DeliverySnapshot::DeliveryRead {
+                pid: Some(201),
+                tag: Some("tag-a".to_owned()),
+            },
+        );
+        let second = WakeEdge::test_with_event(
+            31,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            DeliverySnapshot::DeliveryRead {
+                pid: Some(201),
+                tag: Some("tag-b".to_owned()),
+            },
+        );
+        assert_ne!(first, second, "tag change must be a distinct edge");
+        clear_queue();
+        push_hook(HookEvent::Wake(first));
+        push_hook(HookEvent::Wake(second));
+        let (rows, _) = pending_edge_rows(join, |_| Some("SomeClass".to_owned()));
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row["managed"], serde_json::json!(true));
+            assert_eq!(row["token"], serde_json::Value::Null);
+            assert_eq!(row["join"], serde_json::json!("ambiguous"));
+            assert_eq!(row["delivery"], serde_json::json!("delivery-read"));
+            assert_eq!(row["tagged"], serde_json::json!(true));
+            assert_eq!(row["class"], serde_json::json!("SomeClass"));
+        }
+        // No thread, time, pid, or tag values leak into product rows.
+        for row in &rows {
+            assert!(row.get("thread").is_none());
+            assert!(row.get("time").is_none());
+            assert!(row.get("pid").is_none());
+            assert!(row.get("hwnd").is_none());
+        }
+        clear_queue();
+    }
+
+    #[test]
+    fn single_generation_still_validates_pid_and_tag() {
+        // A lone candidate is not enough: the delivery read must match the
+        // stored pid plus the stored tag. A stale tag (edge predating
+        // reuse), a wrong pid, and an unknown delivery all report null
+        // with their reason; only the exact match joins.
+        let members = [MemberJoinView {
+            hwnd: 33,
+            pid: 202,
+            token: "w7",
+            stored_tag: Some("tag-new"),
+        }];
+        let join = |hwnd: u64, snapshot: &DeliverySnapshot| {
+            let (token, reason) = join_delivery_token(hwnd, snapshot, &members);
+            (true, token, reason)
+        };
+        let stale = WakeEdge::test_with_event(
+            33,
+            EVENT_OBJECT_CREATE,
+            DeliverySnapshot::DeliveryRead {
+                pid: Some(202),
+                tag: Some("tag-old".to_owned()),
+            },
+        );
+        let wrong_pid = WakeEdge::test_with_event(
+            33,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            DeliverySnapshot::DeliveryRead {
+                pid: Some(999),
+                tag: Some("tag-new".to_owned()),
+            },
+        );
+        let unknown =
+            WakeEdge::test_with_event(33, EVENT_OBJECT_DESTROY, DeliverySnapshot::Unknown);
+        let fresh = WakeEdge::test_with_event(
+            33,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            DeliverySnapshot::DeliveryRead {
+                pid: Some(202),
+                tag: Some("tag-new".to_owned()),
+            },
+        );
+        clear_queue();
+        push_hook(HookEvent::Wake(stale));
+        push_hook(HookEvent::Wake(wrong_pid));
+        push_hook(HookEvent::Wake(unknown));
+        push_hook(HookEvent::Wake(fresh));
+        let (rows, _) = pending_edge_rows(join, |_| None);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0]["token"], serde_json::Value::Null);
+        assert_eq!(rows[0]["join"], serde_json::json!("tag-mismatch"));
+        assert_eq!(rows[1]["token"], serde_json::Value::Null);
+        assert_eq!(rows[1]["join"], serde_json::json!("pid-mismatch"));
+        assert_eq!(rows[2]["token"], serde_json::Value::Null);
+        assert_eq!(rows[2]["join"], serde_json::json!("unknown-delivery"));
+        assert_eq!(rows[3]["token"], serde_json::json!("w7"));
+        assert_eq!(rows[3]["join"], serde_json::json!("matched"));
+        // An empty class reads as null, never fabricated.
+        let (rows, _) = pending_edge_rows(join, |_| Some(String::new()));
+        assert_eq!(rows[3]["class"], serde_json::Value::Null);
+        clear_queue();
+    }
+
+    #[test]
+    fn pending_rows_bound_copy_and_count_honestly() {
+        // Ten queued wakes copy only the first eight rows; the remainder
+        // folds into the omitted count and the queue stays intact.
+        fn join(hwnd: u64, snapshot: &DeliverySnapshot) -> (bool, Option<String>, &'static str) {
+            let (token, reason) = join_delivery_token(hwnd, snapshot, &[]);
+            (false, token, reason)
+        }
+        clear_queue();
+        for hwnd in 50..60 {
+            push_hook(HookEvent::Wake(WakeEdge::test_with_event(
+                hwnd,
+                EVENT_OBJECT_LOCATIONCHANGE,
+                DeliverySnapshot::DeliveryRead {
+                    pid: Some(300),
+                    tag: Some("t".to_owned()),
+                },
+            )));
+        }
+        let (rows, omitted) = pending_edge_rows(join, |_| None);
+        assert_eq!(rows.len(), MAX_PENDING_EDGE_ROWS);
+        assert_eq!(omitted, 10 - MAX_PENDING_EDGE_ROWS);
+        assert!(hook_edges_pending(), "diag peek must not drain");
+        assert_eq!(hook_cause_summary(), vec![("other", 10)]);
+        clear_queue();
+    }
+
+    #[test]
+    fn destroy_and_unreadable_stay_unknown_and_foreground_preserved() {
+        // Destroy short-circuits without reading; an unreadable live edge
+        // (no pid, no tag) is also unknown. Foreground keeps its cause.
+        // The join runs the production validator: unknown delivery never
+        // joins even when the HWND is currently managed.
+        let members = [MemberJoinView {
+            hwnd: 42,
+            pid: 400,
+            token: "w9",
+            stored_tag: Some("tag-f"),
+        }];
+        let join = |hwnd: u64, snapshot: &DeliverySnapshot| {
+            let (token, reason) = join_delivery_token(hwnd, snapshot, &members);
+            (true, token, reason)
+        };
+        assert_eq!(
+            snapshot_delivery(EVENT_OBJECT_DESTROY, 41),
+            DeliverySnapshot::Unknown
+        );
+        assert_eq!(wake_cause(EVENT_SYSTEM_FOREGROUND), HookCause::Foreground);
+        assert_eq!(edge_kind_str(EVENT_SYSTEM_FOREGROUND), "foreground");
+        clear_queue();
+        push_hook(HookEvent::Wake(WakeEdge::test_with_event(
+            42,
+            EVENT_SYSTEM_FOREGROUND,
+            DeliverySnapshot::Unknown,
+        )));
+        let (rows, _) = pending_edge_rows(join, |_| None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["kind"], serde_json::json!("foreground"));
+        assert_eq!(rows[0]["cause"], serde_json::json!("foreground"));
+        assert_eq!(rows[0]["delivery"], serde_json::json!("unknown"));
+        assert_eq!(rows[0]["token"], serde_json::Value::Null);
+        assert_eq!(rows[0]["join"], serde_json::json!("unknown-delivery"));
+        assert_eq!(hook_cause_summary(), vec![("foreground", 1)]);
+        assert!(hook_edges_pending(), "diag peek must not drain");
+        clear_queue();
+    }
 }

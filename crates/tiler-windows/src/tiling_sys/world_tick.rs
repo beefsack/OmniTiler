@@ -678,6 +678,13 @@ fn apply_diag_value(
         "command": command_kind,
         "command_consumed": reply.command_consumed,
         "command_result": command_result_kind(&reply.command_result),
+        "invalidation_pending": super::observe::hook_cause_summary()
+            .into_iter()
+            .map(|(cause, pending)| serde_json::json!({
+                "cause": cause,
+                "pending": pending,
+            }))
+            .collect::<Vec<serde_json::Value>>(),
         "stats": {
             "geometry_writes": stats.geometry_writes,
             "membership_writes": stats.membership_writes,
@@ -2307,6 +2314,75 @@ mod apply_diag_tests {
         assert_eq!(value["frames_omitted"], serde_json::json!(0));
         assert_eq!(value["desired_operations"], serde_json::json!([]));
         assert_eq!(value["desired_operations_omitted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn diag_carries_bounded_pending_hook_causes() {
+        // Trace-only pending-cause peek: counts only, no HWND/titles, at most
+        // one row per cause. Offline the queue starts empty; staged edges
+        // render bounded rows and clear again.
+        use super::super::observe::{HookCause, HookEvent, WakeEdge, hook_queue};
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.clear();
+        }
+        let value = apply_diag_value(
+            12,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            fresh_route_value(
+                "w1",
+                None,
+                "focused-output-last-focused",
+                "cursor-output",
+                (None, None, None, "retained"),
+            ),
+            None,
+            false,
+            &report_shell(vec![]),
+        );
+        assert_eq!(value["invalidation_pending"], serde_json::json!([]));
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.push(HookEvent::Wake(WakeEdge::test(1, HookCause::Foreground)));
+            queue.push(HookEvent::Wake(WakeEdge::test(2, HookCause::Foreground)));
+            queue.push(HookEvent::Wake(WakeEdge::test(3, HookCause::Visibility)));
+        }
+        let value = apply_diag_value(
+            13,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            fresh_route_value(
+                "w1",
+                None,
+                "focused-output-last-focused",
+                "cursor-output",
+                (None, None, None, "retained"),
+            ),
+            None,
+            false,
+            &report_shell(vec![]),
+        );
+        assert_eq!(
+            value["invalidation_pending"],
+            serde_json::json!([
+                {"cause": "foreground", "pending": 2},
+                {"cause": "visibility", "pending": 1},
+            ])
+        );
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.clear();
+        }
     }
 
     #[test]

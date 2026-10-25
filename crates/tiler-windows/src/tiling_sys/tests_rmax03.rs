@@ -78,6 +78,7 @@ pub(super) fn test_state() -> TileLoop {
         pager_icon_retry_at: None,
         pager_suppress_last: None,
         pager_gate_last: None,
+        pager_cells_last: None,
         pager_refusals: std::collections::HashMap::new(),
         workspace_proof: false,
         maximize_admission_attempted: std::collections::HashSet::new(),

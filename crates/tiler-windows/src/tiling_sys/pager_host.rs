@@ -192,6 +192,174 @@ fn pager_suppress_signature(facts: &PagerSuppressFacts) -> String {
     )
 }
 
+/// Max traced outputs, cells per output, and focus marks per cell in one
+/// `pager-cells` trace line; the remainder folds into honest omitted
+/// counts so a crowded pager never floods the trace.
+const MAX_PAGER_CELLS_TRACE_OUTPUTS: usize = 8;
+const MAX_PAGER_CELLS_TRACE_CELLS: usize = 8;
+const MAX_PAGER_CELLS_TRACE_MINIS: usize = 8;
+
+/// Trace-only cell-payload evidence over the actual frames sent to the
+/// renderer: one bounded `pager-cells` value per pump. Logs actual cell
+/// fields only (ordinals, workspace tokens, current/focus marks with
+/// honest omitted counts); never titles, paths, HWNDs, PIDs, creations,
+/// or raw input. Focus marks ride the cells verbatim (never recomputed
+/// here: no second projection). Tick and reply identity ride the line
+/// for correlation only.
+fn pager_cells_trace_value(
+    pagers: &[OutputPager],
+    output_token: &dyn Fn(&str) -> String,
+    workspace_token: &dyn Fn(&str, &str) -> String,
+    tick: u64,
+    observation: u64,
+    revision: u64,
+) -> serde_json::Value {
+    let mut outputs = Vec::new();
+    for pager in pagers.iter().take(MAX_PAGER_CELLS_TRACE_OUTPUTS) {
+        let mut cells = Vec::new();
+        for (index, cell) in pager
+            .cells
+            .iter()
+            .enumerate()
+            .take(MAX_PAGER_CELLS_TRACE_CELLS)
+        {
+            let ws = pager.ids.get(index).map(String::as_str).unwrap_or("");
+            let marks: Vec<serde_json::Value> = cell
+                .mini_focused
+                .iter()
+                .take(MAX_PAGER_CELLS_TRACE_MINIS)
+                .map(|focused| serde_json::Value::from(*focused))
+                .collect();
+            cells.push(serde_json::json!({
+                "ord": cell.ordinal,
+                "ws": workspace_token(&pager.output, ws),
+                "cur": cell.active,
+                "focused": cell.mini_focused.iter().any(|focused| *focused),
+                "minis": marks,
+                "minis_total": cell.mini_focused.len(),
+                "minis_omitted": cell.mini_focused.len().saturating_sub(marks.len()),
+                "focused_total": cell.mini_focused.iter().filter(|focused| **focused).count(),
+            }));
+        }
+        outputs.push(serde_json::json!({
+            "output": output_token(&pager.output),
+            "cells": cells,
+            "cells_total": pager.cells.len(),
+            "cells_omitted": pager.cells.len().saturating_sub(cells.len()),
+            "active": pager.active_index,
+        }));
+    }
+    serde_json::json!({
+        "event": "pager-cells",
+        "tick": tick,
+        "observation": observation,
+        "revision": revision,
+        "outputs": outputs,
+        "outputs_total": pagers.len(),
+        "outputs_omitted": pagers.len().saturating_sub(outputs.len()),
+    })
+}
+
+/// Full change signature over the logged cell payload: output tokens plus
+/// per-cell ordinal/workspace/current/any-focused, per-miniature focus
+/// bits, every total, and the top-level output counts. Tick and reply
+/// identity ride the logged line but never the gate, so a new tick with
+/// identical cells stays silent - while omitted growth past the cap still
+/// re-logs.
+fn pager_cells_trace_signature(value: &serde_json::Value) -> String {
+    let outputs = value
+        .get("outputs")
+        .map(|outputs| outputs.to_string())
+        .unwrap_or_default();
+    let total = value
+        .get("outputs_total")
+        .map(|total| total.to_string())
+        .unwrap_or_default();
+    let omitted = value
+        .get("outputs_omitted")
+        .map(|omitted| omitted.to_string())
+        .unwrap_or_default();
+    format!("{outputs}|{total}|{omitted}")
+}
+
+/// Trace-only change-gated cell-payload emission over the actual frames
+/// about to reach the renderer: one `pager-cells` line per payload change
+/// (baseline included), identical repeats silent. Never a native effect;
+/// the gate and the renderer are untouched.
+fn emit_pager_cells(
+    state: &mut TileLoop,
+    pagers: &[OutputPager],
+    log_path: &Path,
+    tick: u64,
+    observation: u64,
+    revision: u64,
+) {
+    if !state.trace {
+        return;
+    }
+    let value = pager_cells_trace_value(
+        pagers,
+        &|device| state.output_token(device),
+        &|device, workspace| state.workspace_token(device, workspace),
+        tick,
+        observation,
+        revision,
+    );
+    let signature = pager_cells_trace_signature(&value);
+    if state.pager_cells_last.as_deref() == Some(signature.as_str()) {
+        return;
+    }
+    state.pager_cells_last = Some(signature);
+    log_json_at(log_path, value);
+}
+
+/// Pure content mapping from core pager screens to portable pager content:
+/// the single production mapper shared by the pump and the offline seam.
+/// Maps opaque lifetimes back to member keys (a mechanical race may lag
+/// membership) and lays out; it never sorts, renumbers, or filters
+/// content. Focus follows the core same-report focus/view epoch rule: the retained foreground may still name the pre-command window
+/// while the views already moved, so only the current workspace may carry
+/// the mark - a stale token on a departed workspace marks nothing until
+/// native observation catches up.
+fn pager_content_for_wire(
+    screens: &[tiler_core::world_presentation::PagerScreen],
+    wire: Option<&str>,
+    foreground: &str,
+    key_of: &HashMap<&str, &crate::native_guards::WindowKey>,
+) -> Vec<crate::pager::PagerContentWorkspace> {
+    let screen = wire.and_then(|wire| screens.iter().find(|screen| screen.output == wire));
+    screen
+        .map(|screen| {
+            screen
+                .workspaces
+                .iter()
+                .map(|workspace| crate::pager::PagerContentWorkspace {
+                    id: workspace.id.clone(),
+                    ordinal: workspace.ordinal,
+                    current: workspace.current,
+                    windows: workspace
+                        .windows
+                        .iter()
+                        .filter_map(|window| {
+                            key_of.get(window.window.0.as_str()).map(|key| {
+                                crate::pager::PagerContentMiniature {
+                                    key: (*key).clone(),
+                                    rect: window.frame,
+                                    focused: workspace.current
+                                        && crate::pager::pager_window_focused(
+                                            window.window.0.as_str(),
+                                            foreground,
+                                        ),
+                                }
+                            })
+                        })
+                        .collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Compatibility suppress-state update with the exact legacy semantics:
 /// a suppression stores its reason, recovery clears. Returns true when the
 /// caller must log. Operates only on `pager_suppress_last`, which the
@@ -534,21 +702,23 @@ pub(super) fn sync_taskbar_pager(
     // lifetimes back to member keys (a mechanical race may lag membership)
     // and lays out; it never sorts, renumbers, or filters content. No reply
     // yet (startup) renders no workspaces.
-    let (screens, foreground): (Vec<tiler_core::world_presentation::PagerScreen>, String) = state
+    let (screens, foreground, observation, revision): (
+        Vec<tiler_core::world_presentation::PagerScreen>,
+        String,
+        u64,
+        u64,
+    ) = state
         .world
         .last_reply()
         .map(|reply| {
             (
                 reply.presentation.pager.clone(),
                 reply.presentation.foreground.clone(),
+                reply.based_on_observation_seq,
+                reply.state_revision,
             )
         })
         .unwrap_or_default();
-    let key_of: HashMap<String, crate::native_guards::WindowKey> = state
-        .member_tokens
-        .iter()
-        .map(|(key, token)| (token.clone(), key.clone()))
-        .collect();
     // Shared owner resolve (first consumer to observe a moved version runs
     // the single WinRT resolve; the border already resolved above on turns
     // it painted, so this is usually a cache hit): the strips paint the
@@ -559,44 +729,19 @@ pub(super) fn sync_taskbar_pager(
     // the pager cell fill.
     let accent = super::accent_owner::refresh_shared_accent(state);
     let focused_highlight = crate::pager_highlight::effective_color(&state.pager_highlight, accent);
+    let key_of: HashMap<&str, &crate::native_guards::WindowKey> = state
+        .member_tokens
+        .iter()
+        .map(|(key, token)| (token.as_str(), key))
+        .collect();
     for (geo_index, bar_index) in match_bars_to_outputs(&geos, &bars) {
         let area = &areas[geo_index];
         let bar: TaskbarFacts = bars[bar_index];
         let wire = state.wire_of(&area.device);
-        let screen = wire
-            .as_deref()
-            .and_then(|wire| screens.iter().find(|screen| screen.output == wire));
         // Unknown wire or no core screen renders no workspaces (the zero-cell
         // strip refuses exactly like the old empty ring).
-        let content: Vec<crate::pager::PagerContentWorkspace> = screen
-            .map(|screen| {
-                screen
-                    .workspaces
-                    .iter()
-                    .map(|workspace| crate::pager::PagerContentWorkspace {
-                        id: workspace.id.clone(),
-                        ordinal: workspace.ordinal,
-                        current: workspace.current,
-                        windows: workspace
-                            .windows
-                            .iter()
-                            .filter_map(|window| {
-                                key_of.get(window.window.0.as_str()).map(|key| {
-                                    crate::pager::PagerContentMiniature {
-                                        key: key.clone(),
-                                        rect: window.frame,
-                                        focused: crate::pager::pager_window_focused(
-                                            window.window.0.as_str(),
-                                            &foreground,
-                                        ),
-                                    }
-                                })
-                            })
-                            .collect(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let content: Vec<crate::pager::PagerContentWorkspace> =
+            pager_content_for_wire(&screens, wire.as_deref(), &foreground, &key_of);
         match crate::pager::build_output_pager_from_content(
             &content,
             &icons,
@@ -647,6 +792,13 @@ pub(super) fn sync_taskbar_pager(
         }
     }
     state.pager_served = pagers.iter().map(|pager| pager.output.clone()).collect();
+    // Trace-only cell-payload evidence over these exact frames (actual
+    // cells sent to the renderer below, never a reply approximation):
+    // change-gated, bounded, no native effect.
+    if state.trace {
+        let tick = state.tick;
+        emit_pager_cells(state, &pagers, log_path, tick, observation, revision);
+    }
     // Queue lookups only for served miniatures that can actually draw an
     // icon: artwork nobody can see is never loaded.
     request_drawable_icons(state, &pagers, now);
@@ -975,12 +1127,13 @@ pub(super) fn dispatch_verified_select(
 mod pager_host_tests {
     use super::rmax03_adapter_tests::test_state;
     use super::{
-        MonitorArea, ObservedWindow, RetainedRow, clear_pending_seams, emit_pager_gate,
-        foreground_elevated, foreground_elevated_detailed, foreground_pager_elevated,
-        foreground_pager_elevated_detailed, inject_pending_elev_probe, inject_pending_elevated,
-        inject_pending_fg_class, inject_pending_observe, inject_pending_suspend,
-        inject_pending_zorder, note_pager_suppress, pager_fg_surface, pager_suppress_diag,
-        pager_suppress_facts, pager_suppress_signature, poll_pager_select,
+        MonitorArea, ObservedWindow, RetainedRow, clear_pending_seams, emit_pager_cells,
+        emit_pager_gate, foreground_elevated, foreground_elevated_detailed,
+        foreground_pager_elevated, foreground_pager_elevated_detailed, inject_pending_elev_probe,
+        inject_pending_elevated, inject_pending_fg_class, inject_pending_observe,
+        inject_pending_suspend, inject_pending_zorder, note_pager_suppress,
+        pager_cells_trace_value, pager_fg_surface, pager_suppress_diag, pager_suppress_facts,
+        pager_suppress_signature, poll_pager_select,
     };
     use crate::tray_pager::SelectScope;
 
@@ -1328,8 +1481,12 @@ mod pager_host_tests {
         hook_queue()
             .lock()
             .map(|mut queue| {
-                queue.push(super::observe::HookEvent::Wake(701));
-                queue.push(super::observe::HookEvent::Wake(702));
+                queue.push(super::observe::HookEvent::Wake(
+                    super::observe::WakeEdge::test(701, super::observe::HookCause::Foreground),
+                ));
+                queue.push(super::observe::HookEvent::Wake(
+                    super::observe::WakeEdge::test(702, super::observe::HookCause::Visibility),
+                ));
             })
             .expect("hook queue");
         drain_hook_edges(&mut quiet, &me, &dir);
@@ -1449,8 +1606,18 @@ mod pager_host_tests {
                     hook_queue()
                         .lock()
                         .map(|mut queue| {
-                            queue.push(HookEvent::Wake(base));
-                            queue.push(HookEvent::Wake(base + 1));
+                            queue.push(HookEvent::Wake(
+                                super::observe::WakeEdge::test(
+                                    base,
+                                    super::observe::HookCause::Other,
+                                ),
+                            ));
+                            queue.push(HookEvent::Wake(
+                                super::observe::WakeEdge::test(
+                                    base + 1,
+                                    super::observe::HookCause::Visibility,
+                                ),
+                            ));
                         })
                         .map_err(|_| "queue lock".to_owned())?;
                     barrier.wait();
@@ -1462,7 +1629,7 @@ mod pager_host_tests {
                         return Err(format!("took {} of 2 staged edges", batch.len()));
                     }
                     for event in &batch {
-                        if !matches!(event, HookEvent::Wake(hwnd) if *hwnd == base || *hwnd == base + 1)
+                        if !matches!(event, HookEvent::Wake(edge) if edge.hwnd == base || edge.hwnd == base + 1)
                         {
                             return Err(format!("foreign edge {event:?}"));
                         }
@@ -1720,55 +1887,41 @@ mod pager_host_tests {
     }
 
     fn pager_frame_for(state: &super::TileLoop, output: &str) -> crate::pager::OutputPager {
+        // Uniform reply content (stage 5) through the shared production
+        // mapper: the adapter only maps opaque lifetimes back to member
+        // keys and lays out, never sorts or filters.
+        let foreground: String = state
+            .world
+            .last_reply()
+            .map(|reply| reply.presentation.foreground.clone())
+            .unwrap_or_default();
+        focus_pager_for(state, output, &foreground)
+    }
+
+    /// Test-only foreground override over the shared production mapper:
+    /// genuine core screens from the last reply plus the tick-time token
+    /// production would carry same-report (offline the reply foreground is
+    /// always empty because presentation ingress needs a live read). The
+    /// mapping itself is never reimplemented here.
+    fn focus_pager_for(
+        state: &super::TileLoop,
+        output: &str,
+        foreground: &str,
+    ) -> crate::pager::OutputPager {
         use std::collections::HashMap;
-        // Uniform reply content (stage 5): the adapter only maps opaque
-        // lifetimes back to member keys and lays out, never sorts or filters.
-        let (screens, foreground): (Vec<tiler_core::world_presentation::PagerScreen>, String) =
-            state
-                .world
-                .last_reply()
-                .map(|reply| {
-                    (
-                        reply.presentation.pager.clone(),
-                        reply.presentation.foreground.clone(),
-                    )
-                })
-                .unwrap_or_default();
+        let screens = state
+            .world
+            .last_reply()
+            .map(|reply| reply.presentation.pager.clone())
+            .unwrap_or_default();
         let wire = state.wire_of(output).expect("device mapped");
-        let screen = screens
-            .iter()
-            .find(|screen| screen.output == wire)
-            .expect("core screen");
         let key_of: HashMap<&str, &crate::native_guards::WindowKey> = state
             .member_tokens
             .iter()
             .map(|(key, token)| (token.as_str(), key))
             .collect();
-        let content: Vec<crate::pager::PagerContentWorkspace> = screen
-            .workspaces
-            .iter()
-            .map(|workspace| crate::pager::PagerContentWorkspace {
-                id: workspace.id.clone(),
-                ordinal: workspace.ordinal,
-                current: workspace.current,
-                windows: workspace
-                    .windows
-                    .iter()
-                    .filter_map(|window| {
-                        key_of.get(window.window.0.as_str()).map(|key| {
-                            crate::pager::PagerContentMiniature {
-                                key: (*key).clone(),
-                                rect: window.frame,
-                                focused: crate::pager::pager_window_focused(
-                                    window.window.0.as_str(),
-                                    &foreground,
-                                ),
-                            }
-                        })
-                    })
-                    .collect(),
-            })
-            .collect();
+        let content = super::pager_content_for_wire(&screens, Some(&wire), foreground, &key_of);
+        assert!(!content.is_empty(), "core screen");
         crate::pager::build_output_pager_from_content(
             &content,
             &HashMap::new(),
@@ -2231,6 +2384,566 @@ mod pager_host_tests {
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 3");
         assert_eq!(paint_keys(&state, &output), vec![bottom, top]);
+        clear_pending_seams();
+    }
+
+    /// Focus-rig for the pager-cell payload tests: two members homed on the
+    /// initial current workspace with the native foreground on A, driven
+    /// through the loop's own observe plus the world dispatch (genuine
+    /// engine homing, never fabricated adapter state). Returns the loop,
+    /// identity, ledger, dir, output, both member keys, and the shared
+    /// frame. Callers select through `run_world_command` with an explicit
+    /// (possibly stale) foreground HWND.
+    fn focus_rig() -> (
+        super::TileLoop,
+        crate::model::ProcessIdentity,
+        crate::storage::LedgerStore,
+        std::path::PathBuf,
+        String,
+        crate::native_guards::WindowKey,
+        crate::native_guards::WindowKey,
+    ) {
+        clear_pending_seams();
+        let _ = crate::ffi::take_taskbar_events();
+        if let Ok(mut pending) = super::observe::hook_queue().lock() {
+            pending.clear();
+        }
+        let mut state = test_state();
+        let me = pager_me();
+        static FOCUS_RIG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = FOCUS_RIG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "tiler-pager-focus-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        let store = crate::storage::LedgerStore::open(&tmp).expect("ledger temp dir");
+        let output = "mon-focus".to_owned();
+        state.ensure_device(&output);
+        let frame = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 960,
+            h: 540,
+        };
+        let key_a = crate::native_guards::WindowKey {
+            hwnd: 911,
+            pid: 7,
+            creation: "creation-fa".to_owned(),
+        };
+        let key_b = crate::native_guards::WindowKey {
+            hwnd: 912,
+            pid: 7,
+            creation: "creation-fb".to_owned(),
+        };
+        state
+            .member_tokens
+            .insert(key_a.clone(), "tok-creation-fa".to_owned());
+        state
+            .member_tokens
+            .insert(key_b.clone(), "tok-creation-fb".to_owned());
+        state
+            .member_rects
+            .insert("tok-creation-fa".to_owned(), frame);
+        state
+            .member_rects
+            .insert("tok-creation-fb".to_owned(), frame);
+        let areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        inject_pending_observe(
+            vec![
+                live_observed_hwnd(911, 7, "creation-fa", frame),
+                live_observed_hwnd(912, 7, "creation-fb", frame),
+            ],
+            Vec::new(),
+            false,
+        );
+        inject_pending_zorder(vec![key_a.clone(), key_b.clone()]);
+        let fulls = vec![pager_full()];
+        let mut skipped = Vec::new();
+        let mut retained = Vec::new();
+        let observed = state
+            .observe(&me, &fulls, &mut skipped, &mut retained)
+            .expect("seed observation");
+        super::super::world_tick::dispatch_test_observation(
+            &mut state, &observed, &retained, &areas, 911, None, 0,
+        )
+        .expect("seed converges");
+        // Hermetic insurance like `pager_rig`: later accidental dispatches
+        // observe nothing.
+        inject_pending_observe(Vec::new(), Vec::new(), false);
+        (state, me, store, tmp, output, key_a, key_b)
+    }
+
+    /// Production select through the world owner: core views move
+    /// immediately (logical authority). Offline the reply foreground is
+    /// always empty (presentation ingress needs a live read), so stale
+    /// epochs pass their tick-time token explicitly to the shared mapper
+    /// below - the token production would carry same-report.
+    fn focus_select(
+        state: &mut super::TileLoop,
+        me: &crate::model::ProcessIdentity,
+        store: &crate::storage::LedgerStore,
+        dir: &std::path::Path,
+        output: &str,
+        target: &str,
+        frame: tiler_core::geometry::Rect,
+    ) {
+        let areas = vec![super::MonitorArea {
+            device: output.to_owned(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        let fulls = vec![pager_full()];
+        let mut observed = vec![
+            live_observed_hwnd(911, 7, "creation-fa", frame),
+            live_observed_hwnd(912, 7, "creation-fb", frame),
+        ];
+        let ctx = super::ActionCtx {
+            correlation: "pager-focus-test".to_owned(),
+            tick: state.tick,
+            queued_at: std::time::Instant::now(),
+            start: std::time::Instant::now(),
+        };
+        let effect = super::super::workspace_do_select(
+            state,
+            me,
+            store,
+            dir,
+            &fulls,
+            &areas,
+            &mut observed,
+            output,
+            target,
+            &ctx,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(effect.outcome, "ok", "select dispatches to {target}");
+        inject_pending_observe(Vec::new(), Vec::new(), false);
+    }
+
+    fn frame_of_focus() -> tiler_core::geometry::Rect {
+        tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 960,
+            h: 540,
+        }
+    }
+
+    #[test]
+    fn pager_cells_departed_workspace_never_focused_despite_stale_foreground() {
+        // Same-report focus/view epoch through genuine core projection
+        // plus the shared production mapper: after selecting away, the
+        // tick-time foreground still names A's window on the departed
+        // workspace (offline the reply foreground is always empty because
+        // presentation ingress needs a live read, so the stale token
+        // production would carry same-report passes explicitly - the
+        // mapping itself is never reimplemented). The departed cell
+        // keeps the real miniature (the stale token resolves) but never
+        // the focus mark; nothing else marks either.
+        let (mut state, me, store, dir, output, key_a, _) = focus_rig();
+        let frame = frame_of_focus();
+        let current = state.active_view(&output).expect("seeded view");
+        let target = state
+            .workspace_ids(&output)
+            .into_iter()
+            .find(|id| id != &current)
+            .expect("second workspace");
+        focus_select(&mut state, &me, &store, &dir, &output, &target, frame);
+        assert_eq!(state.active_view(&output).as_deref(), Some(target.as_str()));
+        let reply = state.world.last_reply().expect("applied reply");
+        let screen = reply
+            .presentation
+            .pager
+            .iter()
+            .find(|screen| screen.output == state.wire_of(&output).expect("device mapped"))
+            .expect("core screen");
+        assert_eq!(
+            screen
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.current)
+                .map(|workspace| workspace.id.as_str()),
+            Some(target.as_str()),
+            "core projection moved the current mark"
+        );
+        // Stale tick-time token production carries same-report: A is still
+        // the native foreground while the views already moved.
+        let pager = focus_pager_for(&state, &output, "tok-creation-fa");
+        let departed = pager
+            .cells
+            .iter()
+            .zip(pager.ids.iter())
+            .find(|(_, id)| id.as_str() == current.as_str())
+            .map(|(cell, _)| cell)
+            .expect("departed workspace keeps its cell");
+        assert!(
+            departed.mini_keys.contains(&key_a),
+            "stale token resolves to the real miniature: {:?}",
+            departed.mini_keys
+        );
+        assert!(
+            departed.mini_focused.iter().all(|focused| !focused),
+            "departed cell never focused: {:?}",
+            departed.mini_focused
+        );
+        assert!(
+            pager
+                .cells
+                .iter()
+                .flat_map(|cell| cell.mini_focused.iter())
+                .all(|focused| !focused),
+            "stale focus marks nothing until catch-up"
+        );
+        // The trace payload logs these actual cell fields (verbatim, no
+        // recompute): departed cell present, non-current, and unmarked.
+        let value = pager_cells_trace_value(
+            std::slice::from_ref(&pager),
+            &|device| state.output_token(device),
+            &|device, workspace| state.workspace_token(device, workspace),
+            state.tick,
+            reply.based_on_observation_seq,
+            reply.state_revision,
+        );
+        assert_eq!(value["event"], serde_json::json!("pager-cells"));
+        assert_eq!(
+            value["observation"],
+            serde_json::json!(reply.based_on_observation_seq)
+        );
+        assert_eq!(value["revision"], serde_json::json!(reply.state_revision));
+        let cells = value["outputs"][0]["cells"]
+            .as_array()
+            .expect("traced cells");
+        assert_eq!(cells.len(), pager.cells.len());
+        for cell in cells {
+            assert_eq!(cell["focused"], serde_json::json!(false));
+            assert_eq!(cell["focused_total"], serde_json::json!(0));
+        }
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn pager_cells_current_focus_catch_up_retained() {
+        // Returning to the departed workspace with the native foreground
+        // back on A marks exactly A's miniature on the current cell; the
+        // other cell stays unmarked. The epoch gate must not swallow the
+        // genuine catch-up.
+        let (mut state, me, store, dir, output, key_a, _) = focus_rig();
+        let frame = frame_of_focus();
+        let home = state.active_view(&output).expect("seeded view");
+        let target = state
+            .workspace_ids(&output)
+            .into_iter()
+            .find(|id| id != &home)
+            .expect("second workspace");
+        focus_select(&mut state, &me, &store, &dir, &output, &target, frame);
+        focus_select(&mut state, &me, &store, &dir, &output, &home, frame);
+        assert_eq!(state.active_view(&output).as_deref(), Some(home.as_str()));
+        // Native focus caught up with the returned view: A is current
+        // again, so the shared mapper marks exactly its miniature.
+        let pager = focus_pager_for(&state, &output, "tok-creation-fa");
+        let current = pager.cells[pager.active_index].clone();
+        assert_eq!(pager.ids[pager.active_index], home);
+        let position = current
+            .mini_keys
+            .iter()
+            .position(|key| key == &key_a)
+            .expect("A paints on its home workspace");
+        assert!(
+            current.mini_focused[position],
+            "catch-up marks the current miniature"
+        );
+        assert_eq!(
+            current
+                .mini_focused
+                .iter()
+                .filter(|focused| **focused)
+                .count(),
+            1,
+            "exactly one focus mark: {:?}",
+            current.mini_focused
+        );
+        for (index, cell) in pager.cells.iter().enumerate() {
+            if index != pager.active_index {
+                assert!(
+                    cell.mini_focused.iter().all(|focused| !focused),
+                    "non-current cell stays unmarked"
+                );
+            }
+        }
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn pager_cells_zero_and_unknown_focus_stay_unmarked() {
+        // Empty foreground (unmanaged/departed/unknown token) focuses
+        // nothing: no guess, no desire read.
+        let (mut state, _, _, _, output, _, _) = focus_rig();
+        let areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        let frame = frame_of_focus();
+        let observed = vec![
+            live_observed_hwnd(911, 7, "creation-fa", frame),
+            live_observed_hwnd(912, 7, "creation-fb", frame),
+        ];
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &observed,
+            &[],
+            &areas,
+            0,
+            None,
+            1,
+        );
+        let reply = state.world.last_reply().expect("applied reply");
+        assert!(
+            reply.presentation.foreground.is_empty(),
+            "zero foreground: {:?}",
+            reply.presentation.foreground
+        );
+        let pager = pager_frame_for(&state, &output);
+        assert!(
+            !pager.cells.is_empty(),
+            "cells still render with zero focus"
+        );
+        assert!(
+            pager
+                .cells
+                .iter()
+                .flat_map(|cell| cell.mini_focused.iter())
+                .all(|focused| !focused),
+            "zero focus stays unmarked"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn pager_cells_trace_is_bounded_change_gated_and_leak_free() {
+        use crate::pager::{
+            PagerContentMiniature, PagerContentWorkspace, build_output_pager_from_content,
+        };
+        use std::collections::HashMap;
+        // Nine workspaces with nine miniatures on the first cell: both
+        // dimensions exceed the trace cap.
+        let ids: Vec<String> = (1..=9).map(|n| format!("ws-{n}")).collect();
+        let mut content: Vec<PagerContentWorkspace> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| PagerContentWorkspace {
+                id: id.clone(),
+                ordinal: index as u32 + 1,
+                current: index == 0,
+                windows: Vec::new(),
+            })
+            .collect();
+        for n in 0..9u64 {
+            content[0].windows.push(PagerContentMiniature {
+                key: crate::native_guards::WindowKey {
+                    hwnd: 100 + n,
+                    pid: 7,
+                    creation: format!("c{n}"),
+                },
+                rect: tiler_core::geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 480,
+                    h: 270,
+                },
+                focused: n == 0,
+            });
+        }
+        let pager = build_output_pager_from_content(
+            &content,
+            &HashMap::new(),
+            "mon-a",
+            pager_full(),
+            &pager_bar(),
+            (0xbd, 0x93, 0xf9),
+        )
+        .expect("crowded strip fits");
+        assert_eq!(pager.cells.len(), 9);
+        let value = pager_cells_trace_value(
+            std::slice::from_ref(&pager),
+            &|device| format!("wire-{device}"),
+            &|_, workspace| workspace.to_owned(),
+            7,
+            42,
+            43,
+        );
+        assert_eq!(value["event"], serde_json::json!("pager-cells"));
+        assert_eq!(value["tick"], serde_json::json!(7));
+        assert_eq!(value["observation"], serde_json::json!(42));
+        assert_eq!(value["revision"], serde_json::json!(43));
+        assert_eq!(value["outputs_total"], serde_json::json!(1));
+        assert_eq!(value["outputs_omitted"], serde_json::json!(0));
+        assert_eq!(
+            value["outputs"][0]["output"],
+            serde_json::json!("wire-mon-a")
+        );
+        let cells = value["outputs"][0]["cells"]
+            .as_array()
+            .expect("traced cells");
+        assert_eq!(cells.len(), super::MAX_PAGER_CELLS_TRACE_CELLS);
+        assert_eq!(value["outputs"][0]["cells_total"], serde_json::json!(9));
+        assert_eq!(value["outputs"][0]["cells_omitted"], serde_json::json!(1));
+        assert_eq!(cells[0]["ord"], serde_json::json!(1));
+        assert_eq!(cells[0]["ws"], serde_json::json!("ws-1"));
+        assert_eq!(cells[0]["cur"], serde_json::json!(true));
+        assert_eq!(cells[0]["focused"], serde_json::json!(true));
+        assert_eq!(cells[0]["focused_total"], serde_json::json!(1));
+        assert_eq!(cells[0]["minis_total"], serde_json::json!(9));
+        assert_eq!(cells[0]["minis_omitted"], serde_json::json!(1));
+        assert_eq!(
+            cells[0]["minis"].as_array().expect("marks").len(),
+            super::MAX_PAGER_CELLS_TRACE_MINIS
+        );
+        for cell in cells.iter().skip(1) {
+            assert_eq!(cell["focused"], serde_json::json!(false));
+        }
+        // No private identity anywhere in the payload: no HWNDs, PIDs,
+        // creations, paths, or titles - only ordinals, tokens, and marks.
+        let rendered = serde_json::to_string(&value).expect("trace serializes");
+        for forbidden in ["hwnd", "pid", "creation", "exe", "\\", "tok-"] {
+            assert!(
+                !rendered.to_lowercase().contains(forbidden),
+                "trace leaks {forbidden}: {rendered}"
+            );
+        }
+        // Change-gated emission over the real `emit_pager_cells` path:
+        // baseline logs once, identical repeats (even under a new tick or
+        // reply) stay silent, a focus flip re-logs once.
+        let mut gate_state = test_state();
+        gate_state.trace = true;
+        static TRACE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = TRACE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-pager-cells-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("trace log dir");
+        let log = dir.join("run.log");
+        assert_eq!(gate_state.pager_cells_last, None);
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&pager),
+            &log,
+            7,
+            42,
+            43,
+        );
+        assert_eq!(gate_lines(&log).len(), 1, "baseline logs once");
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&pager),
+            &log,
+            8,
+            44,
+            45,
+        );
+        assert_eq!(
+            gate_lines(&log).len(),
+            1,
+            "identical cells stay silent under a new tick and reply"
+        );
+        let mut flipped = pager.clone();
+        flipped.cells[1].mini_focused = vec![true];
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&flipped),
+            &log,
+            8,
+            44,
+            45,
+        );
+        assert_eq!(gate_lines(&log).len(), 2, "focus flip re-logs");
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&flipped),
+            &log,
+            8,
+            44,
+            45,
+        );
+        assert_eq!(gate_lines(&log).len(), 2, "repeat stays silent");
+        // Omitted growth past the output cap re-logs even when the first
+        // eight outputs are byte-identical: the top-level counts ride the
+        // gate, while tick and reply identity never do.
+        fn trace_only_pager(output: &str) -> crate::pager::OutputPager {
+            use crate::pager::PagerCell;
+            crate::pager::OutputPager {
+                output: output.to_owned(),
+                strip: tiler_core::geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 72,
+                    h: 40,
+                },
+                ids: vec!["ws-1".to_owned()],
+                cells: vec![PagerCell {
+                    rect: tiler_core::geometry::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 72,
+                        h: 40,
+                    },
+                    active: true,
+                    ordinal: 1,
+                    minis: Vec::new(),
+                    mini_focused: Vec::new(),
+                    mini_keys: Vec::new(),
+                    mini_icons: Vec::new(),
+                }],
+                active_index: 0,
+                dpi: 96,
+                focused_highlight: (0xbd, 0x93, 0xf9),
+            }
+        }
+        let nine: Vec<crate::pager::OutputPager> = (0..9)
+            .map(|n| trace_only_pager(&format!("mon-{n}")))
+            .collect();
+        let mut ten = nine.clone();
+        ten.push(trace_only_pager("mon-9"));
+        emit_pager_cells(&mut gate_state, &nine, &log, 10, 50, 51);
+        assert_eq!(gate_lines(&log).len(), 3, "nine-output baseline logs");
+        emit_pager_cells(&mut gate_state, &ten, &log, 10, 50, 51);
+        assert_eq!(
+            gate_lines(&log).len(),
+            4,
+            "omitted growth re-logs with identical first eight"
+        );
+        emit_pager_cells(&mut gate_state, &ten, &log, 11, 52, 53);
+        assert_eq!(gate_lines(&log).len(), 4, "repeat stays silent");
+        // Trace off emits nothing and never arms the gate.
+        gate_state.trace = false;
+        gate_state.pager_cells_last = None;
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&flipped),
+            &log,
+            9,
+            46,
+            47,
+        );
+        assert_eq!(gate_lines(&log).len(), 4, "trace off stays silent");
+        assert_eq!(gate_state.pager_cells_last, None);
         clear_pending_seams();
     }
 

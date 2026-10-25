@@ -222,6 +222,7 @@ pub(super) fn run_tile_loop(
         pager_icon_retry_at: None,
         pager_suppress_last: None,
         pager_gate_last: None,
+        pager_cells_last: None,
         pager_refusals: HashMap::new(),
         workspace_proof: false,
         maximize_admission_attempted: HashSet::new(),

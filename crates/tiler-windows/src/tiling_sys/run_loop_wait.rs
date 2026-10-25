@@ -288,6 +288,45 @@ pub(super) fn drain_hook_edges(
     me: &ProcessIdentity,
     log_path: &Path,
 ) -> EdgeDrain {
+    // Trace-only pending-edge peek before the consuming take below: exact
+    // kinds joined to managed tokens/classes with no drain and no gate
+    // effect. Own-overlay HWNDs are filtered at drain, not here, so the
+    // peek never decides what wakes.
+    if state.trace && super::observe::hook_edges_pending() {
+        let (rows, omitted) = super::observe::pending_edge_rows(
+            |hwnd, snapshot| {
+                let managed = state.managed.contains(&hwnd);
+                let views: Vec<super::observe::MemberJoinView<'_>> = state
+                    .member_tokens
+                    .iter()
+                    .filter(|(key, _)| key.hwnd == hwnd)
+                    .map(|(key, token)| super::observe::MemberJoinView {
+                        hwnd: key.hwnd,
+                        pid: key.pid,
+                        token: token.as_str(),
+                        stored_tag: state.member_tags.get(key).map(String::as_str),
+                    })
+                    .collect();
+                let (token, reason) = super::observe::join_delivery_token(hwnd, snapshot, &views);
+                (managed, token, reason)
+            },
+            |hwnd| {
+                let class = super::observe::class_of(hwnd as isize as HWND);
+                (!class.is_empty()).then_some(class)
+            },
+        );
+        if !rows.is_empty() {
+            super::trace::log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "pending-edges",
+                    "tick": state.tick,
+                    "edges": rows,
+                    "omitted": omitted,
+                }),
+            );
+        }
+    }
     let events = hook_queue()
         .lock()
         .map(|mut queue| std::mem::take(&mut *queue))
@@ -303,7 +342,8 @@ pub(super) fn drain_hook_edges(
     let mut ow_ends: u64 = 0;
     for event in events {
         match event {
-            HookEvent::Wake(raw) => {
+            HookEvent::Wake(edge) => {
+                let raw = edge.hwnd;
                 // Own overlay events never wake the loop: no repeated
                 // full reconcile off our own move/paint/show.
                 if owned_overlay_hwnd(state, RenderCarrier::Border) == Some(raw as u64)

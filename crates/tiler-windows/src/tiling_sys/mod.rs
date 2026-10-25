@@ -501,6 +501,11 @@ struct TileLoop {
     /// baseline and allowed-to-allowed fact changes. Independent of
     /// `pager_suppress_last`; taskbar-fact resets never touch it.
     pager_gate_last: Option<String>,
+    /// Last trace-only pager-cell payload signature (`None` until the first
+    /// safe present): change-only `pager-cells` logging over the actual
+    /// frames sent to the renderer. Tick and reply identity ride the line,
+    /// never the gate. Independent of every suppression/refusal log.
+    pager_cells_last: Option<String>,
     /// Last per-output pager refusal reason by device key: change-only
     /// `pager-refused` logging, never guessed positions.
     pager_refusals: HashMap<String, String>,
