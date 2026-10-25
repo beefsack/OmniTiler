@@ -74,7 +74,7 @@
   focus replay has been introduced. Classifying every pending edge as self
   generated would also risk overlooking genuine intervening input/window state.
 - Latest offline gates: `mise exec -- cargo test -p tiler-core --locked`
-  (843 library tests plus integration suites), Windows equivalent (959 library
+  (844 library tests plus integration suites), Windows equivalent (959 library
   tests, one existing ignored test, integration suites and four doc tests),
   strict all-target clippy for both crates and crate fmt checks passed. These
   green checks include a diagnostic of the unresolved stale hold, not native
