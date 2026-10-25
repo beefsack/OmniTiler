@@ -66,6 +66,14 @@ decisions of 2026-09-24 are under
   to another output's window? Capture Tier 1 outcomes in the
   [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
   then decide with the user. Related to cursor-first targeting above.
+- P0 | Workspace-switch focus restore (Windows) | User dogfood 2026-10-25:
+  firefox on WS1, terminal on WS2; switching WS1->WS2 does not focus the
+  terminal and returning does not refocus firefox, contrary to
+  [R-WS-09](spec/reference-outcomes/workspaces.md#r-ws-09-select-ws2-select-ws1-return-focus-and-viewport);
+  after adding a second WS2 terminal, the overview sometimes still shows a WS2
+  terminal focused after switching to WS1. Open policy questions needing Tier 1
+  evidence: arrival with no remembered focus (focus first window?), directional
+  focus with no focused window, and whether Tier 1 WMs allow no active window.
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every
