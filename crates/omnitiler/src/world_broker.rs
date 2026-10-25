@@ -22,9 +22,12 @@
 //!   files one command, `TakeCommandResult` collects its terminal outcome
 //!   (re-readable while the bounded memory holds it, so a lost reply never
 //!   loses the outcome), and `ReadWorldPresentation` reads the cached
-//!   accepted presentation. One-shot lanes (result, transfers, effects,
-//!   settlements, warp) and native write tokens (`frame_op`, `clear_op`)
-//!   never enter the presentation cache.
+//!   accepted presentation plus the current drop preview. One-shot lanes
+//!   (result, transfers, effects, settlements, warp) and native write
+//!   tokens (`frame_op`, `clear_op`) never enter the presentation cache;
+//!   only the read-only drop preview (`DragPreview` result shape, or null)
+//!   rides alongside it so a renderer without take-lane authority can paint
+//!   exactly what core published.
 //!
 //! Wire shapes (strict v2, no v1 compatibility route):
 //!
@@ -90,9 +93,12 @@
 //!   eviction (never re-executes); or an unknown-command rejection.
 //! read:     {"v":2,"req":R}
 //!   Replies {"v":2,"outcome":"presentation","gen","req","rev","obs",
-//!   "scopes","workspaces","outputs","windows","presentation"} from the last
-//!   accepted capture, or a not-ready rejection before the first one. Window
-//!   rows carry no frame_op/clear_op tokens.
+//!   "scopes","workspaces","outputs","windows","presentation","preview"} from
+//!   the last accepted capture, or a not-ready rejection before the first
+//!   one. Window rows carry no frame_op/clear_op tokens. `preview` is the
+//!   core's read-only drop preview (`DragPreview` result shape) when the
+//!   cached reply carried one, else null; every other one-shot lane stays
+//!   excluded.
 //! ```
 //!
 //! Dispatch rules. A syntactically invalid capture (envelope or commandless
@@ -307,8 +313,9 @@ pub struct WorldBroker {
     /// reply never loses the outcome. Bounded like `settled`.
     retired: HashMap<(String, String, String), Settlement>,
     retired_order: VecDeque<(String, String, String)>,
-    /// Cached accepted presentation projection (snapshot plus presentation
-    /// only, window write tokens stripped). Never the full reply.
+    /// Cached accepted presentation projection (snapshot plus
+    /// presentation plus the read-only drop preview, window write tokens
+    /// stripped). Never the full reply.
     presentation: Option<String>,
     /// Single active producer capture lifetime bound at discovery. Captures
     /// from any other lifetime refuse, so old actuator lifetimes can never
@@ -726,14 +733,20 @@ impl WorldBroker {
                 // The actuator lane never carries the terminal result
                 // (requester-only even when the actuator is the issuer); the
                 // projection cache keeps the snapshot plus presentation only,
-                // with write tokens stripped. The expanded bound reply always
-                // fits the reply cap; oversize fails closed without caching.
+                // with write tokens stripped. The read-only drop preview is
+                // the single exception: when the accepted reply carried a
+                // `DragPreview` result, its shape rides the projection as
+                // `preview` (null otherwise) so a renderer without take-lane
+                // authority paints exactly what core published. The expanded
+                // bound reply always fits the reply cap; oversize fails
+                // closed without caching.
+                let preview = drag_preview_of(&encoded);
                 let stripped = strip_result(&encoded);
                 let bound = bind_response(&stripped, &parsed.source, parsed.native_invalid, clock);
                 if bound.len() > WORLD_MAX_REPLY_BYTES {
                     return Err(BrokerError::Oversized);
                 }
-                self.presentation = Some(project_reply(&stripped));
+                self.presentation = Some(project_reply(&stripped, preview));
                 self.watermarks
                     .insert(parsed.adapter.clone(), parsed.native_invalid);
                 self.remember_response(&parsed.source, envelope.as_bytes(), &bound);
@@ -1059,8 +1072,10 @@ impl WorldBroker {
     }
 
     /// Read the cached accepted presentation projection (snapshot plus
-    /// presentation only, window write tokens stripped). Never carries
-    /// transfers, effects, terminal results, settlements, or warp desires.
+    /// presentation plus the read-only drop preview, window write tokens
+    /// stripped). Never carries transfers, effects, terminal results,
+    /// settlements, or warp desires; the preview is the single carried
+    /// `DragPreview` shape (null when the cached reply carried none).
     pub fn read_presentation(&self, request: &str) -> Result<String, BrokerError> {
         if request.len() > WORLD_MAX_REQUEST_BYTES {
             return Err(BrokerError::Oversized);
@@ -1834,12 +1849,27 @@ fn take_duplicate_reply(generation: &str) -> String {
     format!("{{\"v\":2,\"outcome\":\"duplicate\",\"gen\":\"{generation}\"}}")
 }
 
+/// Read-only drop preview of one accepted reply: the `DragPreview` result
+/// shape when the reply carried one, else `None`. Pure over the encoded
+/// reply; never touches the engine. Every other one-shot lane maps to
+/// `None`, so only the renderer-visible preview can ride the projection.
+fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
+    let result = value.get("result")?;
+    if result.get("op").and_then(serde_json::Value::as_str) != Some("drag-preview") {
+        return None;
+    }
+    Some(result.clone())
+}
+
 /// Project one accepted reply for the presentation cache: snapshot plus
-/// presentation only, with the native write tokens (`frame_op`, `clear_op`)
-/// stripped from every window row. One-shot lanes (result, transfers,
-/// effects, settlements, warp) never enter. The `gen`/`req` binding is
+/// presentation plus the read-only drop preview, with the native write
+/// tokens (`frame_op`, `clear_op`) stripped from every window row.
+/// One-shot lanes (result, transfers, effects, settlements, warp) never
+/// enter except through the carried `preview` (a `DragPreview` shape or
+/// null, computed from the pre-strip reply). The `gen`/`req` binding is
 /// added at read time.
-fn project_reply(encoded: &str) -> String {
+fn project_reply(encoded: &str, preview: Option<serde_json::Value>) -> String {
     let value: serde_json::Value = serde_json::from_str(encoded).unwrap_or_default();
     let get = |key: &str| value.get(key).cloned().unwrap_or(serde_json::Value::Null);
     let mut windows = get("windows");
@@ -1861,6 +1891,7 @@ fn project_reply(encoded: &str) -> String {
         "outputs": get("outputs"),
         "windows": windows,
         "presentation": get("presentation"),
+        "preview": preview.unwrap_or(serde_json::Value::Null),
     })
     .to_string()
 }
@@ -2105,7 +2136,7 @@ mod tests {
             \"alloc\":null}],\"transfers\":[{}],\"effects\":[{}],\"result\":{},\
             \"operationSettled\":[{}],\"gestureSettled\":null,\"presentation\":{}}";
         let projection: serde_json::Value =
-            serde_json::from_str(&project_reply(reply)).expect("JSON");
+            serde_json::from_str(&project_reply(reply, drag_preview_of(reply))).expect("JSON");
         let window = &projection["windows"][0];
         assert!(window.get("frame_op").is_none());
         assert!(window.get("clear_op").is_none());
@@ -2119,7 +2150,47 @@ mod tests {
         ] {
             assert!(projection.get(key).is_none(), "{key}");
         }
+        // A non-preview result never rides the projection: the preview lane
+        // stays an explicit null until core publishes a drop preview.
+        assert!(projection["preview"].is_null());
         assert_eq!(projection["rev"], "3");
+    }
+
+    #[test]
+    fn projection_carries_only_the_drag_preview_result() {
+        let preview = "{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
+            \"domainWs\":\"ws-1\",\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\
+            \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"}";
+        let reply = format!(
+            "{{\"v\":2,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+            \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\"result\":{preview},\
+            \"operationSettled\":[],\"gestureSettled\":null,\"presentation\":{{}}}}"
+        );
+        let carried = drag_preview_of(&reply).expect("drag preview carries");
+        assert_eq!(carried["op"], "drag-preview");
+        assert_eq!(carried["rect"], serde_json::json!([0, 0, 396, 600]));
+        let projection: serde_json::Value =
+            serde_json::from_str(&project_reply(&reply, drag_preview_of(&reply))).expect("JSON");
+        assert_eq!(projection["preview"]["op"], "drag-preview");
+        assert_eq!(
+            projection["preview"]["rect"],
+            serde_json::json!([0, 0, 396, 600])
+        );
+        // The actuator reply lane itself still strips the terminal result:
+        // only the projection carries the read-only preview.
+        let stripped: serde_json::Value =
+            serde_json::from_str(&strip_result(&reply)).expect("JSON");
+        assert!(stripped["result"].is_null());
+        // A terminal result of any other op never becomes a preview.
+        let other = reply.replace("\"drag-preview\"", "\"toggle-float\"");
+        assert!(drag_preview_of(&other).is_none());
+        let cleared: serde_json::Value =
+            serde_json::from_str(&project_reply(&other, drag_preview_of(&other))).expect("JSON");
+        assert!(cleared["preview"].is_null());
+        // Missing and malformed result lanes fail closed to null, never a
+        // fabricated shape.
+        assert!(drag_preview_of("{\"v\":2}").is_none());
+        assert!(drag_preview_of("not json").is_none());
     }
 
     #[test]

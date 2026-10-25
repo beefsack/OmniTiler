@@ -1274,3 +1274,31 @@
   transport or deleting the oracle route. N5/N6, game/fullscreen suspension and
   the other parked product questions remain unchanged; cursor warp remains
   unsupported and is never reported applied.
+
+## Stage 5 bounded plan (2026-10-26)
+
+- Replace native border/underlay geometry and eligibility derivation with the
+  accepted broker presentation. Retain native item anchoring, host styling and
+  immediate hide-only freshness/liveness vetoes; keep the pending gesture oracle
+  and N5/N6/game paths unchanged. Drop preview renders only published core bounds.
+- Establish an event-driven read-only presentation consumer with reconnect seeding,
+  generation/request fencing and no one-shot lanes. Extend the broker projection
+  only as needed to carry the core's separate drop-preview shape. Presentation
+  reads retain their existing separate authority from capture and actuation.
+- Delete superseded native policy FFI consumers and legacy active-group result
+  forwarding, with token/freshness/render-shape regressions and a host-matched
+  native build/CTest. Verify the service, full JS suite and exact world acceptance
+  through the declared development environment. Shared core remains unchanged.
+- Prove KWin-logical geometry end-to-end at the conversion/render use sites and
+  in the port notes. Assess the currently absent pager renderer separately from
+  consuming its published content; do not invent workspace/pager placement policy.
+  Independent pager-highlight styling belongs with the pager rendering surface.
+- Native acceptance remains distinct from offline gates; a live check requires
+  fixture-only scope and independent frame/visibility/foreground readback.
+- An unverified broker draft projects a `drag-preview` result into a separate
+  read-only `preview` field before stripping requester results. This draft
+  passes the service build, tests and strict clippy but has not had contract
+  review and is not accepted delivery. The native
+  renderer, legacy forwarding and gesture ingress remain unchanged; Stage 5 is
+  incomplete. Next: review preview freshness/retention semantics, implement the
+  native subscriber/render cutover, then run the required gates.
