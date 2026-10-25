@@ -44,6 +44,8 @@ Tentative index (user review pending; not approved product rules):
   after both KDE and macOS changes land
 - Host-owned native attempt preimages/settlement (B2 option 1)
   ([below](#native-adoption-2026-10-24)); review after KDE/macOS land
+- Released source backing/fresh native adoption, no dormant return binding
+  ([below](#native-adoption-2026-10-24)); implementation and oracle alignment pending
 - KDE broker capture-lifetime reset and sender/generation-bound command transport
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 - KDE v2 migration/backing and native-bound empty lifecycle oracle reconciliation
@@ -4666,12 +4668,13 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
 - **Tentative oracle reconciliation, 2026-10-25:** migration retains the core
   logical id. Missing destination backing uses explicit fresh creation; an empty
   native desktop already bound to another logical workspace is not reused.
-  Returning can revalidate that same logical id's dormant native binding.
+  Dormant return binding was the earlier behavior; the released-source decision
+  below supersedes it as the intended contract, not yet accepted implementation.
   Native-bound empties retain identity and ordinary occupancy-driven trailing
   spares remain unbound until needed. These are existing core outcomes, not a
   new native reuse/deletion policy. Eligible-unbound reuse remains parked;
   [source-view supersession B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
-  still needs dormant-source identity/return-provenance resolution.
+  still needs implementation and oracle alignment.
 - **Tentative native attempt settlement (option 1), user-selected 2026-10-25;
   review after KDE and macOS land:** optional capability-gated native
   before/after/baseline ids extend `MemberAttempt`/`ViewAttempt`. Non-null
@@ -4681,9 +4684,21 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   The user's switch back wins, migration stays and the paired source refill
   retires permanently. Windows logical preimages remain unchanged. Also pin a
   late tiler send observed with intermediate readings settling as the tiler's
-  transfer, not an outside move. Implementation is draft, not delivered: the
-  exact old source desktop has dormant backing after migration, requiring the
-  [B2 ownership choice](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked).
+  transfer, not an outside move. Implementation is draft, not delivered; see the
+  [B2 blocker](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked).
+- **Tentative released-source backing (option 1), user-selected 2026-10-25;
+  comprehensive cross-platform review pending:** migration releases its source
+  output's native binding, retaining no dormant return binding. The released
+  desktop is unbound backing. When observed current or otherwise present in that
+  output's complete native order without a logical workspace, core adopts it as
+  a fresh empty logical workspace at native-order position, just like an outside
+  creation. The migrated workspace stays at its destination; a user's switch
+  wins and the paired refill child retires permanently. Ordinary trailing and
+  equal-count lifecycle remain unchanged. No reverse-migration provenance or
+  eligible-spare reuse is introduced; the latter stays parked. This contract
+  also applies to macOS Spaces, not only KDE. Implementation remains unaccepted:
+  existing KDE assertions explicitly require dormant backing and retaining both
+  transfers on the proven rewind, contradicting this decision.
 - **Tentative host-hidden representation, user-selected 2026-10-25; native
   Activities testing pending:** KDE inactive-Activity and macOS Cmd+H windows
   use existing `WindowFact.minimized=true`, no new core state. Qualified

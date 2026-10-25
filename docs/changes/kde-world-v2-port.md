@@ -11,7 +11,7 @@
   acceptance remains TBD. This record stays active for the whole port;
   stage 2 has a partial paired implementation, not accepted as a completed
   stage: the five original integration oracles are resolved, but the
-  restored B2 source-view discriminator remains parked; B1 wake is delivered
+  restored B2 source-view discriminator remains blocked; B1 wake is delivered
   offline. Stages 3 onward remain outstanding except for the
   observation/actuation vocabulary required by the atomic wire cutover.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
@@ -33,7 +33,7 @@
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
-| 2. Broker and strict v2 cutover | Partial: strict broker, creation consumption, raw attempts, migration/lifecycle oracles and B1 wake delivered offline; B2 dormant-source ownership parked | Rust 216/216; JS 719/720, only original both-view rewind red; no native or completion claim |
+| 2. Broker and strict v2 cutover | Partial: strict broker, creation consumption, raw attempts, migration/lifecycle oracles and B1 wake delivered offline; B2 source-release implementation/oracle conflict blocks closure | Rust 216/216; JS 719/720, only original both-view rewind red; no native or completion claim |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
@@ -135,10 +135,20 @@
 - Migration/lifecycle oracle reconciliation (tentative, 2026-10-25): retain the
   migrating core logical id and its output-specific proven backing. Request
   fresh backing when none exists; another logical workspace's empty native
-  desktop is not eligible reuse. A return can revalidate the same logical id's
-  dormant binding. Native-bound empty workspaces retain identity; occupancy
+  desktop is not eligible reuse. The earlier dormant-return rule is superseded
+  in intent by released-source option 1 below; its implementation is unaccepted.
+  Native-bound empty workspaces retain identity; occupancy
   adds an ordinary unbound trailing spare without creating a native desktop.
   These preserve existing core behavior, not new reuse or deletion policy.
+- Released-source backing (tentative, user-selected 2026-10-25): release the
+  migrating workspace's source binding, keeping no dormant backing there. An
+  unbound desktop observed current or otherwise present in that output's complete
+  native order adopts as a fresh empty logical row at native-order position, by
+  the outside-creation rule. Migration stays at the destination; the user's
+  switch wins and the paired refill retires forever. Ordinary trailing/equal-
+  count lifecycle is unchanged. No reverse provenance; eligible-spare reuse
+  remains parked. Applies equally to macOS Spaces. Implementation and oracle
+  alignment remain outstanding, not a completed B2 claim.
 
 ## Stage 1b creation correlation
 
@@ -375,6 +385,15 @@
 - Neutrality: Windows keeps its logical domain; KDE/macOS and future GNOME/
   ChromeOS must represent a selected vacated host desktop without assuming a
   native id is the migrating logical id or stealing its return binding.
+- Superseding ownership decision, 2026-10-25: released-source option 1 above
+  removes dormant return backing; reverse-migration provenance is not required.
+  The unchanged KDE oracles conflict with that decision: the settled migration
+  test explicitly forbids a fresh row for the released source, while the B2
+  rewind test requires retaining parent and refill despite a proven abandoned
+  refill. Neither expectation was altered. Recommended resolution: align those
+  assertions with fresh adoption and switch-wins, retaining stable destination
+  identity, native order, no unchosen writes and eventual empty transfers.
+  Oracle changes require a decision before another semantic implementation.
 
 ### Existing deferred product boundaries
 
@@ -647,3 +666,55 @@
   acceptance untouched. Next: decide dormant-source identity/return provenance,
   then complete B2, re-run all gates and close Stage 2 only with a green original
   discriminator. The port record remains active, not archived.
+
+## B2 closure attempt and helper investigation (2026-10-25)
+
+- Reconciled the full native-attempt draft onto the delivered command-wake and
+  intervening macOS/core changes without losing files. The delivered B1 worktree
+  was clean, fully integrated and removed. B2 remains uncommitted and unaccepted;
+  Stage 2 is not closed and Stage 3+ has not started.
+- Two semantic approaches failed acceptance. Proactive source release/adoption
+  regressed the migration producer's later backing correlation; an A/B run
+  isolated the change. Reactive selection/proven-refill adoption restored that
+  producer, but only releases on a selected, apparently vacated source with a
+  proven refill write, not on migration or a non-current ordered desktop. It
+  therefore does not implement the selected option 1 contract. Its B2 result
+  moves the failure from final convergence to the earlier retention assertion:
+  both transfers are already retired. Neither approach is an accepted fix.
+- Independent boundary review confirmed the oracle conflict in
+  `world-aligned-migration-engine.test.ts`: the ordinary settled journey requires
+  no fresh source logical, and the rewind requires both transfers retained.
+  Released-source/fresh adoption plus proven switch-wins require the opposite.
+  Preserve the tests and draft pending explicit oracle alignment. Review also
+  flagged the reactive helper's negative vacancy inference without a separate
+  roster-freshness proof and delayed native attempt translation against mutable
+  bindings; establish discriminators before treating either as a safe general
+  abstraction. Windows logical receipts remain unchanged.
+- Draft verification through devenv: core/protocol/Windows all-target tests
+  2,045 passed across 53 suites, including native-attempt 9/9; strict all-target
+  clippy, workspace fmt/whitespace and world acceptance 6/6 passed. KDE Rust
+  216/216 and strict clippy passed; JS typecheck/build passed. macOS all targets
+  checked; world-filtered 58/58 and trailing-join 7/7 passed; full library 1,127
+  passed plus the same four non-macOS version-read failures. Existing macOS
+  lib-test dead-code warnings also block strict clippy there. These results do
+  not override the B2 semantic failure or claim a completed core delivery.
+- Helper investigation corrected the earlier incomplete failure description:
+  the retained failing run contains three bare helper exits 101 (aligned
+  migration, FIFO and split-edge journeys) plus two file-level V8 heap failures
+  (cross-scope and float-nav). Original helper stderr was discarded, so cargo
+  failure versus helper panic cannot be recovered. The original causes remain
+  unproven; no race fix is claimed. Repeated focused run: 16/17, cold parallel
+  engine run: 21/22, and three full runs: 719/720 each, only B2 red. No 101 or
+  heap failure recurred; the focused and cold runs observed 85 helper exits 0.
+- Seven engine harnesses now retain bounded stderr tails and report code/signal
+  on `close`, after stdio flush rather than `exit`. A temporary helper compile
+  error reproduced discarded/truncated diagnostics and then verified complete
+  compiler diagnostics in the failure; the helper source was restored exactly.
+  Independent review accepted this diagnostic-only repair. No assertion or
+  product behavior was weakened; final full JS run remains 719/720, B2 only.
+- Next decision: align the two contradictory migration assertions with the
+  selected released-source contract, or retain the old contract. Recommendation:
+  align assertions while preserving stronger native adoption/order, stable
+  destination, no-refill-reapply and zero-unchosen-write checks. Then implement
+  unconditional source release plus ordinary ordered adoption and rerun all
+  core/KDE gates. Do not begin Stage 3 while Stage 2 remains blocked.

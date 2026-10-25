@@ -43,6 +43,7 @@ class WorldBridge {
         reject: (error: Error) => void;
     }> = [];
     private dead: string | null = null;
+    private stderrTail = "";
 
     private constructor(proc: ChildProcess) {
         this.proc = proc;
@@ -53,12 +54,14 @@ class WorldBridge {
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
         });
-        proc.stderr?.resume();
+        proc.stderr?.on("data", (chunk: unknown) => {
+            this.stderrTail = (this.stderrTail + String(chunk)).slice(-8192);
+        });
         proc.on("error", (error) => {
             this.failAll(error instanceof Error ? error : new Error(String(error)));
         });
-        proc.on("exit", (code) => {
-            this.failAll(new Error(`world_eval exited with code ${String(code)}`));
+        proc.on("close", (code, signal) => {
+            this.failAll(new Error(`world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
         });
     }
 

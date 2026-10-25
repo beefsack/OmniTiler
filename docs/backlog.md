@@ -140,9 +140,17 @@ decisions of 2026-09-24 are under
   minimal port discriminator rows keep untested native outcomes TBD; Activities
   defaults tentative pending KDE evidence. v1 KDE rows below keep their
   historical evidence; replacement belongs to this port. Status: adoption and
-  B1 command wake delivered offline; Stage 2 remains partial on B2 dormant-source
-  identity/return provenance, with later stages and native acceptance pending.
+  B1 command wake delivered offline; Stage 2 remains blocked on implementing
+  released-source/fresh adoption and reconciling contradictory B2 retention
+  assertions. Helper failure diagnostics improved; later stages and native
+  acceptance remain pending.
   [Record](changes/kde-world-v2-port.md).
+- P2 | Comprehensive cross-platform core abstraction review once Windows, KDE and
+  macOS ports are complete: re-examine the tentative host-owned adoption decisions
+  (native-evidence-only reporting, hybrid creation correlation, native attempt
+  preimages, released source backing/fresh adoption, minimized as host-hidden,
+  trailing spare count) for a better general abstraction across Windows, KDE,
+  macOS, GNOME and ChromeOS. [Record](changes/kde-world-v2-port.md).
 - P1 | Live fixture first use on macOS (2026-10-20) |
   `crates/tiler-live-fixture` is the standard agent live-test window
   (KDE live-verified, KDE `--scope-class`). Windows first use and

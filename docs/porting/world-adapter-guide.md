@@ -359,8 +359,8 @@ facts only, at most one latest-wins entry per window/operation/phase:
   bindings; tiler-owned domains keep logical preimages. Capture real native
   reads around writes and the observation-time view baseline, never desires or
   an adapter binding table. A matching outstanding change settles; other input
-  is adopted. The exact dormant-source B2 rewind still needs identity/return-
-  provenance resolution before this extension is accepted.
+  is adopted. The released-source decision below supplies the intended identity
+  rule; implementation and conflicting offline oracles still block acceptance.
 - Acknowledgement never copies desires into observations. Incorporation
   receipts bind to the incorporating generation; foreign-generation,
   foreign-adapter and wrong-request replies apply nothing.
@@ -424,9 +424,16 @@ eligible existing-native reuse remain
 not extra fields or platform-side policy to invent during a port.
 Migration keeps the stable logical id. Existing backing for another logical
 workspace is not eligible reuse; fresh creation desires/correlation supply
-missing backing. Returning to an output can revalidate that same logical id's
-dormant native binding. Core-published actuatable scopes and desired window rows,
-including a complete empty set, drive actuation without requester-only results;
+missing backing. Tentative released-source option 1 supersedes dormant return
+backing: release the source binding on migration; adopt its unbound desktop as a
+fresh empty logical workspace whenever observed current or otherwise listed
+without a logical workspace, at authoritative native-order position. The
+migrated logical stays at its destination; the user's switch wins and the paired
+source refill retires permanently. No reverse provenance or eligible-spare reuse;
+ordinary trailing/equal-count lifecycle is unchanged. This is platform-neutral,
+including macOS Spaces; implementation remains draft, not accepted.
+Core-published actuatable scopes and desired window rows, including a complete
+empty set, drive actuation without requester-only results;
 the adapter never selects a replacement source refill by ordinal.
 
 ### Coordinates and safety
