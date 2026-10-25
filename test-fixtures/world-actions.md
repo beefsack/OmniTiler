@@ -39,7 +39,13 @@ version; `ready`, no consumed command):
 - outputs show the expected logical view; workspaces/scopes match the
   bound ring with null host-owned bindings; effects match exactly with
   issued revision equal to the reply revision; no command result,
-  gesture, settled operations, or cursor warp.
+  gesture, settled operations, or cursor warp. The `select-previous`
+  return (command seq 12) expects exactly one focus effect (`fx-12`
+  targeting `win-a`): returning to `home` re-emits the remembered leaf
+  focus per the already-landed approved R-WS-09 rule (with the authored
+  empty observed focus, the retained bootstrap focus survives the
+  `admit-c` admission). This restates landed core behavior and makes no
+  host or native actuation claim.
 
 `settlement: command-pending` steps pin exactly one retained unheld view
 flight (`op-<cmdSeq>`, linked to the command); `settlement: settled`

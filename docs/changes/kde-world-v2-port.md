@@ -924,6 +924,17 @@
   Host-matched native effect build passes. Final test-enabled native CTest
   passes 34/34 after seed/availability and watchdog corrections. No live KWin
   mutation or native acceptance claim.
+- Final integration includes the subsequently landed core remembered-focus
+  selection and Windows focus/pager changes. Locked all-target builds and
+  strict clippy pass for core/protocol/Windows/service/exporter; final tests
+  pass 2,293/2,293 across 59 suites, JS remains 764/764, and acceptance is 6/6.
+  The incoming selection change exposed a stale acceptance-fixture expectation:
+  `select-previous` command 12 now expects exactly `fx-12` focus on `win-a`,
+  the bootstrap focus retained through admission when observed focus is empty.
+  Only that expected effect row and its companion explanation changed; checker,
+  core semantics, geometry, view flights and all 24 acceptance tests remain
+  intact. The initial five example-test failures and exact-run rejection are
+  replaced by these fresh passing results, not waived.
 - Review corrected undispatched float spending, a fabricated clear-veto row,
   the missing final clear gate, local clamp ownership and pure-hold rescheduling.
   Blanket removal of follow-up scheduling initially stalled the retained

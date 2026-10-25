@@ -137,7 +137,7 @@
         "transfers": [
           { "op": "op-12", "kind": "view", "window": null, "output": "out-a", "workspace": "home", "follow": false, "held": false }
         ],
-        "effects": [],
+        "effects": [{ "id": "fx-12", "kind": "focus", "target": "win-a" }],
         "settlement": "command-pending"
       }
     },
