@@ -10,9 +10,13 @@
 //! no native operations (no Fix/Force/Revert, no shortcut apply); it only
 //! describes mappings for the development-only exporter.
 //!
-//! Coverage: 16 of the 19 portable fields have KCM controls. Two portable
-//! bool fields are explicitly unsupported on KDE (no KConfig key, no
-//! widget): `border.enabled` and `underlay.enabled`. One portable field,
+//! Coverage: 16 of the 23 portable fields have KCM controls. Six portable
+//! fields are explicitly unsupported on KDE (no KConfig key, no widget):
+//! `border.enabled`, `underlay.enabled`, plus the four output-targeting
+//! fields `output.switch-target`, `output.fresh-placement`,
+//! `output.focus-follows-cursor` and `output.cursor-warp`, which the KDE
+//! runtime does not expose today (fixed focused-output/last-focused
+//! targeting, false cursor toggles). One portable field,
 //! `workspace.default-tiled`, is schema-only on KDE (persisted in
 //! `main.xml`, consumed by the tray/script; intentionally no KCM control).
 //! Two entries are KDE-native-only and stay out of the catalog: the
@@ -345,10 +349,16 @@ pub const KDE_EXPOSED_FIELDS: &[KdeField] = &[
 // ---------------------------------------------------------------------------
 
 /// Portable fields with no KDE control (no KConfig key, no widget).
-/// Adapter-only exclusion list; shared capabilities are unchanged.
+/// Adapter-only exclusion list; shared capabilities are unchanged. The four
+/// output-targeting entries stay catalog-portable but have no KCM control
+/// or schema key on KDE today (not a Stage 6 control decision).
 pub const KDE_UNSUPPORTED_FIELDS: &[&str] = &[
     settings_catalog::FIELD_BORDER_ENABLED,
     settings_catalog::FIELD_UNDERLAY_ENABLED,
+    settings_catalog::FIELD_SWITCH_TARGET,
+    settings_catalog::FIELD_FRESH_PLACEMENT,
+    settings_catalog::FIELD_FOCUS_FOLLOWS_CURSOR,
+    settings_catalog::FIELD_CURSOR_WARP,
 ];
 
 /// Portable field kept in the script schema without a KCM control
@@ -604,7 +614,7 @@ mod tests {
             );
         }
         assert_eq!(KDE_EXPOSED_FIELDS.len(), 16);
-        assert_eq!(KDE_UNSUPPORTED_FIELDS.len(), 2);
+        assert_eq!(KDE_UNSUPPORTED_FIELDS.len(), 6);
         for unsupported in KDE_UNSUPPORTED_FIELDS {
             assert!(
                 settings_catalog::find_field(unsupported).is_some(),
