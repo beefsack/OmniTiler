@@ -115,6 +115,16 @@
   pass after capturing the destination's remembered window before session
   rekey. Empty destinations remain quiet. No new option, public contract,
   unremembered-focus fallback, or adapter-owned focus policy is added.
+- Windows same-pass reveal eligibility re-reads visibility but retains the
+  original identity baseline at the final setter gate. A regression exposed
+  that replacing the baseline could accept a recycled HWND with a matching
+  tag; it fails before correction and now stops without spending focus.
+- Actual Windows pager miniatures previously recomputed foreground equality
+  without the current-workspace guard, independently of the core's workspace
+  focus mark. The shared production mapper now rejects that departing-view
+  highlight too. Regression covers stale foreground, observed catch-up and
+  no focus. Trace-only `pager-cells` records the actual renderer payload,
+  bounded with honest omission counts and change-only emission.
 - Full core tests pass: 847 library tests and 436 integration tests. Full
   Windows tests pass: 1,385 tests, one existing ignored test. Strict all-target
   clippy passes for both crates. Native focus acceptance remains blocked.

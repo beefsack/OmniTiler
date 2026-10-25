@@ -1019,6 +1019,290 @@ fn invalidation_stops_after_first_write() {
     assert_eq!(diff.gate.current_obs, 8);
 }
 
+/// Same-pass view switch arming a pending external invalidation: the
+/// switch actuates, then the trailing focus effect holds stale without
+/// dispatch and without being marked spent.
+///
+/// HONEST DIAGNOSTIC OF THE CURRENT BLOCKER. This test pins the failure
+/// mode behind the live return-focus blocker (the switch's own SHOW/HIDE
+/// WinEvent queue surfaces as a same-pass external invalidation, so the
+/// remembered-focus effect the core emits for a workspace return never
+/// reaches the setter). It passes by asserting the hold exactly. Do not
+/// read it as approval of the outcome: a retry or re-issue policy needs
+/// a separate product decision, and at-most-once semantics stay unchanged.
+/// In particular this FakeNative consumes the pending flag on poll while
+/// the production probe (`hook_edges_pending`) is non-consuming: see
+/// `nonconsuming_pending_stops_until_drained` for the production-contract
+/// shape, where no same-pass retry can succeed and only drain-before-apply
+/// ordering restores progress.
+struct InvalidateAfterViewSwitch {
+    inner: FakeNative,
+}
+
+impl NativeOps for InvalidateAfterViewSwitch {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        let result = self.inner.switch_view(output, logical);
+        if result == Ok(true) {
+            self.inner.pending_invalidation = true;
+        }
+        result
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.inner.focus_window(token)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.poll_external_invalidation()
+    }
+}
+
+/// Shared base for the same-pass view/focus stale-hold proofs: the
+/// observation preimage hides the target while the live target reads
+/// visible with the view shown. Asserts nothing about behavior on its own.
+fn view_return_base() -> (Rig, HostDiff, FreshHost, FakeNative) {
+    let rig = rig();
+    let (diff, mut fresh, mut native) = converted(&rig);
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.hidden = true;
+        base.frame = None;
+        base.observed_frame = None;
+    }
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.hidden = false;
+        live.iconic = false;
+        live.frame = Some(rect(0, 0, 800, 600));
+        live.observed_frame = Some(rect(0, 0, 800, 600));
+    }
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    (rig, diff, fresh, native)
+}
+
+fn view_return_reply(rig: &Rig) -> WorldReply {
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .transfers
+        .push(view_transfer("op-v", &rig.out, &rig.ws));
+    reply.effects.push(OneShotEffect {
+        id: "fx-9".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("w1".to_owned()),
+        issued_revision: 1,
+    });
+    reply
+}
+
+#[test]
+fn same_pass_view_invalidation_holds_focus_stale_without_consuming_effect() {
+    // Honest blocker regression: the switch's own SHOW/HIDE edges surface
+    // as a same-pass external invalidation, so the trailing remembered-
+    // focus effect holds stale without dispatch and without being marked
+    // spent. No exemption is applied here: a proven-causality distinction
+    // is not available at this gate, `LiveNative::focus_window` would
+    // refuse on a pending queue anyway and burn the one-shot effect, and
+    // proof of a shown view does not prove the edges are self-caused.
+    let (rig, mut diff, fresh, native) = view_return_base();
+    let mut probe = InvalidateAfterViewSwitch { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    // The switch itself actuated; the trailing focus never dispatched.
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert!(!probe.inner.is_foreground("w1"));
+    assert!(stats.stopped_mid_apply);
+    assert!(stats.partial);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert_eq!(row.id, "fx-9");
+    assert_eq!(row.target, "w1");
+    assert!(!row.dispatched);
+    assert_eq!(row.setter, "skipped");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("stale"));
+    // The effect was dropped without being marked spent: re-marking
+    // succeeds because apply never consumed it. Production carries
+    // one-shot effects on one reply only, so nothing retries it there.
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+}
+
+/// Production-contract pending probe: unlike `FakeNative` (which consumes
+/// the flag on poll), the production probe (`hook_edges_pending`) is
+/// non-consuming, and `LiveNative::focus_window` additionally refuses while
+/// any edge waits. This wrapper models that contract: a pending flag
+/// persists across polls, so no same-pass re-poll can clear it and only an
+/// explicit drain (the loop's `drain_hook_edges` before apply) restores
+/// progress.
+struct ProdContractNative {
+    inner: FakeNative,
+}
+
+impl NativeOps for ProdContractNative {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view(output, logical)
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.inner.focus_window(token)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.pending_invalidation
+    }
+}
+
+impl ProdContractNative {
+    /// Explicit queue drain: the only modeled way pending edges clear,
+    /// matching the loop's `drain_hook_edges` before apply.
+    fn drain_pending(&mut self) {
+        self.inner.pending_invalidation = false;
+    }
+}
+
+#[test]
+fn nonconsuming_pending_stops_until_drained() {
+    // Production contract: pending edges do not clear on poll, so with
+    // edges waiting at pass entry the view switch never dispatches and
+    // the trailing focus never runs; re-applying without a drain stops
+    // the same way (no same-pass retry can succeed). After an explicit
+    // drain (the loop order: drain before apply) the same reply actuates
+    // the view and dispatches the remembered focus through the normal
+    // live-reveal path with the effect spent exactly once.
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.pending_invalidation = true;
+    let mut probe = ProdContractNative { inner: native };
+    let reply = view_return_reply(&rig);
+    let run =
+        |diff: &mut HostDiff, fresh: &FreshHost, probe: &mut ProdContractNative| -> ApplyStats {
+            apply_world_reply(
+                diff,
+                &reply,
+                fresh,
+                probe,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                0,
+            )
+        };
+    // Leg 1: no drain. The pass stops at the view switch; the focus
+    // effect never runs and stays unspent.
+    let stats = run(&mut diff, &fresh, &mut probe);
+    assert_eq!(stats.view_writes, 0);
+    assert_eq!(stats.effects, 0);
+    assert!(stats.stopped_mid_apply);
+    assert!(stats.focus_dispatch.is_empty());
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+    // Leg 2: still no drain, fresh gate. The persistent flag stops the
+    // pass identically: polling again cannot clear production edges.
+    let mut diff = diff_at(7);
+    let stats = run(&mut diff, &fresh, &mut probe);
+    assert_eq!(stats.view_writes, 0);
+    assert_eq!(stats.effects, 0);
+    assert!(stats.stopped_mid_apply);
+    assert!(stats.focus_dispatch.is_empty());
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+    // Leg 3: drained, fresh gate. Normal live-reveal path dispatches the
+    // view and the remembered focus exactly once.
+    probe.drain_pending();
+    let mut diff = diff_at(7);
+    let stats = run(&mut diff, &fresh, &mut probe);
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 1);
+    assert!(probe.inner.is_foreground("w1"));
+    assert!(!stats.stopped_mid_apply);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "accepted");
+    assert!(row.foreground);
+    assert_eq!(row.hold, None);
+}
+
 #[test]
 fn write_plus_hold_reports_partial_truthfully() {
     let rig = rig();
@@ -1306,6 +1590,112 @@ fn effect_needs_exact_live_view_and_spends_once() {
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
     assert!(stats.stopped_mid_apply);
+}
+
+#[test]
+fn focus_dispatches_after_same_pass_view_reveal() {
+    // View-return race: the observation preimage still hides the target
+    // (the view switch has not been observed yet), but section 3 reveals
+    // entering members synchronously, so the live re-read is visible
+    // with the exact view shown. The effect must dispatch in the same
+    // pass; a still-hidden live target must hold without dispatch.
+    let rig = rig();
+    let (mut diff, mut fresh, mut native) = converted(&rig);
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.hidden = true;
+        base.frame = None;
+        base.observed_frame = None;
+    }
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.hidden = false;
+        live.iconic = false;
+        live.frame = Some(rect(0, 0, 800, 600));
+        live.observed_frame = Some(rect(0, 0, 800, 600));
+    }
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.effects.push(OneShotEffect {
+        id: "fx-9".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("w1".to_owned()),
+        issued_revision: 1,
+    });
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 1);
+    assert!(native.is_foreground("w1"));
+    assert!(!stats.stopped_mid_apply);
+
+    // Still-hidden live target holds without dispatch.
+    let (mut diff, mut fresh, mut native) = converted(&rig);
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.hidden = true;
+        base.frame = None;
+        base.observed_frame = None;
+    }
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.hidden = true;
+        live.frame = None;
+        live.observed_frame = None;
+    }
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.effects.push(OneShotEffect {
+        id: "fx-9".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("w1".to_owned()),
+        issued_revision: 1,
+    });
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert!(stats.held >= 1);
+}
+
+#[test]
+fn same_pass_reveal_recycled_key_stops_focus_without_trusting_new_baseline() {
+    // Identity-gate regression: the observation preimage hides the target
+    // while the live reveal reads visible with the SAME HWND but a
+    // recycled lifetime (changed PID/creation) and a matching/spoofed old
+    // tag. The pre-setter identity check must keep the original pre-pass
+    // baseline: trusting the fresh reveal as the baseline would compare
+    // the recycled read against itself and dispatch focus. The pass must
+    // stop with no dispatch and the effect unspent.
+    let rig = rig();
+    let (mut diff, mut fresh, mut native) = converted(&rig);
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.hidden = true;
+        base.frame = None;
+        base.observed_frame = None;
+    }
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.hidden = false;
+        live.iconic = false;
+        live.frame = Some(rect(0, 0, 800, 600));
+        live.observed_frame = Some(rect(0, 0, 800, 600));
+        // Recycled HWND: same handle, new lifetime, spoofed old tag.
+        live.key = win_key(1001, 9999, "proc-recycled");
+        live.live_tag = Some("member-tag-1".to_owned());
+    }
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.effects.push(OneShotEffect {
+        id: "fx-9".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("w1".to_owned()),
+        issued_revision: 1,
+    });
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert!(stats.stopped_mid_apply);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert_eq!(row.id, "fx-9");
+    assert!(!row.dispatched);
+    assert_eq!(row.setter, "skipped");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("pre-setter-stop"));
+    assert!(diff.effects.mark_effect_spent("fx-9"));
 }
 
 // --- stage 4b cursor warp: focus-correlated mechanical application ---

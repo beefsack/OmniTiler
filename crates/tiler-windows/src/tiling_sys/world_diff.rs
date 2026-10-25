@@ -2472,12 +2472,32 @@ pub(super) fn apply_world_reply(
             stats.held += 1;
             continue;
         };
-        if base.hidden || base.iconic || base.frame.is_none() {
+        // Same-pass view reveal: section 3 reveals entering members
+        // synchronously on a pure view switch, but `fresh.baseline` is
+        // the pre-pass preimage, so a view-return target still reads
+        // hidden there. Re-read live and proceed only when the target
+        // now reads visible with a frame; otherwise hold without
+        // marking spent. Minimized/iconic targets never clear this
+        // way (reveal does not restore them).
+        let live_reveal: Option<FreshWindow> = if base.hidden || base.iconic || base.frame.is_none()
+        {
+            ops.read_window(&effect.target.0)
+                .filter(|live| !live.hidden && !live.iconic && live.frame.is_some())
+        } else {
+            None
+        };
+        if (base.hidden || base.iconic || base.frame.is_none()) && live_reveal.is_none() {
             push_focus!(false, "skipped", false, Some("hidden-or-unreadable"));
             stats.held += 1;
             continue;
         }
-        if base
+        // The fresh reveal only lifts the stale hidden/unreadable
+        // eligibility and facts check below. The pre-setter identity gate
+        // keeps the original pre-pass `base`: comparing the recycled live
+        // read against itself would lose key drift when `read_window`
+        // first sees a recycled HWND with a matching/spoofed old tag.
+        let check: &FreshWindow = live_reveal.as_ref().unwrap_or(base);
+        if check
             .facts
             .is_some_and(|facts| !capture_facts_rideable(&facts))
         {
