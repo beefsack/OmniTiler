@@ -53,9 +53,11 @@
 - Pager diagnosis: `world_presentation.rs` retains report-time foreground but
   builds pager rows over post-command views. A departing WS2 foreground and
   a newly current WS1 can coexist in one reply, showing WS2 focused until a
-  fresh desktop/destination observation clears or replaces it. The regression
-  exposes this mixed-epoch feed; no pager correction or live highlight proof
-  is claimed. Existing live logs do not carry pager presentation payloads.
+  fresh desktop/destination observation clears or replaces it. The draft now
+  marks focus only on a current workspace. Regression covers stale departing
+  focus, native destination catch-up and foreign focus; it never substitutes
+  desired remembered focus for observed foreground. Live pager-cell payloads
+  remain unverified; existing logs carry pager lifecycle, not cell data.
 
 ## Verification and blocker (2026-10-25)
 
@@ -66,19 +68,36 @@
   then stop focus dispatch as stale. Independent native reads confirm visible
   fixture windows without foreground landing. Cleanup released the owner,
   restored the recovery ledger and shut down fixture windows/processes.
-- Source inspection identifies the ordering conflict: the view's own show/hide
-  WinEvents queue wakes, and the trailing focus freshness probe treats pending
-  hook edges as invalidation. The adapter diagnostic test reproduces this
+- The ordering conflict is inside production, not a missing harness drain:
+  `product_hide/sys/mod.rs::post_visibility` pumps messages while confirming
+  each visibility write. Hook deliveries during that nested pump populate the
+  queue after the view's freshness check and before trailing focus. A normal
+  loop-top drain cannot prevent this. The adapter diagnostic reproduces the
   view-write-then-stale-focus sequence without consuming the effect.
-- No further native retry, event exemption, safety-fence relaxation or delayed
-  focus replay has been introduced. Classifying every pending edge as self
-  generated would also risk overlooking genuine intervening input/window state.
+- A poll-only exemption based on proven view state and managed foreground was
+  rejected and removed. Those reads do not establish event causality, miss
+  foreign foreground and gesture supersession, and leave the native focus
+  setter's non-consuming pending-event veto intact. A consuming fake had hidden
+  that veto. The added production-contract regression proves pending edges keep
+  stopping until drained; no exemption, watermark reset, queue filtering or
+  delayed focus replay remains in the draft.
+- A subsequent fixture-only diagnostic used the real owner and exact-owner
+  numbered selection, with no synthetic input. Both fixture windows occupied
+  WS1; selecting empty WS2 hid them, then returning revealed both without
+  foreground landing. The return reply emitted remembered focus but held it
+  `stale`, with two visibility and five other pending wakes. The departure also
+  had one foreground wake. Counts distinguish causes without draining or
+  weakening gates, but do not prove individual events are self-generated.
+  This is not occupied-workspace acceptance in both directions. Stop/restore
+  released the owner, cleaned the ledger and shut down the fixture; no owned
+  processes remained.
 - Latest offline gates: `mise exec -- cargo test -p tiler-core --locked`
-  (844 library tests plus integration suites), Windows equivalent (959 library
-  tests, one existing ignored test, integration suites and four doc tests),
-  strict all-target clippy for both crates and crate fmt checks passed. These
-  green checks include a diagnostic of the unresolved stale hold, not native
-  focus acceptance.
+  (844 library tests plus integration suites), Windows equivalent (963 passing
+  library tests, one existing ignored test, integration suites and doc tests),
+  strict all-target clippy for both crates, workspace fmt and
+  `git diff --check` passed after integrating the native-settlement changes.
+  These green checks include diagnostics of the unresolved stale hold, not
+  native focus acceptance. Implementation and regression changes remain draft.
 - Tier 1 source findings and unsupported cells are recorded in the
   [minimal no-focus discriminators](../spec/reference-outcomes.md#workspace-no-focus-discriminators).
   No new product policy is selected.
@@ -86,10 +105,14 @@
 ## Remaining work
 
 - Resolve same-pass view-event/focus freshness ordering without losing genuine
-  intervening-change protection or violating at-most-once focus. Add a desired-
-  behavior regression before another native attempt; the current diagnostic
-  only proves the blocker.
-- Correct or settle the mixed-epoch pager presentation, then verify foreground,
-  visibility and actual pager data on occupied workspace switches both ways.
+  intervening-change protection or violating at-most-once focus. Preserve event
+  kind and window-lifetime attribution before attempting any self-event
+  classification; per-HWND wake removal alone is insufficient. Add a desired-
+  behavior regression against the non-consuming native contract before another
+  fix attempt. Cross-reply focus replay would change the one-shot contract and
+  is not selected here.
+- Verify foreground, visibility and actual pager-cell data on occupied workspace
+  switches both ways, including the second destination arrival. Pager lifecycle
+  traces and the current empty-workspace diagnostic do not meet that acceptance.
 - Shared/global-swap variants and floating remembered-focus coverage remain
   outside the current draft's demonstrated acceptance.
