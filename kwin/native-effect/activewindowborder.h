@@ -11,6 +11,7 @@
 #include <scene/outlinedborderitem.h>
 
 #include <QByteArray>
+#include <QDBusConnection>
 #include <QHash>
 #include <QPointF>
 #include <QPointer>
@@ -40,6 +41,12 @@ public:
     void applyGroupHighlight(const QString &payload);
     void clearGroupHighlight();
     QString groupHighlightStatus() const;
+    // Versioned raw presentation facts for the script route (Stage 3
+    // ingress, read-only): pushes the observed chord level and the actual
+    // style configuration into the held facts source on the well-known
+    // object. The source bumps its revision only on material change.
+    void noteFactsChord();
+    void noteFactsStyle();
     // Independent drag-target preview: screen-space filled rectangle above
     // windows, window-agnostic (no EffectWindow retained). Visible only
     // between a valid set and an explicit clear; never gated on Meta, focus,
@@ -100,7 +107,15 @@ private:
     // minimizedChanged/windowHiddenChanged re-anchor via
     // onGroupMemberVisibilityChanged. No logging of ids.
     void updateGroupAnchorAndGeometry();
+    // Compile-version gate (see CMakeLists OMNITILER_KWIN_PAINTSCREEN_BOOL):
+    // KWin 6.8 changed Effect::paintScreen from void to [[nodiscard]] bool.
+    // The 6.7 spelling keeps the void passthrough; the 6.8 spelling
+    // propagates the painting result. Identical call, no policy.
+#ifdef OMNITILER_KWIN_PAINTSCREEN_BOOL
+    [[nodiscard]] bool paintScreen(const RenderTarget &renderTarget, const RenderViewport &viewport, int mask, const Region &deviceRegion, LogicalOutput *screen) override;
+#else
     void paintScreen(const RenderTarget &renderTarget, const RenderViewport &viewport, int mask, const Region &deviceRegion, LogicalOutput *screen) override;
+#endif
     void updateGroupVisibility();
     void onMouseChanged(const QPointF &pos, const QPointF &oldPos, Qt::MouseButtons buttons, Qt::MouseButtons oldButtons,
         Qt::KeyboardModifiers modifiers, Qt::KeyboardModifiers oldModifiers);
@@ -136,6 +151,19 @@ private:
     QSet<EffectWindow *> m_maximizeSubscribed;
     QSet<EffectWindow *> m_groupVisibilitySubscribed;
     QObject *m_groupDbusObject = nullptr;
+    // Effect-owned dedicated connection to the same session bus for the
+    // ActiveBorder endpoint. Qt forbids delayed replies on local-loop
+    // (same-connection) messages, so the held WaitPresentationFacts waiter
+    // cannot complete when the endpoint and the script caller share
+    // QDBusConnection::sessionBus. The dedicated connection reaches the
+    // same bus (same service/path/interface/shape; the script still calls
+    // via KWin's sessionBus), so held replies route cross-connection.
+    // The DragOracle endpoint stays on the shared sessionBus (fire-and-read
+    // verdict, no held waiter). Exact owned teardown only: unregister the
+    // object/service on this connection, then disconnectFromBus(name);
+    // never touches the shared sessionBus registrations.
+    QString m_groupBusName;
+    QDBusConnection m_groupBus;
     // Drag oracle state: inert read-only
     // observer state only (start rects plus the D-Bus object). The verdict
     // policy lives in the std-only Rust staticlib behind the POD C ABI.
@@ -176,6 +204,14 @@ private:
     // rolls back only what this attempt acquired. Never unregisters an
     // endpoint owned elsewhere. No timers or polling.
     bool ensureDbusEndpoint(const QString &service, const QString &path, QObject *object, bool *serviceOkOut, bool *objectOkOut);
+    bool ensureDbusEndpointOn(QDBusConnection &bus, const QString &service, const QString &path, QObject *object,
+        bool *serviceOkOut, bool *objectOkOut);
+    // ActiveBorder endpoint on the effect-owned dedicated connection (same
+    // bus, same service/path/interface/shape). Establishes the connection
+    // once, binds the group object (and its facts source) to exactly that
+    // connection, and registers there. Fail/recover on the existing
+    // activation/reconfigure events; no retry polling.
+    bool ensureGroupEndpointRegistered();
     void ensureOraclePressSpy();
     void ensureEndpointsRegistered();
     void emitActiveBorderVisible(bool visible, const char *reason, bool appletPopup);

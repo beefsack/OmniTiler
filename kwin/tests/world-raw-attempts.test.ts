@@ -1,15 +1,16 @@
-// Raw mechanical attempt production (Stage 2 strict v2 cutover): the
+// Raw mechanical attempt production (Stage 3 strict v2 cutover): the
 // production entry records write/re-read facts for every native dispatch
 // (tiled sweep frames, explicit float placements, window membership, exact
-// output views) and carries them on the next report with original write
-// stamps, actual setter evidence, immediate readbacks, and nullable DPI.
-// Host-owned logical receipts stay empty: native homing/views never ride
-// as logical pre/post/base evidence (translation through the adapter
-// binding table would forge logical evidence and poison core
+// output views, maximize clears) and carries them on the next report with
+// original write stamps, actual setter evidence, immediate readbacks, and
+// nullable DPI. Host-owned logical receipts stay empty: native homing/views
+// never ride as logical pre/post/base evidence (translation through the
+// adapter binding table would forge logical evidence and poison core
 // third-location proof). The fresh same-turn native desktop/current ids
-// ride the native keys for core-side translation. Maximize-clear
-// stays absent: Stage 3 parks native clear actuation, so no setter ever
-// runs and there is nothing truthful to report. Included in `npm test`.
+// ride the native keys for core-side translation. Maximize clears actuate
+// through the native nonactivating setter with spend-before-dispatch;
+// already-unmaximized desires spend with no invented row. Included in
+// `npm test`.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -33,6 +34,7 @@ interface FakeWindow {
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
+    setMaximize?: (vertical: boolean, horizontal: boolean) => void;
 }
 
 function makeSurface() {
@@ -62,6 +64,20 @@ function makeSurface() {
             minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
         },
     ];
+    // A maximized tiled window proving the real-engine clear path: the
+    // native nonactivating setter flips maximizeMode synchronously, and
+    // the immediate readback proves the clear in the same flight.
+    const winD: FakeWindow = {
+        internalId: "win-d",
+        normalWindow: true,
+        frameGeometry: { x: 100, y: 100, width: 50, height: 50 },
+        output: { name: "out-1" }, desktops: [d1],
+        minimized: false, fullScreen: false, maximizeMode: 3, onAllDesktops: false,
+        setMaximize: (vertical, horizontal): void => {
+            winD.maximizeMode = (vertical || horizontal) ? 3 : 0;
+        },
+    };
+    wins.push(winD);
     // Both views start unproven so follow and standalone actuation run.
     const currents = new Map([["out-1", "d2"], ["out-2", "d1"]]);
     const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
@@ -224,7 +240,10 @@ describe("world raw mechanical attempts", () => {
             // Round 2: one tiled frame correction (win-b), one member move
             // with follow (win-a to out-2, target view unproven), one
             // standalone view (out-1 back to d1), one explicit float
-            // placement (win-c), one clear token (win-b, parked: held).
+            // placement (win-c), one clear token on an already-clear
+            // window (win-b, spends with no row), and one clear token on
+            // a maximized window (win-d, actuates through the native
+            // nonactivating setter with fresh pre/post proof).
             // The round-1 apply may leave no dirty work, so drive the next
             // flight explicitly through a native invalidation.
             flow.fire("desktopsChanged");
@@ -238,6 +257,7 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
                     { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "" },
                     { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "" },
+                    { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "" },
                 ];
                 reply["transfers"] = [
                     { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false },
@@ -247,7 +267,9 @@ describe("world raw mechanical attempts", () => {
             // The member move landed (output + desktop setters ran on the
             // fake), the follow target view was unproven so it actuated,
             // the standalone view actuated back to d1, the tiled frame
-            // corrected, the float placed, the clear held parked.
+            // corrected, the float placed, the already-clear token spent
+            // with no row, and the maximized window cleared natively with
+            // fresh pre/post proof.
             flow.fire("desktopsChanged");
             runTimers(flow);
             const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
@@ -260,7 +282,12 @@ describe("world raw mechanical attempts", () => {
             assert.ok(Array.isArray(frames) && frames.length === 2, `two frame attempts ride, got ${JSON.stringify(frames)} ${diag}`);
             assert.ok(Array.isArray(members) && members.length === 1, `one member attempt rides, got ${JSON.stringify(members)}`);
             assert.ok(Array.isArray(views) && views.length === 2, `two view attempts ride, got ${JSON.stringify(views)}`);
-            assert.ok(Array.isArray(clears) && clears.length === 0, "clear lane stays empty: no native clear actuation exists");
+            assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides, got ${JSON.stringify(clears)} ${diag}`);
+            assert.deepEqual(
+                clears[0],
+                { op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                "native nonactivating clear with fresh pre/post proof; the already-clear token spends silently",
+            );
             // Tiled sweep: ordinary write (empty op, no prewrite), real
             // target plus immediate readback, nullable DPI, write stamp.
             const sweep = frames.find((f) => f["op"] === "");
@@ -450,7 +477,7 @@ describe("world empty migration controlled scope", () => {
         assert.equal(out.viewWrites, 2, "target plus refill write exactly once each");
         assert.equal(out.membershipWrites, 0, "no members means no membership writes");
         assert.equal(out.held, 0, "complete empty set holds nothing");
-        assert.equal(env.state.isHeldAmbiguous("op-1"), false, "settled migration leaves no ambiguity");
+        assert.equal(env.state.isDispatched("op-1"), false, "undispatched parent records nothing; the refill dispatch is the evidence");
     });
     it("actuates views for an untouched empty target with unheld output and no gesture", () => {
         const switched: string[] = [];
@@ -895,5 +922,273 @@ describe("world setter attempt correspondence", () => {
             nativePre: "da", nativePost: null, attemptMs: "9",
         }], "superseded flight keeps the real output disposition");
         assert.equal(result.membershipWrites, 0, "superseded flight earns no write credit");
+    });
+});
+
+describe("world clear attempt correspondence", () => {
+    // Focused Stage 3 clear coverage through the production apply loop:
+    // spend-before-dispatch, fresh maximized pre/post, truthful
+    // accepted/refused/threw dispositions on the broker clock, veto and
+    // gap handling, at-most-once replay protection, and generation reset.
+    const clearEnv = (state: WorldAdapterState, opts: {
+        maximized: boolean | null;
+        fullscreen?: boolean;
+        minimized?: boolean;
+        sticky?: boolean;
+        liveRect?: { x: number; y: number; w: number; h: number } | null;
+        clear?: "accept" | "refuse" | "throw" | "missing";
+        gesture?: boolean;
+        listed?: boolean;
+        homing?: { out: string; ws: string } | null;
+        // Optional dynamic seams for final-gate regressions: a per-call
+        // safety reader (to flip overlay state between the veto read and
+        // the final pre-dispatch re-read) and a frame-race side effect
+        // (to advance the watermark mid-apply).
+        safetyFn?: () => { minimized: boolean; fullscreen: boolean; maximized: boolean | null; sticky: boolean };
+        onRect?: () => void;
+    }) => {
+        let maximized = opts.maximized;
+        let calls = 0;
+        const ref = {};
+        const env = {
+            state,
+            observation: {
+                ...setterObservation([{ win: "win-c", ref, out: "out-1", ws: "d1" }]),
+                gesture: opts.gesture ?? false,
+            },
+            reply: setterReply(
+                [{
+                    win: "win-c", out: "out-1", ws: "w1", alloc: null, frame: null,
+                    frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
+                    frame_op: "", clear_op: "op-clear-1", floating: false,
+                }],
+                [],
+                [],
+            ),
+            dispatchWatermark: "0",
+            takeResult: null,
+            log: (): void => undefined,
+            isStillListed: (): boolean => opts.listed ?? true,
+            isActiveWindow: (): boolean => false,
+            readLiveRect: (): { x: number; y: number; w: number; h: number } | null => {
+                opts.onRect?.();
+                return opts.liveRect === undefined ? { x: 0, y: 0, w: 100, h: 100 } : opts.liveRect;
+            },
+            readLiveMembership: (): { out: string; ws: string } | null => opts.homing === undefined ? { out: "out-1", ws: "d1" } : opts.homing,
+            readLiveSafety: () => opts.safetyFn?.() ?? ({
+                minimized: opts.minimized ?? false,
+                fullscreen: opts.fullscreen ?? false,
+                maximized,
+                sticky: opts.sticky ?? false,
+            }),
+            setGeometry: (): boolean => { throw new Error("no frame setter expected"); },
+            setMembership: (): boolean => { throw new Error("no desktop setter expected"); },
+            sendToOutput: (): boolean => { throw new Error("no output setter expected"); },
+            resolveOutput: (out: string): object => ({ name: out }),
+            resolveDesktop: (ws: string): object => ({ id: ws }),
+            switchView: (): boolean => { throw new Error("no view setter expected"); },
+            createDesktop: (): void => undefined,
+            removeDesktop: (): boolean => false,
+            focusWindow: (): boolean => false,
+            desktopOccupants: () => ({ total: 0, readable: true }),
+            desktopVisible: (): boolean => false,
+            readLiveView: (): string | null => null,
+            desktopById: (id: string): object => ({ id }),
+            minDesktops: 1,
+        };
+        if (opts.clear !== "missing") {
+            (env as Record<string, unknown>)["clearMaximized"] = (): boolean => {
+                calls += 1;
+                if (opts.clear === "throw") {
+                    throw new Error("native clear threw");
+                }
+                if (opts.clear === "refuse" || opts.clear === undefined) {
+                    return false;
+                }
+                maximized = false;
+                return true;
+            };
+        }
+        return { env, calls: () => calls };
+    };
+
+    function boundClear(): WorldAdapterState {
+        const state = new WorldAdapterState("adapter-a", "owner-a");
+        state.boundGen = "gen-1";
+        state.recordClock("9");
+        return state;
+    }
+
+    it("dispatches the native clear once with fresh pre/post proof", () => {
+        const state = boundClear();
+        const { env, calls } = clearEnv(state, { maximized: true, clear: "accept" });
+        const result = applyWorldReply(env);
+        assert.equal(calls(), 1, "exactly one native clear");
+        assert.deepEqual(state.clearAttemptsForReport(), [{
+            op: "op-clear-1", win: "win-c", setter: "accepted", pre: true, post: false, attemptMs: "9",
+        }], "accepted disposition with fresh pre/post maximized states");
+        assert.equal(result.clears, 1, "accepted dispatch counts the clear write");
+        assert.equal(result.held, 0, "proven clear holds nothing");
+        assert.equal(state.isDispatched("op-clear-1"), true, "dispatch recorded once");
+        // A duplicate reply never re-actuates the spent operation.
+        const again = applyWorldReply(env);
+        assert.equal(calls(), 1, "no second native clear");
+        assert.equal(again.clears, 0);
+        assert.equal(state.clearAttemptsForReport().length, 1, "no duplicate attempt row");
+    });
+
+    it("spends without an attempt when already unmaximized", () => {
+        const state = boundClear();
+        const { env, calls } = clearEnv(state, { maximized: false, clear: "accept" });
+        const result = applyWorldReply(env);
+        assert.equal(calls(), 0, "no native call for an already-clear window");
+        assert.ok(state.clearSpent.has("op-clear-1"), "token spent so the desire never wedges");
+        assert.deepEqual(state.clearAttemptsForReport(), [], "fresh observation is the proof: no invented row");
+        assert.equal(result.clears, 0);
+        assert.equal(result.held, 0);
+    });
+
+    it("records refused with unchanged proof and never repeats", () => {
+        const state = boundClear();
+        const { env, calls } = clearEnv(state, { maximized: true, clear: "refuse" });
+        const result = applyWorldReply(env);
+        assert.equal(calls(), 1, "the refused setter still ran once");
+        assert.deepEqual(state.clearAttemptsForReport(), [{
+            op: "op-clear-1", win: "win-c", setter: "refused", pre: true, post: true, attemptMs: "9",
+        }], "refused disposition keeps the unchanged pre/post proof");
+        assert.equal(result.clears, 0, "refused dispatch earns no write credit");
+        assert.ok(result.held >= 1, "unproven clear holds");
+        const again = applyWorldReply(env);
+        assert.equal(calls(), 1, "spent refusal never re-actuates");
+        assert.equal(again.clears, 0);
+    });
+
+    it("records threw with best-known proof and never repeats", () => {
+        const state = boundClear();
+        const { env, calls } = clearEnv(state, { maximized: true, clear: "throw" });
+        const result = applyWorldReply(env);
+        assert.equal(calls(), 1, "the throwing setter ran once");
+        assert.deepEqual(state.clearAttemptsForReport(), [{
+            op: "op-clear-1", win: "win-c", setter: "threw", pre: true, post: true, attemptMs: "9",
+        }], "throw keeps the best-known unchanged proof, never fabricated arrival");
+        assert.equal(result.clears, 0);
+        assert.ok(result.held >= 1);
+        const again = applyWorldReply(env);
+        assert.equal(calls(), 1, "spent throw never re-actuates");
+        assert.equal(again.clears, 0);
+    });
+
+    it("vetoes fullscreen with no native call and no invented row", () => {
+        const state = boundClear();
+        const { env, calls } = clearEnv(state, { maximized: true, fullscreen: true, clear: "accept" });
+        const result = applyWorldReply(env);
+        assert.equal(calls(), 0, "game/fullscreen lane never takes a clear write");
+        assert.deepEqual(state.clearAttemptsForReport(), [], "no setter ran and no post state was read: no row");
+        assert.ok(!state.clearSpent.has("op-clear-1"), "veto spends nothing; the core owns abandonment");
+        assert.ok(result.held >= 1);
+        // A later readable reply retries the still-undispatched desire.
+        const readable = clearEnv(state, { maximized: true, clear: "accept" });
+        const retry = applyWorldReply(readable.env);
+        assert.equal(readable.calls(), 1, "readable reply dispatches the retained desire");
+        assert.equal(retry.clears, 1);
+    });
+
+    it("holds unspent when safety flips between the veto read and the final gate", () => {
+        const state = boundClear();
+        let reads = 0;
+        const { env, calls } = clearEnv(state, {
+            maximized: true,
+            clear: "accept",
+            safetyFn: () => {
+                reads += 1;
+                // First read (vetoes) sees a clearable window; the final
+                // pre-dispatch re-read sees a newer fullscreen flip.
+                return reads <= 1
+                    ? { minimized: false, fullscreen: false, maximized: true, sticky: false }
+                    : { minimized: false, fullscreen: true, maximized: true, sticky: false };
+            },
+        });
+        const result = applyWorldReply(env);
+        assert.equal(calls(), 0, "flipped gate runs no native setter");
+        assert.ok(!state.clearSpent.has("op-clear-1"), "flipped gate spends nothing");
+        assert.deepEqual(state.clearAttemptsForReport(), [], "flipped gate records no row");
+        assert.ok(result.held >= 1);
+        assert.ok(!state.isDispatched("op-clear-1"), "no dispatch recorded");
+        // A fresh reply with stable safety dispatches exactly once.
+        const readable = clearEnv(state, { maximized: true, clear: "accept" });
+        const retry = applyWorldReply(readable.env);
+        assert.equal(readable.calls(), 1, "stable safety dispatches the retained desire");
+        assert.deepEqual(state.clearAttemptsForReport(), [{
+            op: "op-clear-1", win: "win-c", setter: "accepted", pre: true, post: false, attemptMs: "9",
+        }], "fresh proof rides the next report");
+        assert.equal(retry.clears, 1);
+    });
+
+    it("holds unspent when the watermark advances before dispatch", () => {
+        const state = boundClear();
+        let invalidated = false;
+        const { env, calls } = clearEnv(state, {
+            maximized: true,
+            clear: "accept",
+            onRect: () => {
+                // Native input lands mid-apply (after the frame-race read):
+                // the final gate sees the advanced watermark.
+                if (!invalidated) {
+                    invalidated = true;
+                    state.invalidate();
+                }
+            },
+        });
+        const result = applyWorldReply(env);
+        assert.equal(calls(), 0, "advanced watermark runs no native setter");
+        assert.ok(!state.clearSpent.has("op-clear-1"), "advanced watermark spends nothing");
+        assert.deepEqual(state.clearAttemptsForReport(), [], "advanced watermark records no row");
+        assert.ok(result.held >= 1);
+        // A fresh capture (new watermark) dispatches exactly once.
+        const readable = clearEnv(state, { maximized: true, clear: "accept" });
+        const retry = applyWorldReply({ ...readable.env, dispatchWatermark: state.currentInvalid });
+        assert.equal(readable.calls(), 1, "fresh watermark dispatches the retained desire");
+        assert.equal(retry.clears, 1);
+    });
+
+    it("holds unspent on unreadable safety, gesture, race, and missing capability", () => {
+        for (const opts of [
+            { maximized: null as boolean | null, clear: "accept" as const },
+            { maximized: true as boolean | null, clear: "accept" as const, gesture: true },
+            { maximized: true as boolean | null, clear: "accept" as const, liveRect: { x: 5, y: 5, w: 50, h: 50 } },
+            { maximized: true as boolean | null, clear: "missing" as const },
+            { maximized: true as boolean | null, clear: "accept" as const, homing: null },
+        ]) {
+            const state = boundClear();
+            const { env, calls } = clearEnv(state, opts);
+            const result = applyWorldReply(env);
+            assert.equal(calls(), 0, `no native call for gap ${JSON.stringify(opts)}`);
+            assert.ok(!state.clearSpent.has("op-clear-1"), `gap stays unspent: ${JSON.stringify(opts)}`);
+            assert.deepEqual(state.clearAttemptsForReport(), [], `no invented row: ${JSON.stringify(opts)}`);
+            assert.ok(result.held >= 1);
+            // The undispatched desire retries on a readable reply.
+            const readable = clearEnv(state, { maximized: true, clear: "accept" });
+            const retry = applyWorldReply(readable.env);
+            assert.equal(readable.calls(), 1, `undispatched desire retries: ${JSON.stringify(opts)}`);
+            assert.equal(retry.clears, 1);
+        }
+    });
+
+    it("resets spent clear tokens on generation rotation", () => {
+        const state = boundClear();
+        const first = clearEnv(state, { maximized: true, clear: "accept" });
+        applyWorldReply(first.env);
+        assert.equal(first.calls(), 1);
+        state.onDiscovery("gen-2", "broker-1");
+        assert.ok(!state.clearSpent.has("op-clear-1"), "rotation clears the spent set");
+        assert.ok(!state.isDispatched("op-clear-1"), "rotation clears the dispatch record");
+        const second = clearEnv(state, { maximized: true, clear: "accept" });
+        const out = applyWorldReply({
+            ...second.env,
+            reply: { ...(second.env.reply as unknown as Record<string, unknown>), gen: "gen-2" } as never,
+            dispatchWatermark: state.currentInvalid,
+        });
+        assert.equal(second.calls(), 1, "a fresh generation may dispatch the retained desire again");
+        assert.equal(out.clears, 1);
     });
 });

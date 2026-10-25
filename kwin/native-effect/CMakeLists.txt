@@ -142,6 +142,8 @@ kcoreaddons_add_plugin(omnitiler-active-border
         drag_oracle_ffi.h
         group_highlight_ffi.h
         visual_policy_ffi.h
+        presentationfacts.h
+        presentationfacts.cpp
         ${config_SOURCES}
 )
 add_dependencies(omnitiler-active-border omnitiler-effect-ffi-rs)
@@ -158,6 +160,15 @@ target_link_libraries(omnitiler-active-border PRIVATE
     Qt6::DBus
 )
 target_compile_options(omnitiler-active-border PRIVATE -Wall -Wextra -Werror)
+# Compile-version gate (causal build repair, no runtime route): KWin 6.8
+# changed Effect::paintScreen from void to [[nodiscard]] bool (sibling
+# v6.7.4 `src/effect/effect.h:709` vs v6.8.0 `:712`; the effect API macro
+# stayed 0.237 on both sides, so no header macro fences it). The package
+# version from KWinConfigVersion.cmake fences the override spelling:
+# 6.7 keeps the void passthrough, 6.8 propagates the painting result.
+if(KWin_VERSION VERSION_GREATER_EQUAL "6.8")
+    target_compile_definitions(omnitiler-active-border PRIVATE OMNITILER_KWIN_PAINTSCREEN_BOOL)
+endif()
 endif()
 
 if(OMNITILER_BUILD_SETTINGS)
@@ -252,6 +263,36 @@ if(BUILD_TESTING)
 
     add_test(NAME native-effect-group-highlight
         COMMAND omnitiler-active-border-group-test)
+
+    # Offline transport test for the versioned script facts waiter: the
+    # exact production PresentationFactsSource class (no test fake) driven
+    # over a real private bus in the production topology (effect-owned
+    # dedicated connection plus the script's sessionBus caller). Proves
+    # immediate bootstrap, change wake, idle lease, supersession,
+    # foreign-caller denial without displacement, malformed/oversize
+    # no-mutation, instance fencing, and shutdown invalidation; a separate
+    # same-connection leg pins the Qt local-loop limit explicitly.
+    find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
+    add_executable(omnitiler-active-border-facts-test
+        presentationfacts_test.cpp
+        presentationfacts.cpp
+    )
+    add_dependencies(omnitiler-active-border-facts-test omnitiler-effect-ffi-rs)
+    target_link_libraries(omnitiler-active-border-facts-test PRIVATE
+        "${EFFECT_STATICLIB}"
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+        Qt6::Core
+        Qt6::DBus
+        Qt6::Gui)
+    target_compile_options(omnitiler-active-border-facts-test PRIVATE -Wall -Wextra -Werror)
+
+    # The private bus is provided by dbus-run-session (same package family
+    # as the Qt D-Bus client already linked; no new dependency): the test
+    # binary must never touch a real session bus (no KWin, no live state).
+    add_test(NAME native-effect-facts-transport
+        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-facts-test>)
+    set_tests_properties(native-effect-facts-transport PROPERTIES TIMEOUT 120)
 
     endif()
 

@@ -251,9 +251,9 @@ export interface WorldViewAttempt {
     attemptMs: string;
 }
 // One normalized raw maximize-clear attempt: the mechanical facts behind a
-// single native nonactivating clear. Parked: Stage 3 parks native clear
-// actuation (the apply lane is proof-only), so no setter ever runs and
-// this lane stays empty rather than report invented evidence.
+// single native nonactivating clear (fresh pre/post maximized states plus
+// the setter disposition). The core owns confirmation, proven refusal,
+// ambiguity, and abandonment; a setter boolean alone never proves arrival.
 export interface WorldClearAttempt {
     op: string;
     win: string;
@@ -1476,8 +1476,7 @@ export interface WorldInnerReportInput {
     // Raw mechanical write/readback evidence retained by the apply loop
     // (latest-wins per window, operation window, owning view phase, and
     // clear operation respectively; empty when nothing was dispatched).
-    // Core owns every verdict over the fresh facts. The clear lane stays
-    // empty: Stage 3 parks native clear actuation, so no setter ever runs.
+    // Core owns every verdict over the fresh facts.
     readonly frameAttempts: ReadonlyArray<WorldFrameAttempt>;
     readonly memberAttempts: ReadonlyArray<WorldMemberAttempt>;
     readonly viewAttempts: ReadonlyArray<WorldViewAttempt>;

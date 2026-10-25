@@ -5,16 +5,11 @@ How the KDE adapter moves to the strict v2 contract in
 implemented vs approved-not-implemented vs open. The v1 inventory below
 describes the delivered baseline, not an accepted v2 KDE runtime.
 The staged implementation and parked boundaries are tracked in
-[KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1 are delivered
-at the core-only boundary; KDE runtime adoption and native acceptance remain
-outstanding. Stage 1b core creation correlation and its KDE consumer are delivered
-offline. Stage 2 remains partial: the five former integration oracles now pass
-with core-owned migration/lifecycle expectations and raw dispatch attempts;
-event-driven external-command delivery (B1) is delivered offline, while the
-restored source-view-rewind settlement discriminator (B2) remains parked.
-The draft pulls in only the v2 observation,
-token and target-resolution pieces needed by the wire cutover; no stage 3
-or native acceptance is claimed.
+[KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1/1b/2/3 are
+complete offline, including command wake, source-view rewind settlement,
+raw attempts and native presentation ingress. Stage 4 removes classification
+policy copies; Stage 5 replaces renderer derivation. Native acceptance remains
+outstanding; no logical receipt or offline test is native arrival proof.
 
 KWin source is read from the local sibling clone at the documented
 `v6.7.4` pin; port work must not web-fetch KWin sources. Mechanical
@@ -87,8 +82,9 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   null; fresh native reads use `nativePre/nativePost/nativeBase`. Core alone
   resolves their identities. Bound valid acknowledgements
   retire only delivered matching rows; transport loss retains them, generation
-  reset clears them. Clear actuation remains a stage 3 hold, so that attempt lane
-  is empty rather than invented.
+  reset clears them. Stage 3 also actuates nonactivating maximize clear through
+  `setMaximize(false, false)` and reports actual setter/pre/post evidence. A
+  veto or already-clear observation never fabricates a dispatch attempt.
 - Migration preserves core's stable logical id, binds fresh backing only through
   core's correlation, and never steals an already-bound empty desktop. Native-bound
   empties stay; ordinary trailing spares stay unbound until explicitly needed.
@@ -171,17 +167,17 @@ request fixtures pin the JS producer, including populated raw attempts.
   `workspace.windowAt(pos, count)` hit test
   (`src/scripting/workspace_wrapper.h:483`,
   `src/scripting/workspace_wrapper.cpp:369` at the pin) without effect
-  involvement or polling. The local `.d.ts` declares only `cursorPos`,
-  so it is incomplete on this point: never treat the declaration file
-  as the API ceiling. Neither the JS nor the effect side has a warp
+  involvement or polling. The local `.d.ts` declares `cursorPos`
+  and `windowAt`; never treat the declaration file as the API ceiling.
+  Neither the JS nor the effect side has a warp
   API: cursor-warp is unsupported on KDE. Never claim an applied
   `cursor_warp`.
 - Current frame reads use `frameGeometry` (`world-observe.ts::readRect`);
   writes use the guarded `frameGeometry` setter (`world-native.ts`).
   `readClientArea` calls `workspace.clientArea(MaximizeArea, output, desktop)`
-  for the work area, not a window's client rectangle. The port must add
-  read-only window `clientGeometry` capture for client-size hint conversion
-  (`src/window.h` Q_PROPERTY at the pin); the current adapter does not read it.
+  for the work area, not a window's client rectangle. Stage 3 captures
+  read-only window `clientGeometry` for client-size hint conversion
+  (`src/window.h` Q_PROPERTY at the pin).
 - The declaration header cites 6.7.5 while these source checks pin 6.7.4.
   Comparing `src/window.h` and the workspace wrapper header/implementation
   between those tags confirms the relied-on scripting APIs are unchanged;
@@ -311,14 +307,14 @@ request fixtures pin the JS producer, including populated raw attempts.
   never replace missing transport with TypeScript policy copies. A shared
   classification-ingress redesign is not implemented here.
 
-- B1 command wake passes offline; B2 exact dormant-source rewind remains parked.
+- B1 command wake and B2 released-source rewind pass offline.
   No passing transport or logical receipt is native settlement evidence.
-- Fractional KWin rounding and the style-unit conversion path have no
-  documented port proof yet; keep both inside the adapter and record
-  the evidence with the port.
+- Fractional KWin rounding and native style conversion are adapter-local;
+  [Stage 3 evidence](../changes/kde-world-v2-port.md#stage-3-outcome-2026-10-26)
+  records the exact frame/client and style formulas and remaining bound gap.
 - No JS/effect warp API exists; cursor-warp stays unsupported on KDE
   even when the core setting is on.
-- The local `kwin-globals.d.ts` omits the pinned `windowAt` hit test;
-  the port extends those declarations instead of assuming no hit API.
+- The local `kwin-globals.d.ts` declares the pinned `windowAt` hit test;
+  consumption remains Stage 6 work, not a claimed applied cursor route.
 - The current effect derives geometry and presentation eligibility instead of
   consuming core bounds; delete that derivation, retaining native host styling.

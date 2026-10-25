@@ -1646,7 +1646,7 @@ describe("world admission focus on settled floats", () => {
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, ["win-b"], "admission intent activates the floated newcomer");
         assert.equal(result.effects, 1);
-        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (applied settles locally)");
+        assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
         // A repeated diff never reapplies: the effect stays spent.
         const again = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, ["win-b"], "no second activation");
@@ -1671,7 +1671,7 @@ describe("world admission focus on settled floats", () => {
             const result = applyWorldReply(admissionEnv(setup));
             assert.deepEqual(setup.focused, [], "overlays never take automatic focus writes");
             assert.equal(result.effects, 0);
-            assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+            assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
                     });
     }
 
@@ -1680,7 +1680,7 @@ describe("world admission focus on settled floats", () => {
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, [], "command focus never steers to a float");
         assert.equal(result.effects, 0);
-        assert.equal(setup.state.isHeldAmbiguous("fx-7"), false, "no ambiguous hold (unattempted settles locally)");
+        assert.equal(setup.state.isDispatched("fx-7"), false, "effects never dispatch-record; at-most-once comes from the spent set");
     });
 
     it("focuses a plain tiled newcomer once with no setter writes", () => {
@@ -1703,7 +1703,7 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, ["win-b"], "safe ordinary newcomer focuses once");
         assert.equal(result.effects, 1);
         assert.equal(setters, 0, "admission focus writes no geometry/membership/view");
-        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (applied settles locally)");
+        assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
         const again = applyWorldReply(admissionEnv(setup));
         assert.equal(again.effects, 0, "no second activation");
     });
@@ -1727,7 +1727,7 @@ describe("world admission focus on settled floats", () => {
             const result = applyWorldReply(admissionEnv(setup));
             assert.deepEqual(setup.focused, [], "never force activation away from a protected overlay");
             assert.equal(result.effects, 0);
-            assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+            assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
                     });
     }
 
@@ -1741,7 +1741,7 @@ describe("world admission focus on settled floats", () => {
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, [], "observed floating alone never earns activation");
         assert.equal(result.effects, 0);
-        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+        assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
             });
 
     it("refuses automatic fixed-size float admission with zero focus writes", () => {
@@ -1768,7 +1768,7 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, [], "automatic fixed float takes no focus write");
         assert.equal(result.effects, 0);
         assert.equal(setters, 0, "no geometry/membership/view writes around a refused admission");
-        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+        assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
                 assert.ok(!setup.logs.some((l) => l.includes("automatic-focus-attempt")), "refused admission attempts no setter");
     });
 
@@ -1794,7 +1794,7 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, ["win-b"], "suppressed tile keeps admission activation");
         assert.equal(result.effects, 1);
         assert.equal(setters, 0);
-        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (applied settles locally)");
+        assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
     });
 
     it("reports native denial with proof and zero setter writes", () => {
@@ -1814,6 +1814,6 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, [], "denied focus writes nothing");
         assert.equal(result.effects, 0);
         assert.equal(setters, 0, "no geometry/membership/view writes around a focus effect");
-        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (refused-proven settles locally)");
+        assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
     });
 });

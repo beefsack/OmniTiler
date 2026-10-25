@@ -282,7 +282,7 @@ describe("world native output echo", () => {
         // Both members ride the same stable operation: exactly one native
         // output send each, then the requested desktop set on the same
         // flight (the synchronous target-current echo is tolerated, never a
-        // superseded-external refusal stranding the second member).
+        // held refusal stranding the second member).
         assert.deepEqual(surf.sendCalls, [`win-a=>${HDMI}`, `win-b=>${HDMI}`]);
         assert.deepEqual(
             surf.wins.map((w) => `${w.output.name}/${w.desktops[0]?.id}`),
@@ -293,7 +293,7 @@ describe("world native output echo", () => {
         // Target AND refill views switch only after every arrival proves.
         assert.deepEqual(surf.viewCalls, [`${HDMI}->${D6}`, `${DP}->${D3}`]);
         assert.equal(first.viewWrites, 2);
-        assert.equal(state.isHeldAmbiguous("op-22"), false);
+        assert.equal(state.isDispatched("op-22"), true, "dispatch recorded once; raw attempts ride, core owns settlement");
         assert.deepEqual(state.appliedWindowTarget.get("win-a"), { op: "op-22", out: HDMI, ws: D6 });
         assert.deepEqual(state.appliedWindowTarget.get("win-b"), { op: "op-22", out: HDMI, ws: D6 });
         // A converged repeat proves without any new native call.
@@ -336,8 +336,8 @@ describe("world native output echo", () => {
         );
         assert.deepEqual(surf.viewCalls, [`${HDMI}->${DY}`]);
         assert.equal(out.held, 0);
-        assert.equal(state.isHeldAmbiguous("op-1"), false);
-        assert.equal(state.isHeldAmbiguous("op-2"), false);
+        assert.equal(state.isDispatched("op-1"), true, "dispatch recorded once; the follow attempt rides the next report");
+        assert.equal(state.isDispatched("op-2"), true, "dispatch recorded once; the stay attempt rides the next report");
     });
 
     it("still fails closed when a third workspace lands during the setter", () => {
@@ -360,10 +360,11 @@ describe("world native output echo", () => {
         const b = surf.wins.find((w) => w.internalId === "win-b") as FakeWin;
         assert.deepEqual(`${b.output.name}/${b.desktops[0]?.id}`, `${DP}/${D6}`, "second member untouched");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view without proof");
-        assert.equal(state.isHeldAmbiguous("op-22"), false, "third-location proof settles the whole migration");
+        assert.equal(state.isDispatched("op-22"), true, "third-location proof holds without re-actuation; the recorded attempt is the evidence");
+        assert.equal(state.memberAttemptsForReport().filter((m) => m.op === "op-22").length, 1, "exactly the output setter disposition rides");
         assert.equal(state.appliedWindowTarget.has("win-a"), false);
         assert.equal(state.appliedWindowTarget.has("win-b"), false);
-        // A repeat retries nothing settled.
+        // A repeat dispatches nothing: the dispatch record stays this generation.
         applyThroughHost(surf, state, reply, obs);
         assert.equal(surf.sendCalls.length, 1, "settled migration never retried");
         assert.deepEqual(surf.viewCalls, [], "still no view moves");
@@ -388,9 +389,9 @@ describe("world native output echo", () => {
         const b = surf.wins.find((w) => w.internalId === "win-b") as FakeWin;
         assert.deepEqual(`${b.output.name}/${b.desktops[0]?.id}`, `${DP}/${D6}`, "second member untouched");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view without proof");
-        assert.equal(state.isHeldAmbiguous("op-22"), false, "refreshed target current is never tolerated as the echo");
+        assert.equal(state.isDispatched("op-22"), true, "refreshed target current holds without re-actuation; the recorded attempt is the evidence");
         assert.equal(state.appliedWindowTarget.has("win-a"), false);
-        // A repeat retries nothing settled.
+        // A repeat dispatches nothing: the dispatch record stays this generation.
         applyThroughHost(surf, state, reply, obs);
         assert.equal(surf.sendCalls.length, 1, "settled migration never retried");
         assert.deepEqual(surf.viewCalls, [], "still no view moves");
@@ -412,7 +413,7 @@ describe("world native output echo", () => {
         assert.equal(first.membershipWrites, 0, "no membership write on an overlay flip");
         assert.deepEqual(surf.viewCalls, [], "no view moves without member proof");
         assert.ok(first.held >= 1);
-        assert.equal(state.isHeldAmbiguous("op-22"), true, "ambiguous attempt stays at-most-once");
+        assert.equal(state.isDispatched("op-22"), true, "dispatch record stays at-most-once; the recorded attempt is the evidence");
         // A repeat under the fresh revision retries nothing ambiguous.
         const second = applyThroughHost(surf, state, reply, observe(surf));
         assert.equal(surf.sendCalls.length, 1, "ambiguous member never retried");
@@ -440,9 +441,9 @@ describe("world native output echo", () => {
         const b = surf.wins.find((w) => w.internalId === "win-b") as FakeWin;
         assert.deepEqual(`${b.output.name}/${b.desktops[0]?.id}`, `${DP}/${D6}`, "second member untouched");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view without proof");
-        assert.equal(state.isHeldAmbiguous("op-22"), false, "an unreadable target view never verifies the echo");
+        assert.equal(state.isDispatched("op-22"), true, "unreadable target view holds without re-actuation; the recorded attempt is the evidence");
         assert.equal(state.appliedWindowTarget.has("win-a"), false);
-        // A repeat retries nothing settled.
+        // A repeat dispatches nothing: the dispatch record stays this generation.
         applyThroughHost(surf, state, reply, obs);
         assert.equal(surf.sendCalls.length, 1, "settled migration never retried");
         assert.deepEqual(surf.viewCalls, [], "still no view moves");
@@ -520,10 +521,10 @@ describe("world native output lag (T05 producer shape)", () => {
         // Both members ride the same armed operation: exactly one native
         // output send each, then the requested desktop set on the same
         // flight. The lag echo (sourceOut, capturedTargetCurrent) is
-        // tolerated, never a superseded-external refusal stranding the
+        // tolerated, never a held refusal stranding the
         // second member.
         assert.deepEqual(surf.sendCalls, [`win-a=>${HDMI}`, `win-b=>${HDMI}`]);
-        assert.equal(state.isHeldAmbiguous("op-22"), true, "lag echo tolerated, attempt stays ambiguous");
+        assert.equal(state.isDispatched("op-22"), true, "lag echo tolerated, dispatch recorded once without premature claims");
         assert.equal(out.held >= 1, true, "deferred output completion holds without views");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view before all arrivals prove");
         assert.equal(surf.wins.every((w) => w.desktops[0]?.id === D6), true, "requested membership set on both");
@@ -558,7 +559,8 @@ describe("world native output lag (T05 producer shape)", () => {
         void out;
         assert.equal(surf.sendCalls.length, 1, "no second-member call after unrelated proof");
         assert.deepEqual(surf.viewCalls, [], "no views on unrelated proof");
-        assert.equal(state.isHeldAmbiguous("op-22"), false, "unrelated proof settles the whole migration");
+        assert.equal(state.isDispatched("op-22"), true, "unrelated proof holds the whole migration without a second native call");
+        assert.equal(state.memberAttemptsForReport().filter((m) => m.op === "op-22").length, 1, "exactly the output setter disposition rides");
     });
 
     it("ordinary sends tolerate the same-flight lag echo without premature follow", () => {
@@ -583,10 +585,10 @@ describe("world native output lag (T05 producer shape)", () => {
         };
         const state = freshState(reply);
         const out = applyThroughHost(surf, state, reply, observe(surf));
-        // Lag echo tolerated: no superseded-external, membership set on the
+        // Lag echo tolerated: membership set on the
         // same flight, follow view waits for exact-target arrival.
         assert.equal(surf.sendCalls.length, 1);
-        assert.equal(state.isHeldAmbiguous("op-1"), true, "lag echo tolerated, attempt stays ambiguous");
+        assert.equal(state.isDispatched("op-1"), true, "lag echo tolerated, dispatch recorded once");
         assert.deepEqual(surf.wins.find((w) => w.internalId === "win-a")?.desktops[0]?.id, DY);
         assert.deepEqual(surf.viewCalls, [], "no follow before exact-target arrival");
         void out;

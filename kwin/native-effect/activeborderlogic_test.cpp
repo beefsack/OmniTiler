@@ -276,6 +276,40 @@ void groupUnderlayDefaultExtensionMatchesBorderWidth()
     CHECK(outerExplicit0 == QRectF(-5.0, -5.0, 110.0, 110.0));
 }
 
+void presentationFactsJsonIsVersionedAndComplete()
+{
+    // Exact wire shape the KWin script route parses (v:1, opaque instance
+    // and rev, 0/1 chord lanes, full-precision doubles, changed lane).
+    KWin::PresentationFactsSnapshot facts;
+    facts.instance = QStringLiteral("instance-1");
+    facts.rev = 7;
+    facts.chord = true;
+    facts.chordKnown = true;
+    facts.gap = 0.0;
+    facts.width = 3.5;
+    facts.extension = -1.0;
+    facts.changed = true;
+    CHECK(KWin::presentationFactsJson(facts) == QStringLiteral("{\"v\":1,\"instance\":\"instance-1\",\"rev\":\"7\",\"chord\":1,\"chordKnown\":1,\"gap\":0,\"width\":3.5,\"extension\":-1,\"changed\":1,\"superseded\":0,\"available\":1}"));
+}
+
+void presentationFactsStaleDetectsInstanceAndRevision()
+{
+    CHECK(KWin::presentationFactsStale(QStringLiteral(""), QStringLiteral(""), QStringLiteral("instance-1"), 0));
+    CHECK(KWin::presentationFactsStale(QStringLiteral("instance-1"), QStringLiteral(""), QStringLiteral("instance-1"), 0));
+    CHECK(KWin::presentationFactsStale(QStringLiteral("instance-1"), QStringLiteral("0"), QStringLiteral("instance-2"), 0));
+    CHECK(KWin::presentationFactsStale(QStringLiteral("instance-1"), QStringLiteral("0"), QStringLiteral("instance-1"), 1));
+    CHECK(!KWin::presentationFactsStale(QStringLiteral("instance-1"), QStringLiteral("1"), QStringLiteral("instance-1"), 1));
+}
+
+void presentationFactsLeaseIsBounded()
+{
+    CHECK(KWin::presentationFactsLeaseMs(0) == 1000);
+    CHECK(KWin::presentationFactsLeaseMs(500) == 1000);
+    CHECK(KWin::presentationFactsLeaseMs(20000) == 20000);
+    CHECK(KWin::presentationFactsLeaseMs(60000) == 60000);
+    CHECK(KWin::presentationFactsLeaseMs(120000) == 60000);
+}
+
 void groupUnderlayChordNeedsBothWinAndShift()
 {
     // (win, shift) -> chord. Extras and press order live outside this
@@ -317,6 +351,9 @@ int main()
     groupUnderlayChordNeedsBothWinAndShift();
     groupUnderlayOuterExpandsByGapWidthAndExtension();
     groupUnderlayDefaultExtensionMatchesBorderWidth();
+    presentationFactsJsonIsVersionedAndComplete();
+    presentationFactsStaleDetectsInstanceAndRevision();
+    presentationFactsLeaseIsBounded();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

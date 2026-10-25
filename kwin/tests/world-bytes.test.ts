@@ -50,6 +50,7 @@ function makeFixtureSurface() {
         {
             internalId: "win-a", normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+            clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: { width: 100, height: 100 }, maxSize: { width: 800, height: 600 },
@@ -83,6 +84,7 @@ function makeFixtureSurface() {
         {
             internalId: "win-fixed", normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 400, height: 300 },
+            clientGeometry: { x: 0, y: 0, width: 400, height: 300 },
             output: { name: "out-2" }, desktops: [ws2],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: { width: 400, height: 300 }, maxSize: { width: 400, height: 300 },
@@ -135,6 +137,16 @@ function makeFixtureSurface() {
                 return true;
             },
         });
+        // Borderless test doubles keep a zero decoration delta across
+        // native moves/resizes: the client rect tracks the live frame size
+        // exactly like a decoration-free production window, so converted
+        // hints stay stable while frames move.
+        if (w["clientGeometry"] !== undefined) {
+            Object.defineProperty(w, "clientGeometry", {
+                configurable: true,
+                get: () => ({ ...frame }),
+            });
+        }
     }
     const surface = {
         windowList: () => world.wins,
@@ -171,6 +183,7 @@ function makeSizeHintsSurface() {
         {
             internalId: "win-default", normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+            clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: { width: 0, height: 0 }, maxSize: { width: 16777215, height: 16777215 },
@@ -178,6 +191,7 @@ function makeSizeHintsSurface() {
         {
             internalId: "win-sentinel", normalWindow: true,
             frameGeometry: { x: 210, y: 0, width: 200, height: 200 },
+            clientGeometry: { x: 210, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: null, maxSize: { width: 2147483647, height: 2147483647 },
@@ -185,6 +199,7 @@ function makeSizeHintsSurface() {
         {
             internalId: "win-wide", normalWindow: true,
             frameGeometry: { x: 420, y: 0, width: 200, height: 200 },
+            clientGeometry: { x: 420, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: { width: 640, height: 0 }, maxSize: { width: 640, height: 0 },
@@ -192,6 +207,7 @@ function makeSizeHintsSurface() {
         {
             internalId: "win-fixed", normalWindow: true,
             frameGeometry: { x: 630, y: 0, width: 400, height: 300 },
+            clientGeometry: { x: 630, y: 0, width: 400, height: 300 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: { width: 400, height: 300 }, maxSize: { width: 400, height: 300 },
@@ -523,6 +539,7 @@ describe("world shared byte fixtures", () => {
                 internalId: `w${"q".repeat(120)}-${i}`,
                 normalWindow: true,
                 frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+                clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
                 output: { name: longOut },
                 desktops: [{ id: `${longWs.slice(0, 120)}-${i % 64}` }],
                 minimized: false, fullscreen: false, maximized: false, sticky: false,
@@ -603,16 +620,19 @@ describe("world T05 unbounded-maximum producer shape", () => {
         // Live T05 probe shape on the production DescribeWorld route: an
         // ordinary resizeable client reports a real minimum (176x150) with
         // Qt's unconstrained maximum (2147483647 x 2147483647, INT_MAX,
-        // meaning "no maximum"). The world report carries the raw
-        // QSize bytes verbatim; the core sanitizes the sentinel to absent
-        // at every use site, never refuses the report, and never
-        // classifies the client as an automatic float.
+        // meaning "no maximum"). The world report carries decorated-frame
+        // hints converted from the client QSize values via the live
+        // frame/client delta; this zero-decoration double keeps the raw
+        // bytes verbatim while the sentinel rides for core-side sanitize
+        // (absent at every use site, never a refusal, never an automatic
+        // float). Generic fake ids, real field shapes.
         const ws1 = { id: "ws-1" };
         const ws2 = { id: "ws-2" };
         const wins: Array<Record<string, unknown>> = [
             {
                 internalId: "win-t05", normalWindow: true,
                 frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+                clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
                 output: { name: "out-1" }, desktops: [ws1],
                 minimized: false, fullscreen: false, maximized: false, sticky: false,
                 minSize: { width: 176, height: 150 },
@@ -621,6 +641,7 @@ describe("world T05 unbounded-maximum producer shape", () => {
             {
                 internalId: "win-fixed", normalWindow: true,
                 frameGeometry: { x: 210, y: 0, width: 400, height: 300 },
+                clientGeometry: { x: 210, y: 0, width: 400, height: 300 },
                 output: { name: "out-1" }, desktops: [ws1],
                 minimized: false, fullscreen: false, maximized: false, sticky: false,
                 minSize: { width: 400, height: 300 }, maxSize: { width: 400, height: 300 },
@@ -668,8 +689,9 @@ describe("world T05 unbounded-maximum producer shape", () => {
                 return row as Record<string, unknown>;
             };
             const t05 = rowOf("win-t05");
-            // Raw Qt bytes ride verbatim; the unbounded max never promotes
-            // an ordinary client to an automatic float.
+            // Decorated hints converted with the zero decoration delta, so
+            // the client bytes ride unchanged; the unbounded max never
+            // promotes an ordinary client to an automatic float.
             assert.deepEqual(
                 t05["hints"],
                 { minW: 176, minH: 150, maxW: 2147483647, maxH: 2147483647 },

@@ -308,7 +308,7 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.markCreationSpent("op-native-1"), true, "spent resets with the generation");
     });
 
-    it("spends one-shot effects and frame/clear tokens once and settles attempts explicitly", () => {
+    it("spends one-shot effects and frame/clear tokens once with dispatch records", () => {
         const state = bound();
         assert.equal(state.markEffectSpent("fx-1"), true);
         assert.equal(state.markEffectSpent("fx-1"), false);
@@ -316,10 +316,9 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.markFloatSpent("op-3"), false);
         assert.equal(state.markClearSpent("op-4"), true);
         assert.equal(state.markClearSpent("op-4"), false);
-        state.armPossiblyExecuted("op-9", "transfer", "out/ws2");
-        assert.equal(state.isHeldAmbiguous("op-9"), true);
-        state.settleAttempt("op-9", "refused-proven", "refused-target");
-        assert.equal(state.isHeldAmbiguous("op-9"), false);
+        state.markDispatched("op-9");
+        assert.equal(state.isDispatched("op-9"), true);
+        assert.equal(state.isDispatched("op-10"), false);
     });
 
     it("rebinds generation on discovery, cancelling flights and restarting the client namespace", () => {

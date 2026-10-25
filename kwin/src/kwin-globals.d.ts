@@ -159,6 +159,14 @@ interface Window {
     // Properties -> `QRectF frameGeometry`. Written only through the guarded
     // boundary seam for float geometry.
     frameGeometry: Rect;
+    // Read-only in the official KWin scripting API (KWin::Window ->
+    // Read-only Properties -> `clientGeometry`; src/window.h Q_PROPERTY
+    // `KWin::RectF clientGeometry READ clientGeometry NOTIFY
+    // clientGeometryChanged` at pinned v6.7.4): the geometry of the window
+    // without frame borders, in global screen coordinates. Read-only: the
+    // adapter captures it for client-to-decorated size-hint conversion,
+    // never writes it.
+    readonly clientGeometry: Rect;
     // Read-write: official KWin scripting API -> KWin::Window -> Read-write
     // Properties -> `bool onAllDesktops`. Written only through the guarded
     // boundary seam for sticky floating.
@@ -382,6 +390,17 @@ interface Workspace {
     // KWin 6.7+ only: absent on KWin 6.6. Same capability-seam rule as the
     // setter above.
     currentDesktopForScreen(output: Output): VirtualDesktop | null;
+    // Script-visible hit test, verified at the pinned v6.7.4
+    // (src/scripting/workspace_wrapper.h:483-495,
+    // src/scripting/workspace_wrapper.cpp:369-395): up to count clients at
+    // a point, topmost first, skipping deleted, off-activity,
+    // off-desktop, minimized, show-desktop-hidden and non-hit windows.
+    // Availability on any other KWin version is unproven: callers must
+    // feature-detect the function itself (never assume presence), and no
+    // current path calls it (Stage 6 cursor work consumes it). Cursor-warp
+    // stays unsupported: no warp API exists on either the JS or the
+    // effect side.
+    windowAt(pos: Point, count?: number): unknown;
     rootTile(output: Output, desktop: VirtualDesktop): Tile | null;
     // src/scripting/workspace_wrapper.h: Q_SCRIPTABLE QRectF clientArea(
     //     ClientAreaOption option, Output *output, VirtualDesktop *desktop)

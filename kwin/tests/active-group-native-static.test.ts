@@ -6,6 +6,8 @@ const read = (path: string): string => readFileSync(path, "utf8");
 
 const effectHeader = read("native-effect/activewindowborder.h");
 const effectImpl = read("native-effect/activewindowborder.cpp");
+const factsHeader = read("native-effect/presentationfacts.h");
+const factsImpl = read("native-effect/presentationfacts.cpp");
 const logic = read("native-effect/activeborderlogic.h");
 const cmake = read("native-effect/CMakeLists.txt");
 const validator = read("native-effect/validate-metadata.cmake");
@@ -17,15 +19,52 @@ function countMatches(body: string, pattern: RegExp): number {
     return matches === null ? 0 : matches.length;
 }
 
+function extractBody(body: string, marker: string): string {
+    const start = body.indexOf(marker);
+    assert.ok(start >= 0, marker);
+    const end = body.indexOf("\n}\n", start);
+    assert.ok(end > start, marker);
+    return body.slice(start, end + 3);
+}
+
 describe("active-group native static contract", () => {
-    it("exposes setter, clear, and a read-only status query through the effect-owned endpoint", () => {
-        assert.equal(countMatches(effectImpl, /Q_SCRIPTABLE/g), 6);
+    it("exposes setter, clear, a read-only status query, and the held facts waiter through the effect-owned endpoint", () => {
+        assert.equal(countMatches(effectImpl, /Q_SCRIPTABLE/g), 7);
         assert.match(effectImpl, /SetGroupHighlight/);
         assert.match(effectImpl, /ClearGroupHighlight/);
         assert.match(effectImpl, /GetGroupHighlightStatus/);
         assert.match(effectImpl, /LastVerdict/);
         assert.match(effectImpl, /SetDragTargetPreview/);
         assert.match(effectImpl, /ClearDragTargetPreview/);
+        // Read-only versioned presentation facts for the script route
+        // (Stage 3 ingress): instance/revision identity, native chord
+        // bits, actual style numbers, and a bounded held-call lease. The
+        // Qt-only PresentationFactsSource module owns the waiter state
+        // machine (the same production class the offline transport test
+        // drives over a real bus); the endpoint forwards to it, and the
+        // effect only pushes observed chord/style levels.
+        assert.match(effectImpl, /WaitPresentationFacts/);
+        assert.match(effectImpl, /PresentationFactsSource/);
+        assert.match(effectImpl, /m_facts->handleWait/);
+        assert.match(effectImpl, /noteFactsChord/);
+        assert.match(effectImpl, /noteFactsStyle/);
+        assert.match(factsHeader, /class PresentationFactsSource/);
+        assert.match(factsHeader, /QDBusContext/);
+        assert.match(factsHeader, /MAX_REQUEST_BYTES/);
+        assert.match(factsImpl, /serviceOwner\(QStringLiteral\("org\.kde\.KWin"\)\)/);
+        assert.match(factsImpl, /QDBusError::AccessDenied/);
+        assert.match(factsImpl, /QDBusError::InvalidArgs/);
+        assert.match(factsImpl, /MAX_REQUEST_BYTES/);
+        assert.match(factsImpl, /available && m_tripleKnown/);
+        assert.match(factsImpl, /QDBusError::InvalidArgs/);
+        assert.match(factsImpl, /completePending\(false, true, true\)/);
+        assert.match(logic, /presentationFactsJson/);
+        assert.match(logic, /presentationFactsStale/);
+        assert.match(logic, /presentationFactsLeaseMs/);
+        assert.match(logic, /"instance"/);
+        assert.match(logic, /"changed"/);
+        assert.match(logic, /\\"superseded\\":%9/);
+        assert.match(logic, /\\"available\\"/);
         // No script maximize handoff: observation seeds directly from the
         // native committed maximizeMode().
         assert.doesNotMatch(effectImpl, /SetInitialMaximizeState/);
@@ -35,6 +74,16 @@ describe("active-group native static contract", () => {
         assert.doesNotMatch(effectImpl, /InitialMaximize/);
         assert.match(effectHeader, /groupHighlightStatus\(\) const/);
         assert.match(effectImpl, /Q_CLASSINFO\("D-Bus Interface", "com\.omnitiler\.ActiveBorder1"\)/);
+        // Effect-owned dedicated connection to the same session bus: Qt
+        // forbids delayed replies on local-loop (same-connection)
+        // messages, so the held waiter needs the endpoint on its own
+        // connection while the script keeps calling via KWin's sessionBus.
+        // Same service/path/interface/shape; the oracle stays on sessionBus.
+        assert.match(effectImpl, /connectToBus\(QDBusConnection::SessionBus/);
+        assert.match(effectImpl, /omnitiler-active-border-endpoint/);
+        assert.match(effectImpl, /disconnectFromBus/);
+        assert.match(effectImpl, /m_groupBus/);
+        assert.match(effectImpl, /new GroupHighlightObject\(this, m_groupBus/);
         assert.match(effectImpl, /QDBusConnection::sessionBus/);
         assert.match(effectImpl, /registerService\(QStringLiteral\("com\.omnitiler\.ActiveBorder"\)\)/);
         assert.match(effectImpl, /registerObject\(QStringLiteral\("\/com\/omnitiler\/ActiveBorder"\)/);
@@ -45,6 +94,24 @@ describe("active-group native static contract", () => {
         assert.doesNotMatch(effectImpl, /\/Effects/);
         assert.doesNotMatch(effectImpl, /reconfigureEffect/);
         assert.doesNotMatch(effectImpl, /org\.kde\.kwin\.Effects/);
+    });
+
+    it("seeds fresh facts sources before first serve and recovers a dropped dedicated bus", () => {
+        // A new group object (construction and reconnect rebind) is seeded
+        // with the actual rendered style and the current observed chord
+        // before registration/first call: a fresh instance must never
+        // serve default zeros as available facts.
+        const regBody = extractBody(effectImpl, "bool ActiveWindowBorderEffect::ensureGroupEndpointRegistered()");
+        const createdAt = regBody.indexOf("new GroupHighlightObject(this, m_groupBus, this)");
+        assert.ok(createdAt >= 0, "dedicated-connection object creation");
+        assert.ok(regBody.indexOf("noteFactsStyle()", createdAt) > createdAt, "style seed after create");
+        assert.ok(regBody.indexOf("noteFactsChord()", createdAt) > createdAt, "chord seed after create");
+        // Healthy and connected returns without re-registering; a dropped
+        // dedicated connection re-enters the reconnect path even while the
+        // endpoint still reads available.
+        assert.match(regBody, /m_groupDbusAvailable && m_groupDbusObject != nullptr/);
+        const endpointsBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::ensureEndpointsRegistered()");
+        assert.match(endpointsBody, /!m_groupDbusAvailable \|\| !m_groupBus\.isConnected\(\)/);
     });
 
     it("keeps the existing active border and adds exactly one filled group underlay", () => {
@@ -200,7 +267,19 @@ describe("active-group native static contract", () => {
         assert.doesNotMatch(effectHeader, /initialMaximizeEpoch/);
         assert.doesNotMatch(effectHeader, /clearInitialGate/);
         assert.doesNotMatch(effectHeader, /isInitialConfirmedNormal/);
+        // No script handoff residue anywhere in the maximize/diag paths:
+        // the facts instance UUID lives only in the factored source module.
+        // (QUuid::createUuid appears exactly once, minting the source
+        // instance.)
+        assert.equal(countMatches(factsImpl, /QUuid::createUuid/g), 1);
         assert.doesNotMatch(effectImpl, /QUuid::createUuid/);
+        for (const body of [
+            extractBody(effectImpl, "void ActiveWindowBorderEffect::subscribeMaximize("),
+            extractBody(effectImpl, "void ActiveWindowBorderEffect::updateMaximizedState("),
+            extractBody(effectImpl, "void ActiveWindowBorderEffect::emitActiveBorderVisible("),
+        ]) {
+            assert.doesNotMatch(body, /QUuid::createUuid/);
+        }
         assert.doesNotMatch(effectImpl, /m_initialEpoch/);
         assert.doesNotMatch(effectImpl, /clearInitialGate/);
         assert.doesNotMatch(effectImpl, /isInitialConfirmedNormal/);
@@ -226,10 +305,17 @@ describe("active-group native static contract", () => {
         // Focus activation clears immediately before async refresh.
         assert.match(effectImpl, /windowActivated/);
         assert.match(effectImpl, /clearGroupHighlight/);
-        // Registration failure fails closed with no retry.
+        // Registration failure fails closed with no retry. Focus clears
+        // synchronously (no async settle); the only singleShot in the
+        // effect is the facts-waiter lease, never the highlight path.
         assert.match(effectHeader, /m_groupDbusAvailable/);
         assert.match(effectImpl, /m_groupDbusAvailable/);
-        assert.doesNotMatch(effectImpl, /singleShot/);
+        for (const body of [
+            extractBody(effectImpl, "void ActiveWindowBorderEffect::applyGroupHighlight("),
+            extractBody(effectImpl, "void ActiveWindowBorderEffect::clearGroupHighlight("),
+        ]) {
+            assert.doesNotMatch(body, /singleShot/);
+        }
     });
 
     it("parses strict bounded JSON with identity ordering and renders only supplied union bounds", () => {
@@ -259,10 +345,8 @@ describe("active-group native static contract", () => {
         }
     });
 
-    it("forbids polling, timers, grabs, interception, filters, shortcuts, and custom scene rendering", () => {
+    it("forbids polling, grabs, interception, filters, shortcuts, and custom scene rendering", () => {
         for (const forbidden of [
-            /QTimer/,
-            /singleShot/,
             /startMousePolling/,
             /grabMouse/,
             /grabKeyboard/,
@@ -275,15 +359,58 @@ describe("active-group native static contract", () => {
             /prePaintScreen/,
             /postPaintScreen/,
             /startTimer/,
+            /QTimer::singleShot/,
         ]) {
             assert.doesNotMatch(effectImpl, forbidden);
             assert.doesNotMatch(effectHeader, forbidden);
         }
+        // The effect header carries no QTimer at all: the single lease
+        // timer lives in the factored facts module (pinned below).
+        assert.doesNotMatch(effectHeader, /QTimer/);
+    });
+
+    it("gates the paintScreen override spelling on the KWin package version", () => {
+        // Causal compile repair: KWin 6.8 changed Effect::paintScreen from
+        // void to [[nodiscard]] bool (sibling v6.7.4 effect.h:709 vs
+        // v6.8.0 :712; the effect API macro stayed 0.237, so no header
+        // macro fences it). The package version fences the spelling: 6.7
+        // keeps the void passthrough, 6.8 propagates the result. No
+        // runtime route, no renderer policy.
+        assert.match(cmake, /OMNITILER_KWIN_PAINTSCREEN_BOOL/);
+        assert.match(cmake, /KWin_VERSION VERSION_GREATER_EQUAL "6\.8"/);
+        assert.match(effectHeader, /#ifdef OMNITILER_KWIN_PAINTSCREEN_BOOL/);
+        assert.match(effectHeader, /\[\[nodiscard\]\] bool paintScreen\(/);
+        assert.match(effectImpl, /return effects->paintScreen\(renderTarget, viewport, mask, deviceRegion, screen\);/);
+    });
+
+    it("bounds the presentation-facts waiter to a single lease timer", () => {
+        // The held WaitPresentationFacts call needs a bounded lease so a
+        // wedged waiter recycles; this is the only timer in the facts
+        // module: single-shot, waiter-scoped, never polling, never
+        // rendering.
+        assert.match(factsHeader, /QTimer m_leaseTimer/);
+        const armBody = extractBody(factsImpl, "void PresentationFactsSource::armWaiter(");
+        assert.ok(armBody.length > 0);
+        assert.match(armBody, /m_leaseTimer\.start\(presentationFactsLeaseMs\(leaseMs\)\)/);
+        const ctorBody = extractBody(factsImpl, "PresentationFactsSource::PresentationFactsSource(");
+        assert.ok(ctorBody.length > 0);
+        assert.match(ctorBody, /m_leaseTimer\.setSingleShot\(true\)/);
+        assert.equal(countMatches(factsImpl, /new QTimer\(/g), 0);
+        assert.doesNotMatch(factsImpl, /QTimer::singleShot/);
+        assert.doesNotMatch(factsImpl, /\.start\([0-9]/);
+        assert.doesNotMatch(effectImpl, /m_factsWaitTimer/);
+        assert.doesNotMatch(effectImpl, /new QTimer/);
+        assert.doesNotMatch(effectHeader, /QTimer/);
     });
 
     it("covers changed files in CMake and the source validator", () => {
         assert.match(cmake, /activebordergroup_test\.cpp/);
         assert.match(cmake, /native-effect-group-highlight/);
+        assert.match(cmake, /presentationfacts_test\.cpp/);
+        assert.match(cmake, /native-effect-facts-transport/);
+        assert.match(cmake, /presentationfacts\.h/);
+        assert.match(cmake, /presentationfacts\.cpp/);
+        assert.match(cmake, /OMNITILER_KWIN_PAINTSCREEN_BOOL/);
         assert.match(cmake, /GROUP_HEADER/);
         assert.match(cmake, /GROUP_IMPL/);
         assert.match(cmake, /GROUP_LOGIC/);

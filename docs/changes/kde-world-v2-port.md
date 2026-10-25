@@ -6,11 +6,11 @@
   Windows is the migrated reference. No v1 compatibility, policy copies or
   second owner. [Principles](../principles.md#layering) and the
   [adapter guide](../porting/world-adapter-guide.md) are authoritative.
-- Stages 0/1/1b/2 are complete offline. The strict paired broker/v2 cutover,
-  B1 command wake and B2 native-attempt/source-release settlement are delivered;
-  all 720 KDE JS tests pass. Native acceptance remains TBD and this record stays
-  active for the whole port. Stages 3 onward are not started except for the
-  observation/actuation vocabulary required by the atomic wire cutover.
+- Stages 0/1/1b/2/3 are complete offline. The strict paired broker/v2 cutover,
+  command wake, native-attempt/source-release settlement and observe/actuate
+  boundary are delivered; all 764 KDE JS tests pass. Native acceptance remains
+  TBD and this record stays active for the whole port. Stage 4 is next; renderer,
+  host integration and the documented unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -31,7 +31,7 @@
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
-| 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
+| 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; independent active-border and pager-focused-window colors, default system accent, full-strength border/dimmer fill | Declaration/source checks and adapter tests; independent overrides; native styling remains host-owned |
@@ -847,4 +847,122 @@
   handling; preserve native identity, recovery, watermark/generation fencing and
   last-moment vetoes; remove legacy feedback/verdict and native-derived homing
   routes. Do not claim native arrival from a setter or logical receipt alone.
-  Stage 3 and native testing were not started by this delivery.
+   Stage 3 and native testing were not started by this delivery.
+
+## Stage 3 outcome (2026-10-26)
+
+- Clear now calls KWin's nonactivating `setMaximize(false, false)` at most once
+  per `clear_op`, with fresh maximized pre/post reads and actual
+  accepted/refused/threw disposition. Fullscreen/minimized/sticky, gestures,
+  unknown safety, changed homing/lifetime and stale watermark/generation veto
+  before spending; no-setter paths emit no attempt. Already-clear is observation,
+  not fabricated execution. Raw attempts retain the original broker clock and
+  survive lost acknowledgements; only exact bound incorporation retires them.
+- Float spending follows the final identity/safety/freshness gate immediately
+  before dispatch. Frame/clear, transfer phases and effects remain spent across
+  repeated replies and clear on generation rotation. Fresh captures, not setter
+  booleans or signals, provide settlement evidence. Existing migration, both-view
+  rewind, target-only lag, FIFO and no-unchosen-write scenarios remain intact.
+- Deleted `AttemptOutcome`, `AttemptFeedback`, `PendingAttempt`, `noteFeedback`,
+  `settleAttempt`, local possibly-executed verdict transitions and the entry's
+  terminal-settlement mirror. Dispatch records and proven-target safety vetoes
+  are mechanical only. Deleted the local three-attempt clamp budget and its
+  key/reset state: the real-engine regression proves core `constraint-clamp`
+  suppression, no writes under hold and resumed writes after external change.
+  Deleted migration's native-member-homing source fallback; core result or
+  paired refill provenance alone supplies that source. Host-owned reports now
+  omit logical views; native current/membership alone supplies core receipts.
+- Presentation captures proof-bound foreground/frame, native interactive move,
+  actual reversed bottom-first KWin stacking and bounded live pager frames.
+  Unknown stacking is empty; unavailable retained float/tile snapshots are null,
+  never a live frame relabelled as retained. Unmanaged foreground and game
+  identity are not invented. Classification and renderer derivation remain
+  Stages 4/5, not hidden alternate routes accepted by this stage.
+- Native `WaitPresentationFacts` supplies the actual effect style triple and
+  observed modifier chord with instance/revision, availability and supersession.
+  Style/chord are seeded before registration and on reconnect. Only the current
+  KWin bus owner may wait; foreign calls cannot replace the single pending slot.
+  Changes wake captures, idle leases do not. Malformed/unavailable/throw/timeout
+  paths hide unknown facts and recover on the verified host deadline; superseded
+  calls stand down, avoiding a competing-waiter loop. Late callbacks fence before
+  touching the newer watchdog. Teardown publishes unavailable.
+- Transport proof: Qt rejects delayed loopback replies on the shared connection
+  (`local-loop message cannot have delayed replies`). The sole existing
+  ActiveBorder endpoint therefore uses an effect-owned dedicated connection to
+  the same bus; service/path/interface and other methods stay unchanged. The
+  private-bus test uses production source and topology, dynamic asynchronous
+  calls, foreign denial, lease/change/supersession and exact teardown. A separate
+  negative leg pins the loopback limitation, not successful acceptance.
+- Coordinate proof: FULL/work/frame/client/cursor capture uses adapter-local
+  `Math.round` in KWin-logical pixels. Meaningful client hints become
+  `clientHint + round(frameExtent) - round(clientExtent)` per axis; missing
+  client geometry yields unknown converted hints, zero/unbounded sentinels keep
+  their meaning. `clientGeometry` is the window rectangle, not workspace
+  `clientArea`. Native style doubles use the same logical units: resolve negative
+  extension to current border width, then round to the protocol style range.
+  No device-scale multiplication or Windows invisible-border compensation.
+  Fractional and decorated-frame regressions pin the conversion.
+- A required native-build repair adapts KWin 6.8's `paintScreen` bool return
+  while retaining the 6.7 void override, selected at compile time by package
+  version. The 6.8 branch propagates painting failure; no runtime policy route.
+  Pinned API evidence uses local KWin `v6.7.4` sources (`window.h` clientGeometry,
+  setMaximize; workspace wrapper stacking/order; scripting asyncCall), with the
+  specific ABI comparison against `v6.8.0:src/effect/effect.h`.
+- KDE exporter ownership confirmed: shared catalog grew from 19 to 23 fields;
+  the four output/cursor fields currently lack KDE schema keys/controls. The
+  explicit partition is now 16 exposed, six unsupported and one schema-only.
+  No new control/default or shared catalog change; generated artifacts unchanged.
+
+### Stage 3 accepted evidence and corrections
+
+- Through the declared development environment: locked service all-target build
+  and tests 216/216; exporter 14/14 and exact `--check`; strict all-target clippy
+  for both crates; workspace formatting and whitespace; core world acceptance
+  6/6. Shared core/protocol/Windows source is unchanged; the prior 2,057 baseline
+  is not claimed as a freshly rerun full suite.
+- JS typecheck/build and full official suite 764/764, zero failures/skips/cancels.
+  Host-matched native effect build passes. Final test-enabled native CTest
+  passes 34/34 after seed/availability and watchdog corrections. No live KWin
+  mutation or native acceptance claim.
+- Review corrected undispatched float spending, a fabricated clear-veto row,
+  the missing final clear gate, local clamp ownership and pure-hold rescheduling.
+  Blanket removal of follow-up scheduling initially stalled the retained
+  both-view rewind; the narrow abandoned-refill suppression follow-up restores
+  that unchanged oracle and extinguishes on core retirement. The initial
+  loopback held-call approach failed on real Qt transport and was replaced by
+  the proven dedicated-connection mechanism, not accepted via a weaker oracle.
+  Test introspection initially blocked its own event loop; dynamic async calls
+  now match KWin's actual producer and complete the transport leg promptly.
+
+### Remaining host facts and neutrality review (parked)
+
+- **Decorated hints above the shared bound:** a client minimum of 16380 plus
+  20 logical pixels of decoration reports exactly 16400. Current core sanitizes
+  this to absent; KDE neither saturates nor substitutes another constraint.
+  Options: retain that bounded sanitization, widen neutral hint representation,
+  or express an explicit out-of-range constraint. Recommendation: preserve core
+  now, decide a neutral representation with native evidence later. Windows
+  physical units and KDE logical units can both reach the bound; macOS, GNOME
+  and ChromeOS must not inherit Windows-specific border or scale assumptions.
+  The [minimal discriminator](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs)
+  keeps native/reference outcomes TBD. No core change is requested by Stage 3.
+- **Game pause ingress:** no proven focused-fullscreen-game identity source is
+  available in the current KDE capture path, so `paused` remains false rather
+  than labelling every fullscreen application a game. Existing fullscreen hide
+  vetoes remain; pager/game-cost acceptance is not established. Options: ground
+  game facts through the shared classification path, conservatively pause every
+  fullscreen app, or retain the unsupported lane. Recommendation: investigate
+  the shared classification/native facts first, without selecting new product
+  behavior. Windows' existing game lane, KDE/macOS host facts and future GNOME/
+  ChromeOS sources must feed neutral policy, not adapter app-name heuristics.
+- Chord truth is the existing effect's observed modifier level on mouse events,
+  not a new keyboard hook. Unknown chord disables that arm; native interactive
+  move remains separately observed. Retained pager frame sources and unmanaged
+  foreground proof remain unknown where no native source exists; renderer and
+  game-pause acceptance belong to the remaining stages.
+- Earlier parked native-order merge, eligible-spare reuse, unknown sticky
+  retention, Activities/configure and directional product questions remain
+  unchanged. Tentative host-owned adoption decisions retain their later
+  cross-platform review. Exact next action: Stage 4 broker raw-capture envelope
+  into existing shared Rust classification/policy entry points, then delete its
+  superseded TypeScript policy copies. Stage 4 has not started.

@@ -138,10 +138,11 @@ function freshState(reply: WorldReply): WorldAdapterState {
     return state;
 }
 
-// Local ambiguity oracle (verdict transport deleted): settled outcomes
-// clear the possibly-executed hold, ambiguity keeps it.
+// Local dispatch-record oracle (verdict transport deleted): a dispatched
+// operation records once and never re-dispatches this generation; the raw
+// attempt rows plus fresh facts are the settlement evidence the core owns.
 function heldAmbiguous(state: WorldAdapterState, op: string): boolean {
-    return state.isHeldAmbiguous(op);
+    return state.isDispatched(op);
 }
 
 describe("world float placement", () => {
@@ -156,11 +157,14 @@ describe("world float placement", () => {
             sets: [],
             gesture: false,
         };
-        // The tiled win-b row converges exactly, so no clamp noise.
+        // The tiled win-b row converges exactly, so only the float placement writes.
         reply.windows.find((w) => w.win === "win-b")!.frame = [0, 0, 800, 600];
         reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
         world.frames.set("win-b", { x: 0, y: 0, w: 800, h: 600 });
         const state = freshState(reply);
+        // beginCapture clears dirty at flight start; the dispatch below
+        // must re-dirty for its follow-up.
+        state.dirty = false;
         const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
@@ -169,7 +173,9 @@ describe("world float placement", () => {
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.ok(first.geometryWrites >= 1);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
-        assert.equal(heldAmbiguous(state, OP), false, "read-back proof settles applied");
+        assert.equal(heldAmbiguous(state, OP), true, "dispatch recorded once; the raw attempt rides, core owns settlement");
+        assert.deepEqual(state.framesForReport().filter((a) => a.op === OP).length, 1, "one raw frame attempt recorded");
+        assert.equal(state.dirty, true, "dispatch schedules a follow-up capture");
         // A duplicate reply (same operation) never double-places.
         const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
@@ -207,7 +213,53 @@ describe("world float placement", () => {
         assert.ok(applied.geometryWrites >= 1);
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
-        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
+        assert.equal(heldAmbiguous(state, OP), true, "dispatch recorded once; the raw attempt rides, core owns settlement");
+    });
+
+    it("spends nothing on a stale final gate, then places once on a fresh capture", () => {
+        const reply = loadReply();
+        const world: FakeWorld = {
+            frames: new Map([
+                ["win-a", { x: 10, y: 10, w: 100, h: 100 }],
+                ["win-b", { x: 0, y: 0, w: 800, h: 600 }],
+            ]),
+            sets: [],
+            gesture: false,
+        };
+        reply.windows.find((w) => w.win === "win-b")!.frame = [0, 0, 800, 600];
+        reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
+        const state = freshState(reply);
+        // Live homing drifted since the observation was captured: the
+        // lane-level freshness still passes, but the final pre-setter
+        // gate fails closed before anything is spent.
+        let calls = 0;
+        const staleEnv = {
+            ...makeEnv(state, world),
+            readLiveMembership: () => ({ out: "out", ws: "drifted" }),
+            setGeometry: (ref: object, rect: { x: number; y: number; w: number; h: number }) => {
+                calls += 1;
+                return makeEnv(state, world).setGeometry(ref, rect);
+            },
+        };
+        const stale = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+            ...staleEnv,
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.equal(calls, 0, "stale final gate runs no native setter");
+        assert.ok(!state.floatSpent.has(OP), "stale veto spends no one-shot token");
+        assert.deepEqual(state.framesForReport().filter((a) => a.op === OP), [], "stale veto records no attempt");
+        assert.equal(stale.stoppedMidApply, true, "stale homing stops the apply");
+        // A fresh capture (homing converged) retries the still-undispatched
+        // desire exactly once.
+        const fresh = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.ok(fresh.geometryWrites >= 1, "fresh capture places");
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
+        assert.equal(heldAmbiguous(state, OP), true, "dispatch recorded once after the fresh gate");
     });
 
     it("lets unrelated later replies keep the retained frame without stealing", () => {
@@ -299,7 +351,7 @@ describe("world float placement", () => {
         });
         assert.equal(out.geometryWrites, 0);
         assert.deepEqual(world.sets, []);
-        assert.equal(heldAmbiguous(state, OP), false, "unrelated reply without the token settles nothing new");
+        assert.equal(heldAmbiguous(state, OP), false, "stale reply dispatches nothing");
     });
 
     it("a throw after the setter holds ambiguous without repeating", () => {
@@ -335,7 +387,7 @@ describe("world float placement", () => {
         const out = applyWorldReply(throwing);
         assert.ok(out.held >= 1);
         assert.equal(calls, 1);
-        assert.equal(heldAmbiguous(state, OP), true, "ambiguous hold, never repeated without proof");
+        assert.equal(heldAmbiguous(state, OP), true, "dispatch record stays; the raw creation-style attempt rides");
         // The ambiguous operation never repeats without fresh proof.
         const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
@@ -359,7 +411,7 @@ describe("world float placement", () => {
         reply.windows.find((w) => w.win === "win-b")!.frame = [0, 0, 800, 600];
         reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
         const state = freshState(reply);
-        state.armPossiblyExecuted(OP, "property", "out/ws");
+        state.markDispatched(OP);
         let calls = 0;
         const env = makeEnv(state, world);
         const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
@@ -389,7 +441,7 @@ describe("world float placement", () => {
         reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
         const state = freshState(reply);
         applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...makeEnv(state, world), observation: makeObservation(world), reply });
-        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
+        assert.equal(heldAmbiguous(state, OP), true, "dispatch record stays; no second native write");
         // The user moves the float elsewhere; the retained token still rides
         // a later reply (the core has not settled yet).
         world.frames.set("win-a", { x: 300, y: 300, w: 200, h: 150 });
@@ -401,10 +453,10 @@ describe("world float placement", () => {
         assert.equal(moved.geometryWrites, 0);
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.deepEqual(world.frames.get("win-a"), { x: 300, y: 300, w: 200, h: 150 });
-        assert.equal(heldAmbiguous(state, OP), false, "proven external input supersedes");
+        assert.equal(heldAmbiguous(state, OP), true, "external move holds without re-actuation; core settles from the attempt");
     });
 
-    it("an explicit refusal settles proven without repeating", () => {
+    it("an explicit refusal records the refused row without repeating", () => {
         const reply = loadReply();
         const world: FakeWorld = {
             frames: new Map([
@@ -429,7 +481,12 @@ describe("world float placement", () => {
             reply,
         });
         assert.equal(calls, 1);
-        assert.equal(heldAmbiguous(state, OP), false, "proven refusal settles without repeating");
+        assert.equal(heldAmbiguous(state, OP), true, "dispatch record stays; the refused row rides, core owns refusal");
+        assert.deepEqual(
+            state.framesForReport().filter((a) => a.op === OP),
+            [{ win: "win-a", target: [162, 122, 475, 355], setter: "refused", readback: [10, 10, 100, 100], dpiBefore: null, dpiAfter: null, attemptMs: state.lastClock, op: OP, pre: [10, 10, 100, 100] }],
+            "refused disposition plus unchanged prewrite rides the next report",
+        );
         const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
@@ -448,6 +505,9 @@ describe("world float placement", () => {
             gesture: true,
         };
         const state = freshState(reply);
+        // beginCapture clears dirty at flight start; the apply below starts
+        // from a clean capture.
+        state.dirty = false;
         const held = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
@@ -456,6 +516,8 @@ describe("world float placement", () => {
         assert.ok(held.held >= 1);
         assert.equal(world.sets.length, 0);
         assert.ok(!state.floatSpent.has(OP), "gesture hold stays unspent so the target retries");
+        assert.equal(state.dirty, false, "pure hold with no dispatch schedules no follow-up capture");
+        assert.deepEqual(state.framesForReport(), [], "pure hold records no attempt");
         // After the barrier lifts the same retained token still places.
         world.gesture = false;
         const placed = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
@@ -464,11 +526,11 @@ describe("world float placement", () => {
             reply,
         });
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
-        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
+        assert.equal(heldAmbiguous(state, OP), true, "dispatch recorded once after the barrier lifts; core owns settlement");
         void placed;
     });
 
-    it("a spent clamp budget on tiled rows never suppresses the explicit float target", () => {
+    it("a never-converging tiled row never suppresses the explicit float target", () => {
         const reply = loadReply();
         const world: FakeWorld = {
             frames: new Map([
@@ -478,15 +540,17 @@ describe("world float placement", () => {
             sets: [],
             gesture: false,
         };
-        // win-b never converges (its setter is filtered out), so the
-        // bounded per-context clamp budget spends; the explicit float
-        // target for win-a still places exactly once.
+        // win-b never converges (its setter is filtered out), so every
+        // Controlled mismatch writes with no local budget; the core owns
+        // stop/resume through later desires. The explicit float target
+        // for win-a still places exactly once.
         const state = freshState(reply);
         const env = makeEnv(state, world, { setFilter: (id) => id === "win-a" });
         for (let i = 0; i < 5; i += 1) {
             applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply });
         }
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
-        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
+        assert.equal(state.framesForReport().filter((a) => a.win === "win-b").length, 1, "latest-wins keeps one row per window");
+        assert.equal(heldAmbiguous(state, OP), true, "explicit float dispatch recorded once; tiled retries never touch it");
     });
 });

@@ -271,6 +271,30 @@ function readRect(ref: object): { x: number; y: number; w: number; h: number } |
     return { x, y, w, h };
 }
 
+// Read-only window client rectangle (KWin `clientGeometry` Q_PROPERTY at
+// pinned v6.7.4 `src/window.h:128`: the window geometry without frame
+// borders, global screen coordinates). Same KWin-logical rounding and
+// bounds as the decorated frame above; null when unreadable. Used only
+// for client-to-decorated size-hint conversion, never for placement.
+function readClientRect(ref: object): { x: number; y: number; w: number; h: number } | null {
+    const g = readProp(ref, "clientGeometry");
+    if (typeof g !== "object" || g === null) {
+        return null;
+    }
+    const r = g as Record<string, unknown>;
+    const x = toInt(r["x"]);
+    const y = toInt(r["y"]);
+    const w = toInt(r["width"] !== undefined ? r["width"] : r["w"]);
+    const h = toInt(r["height"] !== undefined ? r["height"] : r["h"]);
+    if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) {
+        return null;
+    }
+    if (x < -16384 || x > 16384 || y < -16384 || y > 16384 || w > 16384 || h > 16384) {
+        return null;
+    }
+    return { x, y, w, h };
+}
+
 function readClientArea(surface: object, outputRef: object, desktopRef: object): { x: number; y: number; w: number; h: number } | null {
     const fn = readProp(surface, "clientArea");
     if (typeof fn !== "function") {
@@ -308,6 +332,71 @@ function readHintSize(value: unknown): { w: number; h: number } | null {
         return null;
     }
     return { w, h };
+}
+
+// Client-to-decorated hint conversion (Stage 3/5 coordinate proof): Qt
+// minSize/maxSize are CLIENT sizes, but the wire hints are DECORATED-FRAME
+// sizes matching WindowFact.rect, which the core clamp assessment compares
+// observed frames against. wire = client + (frame - client) per axis, both
+// rects Math.round'ed KWin-logical pixels. Zero/sentinel values are
+// space-invariant (no minimum, unbounded maximum) and ride verbatim for
+// core-side sanitize; negatives never reach conversion (readHintSize
+// refuses them upstream, so the bound reads null). Only positive in-bound
+// client values convert, and an unknown delta (unreadable client rect)
+// nulls those bounds instead of mixing client and frame spaces. A
+// converted bound over the carried-geometry bound rides exact: the KDE
+// side must not saturate genuine constraints to accommodate the core
+// sanitizer (core caps valid carried rects at GEOMETRY_BOUND and sanitizes
+// larger values to absent today). That constraint-loss is a parked shared
+// neutrality concern, not solved here. Never Windows invisible-border
+// compensation: the delta is this window's own frame/client readback.
+const GEOMETRY_BOUND = 16384;
+function convertHintBound(value: number | null, delta: number | null): number | null {
+    if (value === null) {
+        return null;
+    }
+    if (value <= 0 || value > GEOMETRY_BOUND) {
+        return value;
+    }
+    if (delta === null) {
+        return null;
+    }
+    const converted = value + delta;
+    if (converted <= 0 || !Number.isSafeInteger(converted)) {
+        return null;
+    }
+    return converted;
+}
+
+// Host presentation facts snapshot (Stage 3 ingress, value seam, never a
+// reader): the latest versioned snapshot the entry fetched from the native
+// effect's `WaitPresentationFacts` waiter, or null when unknown (effect
+// absent, stale, or malformed). Absent/null rides disabled zeros and the
+// core hides instead of projecting. Offline tests inject exact values;
+// production always supplies the field with the latest fetched snapshot.
+export interface PresentationSnapshot {
+    instance: string;
+    rev: string;
+    chord: boolean;
+    borderGap: number;
+    borderWidth: number;
+    underlayExtension: number;
+}
+
+// Host-scaled style pixel (core MAX_PRESENTATION_STYLE_PX 0..1024, style
+// numbers refuse outside it): Math.round'ed KWin-logical pixels, clamped
+// to keep the report valid. Clamping an absurd configured value hides
+// truth, but refusing the whole report over style would fence every scope;
+// configured spinbox ranges stay far below the bound in practice.
+function toStylePx(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return 0;
+    }
+    const r = Math.round(value);
+    if (r < 0) {
+        return 0;
+    }
+    return r > 1024 ? 1024 : r;
 }
 
 // Bounded inventory read with explicit truncation: over-cap lists return
@@ -389,6 +478,12 @@ export interface ObserveEnv {
     // tile-overridden window carries fixedSuppress=true so the core never
     // auto-floats it, and stays tiled locally. Never policy.
     isTileOverride?: (win: string) => boolean;
+    // Stage-5 presentation facts seam (fact value, never policy): the
+    // latest native-effect snapshot the entry fetched (always present in
+    // production: a snapshot or null), or null when the effect facts are
+    // unknown. Null rides disabled zeros and the core hides instead of
+    // projecting. Offline tests inject exact values here.
+    presentationFacts?: PresentationSnapshot | null;
     // Adapter-asserted fixed-size origin decoration (read-only): the
     // intentional-float/suppress provenance for one stable id and live ref,
     // or null when unrecorded. Never classifies fresh admissions; the core
@@ -633,6 +728,13 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         const nativeWs = !stickyEmptyHomed && memberCount === 1 ? home : null;
         const min = readHintSize(readProp(ref, "minSize"));
         const max = readHintSize(readProp(ref, "maxSize"));
+        // Decorated-frame hint delta: this window's own frame/client
+        // readback difference (frame minus client) per axis. Null when the
+        // client rect is unreadable: converted bounds fail closed then,
+        // never mixing client and frame spaces.
+        const client = readClientRect(ref);
+        const deltaW = client !== null ? rect.w - client.w : null;
+        const deltaH = client !== null ? rect.h - client.h : null;
         const adapterFloat = (() => {
             try {
                 return env.isFloating !== undefined && env.isFloating(rawId);
@@ -703,8 +805,10 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             sticky: stickyNow,
             fixedAuto, fixedSuppress,
             hints: {
-                minW: min ? min.w : null, minH: min ? min.h : null,
-                maxW: max ? max.w : null, maxH: max ? max.h : null,
+                minW: convertHintBound(min ? min.w : null, deltaW),
+                minH: convertHintBound(min ? min.h : null, deltaH),
+                maxW: convertHintBound(max ? max.w : null, deltaW),
+                maxH: convertHintBound(max ? max.h : null, deltaH),
             },
             minimized: readProp(ref, "minimized") === true,
             nativeWs,
@@ -923,7 +1027,15 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             });
         }
     }
-    const views: ObservedViewFact[] = screenEntries.map((s) => {
+    // Logical view receipts: host-owned adapters omit them (the core
+    // derives every view receipt from the native current map in `native[]`
+    // through its own per-output bindings; the adapter never projects
+    // logical desires). Only tiler-owned domains keep the logical route.
+    // The adapter's converged binding table below is core-reply convergence
+    // for actuation targeting, never a view receipt source.
+    const views: ObservedViewFact[] = hostOwned
+        ? screenEntries.map((s) => ({ out: s.name, view: "" }))
+        : screenEntries.map((s) => {
         let view = "";
         if (s.current !== "") {
             try {
@@ -958,27 +1070,127 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     })();
     const visibleCurrents = new Set(screenEntries.map((s) => s.current).filter((c) => c !== ""));
     const fgRecord = activeId !== "" ? liveById.get(activeId) ?? null : null;
+    // Focused native Move subject (underlay move arm): the exact KWin
+    // `Window.move` (isInteractiveMove) level on the proven foreground
+    // lifetime, "" when the foreground is not in an interactive move.
+    // Resize-only (`resize` without `move`) never arms this lane. Offline
+    // lowercase aliases never apply: only the native property reads.
+    let moveWindow = "";
+    if (fgRecord !== null) {
+        try {
+            if (readProp(fgRecord.ref, "move") === true) {
+                moveWindow = fgRecord.win;
+            }
+        } catch (error) {
+            void error;
+        }
+    }
+    // Native top-to-bottom stacking snapshot for the pager order (Stage 5):
+    // pinned v6.7.4 `Workspace.stackingOrder` lists bottommost first
+    // (workspace_wrapper.h:137-142), so the reversed snapshot is topmost
+    // first. windowList order is NOT stacking and never substitutes here:
+    // unreadable stacking rides empty (the core renders no pager members
+    // rather than a fabricated order). Unknown ids (windows that left
+    // between the two enumerations) drop; duplicates keep first occurrence.
+    // Bounded like the core MAX_PRESENTATION_ORDER (1024): over-cap tails
+    // truncate bottom-first.
+    const MAX_PAGER_ORDER = 1024;
+    const stackingOrder: string[] = (() => {
+        try {
+            const raw = readProp(target, "stackingOrder");
+            const decoded = decodeListCapped(raw, MAX_WINDOWS);
+            if (decoded === null || decoded.items.length === 0) {
+                return [];
+            }
+            const order: string[] = [];
+            const seen = new Set<string>();
+            for (const item of decoded.items) {
+                if (typeof item !== "object" || item === null) {
+                    continue;
+                }
+                const id = normalizeNativeId(readProp(item as object, "internalId"));
+                if (id === null || !liveById.has(id) || seen.has(id)) {
+                    continue;
+                }
+                seen.add(id);
+                order.push(id);
+            }
+            return order.length > 0 ? order.reverse() : [];
+        } catch (error) {
+            void error;
+            return [];
+        }
+    })();
+    const pagerOrder = stackingOrder.slice(0, MAX_PAGER_ORDER);
+    // Style and chord ingress: the latest native-effect snapshot the entry
+    // fetched (always supplied: a snapshot or null), or null when the
+    // effect facts are unknown. A null snapshot rides disabled zeros and
+    // the core hides instead of projecting: unknown style/chord never
+    // renders guessed defaults. Doubles round adapter-side to KWin-logical
+    // pixels; the extension sentinel (< 0) resolves to the border width
+    // first; every lane clamps to the core 0..1024 style bound so style can
+    // never refuse the report. The snapshot's instance/rev is the entry's
+    // staleness fence, not observed here.
+    const snapshot: PresentationSnapshot | null = env.presentationFacts ?? null;
+    const resolvedExtension = snapshot !== null && snapshot.underlayExtension < 0
+        ? snapshot.borderWidth
+        : (snapshot?.underlayExtension ?? 0);
+    // Bounded pager source rows (adapter cap 4096: the core validates
+    // frames at its 10000 window-inventory bound, so the tighter adapter
+    // cap always validates while keeping oversized inventories out of the
+    // pager lane; over-cap tails drop bottom-first with the order above).
+    const MAX_PAGER_FRAMES = 4096;
     const presentation: ObservedPresentation = {
         foreground: fgRecord !== null ? fgRecord.win : "",
         minimized: fgRecord?.minimized ?? false,
         maximized: fgRecord?.maximized ?? false,
         fullscreen: fgRecord?.fullscreen ?? false,
+        // KWin exposes no cloaked (DWM-style redirection-hidden) state to
+        // scripts: always false. Minimized/hidden windows ride their own
+        // flags; never aliased here.
         cloaked: false,
         hiddenWorkspace: fgRecord !== null && !visibleCurrents.has(fgRecord.ws),
+        // No shell-surface concept in the managed normal-window set (shell
+        // surfaces are never normalWindow members): always false, never a
+        // guess from captions or classes.
         shell: false,
-        frame: fgRecord !== null ? fgRecord.rect : null,
-        borderEnabled: false,
-        underlayEnabled: false,
-        borderGap: 0,
-        borderWidth: 0,
-        underlayExtension: 0,
-        chordHeld: false,
-        moveWindow: "",
+        // A minimized foreground has no visible frame: null instead of a
+        // stale last geometry. The core hides on the minimized flag either
+        // way; the null keeps frame facts truthful.
+        frame: fgRecord !== null && !fgRecord.minimized ? fgRecord.rect : null,
+        // Effect liveness gates both overlays (one effect hosts both): a
+        // null snapshot means the effect facts are unknown, so both flags
+        // read false and the core hides instead of projecting.
+        borderEnabled: snapshot !== null,
+        underlayEnabled: snapshot !== null,
+        borderGap: snapshot !== null ? toStylePx(snapshot.borderGap) : 0,
+        borderWidth: snapshot !== null ? toStylePx(snapshot.borderWidth) : 0,
+        underlayExtension: snapshot !== null ? toStylePx(resolvedExtension) : 0,
+        // Native chord level from the effect snapshot (the script has no
+        // modifier/key-state source of its own): false when unknown. The
+        // underlay move arm still fires from the synchronous moveWindow
+        // read below.
+        chordHeld: snapshot?.chord === true,
+        moveWindow,
+        // Paused stays false: no focused-fullscreen-game identification
+        // baseline exists on KWin (game identity is unavailable to scripts
+        // and to the effect), so any-fullscreen-pauses would be new product
+        // behavior, not established host hide safety. The effect and the
+        // core still hide on their own fullscreen gates; this lane parks
+        // until a game baseline is discriminated and approved.
         paused: false,
-        // Native enumeration order (windowList order), never re-sorted or
-        // inferred: the pager mirrors the live inventory.
-        pagerOrder: [...liveById.keys()],
-        pagerFrames: [...liveById.values()].map((w) => ({ win: w.win, live: w.rect, float: null, tile: null })),
+        pagerOrder,
+        // Bounded source rows: live is the fresh frame (null for minimized,
+        // which has no visible frame). Float and tile slots stay null: the
+        // adapter keeps no retained frame store, and the live frame is not
+        // a retained source. The core resolves live, then float, then tile,
+        // and never reads WindowFact.rect for pager content.
+        pagerFrames: [...liveById.values()].slice(0, MAX_PAGER_FRAMES).map((w) => ({
+            win: w.win,
+            live: w.minimized ? null : w.rect,
+            float: null,
+            tile: null,
+        })),
     };
     return {
         mode, topology, bindings, domains, minimized, predicate: predicateWire, complete, gesture,

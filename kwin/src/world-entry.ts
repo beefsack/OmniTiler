@@ -93,7 +93,7 @@ import {
     type WorldTakeReply,
     type WorldWaitReply,
 } from "./world-report";
-import { captureWorldObservation, type WorldObservation } from "./world-observe";
+import { captureWorldObservation, type PresentationSnapshot, type WorldObservation } from "./world-observe";
 import { WorldAdapterState, type CaptureFlight, type QueuedIntent } from "./world-state";
 import { applyWorldReply } from "./world-apply";
 import { decodeList } from "./qml-list";
@@ -125,6 +125,23 @@ export const WORLD_WAKE_SIGNAL = "WorldWake";
 export const WORLD_TIMEOUT_MS = 2000;
 export const WORLD_DEBOUNCE_MS = 120;
 export const WORLD_WAIT_METHOD = "WaitWorldWake";
+// Native effect presentation-facts route (Stage 3 ingress, read-only):
+// the `omnitiler-active-border` effect owns the well-known object and
+// serves one held `WaitPresentationFacts` call per adapter generation.
+// The request and reply are single JSON strings (the same callDBus shape
+// as every other route): request
+// {"instance":"...","rev":"...","leaseMs":20000}, reply
+// {"v":1,"instance":"...","rev":"...","chord":0/1,"chordKnown":0/1,
+//  "gap":f64,"width":f64,"extension":f64,"changed":0/1}. A mismatched
+// identity completes immediately with the fresh snapshot; otherwise the
+// effect holds the call until a fact changes or the bounded lease expires.
+export const EFFECT_FACTS_SERVICE = "com.omnitiler.ActiveBorder";
+export const EFFECT_FACTS_OBJECT = "/com/omnitiler/ActiveBorder";
+export const EFFECT_FACTS_INTERFACE = "com.omnitiler.ActiveBorder1";
+export const EFFECT_FACTS_WAIT_METHOD = "WaitPresentationFacts";
+// Held-call lease, service-wake scale (the effect clamps to 1-60 s
+// server-side). The host watchdog below reuses WAIT_HOST_DEADLINE_MS.
+export const EFFECT_FACTS_LEASE_MS = 20000;
 // Host call deadline for long-held callDBus (verified, not invented):
 // KWin scripting.cpp uses sessionBus().asyncCall(message) with no timeout
 // argument (default -1); Qt passes it to libdbus, which substitutes
@@ -183,6 +200,17 @@ export interface WorldEntryOverrides {
     readonly oracleCallDbus?: (
         service: string, path: string, iface: string, method: string,
         callback: (reply: unknown) => void,
+    ) => void;
+    // Native effect presentation-facts seam (read-only, no policy): the
+    // transport for the held `WaitPresentationFacts` call on the effect's
+    // well-known object. Same callDBus shape as every other route
+    // (service/path/iface/method plus one JSON payload string). Absent
+    // skips the facts lane entirely (unknown facts hide presentation);
+    // production wires the global callDBus, offline tests inject exact
+    // replies or omit the seam.
+    readonly effectCallDbus?: (
+        service: string, path: string, iface: string, method: string,
+        payload: string, callback: (reply: unknown) => void,
     ) => void;
     // Renderer D-Bus caller for the native effect endpoints (drag-preview
     // overlay plus active-group highlight): the effect remains the
@@ -520,6 +548,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         replicateBindingsPerOutput: readModeAligned() === "per-output-local",
         isFloating: (win) => floatingIds.has(win),
         isTileOverride: (win) => tileIds.has(win),
+        // Latest native-effect facts snapshot for this generation (a
+        // snapshot or null when unknown): the held waiter keeps it fresh
+        // and invalidates on change, so every capture carries facts that
+        // precede their observation.
+        presentationFacts: effectSnapshot,
         ...(overrides.readFixedPredicateFn !== undefined ? { readFixedPredicate: overrides.readFixedPredicateFn } : {}),
         ...(overrides.fixedOriginOf !== undefined ? { fixedOriginOf: overrides.fixedOriginOf } : {}),
     });
@@ -1165,7 +1198,21 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         wakePendingCapture = false;
                     }
                     state.invalidate();
+                    // A fresh generation drops the old effect identity
+                    // before the post-discovery observation: stale snapshots
+                    // and replaced waiters never cross the rotation.
+                    effectSnapshot = null;
+                    effectWaiterOutstanding = false;
+                    effectWaiterGen = null;
+                    try {
+                        effectWatchdogCancel?.();
+                    } catch (error) {
+                        void error;
+                    }
+                    effectWatchdogCancel = null;
+                    cancelEffectRecovery();
                     void dispatch(false);
+                    armEffectWaiter();
                     armWait();
                 },
             );
@@ -1379,6 +1426,281 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
     let waitHoldForDiscovery = false;
     let wakePendingCapture = false;
+    // Native effect presentation-facts snapshot (Stage 3 ingress): the
+    // latest versioned snapshot the held effect waiter delivered for the
+    // bound generation, or null when unknown (effect absent, stale, or
+    // malformed). Every capture carries it verbatim; the observer hides
+    // presentation on null instead of guessing defaults. One waiter holds
+    // per generation; fact changes invalidate and wake observation without
+    // polling, and generation rotation drops stale waiters (spend/no replay
+    // on connection changes: no snapshot or waiter ever crosses a
+    // generation).
+    let effectSnapshot: PresentationSnapshot | null = null;
+    let effectWaiterOutstanding = false;
+    let effectWaiterNonce = 0;
+    let effectWaiterGen: string | null = null;
+    let effectWatchdogCancel: (() => void) | null = null;
+    let effectRetryCancel: (() => void) | null = null;
+
+    // Strict versioned parse of one effect facts reply: v:1 with an
+    // opaque instance/rev, 0/1 chord lanes, finite style doubles, an
+    // explicit changed/superseded lane pair and an availability lane.
+    // Oversize payloads refuse like malformed ones (bounded ingress: the
+    // genuine reply is tiny). A contradictory chord (held without known)
+    // refuses too, and the chord folds to false whenever unknown: the
+    // script never reports a level it cannot prove. Any other shape is
+    // unknown (never a partial snapshot: a half-parsed chord with guessed
+    // style would mix sources).
+    const parseEffectFacts = (reply: unknown): (PresentationSnapshot & { changed: boolean; superseded: boolean; available: boolean }) | null => {
+        if (typeof reply !== "string") {
+            return null;
+        }
+        if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
+            return null;
+        }
+        let value: unknown;
+        try {
+            value = JSON.parse(reply);
+        } catch (error) {
+            void error;
+            return null;
+        }
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            return null;
+        }
+        const r = value as Record<string, unknown>;
+        if (r["v"] !== 1) {
+            return null;
+        }
+        const instance = r["instance"];
+        const rev = r["rev"];
+        const chord = r["chord"];
+        const chordKnown = r["chordKnown"];
+        const gap = r["gap"];
+        const width = r["width"];
+        const extension = r["extension"];
+        const changed = r["changed"];
+        const superseded = r["superseded"];
+        const available = r["available"];
+        if (
+            typeof instance !== "string" || instance === "" || instance.length > 128 ||
+            typeof rev !== "string" || rev === "" || rev.length > 128 ||
+            (chord !== 0 && chord !== 1) || (chordKnown !== 0 && chordKnown !== 1) ||
+            (chord === 1 && chordKnown !== 1) ||
+            typeof gap !== "number" || !Number.isFinite(gap) ||
+            typeof width !== "number" || !Number.isFinite(width) ||
+            typeof extension !== "number" || !Number.isFinite(extension) ||
+            (changed !== 0 && changed !== 1) ||
+            (superseded !== 0 && superseded !== 1) ||
+            (available !== 0 && available !== 1)
+        ) {
+            return null;
+        }
+        return {
+            instance, rev, chord: chord === 1 && chordKnown === 1,
+            borderGap: gap, borderWidth: width, underlayExtension: extension,
+            changed: changed === 1, superseded: superseded === 1, available: available === 1,
+        };
+    };
+
+    // Single held effect-facts waiter for the bound generation. Re-arm
+    // FIRST on every terminal waiter reply (the effect parks the new
+    // waiter immediately), then invalidate on changed snapshots so the
+    // fresh facts precede their observation. The 25 s host watchdog drops
+    // a killed call to unknown (hide) and re-arms with the same identity,
+    // so an enabled-later effect is adopted without polling and a
+    // removed effect hides without wedging the capture lane.
+    const armEffectWaiter = (): void => {
+        if (stopped || effectWaiterOutstanding) {
+            return;
+        }
+        if (state.boundGen === null || state.brokerIncarnation === null || discoverOutstanding) {
+            return;
+        }
+        // The facts lane is opt-in transport: without the effect seam the
+        // lane stays unknown (hide) and nothing is armed, so offline
+        // doubles without an effect service observe zero lane impact.
+        const effectCall = overrides.effectCallDbus;
+        if (effectCall === undefined) {
+            return;
+        }
+        const gen = state.boundGen;
+        effectWaiterNonce += 1;
+        const nonce = effectWaiterNonce;
+        effectWaiterGen = gen;
+        effectWaiterOutstanding = true;
+        const request = JSON.stringify({
+            instance: effectSnapshot?.instance ?? "",
+            rev: effectSnapshot?.rev ?? "",
+            leaseMs: EFFECT_FACTS_LEASE_MS,
+        });
+        let settled = false;
+        effectWatchdogCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            if (settled || stopped || nonce !== effectWaiterNonce) {
+                return;
+            }
+            settled = true;
+            effectWaiterOutstanding = false;
+            effectWaiterGen = null;
+            effectWatchdogCancel = null;
+            log("omnitiler:world:effect-facts-host-timeout recovery=rearm-unknown");
+            effectSnapshot = null;
+            state.invalidate();
+            scheduleDispatch();
+            armEffectWaiter();
+        });
+        try {
+            (effectCall as NonNullable<WorldEntryOverrides["effectCallDbus"]>)(
+                EFFECT_FACTS_SERVICE, EFFECT_FACTS_OBJECT, EFFECT_FACTS_INTERFACE,
+                EFFECT_FACTS_WAIT_METHOD, request, (reply: unknown) => {
+                    if (settled) {
+                        return;
+                    }
+                    if (nonce !== effectWaiterNonce || gen !== effectWaiterGen) {
+                        // Stale completion (superseded arm or rotated
+                        // generation): never clears the current slot and
+                        // never cancels its watchdog. The orphaned waiter
+                        // is terminal here; the live arm keeps its timeout.
+                        settled = true;
+                        log("omnitiler:world:effect-facts-stale recovery=ignore");
+                        return;
+                    }
+                    settled = true;
+                    const cancel = effectWatchdogCancel;
+                    effectWatchdogCancel = null;
+                    try {
+                        cancel?.();
+                    } catch (error) {
+                        void error;
+                    }
+                    onEffectFactsReply(nonce, gen, reply);
+                },
+            );
+        } catch (error) {
+            void error;
+            settled = true;
+            effectWaiterOutstanding = false;
+            effectWaiterGen = null;
+            try {
+                effectWatchdogCancel?.();
+            } catch (discardError) {
+                void discardError;
+            }
+            effectWatchdogCancel = null;
+            // Synchronous transport throw: drop any retained snapshot (a
+            // stale chord or style must never ride another capture) with one
+            // follow-up capture only when something was known, then stand
+            // down to the single host-deadline recovery chain: no hot loop
+            // on a synchronously throwing transport.
+            if (effectSnapshot !== null) {
+                effectSnapshot = null;
+                state.invalidate();
+                scheduleDispatch();
+            }
+            log("omnitiler:world:effect-facts-transport recovery=host-deadline-unknown");
+            scheduleEffectRecovery();
+        }
+    };
+    // Terminal reply of one held effect-facts call. The nonce plus
+    // generation fence stale completions first (a retried waiter owns the
+    // slot; a late callback neither clears it nor re-arms beside it).
+    // Every valid reply re-arms for the current generation; only changed
+    // snapshots invalidate (a lease expiry is not work and never dispatches
+    // by itself). A superseded waiter stands down to the host deadline
+    // instead of ping-ponging an immediate re-arm against its replacement.
+    // A malformed reply hides presentation (unknown snapshot plus one
+    // follow-up capture) and then stands down the same way: a persistently
+    // malformed effect yields one call per host deadline, never a hot
+    // re-arm loop over a stale snapshot.
+    const onEffectFactsReply = (nonce: number, gen: string, reply: unknown): void => {
+        if (stopped) {
+            return;
+        }
+        if (nonce !== effectWaiterNonce || gen !== effectWaiterGen) {
+            log("omnitiler:world:effect-facts-stale recovery=ignore");
+            return;
+        }
+        effectWaiterOutstanding = false;
+        effectWaiterGen = null;
+        if (gen !== state.boundGen) {
+            log("omnitiler:world:effect-facts-stale recovery=ignore");
+            return;
+        }
+        const parsed = parseEffectFacts(reply);
+        if (parsed === null) {
+            // Malformed/oversize/invalid: unknown supersedes any retained
+            // snapshot (a stale chord or style must never ride another
+            // capture), one follow-up capture publishes the hide, and the
+            // lane stands down to the single host-deadline recovery chain.
+            log("omnitiler:world:effect-facts-malformed recovery=host-deadline-unknown");
+            effectSnapshot = null;
+            state.invalidate();
+            scheduleDispatch();
+            scheduleEffectRecovery();
+            return;
+        }
+        if (!parsed.available) {
+            // Explicit endpoint teardown: same unknown treatment as
+            // malformed, with its own reason. The next waiter (after a
+            // restart) re-binds a fresh instance; a stale one never applies
+            // here because generation fencing already dropped it.
+            log("omnitiler:world:effect-facts-unavailable recovery=host-deadline-unknown");
+            effectSnapshot = null;
+            state.invalidate();
+            scheduleDispatch();
+            scheduleEffectRecovery();
+            return;
+        }
+        if (parsed.superseded) {
+            // Replaced by a newer waiter: stand down to the host deadline
+            // instead of ping-ponging an immediate re-arm. The snapshot is
+            // kept: supersession is transport, never newer facts.
+            log("omnitiler:world:effect-facts-superseded recovery=host-deadline");
+            scheduleEffectRecovery();
+            return;
+        }
+        effectSnapshot = {
+            instance: parsed.instance, rev: parsed.rev, chord: parsed.chord,
+            borderGap: parsed.borderGap, borderWidth: parsed.borderWidth,
+            underlayExtension: parsed.underlayExtension,
+        };
+        armEffectWaiter();
+        if (parsed.changed) {
+            log(`omnitiler:world:effect-facts-changed instance=${token(parsed.instance)} rev=${token(parsed.rev)}`);
+            state.invalidate();
+            scheduleDispatch();
+        }
+    };
+
+    // Single host-bound effect-facts recovery chain: at most one live 25 s
+    // timer; arming while one lives keeps the original deadline (never
+    // overwritten). On fire the waiter re-arms if the generation still
+    // holds it; an unbound generation waits for discovery, which arms
+    // directly. Superseded and malformed lanes converge here, so neither
+    // can hot-loop: at most one waiter flight per host deadline.
+    const cancelEffectRecovery = (): void => {
+        try {
+            effectRetryCancel?.();
+        } catch (error) {
+            void error;
+        }
+        effectRetryCancel = null;
+    };
+    const scheduleEffectRecovery = (): void => {
+        if (stopped || effectRetryCancel !== null) {
+            return;
+        }
+        effectRetryCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            effectRetryCancel = null;
+            if (stopped || effectWaiterOutstanding) {
+                return;
+            }
+            if (state.boundGen === null || discoverOutstanding) {
+                return;
+            }
+            armEffectWaiter();
+        });
+    };
 
     // Terminal take collection for one filed queue-client command. The
     // capture reply never carries the result (requester-only even when the
@@ -1887,23 +2209,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     if (parsed.warpCursor !== null) {
                         log(`omnitiler:world:warp-desired ignored x=${parsed.warpCursor[0]} y=${parsed.warpCursor[1]}`);
                     }
-                    // Terminal retained-operation verdicts settle matching
-                    // locally ambiguous attempts only: proven outcomes end
-                    // ambiguity, continuations and abandonments stay
-                    // core-owned. Unknown ops or unmatched ids change
-                    // nothing and never actuate.
-                    for (const settledOp of parsed.operationSettled) {
-                        if (!state.attempts.has(settledOp.op)) {
-                            continue;
-                        }
-                        if (settledOp.outcome === "float-frame-proven") {
-                            state.settleAttempt(settledOp.op, "applied", "");
-                        } else if (settledOp.outcome === "float-refused-proven" || settledOp.outcome === "refused-proven") {
-                            state.settleAttempt(settledOp.op, "refused-proven", settledOp.cause);
-                        } else if (settledOp.outcome === "superseded") {
-                            state.settleAttempt(settledOp.op, "superseded-external", "");
-                        }
-                    }
+                    // Core-published retained-operation settlement rides the
+                    // reply for core-side consumers only: the adapter never
+                    // mirrors it into local dispatch state. Local dispatch
+                    // records clear only on generation rotation; transfers
+                    // retire through subsequent replies, and raw attempt
+                    // rows plus fresh native facts are the only evidence
+                    // the adapter reports. Unknown ops change nothing and
+                    // never actuate.
                     const applied = applyWorldReply({
                         state,
                         observation: fresh,
@@ -3022,6 +3335,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             waitWatchdogCancel = null;
             cancelWaitRecovery();
             cancelDiscoverChain();
+            cancelEffectRecovery();
+            // Effect-facts teardown: drop the held waiter slot so a late
+            // facts callback no-ops on the fence; the pending native call
+            // (if any) completes into a cleared slot.
+            effectWaiterOutstanding = false;
+            effectWaiterGen = null;
+            effectSnapshot = null;
+            try {
+                effectWatchdogCancel?.();
+            } catch (error) {
+                void error;
+            }
+            effectWatchdogCancel = null;
             // Per-window homing teardown first so no stale window
             // callback can fire after stop; workspace detaches below
             // are idempotent and also release the per-window set.

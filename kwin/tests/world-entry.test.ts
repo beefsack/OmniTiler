@@ -1214,8 +1214,16 @@ describe("world entry aligned bindings", () => {
         }
         h.runTimers();
         const second = reportOf(h);
+        // Host-owned adapters omit logical views: the core derives receipts
+        // from native order/current. The converged binding proof rides
+        // native[] (live order plus current), never the views lane.
         const views = second["views"] as Array<Record<string, unknown>>;
-        assert.ok(views.some((v) => v["out"] === "out" && v["view"] === "al-1"), "live cell publishes its logical");
+        assert.ok(views.every((v) => v["view"] === ""), "host-owned adapters omit logical views");
+        const native = second["native"] as Array<{ out: string; order: string[]; current: string }>;
+        const row = native.find((n) => n.out === "out");
+        assert.ok(row !== undefined);
+        assert.ok(row.order.includes("ws1"), "live cell publishes its native order");
+        assert.equal(row.current, "ws1", "live cell publishes its native current");
     });
 
     it("replicates bindings per output in per-output-local across two screens", () => {
@@ -1241,11 +1249,16 @@ describe("world entry aligned bindings", () => {
         }
         h.runTimers();
         const second = reportOf(h);
-        // One logical view per output: the same native publishes a distinct
-        // logical on each output.
+        // One native order/current per output (the same global native list
+        // projects per output); the logical binding stays core-owned and
+        // the views lane stays empty under host ownership.
         assert.deepEqual(second["views"], [
-            { out: "out", view: "al-1" },
-            { out: "out-2", view: "al-9" },
+            { out: "out", view: "" },
+            { out: "out-2", view: "" },
+        ]);
+        assert.deepEqual(second["native"], [
+            { out: "out", order: ["ws1", "ws2"], current: "ws1" },
+            { out: "out-2", order: ["ws1", "ws2"], current: "ws1" },
         ]);
     });
 
@@ -1267,9 +1280,10 @@ describe("world entry aligned bindings", () => {
         }
         h.runTimers();
         const second = reportOf(h);
-        // Shared is unchanged: one logical view resolves through the
-        // output-less lookup (never replicated per output).
-        assert.deepEqual(second["views"], [{ out: "out", view: "sh-1" }]);
+        // Shared is unchanged: one native order/current row, and the
+        // logical binding stays core-owned with the views lane empty.
+        assert.deepEqual(second["views"], [{ out: "out", view: "" }]);
+        assert.deepEqual(second["native"], [{ out: "out", order: ["ws1", "ws2"], current: "ws1" }]);
     });
 });
 

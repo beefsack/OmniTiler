@@ -5,11 +5,11 @@ KDE and macOS ports). The remote contract is strict v2 with no
 compatibility route: v1 payloads, field names and discovery paths
 refuse and are never shimmed.
 
-KDE's paired cutover remains parked, not an accepted implementation of this
-guide. Its [port record](../changes/kde-world-v2-port.md#stage-2-implementation-boundary)
-  tracks partial offline evidence, delivered command wake transport and parked host-owned
-source-view supersession. Fresh backing correlation and the former five KDE
-oracles pass offline; native settlement must not be inferred from wire acceptance.
+KDE's paired cutover and observe/actuate boundary are complete offline. Its
+[port record](../changes/kde-world-v2-port.md) tracks accepted evidence and
+remaining classification, renderer and host-integration work. Fresh backing,
+source-view supersession and raw attempts pass offline; native settlement must
+not be inferred from wire acceptance.
 
 Source roots below are relative to the repository root. Core symbols
 live in `crates/tiler-core/src/`; the JSON codec lives in
@@ -459,9 +459,13 @@ the adapter never selects a replacement source refill by ordinal.
   and visible-frame spaces; join them explicitly per platform.
 - Size hints are client sizes; convert to decorated frames with the
   platform's own frame facts (KWin window `clientGeometry` versus
-  `frameGeometry`), never with another platform's compensation. KDE still
-  needs this window-client capture; its current `readClientArea` instead
-  reads `workspace.clientArea`, the desktop work area. Learned minima ride the
+  `frameGeometry`), never with another platform's compensation. KDE captures
+  both window rectangles and adds their rounded per-axis extent difference to
+  meaningful client hints. `readClientArea` instead reads `workspace.clientArea`,
+  the desktop work area. Conversion stays exact even above the current core
+  hint-sanitization bound; that constraint-loss concern is parked in the
+  [port record](../changes/kde-world-v2-port.md#stage-3-outcome-2026-10-26).
+  Learned minima ride the
   shared clamp/suppression lane: the shipped Windows fix (`01a73798`) prefers
   a later staged frame over the immediate readback (exact immediate
   target plus eligible later same-origin growth learns minima; the

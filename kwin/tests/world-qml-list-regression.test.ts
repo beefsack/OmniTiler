@@ -280,9 +280,14 @@ describe("world qml-list regression", () => {
         );
         assert.equal(result.viewWrites, 1);
         assert.equal(liveCurrent, WS_B);
-        // The view attempt settles locally so the next report carries
-        // proof instead of silently repeating the no-op (verdict
-        // transport is deleted; the hold drains through take/apply).
-        assert.equal(state.isHeldAmbiguous(TRANSFER_OP), false, "view settle clears ambiguity");
+        // The view dispatch records once so the next report carries the raw
+        // attempt instead of repeating the native call; the core owns
+        // settlement from that attempt plus fresh facts.
+        assert.equal(state.isDispatched(TRANSFER_OP), true, "view dispatch recorded once");
+        assert.equal(
+            state.viewAttemptsForReport().filter((v) => v.op === TRANSFER_OP).length,
+            1,
+            "exactly the view setter disposition rides the next report",
+        );
     });
 });

@@ -5,6 +5,7 @@
 #include "activeborderlogic.h"
 #include "drag_oracle_ffi.h"
 #include "oraclepress.h"
+#include "presentationfacts.h"
 
 #include <KColorScheme>
 #include <KSharedConfig>
@@ -22,6 +23,9 @@
 #include <QByteArray>
 #include <QColor>
 #include <QDBusConnection>
+#include <QDBusContext>
+#include <QDBusError>
+#include <QDBusMessage>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -29,6 +33,7 @@
 #include <QJsonValue>
 #include <QLoggingCategory>
 #include <QPalette>
+#include <QTimer>
 #include <QUuid>
 
 #include <chrono>
@@ -44,16 +49,24 @@ Q_LOGGING_CATEGORY(lcActiveBorder, "omnitiler.activeborder");
 namespace
 {
 
-class GroupHighlightObject : public QObject
+class GroupHighlightObject : public QObject, protected QDBusContext
 {
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "com.omnitiler.ActiveBorder1")
 
 public:
-    explicit GroupHighlightObject(ActiveWindowBorderEffect *effect, QObject *parent = nullptr)
+    explicit GroupHighlightObject(ActiveWindowBorderEffect *effect, const QDBusConnection &connection,
+        QObject *parent = nullptr)
         : QObject(parent)
         , m_effect(effect)
+        , m_bus(connection)
+        , m_facts(new PresentationFactsSource(connection, this))
     {
+    }
+
+    PresentationFactsSource *facts() const
+    {
+        return m_facts;
     }
 
 public Q_SLOTS:
@@ -85,9 +98,37 @@ public Q_SLOTS:
     {
         return m_effect ? m_effect->groupHighlightStatus() : QStringLiteral("v=1;rx=0;ok=0;parse_rej=0;focus_mm=0;stale=0;clr=0;has=0;ord=0;first=0;chord=0;move=0;foc=0;ep=0;gl=0;vis=0");
     }
+    // Versioned raw presentation facts for the KWin script route (Stage 3
+    // ingress, read-only, no policy). The request carries the
+    // script-known identity as JSON
+    // ({"instance":"...","rev":"...","leaseMs":20000}); a mismatched
+    // identity completes immediately with the fresh snapshot, otherwise
+    // the call holds until a fact changes or the bounded lease expires.
+    // Delayed reply: the effect owns the pending message, never the bus.
+    Q_SCRIPTABLE void WaitPresentationFacts(const QString &request, const QDBusMessage &message)
+    {
+        if (!calledFromDBus()) {
+            return;
+        }
+        setDelayedReply(true);
+        if (m_effect) {
+            m_facts->handleWait(request, message);
+            return;
+        }
+        m_bus.send(message.createErrorReply(QDBusError::InvalidArgs,
+            QStringLiteral("presentation facts unavailable")));
+    }
 
 private:
     ActiveWindowBorderEffect *m_effect = nullptr;
+    // Exact connection the ActiveBorder object is registered on (the
+    // effect-owned dedicated connection): error replies route here, never
+    // the shared sessionBus.
+    QDBusConnection m_bus;
+    // Versioned raw presentation facts for the script route (Stage 3
+    // ingress, read-only): the same production class the offline transport
+    // test drives, held on this well-known object.
+    PresentationFactsSource *m_facts = nullptr;
 };
 
 class LastVerdictObject : public QObject
@@ -207,17 +248,20 @@ const char *activeBorderDiagReason(bool hasWindow, bool deleted, bool minimized,
 ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     : m_isOpenGL(effects->isOpenGLCompositing())
     , m_borderItem(RectF(), BorderOutline())
+    , m_groupBusName(QStringLiteral("omnitiler-active-border-endpoint"))
+    , m_groupBus(QDBusConnection::connectToBus(QDBusConnection::SessionBus, m_groupBusName))
 {
     ActiveBorderConfig::instance(QStringLiteral("kwinrc"));
     updateOutline();
     updateGroupUnderlayFill();
 
-    m_groupDbusObject = new GroupHighlightObject(this, this);
     group_highlight_state_init(&m_groupState);
     // Fail closed with no false endpoint expectation: the group stays
     // unavailable/clear unless both the well-known service and object
-    // register. Visibility and apply paths gate on this flag. A transient
-    // failure retries on later activation/reconfigure events, never by timer.
+    // register. A transient failure retries on later activation/reconfigure
+    // events, never by timer. The ActiveBorder object binds the
+    // effect-owned dedicated connection (cross-connection held replies);
+    // the oracle stays on the shared sessionBus.
     m_oracleDbusObject = new LastVerdictObject(this);
     ensureEndpointsRegistered();
     if (!m_groupDbusAvailable) {
@@ -344,15 +388,27 @@ ActiveWindowBorderEffect::~ActiveWindowBorderEffect()
     delete m_oraclePressSpy;
     m_oraclePressSpy = nullptr;
     // Release only endpoints this effect registered, never an endpoint owned
-    // elsewhere after a failed or partial registration.
+    // elsewhere after a failed or partial registration. The ActiveBorder
+    // endpoint tears down on its exact owned connection (unregister there,
+    // then disconnect that named connection); the shared sessionBus and the
+    // oracle endpoint on it are untouched by the ActiveBorder teardown.
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (m_oracleDbusAvailable) {
         bus.unregisterObject(QStringLiteral("/com/omnitiler/DragOracle"));
         bus.unregisterService(QStringLiteral("com.omnitiler.DragOracle"));
     }
     if (m_groupDbusAvailable) {
-        bus.unregisterObject(QStringLiteral("/com/omnitiler/ActiveBorder"));
-        bus.unregisterService(QStringLiteral("com.omnitiler.ActiveBorder"));
+        m_groupBus.unregisterObject(QStringLiteral("/com/omnitiler/ActiveBorder"));
+        m_groupBus.unregisterService(QStringLiteral("com.omnitiler.ActiveBorder"));
+    }
+    // A held script waiter is owned by the facts source on the well-known
+    // object: destroying the object completes any pending waiter as
+    // explicitly unavailable, so the script hides immediately instead of
+    // holding a stale snapshot through its lease.
+    delete m_groupDbusObject;
+    m_groupDbusObject = nullptr;
+    if (!m_groupBusName.isEmpty()) {
+        QDBusConnection::disconnectFromBus(m_groupBusName);
     }
 }
 
@@ -360,6 +416,10 @@ void ActiveWindowBorderEffect::reconfigure(ReconfigureFlags)
 {
     ensureEndpointsRegistered();
     ActiveBorderConfig::self()->read();
+    // A style configuration change is a published fact change: push the
+    // live triple the effect renders with so a held waiter completes with
+    // the same numbers. The source bumps only on material change.
+    noteFactsStyle();
     updateOutline();
     updateDragPreviewFill();
     updateGroupUnderlayFill();
@@ -882,9 +942,15 @@ void ActiveWindowBorderEffect::emitOracleEndpoint()
 bool ActiveWindowBorderEffect::ensureDbusEndpoint(
     const QString &service, const QString &path, QObject *object, bool *serviceOkOut, bool *objectOkOut)
 {
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    return ensureDbusEndpointOn(bus, service, path, object, serviceOkOut, objectOkOut);
+}
+
+bool ActiveWindowBorderEffect::ensureDbusEndpointOn(
+    QDBusConnection &bus, const QString &service, const QString &path, QObject *object, bool *serviceOkOut, bool *objectOkOut)
+{
     bool serviceOk = false;
     bool objectOk = false;
-    QDBusConnection bus = QDBusConnection::sessionBus();
     if (bus.isConnected() && object != nullptr) {
         serviceOk = bus.registerService(service);
         objectOk = bus.registerObject(path, object, QDBusConnection::ExportScriptableContents);
@@ -915,6 +981,62 @@ bool ActiveWindowBorderEffect::ensureDbusEndpoint(
     return false;
 }
 
+bool ActiveWindowBorderEffect::ensureGroupEndpointRegistered()
+{
+    // Establish the effect-owned dedicated connection once: a distinct
+    // connection to the same session bus (unique internal name, never the
+    // shared sessionBus handle), so held WaitPresentationFacts replies
+    // route cross-connection instead of hitting the local-loop limit.
+    if (!m_groupBus.isConnected()) {
+        // Stale named handle: drop it before a fresh connect so the name
+        // is never double-registered.
+        if (!m_groupBusName.isEmpty()) {
+            QDBusConnection::disconnectFromBus(m_groupBusName);
+            m_groupBus = QDBusConnection::connectToBus(QDBusConnection::SessionBus, m_groupBusName);
+        }
+        if (!m_groupBus.isConnected()) {
+            return false;
+        }
+        // A (re)connected bus invalidates the previous binding: the facts
+        // source holds exactly the registering connection, so rebind the
+        // object to the current one. The instance identity resets, which
+        // the script treats as unknown (hide) until fresh facts arrive.
+        delete m_groupDbusObject;
+        m_groupDbusObject = nullptr;
+        m_groupDbusAvailable = false;
+    } else if (m_groupDbusAvailable && m_groupDbusObject != nullptr) {
+        // Healthy and connected: never re-register while well.
+        return true;
+    }
+    if (m_groupDbusObject == nullptr) {
+        m_groupDbusObject = new GroupHighlightObject(this, m_groupBus, this);
+        // Seed the fresh source before registration/first call: the actual
+        // rendered style triple and the current observed chord. Config is
+        // instantiated before construction ensures endpoints; an unseeded
+        // source serves available:false (no guessed defaults).
+        noteFactsStyle();
+        noteFactsChord();
+    }
+    bool serviceOk = false;
+    bool objectOk = false;
+    if (ensureDbusEndpointOn(m_groupBus, QStringLiteral("com.omnitiler.ActiveBorder"),
+            QStringLiteral("/com/omnitiler/ActiveBorder"), m_groupDbusObject, &serviceOk, &objectOk)) {
+        m_groupDbusAvailable = true;
+        // Transition diagnostic only: initial success or recovery once.
+        // Never affects gate, visibility, or repaint decisions.
+        emitActiveBorderEndpoint();
+        return true;
+    }
+    if (!m_groupEndpointFailedLogged) {
+        m_groupEndpointFailedLogged = true;
+        logActiveBorderDiag(QStringLiteral("omnitiler:active-border:endpoint stage=failed service=%1 object=%2")
+                .arg(serviceOk ? 1 : 0)
+                .arg(objectOk ? 1 : 0));
+        emitActiveBorderEndpoint();
+    }
+    return false;
+}
+
 void ActiveWindowBorderEffect::ensureOraclePressSpy()
 {
     // Late install when input redirection was null at construction. Passive
@@ -936,22 +1058,13 @@ void ActiveWindowBorderEffect::ensureEndpointsRegistered()
 {
     // Idempotent: never re-registers while healthy, never polls. Called from
     // construction plus the existing activation and reconfigure events.
-    if (!m_groupDbusAvailable) {
-        bool serviceOk = false;
-        bool objectOk = false;
-        if (ensureDbusEndpoint(QStringLiteral("com.omnitiler.ActiveBorder"),
-                QStringLiteral("/com/omnitiler/ActiveBorder"), m_groupDbusObject, &serviceOk, &objectOk)) {
-            m_groupDbusAvailable = true;
-            // Transition diagnostic only: initial success or recovery once.
-            // Never affects gate, visibility, or repaint decisions.
-            emitActiveBorderEndpoint();
-        } else if (!m_groupEndpointFailedLogged) {
-            m_groupEndpointFailedLogged = true;
-            logActiveBorderDiag(QStringLiteral("omnitiler:active-border:endpoint stage=failed service=%1 object=%2")
-                    .arg(serviceOk ? 1 : 0)
-                    .arg(objectOk ? 1 : 0));
-            emitActiveBorderEndpoint();
-        }
+    // The ActiveBorder endpoint registers on the effect-owned dedicated
+    // connection (same bus, same service/path/interface/shape); the
+    // DragOracle endpoint stays on the shared sessionBus. A dropped
+    // dedicated connection recovers even while the endpoint still reads
+    // available: the bus check below re-enters the reconnect path.
+    if (!m_groupDbusAvailable || !m_groupBus.isConnected()) {
+        ensureGroupEndpointRegistered();
     }
     // Drag oracle endpoint stays independent of the ActiveBorder outcome, so
     // one failure never hides the other service.
@@ -1255,15 +1368,47 @@ void ActiveWindowBorderEffect::onMouseChanged(const QPointF &pos, const QPointF 
     Q_UNUSED(buttons);
     Q_UNUSED(oldButtons);
     Q_UNUSED(oldModifiers);
+    const bool wasKnown = m_firstMouseSeen;
     m_firstMouseSeen = true;
     // Movement-only chord: both Win and Shift held (extras allowed, either
     // press order). The predicate lives in Rust; only these two level bits
     // fold here. Unknown before the first signal hides via the first-seen
     // gate in updateGroupVisibility.
+    const bool wasHeld = m_chordHeld;
     m_chordHeld = groupUnderlayChordHeld(
         modifiers.testFlag(Qt::MetaModifier), modifiers.testFlag(Qt::ShiftModifier));
+    // A chord level/known flip is a published fact change: push the observed
+    // level into the versioned script facts so a held waiter completes with
+    // the fresh snapshot instead of holding stale identity.
+    if (!wasKnown || wasHeld != m_chordHeld) {
+        noteFactsChord();
+    }
     updateGroupVisibility();
     emitGroupTransitionDiag();
+}
+
+// Versioned raw presentation facts for the script route (Stage 3 ingress,
+// read-only): pushes the observed chord level and the actual style
+// configuration into the held facts source on the well-known object. The
+// source bumps its revision only on material change; the script fences
+// snapshots on (instance, rev).
+void ActiveWindowBorderEffect::noteFactsChord()
+{
+    if (auto *dbusObject = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
+        if (PresentationFactsSource *facts = dbusObject->facts()) {
+            facts->noteChord(m_chordHeld, m_firstMouseSeen);
+        }
+    }
+}
+
+void ActiveWindowBorderEffect::noteFactsStyle()
+{
+    if (auto *dbusObject = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
+        if (PresentationFactsSource *facts = dbusObject->facts()) {
+            facts->noteStyle(ActiveBorderConfig::borderGap(), ActiveBorderConfig::borderWidth(),
+                ActiveBorderConfig::groupUnderlayExtension());
+        }
+    }
 }
 
 void ActiveWindowBorderEffect::updateGroupVisibility()
@@ -1295,10 +1440,17 @@ void ActiveWindowBorderEffect::updateGroupVisibility()
     }
 }
 
+#ifdef OMNITILER_KWIN_PAINTSCREEN_BOOL
+bool ActiveWindowBorderEffect::paintScreen(const RenderTarget &renderTarget, const RenderViewport &viewport, int mask, const Region &deviceRegion, LogicalOutput *screen)
+{
+    return effects->paintScreen(renderTarget, viewport, mask, deviceRegion, screen);
+}
+#else
 void ActiveWindowBorderEffect::paintScreen(const RenderTarget &renderTarget, const RenderViewport &viewport, int mask, const Region &deviceRegion, LogicalOutput *screen)
 {
     effects->paintScreen(renderTarget, viewport, mask, deviceRegion, screen);
 }
+#endif
 
 KWIN_EFFECT_FACTORY(ActiveWindowBorderEffect, "metadata.json")
 

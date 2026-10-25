@@ -20,26 +20,6 @@ import {
     type WorldViewAttempt,
 } from "./world-report";
 
-export type AttemptOutcome =
-    | "unattempted"
-    | "possibly-executed"
-    | "refused-proven"
-    | "superseded-external"
-    | "applied";
-
-export interface AttemptFeedback {
-    op: string;
-    kind: "transfer" | "view" | "creation" | "effect" | "property";
-    outcome: AttemptOutcome;
-    hold: string;
-}
-
-export interface PendingAttempt {
-    op: string;
-    kind: AttemptFeedback["kind"];
-    target: string;
-}
-
 // Executed-but-unproven native creation: the native call ran (op spent)
 // but the same-turn post-call readback was unavailable, so no causal id
 // can be proven from that turn. Preserved locally - never emitted - until
@@ -142,9 +122,16 @@ export class WorldAdapterState {
     // acknowledges them. (Old verdict `feedback` transport is deleted: no
     // verdicts ride the wire, so only closes retain.)
     pendingClosed: string[] = [];
-    // Transfer/view attempts keyed by operation id.
-    attempts = new Map<string, PendingAttempt>();
-    possiblyExecuted = new Set<string>();
+    // Transfer/view attempts dispatched this generation (armed BEFORE the
+    // first native setter). Dispatch-phase duplicate suppression only:
+    // while an op is recorded here the apply loop never re-dispatches it,
+    // so one stable operation actuates at most once per generation. The
+    // recorded raw attempt rows ride until the bound reply consumes them;
+    // the core owns every outcome (confirmation, refusal, supersession) and
+    // retires its transfers through subsequent replies. Never cleared
+    // except on generation rotation: a stale core repeat holds silently
+    // rather than fighting the user with a second native write.
+    dispatchedOps = new Set<string>();
     spentEffects = new Set<string>();
     // Explicit retained float placements spent per stable core property
     // operation id (`frame_op`): the row token places exactly once, never
@@ -153,10 +140,12 @@ export class WorldAdapterState {
     // `clear_op` spends exactly once the same way.
     floatSpent = new Set<string>();
     clearSpent = new Set<string>();
-    // Last proven-applied native targets, for external-input causality: a
-    // repeat of the SAME operation after the subject demonstrably left the
-    // applied target proves newer external input (supersede), while a
-    // distinct operation id is always a fresh actuation. Operation ids are
+    // Last proven native targets, for last-moment external-input safety:
+    // a repeat of the SAME operation after its subject demonstrably left
+    // the proven target holds instead of re-actuating (never fights a user
+    // switch-back while the core settles the stale repeat from fresh native
+    // facts). Proven-target proof only, never an outcome verdict: nothing
+    // here settles, retires, or reaps core transfers. Operation ids are
     // never reused, so same-op means same intent.
     appliedWindowTarget = new Map<string, { op: string; out: string; ws: string }>();
     appliedViewTarget = new Map<string, { op: string; ws: string }>();
@@ -176,7 +165,7 @@ export class WorldAdapterState {
     // write stamps; the core consumes each idempotently. Host-owned
     // member/view rows carry null native-derived evidence (never
     // translated logical receipts); frames carry full rect evidence with
-    // nullable DPI; clears stay empty (no native clear actuation).
+    // nullable DPI; clears carry the pre/post maximized states.
     frameAttempts = new Map<string, WorldFrameAttempt>();
     memberAttempts = new Map<string, WorldMemberAttempt>();
     viewAttempts = new Map<string, WorldViewAttempt>();
@@ -186,8 +175,6 @@ export class WorldAdapterState {
     // first successful later full native-order readback. Cleared with
     // everything else on generation rotation.
     creationPending = new Map<string, PendingCreationReceipt>();
-    // Bounded per-context clamp reassertions.
-    clampAttempts = new Map<string, number>();
     // Last accepted desired snapshot for per-property diffing.
     lastReply: WorldReply | null = null;
     // Last terminal take result, for entry routing (drag-preview,
@@ -224,39 +211,27 @@ export class WorldAdapterState {
         this.dirty = true;
     }
 
-    // Local attempt-outcome bookkeeping (possibly-executed gating for
-    // mid-apply causality). Never a wire verdict: raw creation receipts ride
-    // the report lane; other raw attempt lanes stay absent until truthful
-    // producers exist (absent backfills [] server-side).
-    noteFeedback(feedback: AttemptFeedback): void {
-        if (feedback.outcome === "possibly-executed") {
-            this.possiblyExecuted.add(feedback.op);
-        } else if (feedback.outcome === "applied" || feedback.outcome === "refused-proven") {
-            this.possiblyExecuted.delete(feedback.op);
-        }
+    // Arm the dispatch record BEFORE any native setter for an operation.
+    // A recorded op never re-dispatches this generation (at-most-once
+    // native actuation per stable operation). The armed raw attempt rows
+    // ride the report lane until the bound reply consumes them; the core
+    // owns settlement. Never cleared except on generation rotation.
+    markDispatched(op: string): void {
+        this.dispatchedOps.add(op);
         this.dirty = true;
     }
 
-    // Arm possibly-executed BEFORE any native setter for an ambiguous
-    // attempt. Never repeat that op until fresh unambiguous proof arrives.
-    armPossiblyExecuted(op: string, kind: AttemptFeedback["kind"], target: string): void {
-        this.attempts.set(op, { op, kind, target });
-        this.possiblyExecuted.add(op);
-        this.dirty = true;
+    isDispatched(op: string): boolean {
+        return this.dispatchedOps.has(op);
     }
 
-    isHeldAmbiguous(op: string): boolean {
-        return this.possiblyExecuted.has(op);
-    }
-
-    settleAttempt(op: string, outcome: AttemptOutcome, hold = ""): void {
-        void hold;
-        if (outcome === "applied" || outcome === "refused-proven" || outcome === "superseded-external") {
-            this.possiblyExecuted.delete(op);
-            if (outcome !== "applied") {
-                this.attempts.delete(op);
-            }
-        }
+    // Schedule a follow-up capture after this apply resolved something the
+    // core must observe promptly (a spent token, recorded proof, or held
+    // retained desire). Pure transport scheduling, never a verdict: the
+    // next capture carries the fresh facts and the core owns every
+    // outcome. Counterpart to the record* methods, which all dirty the
+    // same way when they store a row.
+    noteFollowup(): void {
         this.dirty = true;
     }
 
@@ -400,9 +375,9 @@ export class WorldAdapterState {
 
     // Incorporate core-published bindings: a reply workspace row binding a
     // recorded attempt's logical on its output proves the core consumed the
-    // receipt, so the attempt retires (and its possibly-executed arm
-    // settles applied). Never invents binding locally: rows without a core
-    // bind keep their receipts for the next report.
+    // receipt, so the attempt retires and a follow-up observes the outcome.
+    // Never invents binding locally: rows without a core bind keep their
+    // receipts for the next report.
     incorporateCreationBindings(reply: WorldReply): void {
         if (this.creationAttempts.size === 0) {
             return;
@@ -413,7 +388,7 @@ export class WorldAdapterState {
             );
             if (bound) {
                 this.creationAttempts.delete(op);
-                this.settleAttempt(op, "applied", "");
+                this.noteFollowup();
             }
         }
     }
@@ -527,8 +502,9 @@ export class WorldAdapterState {
     }
 
     // Record one raw mechanical maximize-clear attempt. Latest-wins per
-    // (operation, window). Production never calls this (no native clear
-    // actuation); the shape stays honest for the parked lane.
+    // (operation, window). Production records every dispatch disposition
+    // (accepted/refused/threw with fresh pre/post maximized states); the
+    // core owns confirmation, proven refusal, ambiguity, and abandonment.
     recordClearAttempt(attempt: WorldClearAttempt): boolean {
         const flagOk = (v: boolean | null): boolean => v === null || typeof v === "boolean";
         if (
@@ -650,24 +626,6 @@ export class WorldAdapterState {
             }
         }
         return retired;
-    }
-
-    clampKey(win: string, target: string, constraints: string): string {
-        return `${win}|${target}|${constraints}`;
-    }
-
-    clampAttempt(key: string): number {
-        return this.clampAttempts.get(key) ?? 0;
-    }
-
-    noteClampAttempt(key: string): number {
-        const next = (this.clampAttempts.get(key) ?? 0) + 1;
-        this.clampAttempts.set(key, next);
-        return next;
-    }
-
-    resetClamp(key: string): void {
-        this.clampAttempts.delete(key);
     }
 
     nextSourceId(counter: string): string {
@@ -813,8 +771,7 @@ export class WorldAdapterState {
             this.hasAccepted = false;
             this.lastAcceptedRev = "0";
             this.nextClientCmd = "1";
-            this.attempts.clear();
-            this.possiblyExecuted.clear();
+            this.dispatchedOps.clear();
             this.spentEffects.clear();
             this.floatSpent.clear();
             this.clearSpent.clear();
@@ -827,7 +784,6 @@ export class WorldAdapterState {
             this.memberAttempts.clear();
             this.viewAttempts.clear();
             this.clearAttempts.clear();
-            this.clampAttempts.clear();
             return true;
         }
         this.dirty = true;

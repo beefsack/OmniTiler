@@ -8,14 +8,17 @@
 //
 // Identity rule: membership/view actuation reports under the stable
 // core transfer operation id (`reply.transfers[].op`, `op-<cmdSeq>`)
-// exactly, never an invented `send-<win>`/`view-<win>` token, so feedback
-// settles the retained core target. Every possibly-executing transfer/view
-// arms possibly-executed BEFORE the native setter and never repeats while
-// ambiguous; Applied is marked only on fresh read-back proof (a setter
-// boolean alone is not proof). Throws and partial writes stay ambiguous;
-// refused-proven requires fresh proof that nothing happened or an explicit
+// exactly, never an invented `send-<win>`/`view-<win>` token, so raw
+// attempts correlate to the retained core target. Every dispatched
+// transfer/view/float/clear/effect operation is recorded BEFORE the
+// native setter and never repeats this generation; read-back proof rides
+// the next report as raw mechanical facts (a setter boolean alone is
+// never proof). The core owns every outcome: this loop records facts,
+// never verdicts. Throws and partial writes stay ambiguous; proven
+// refusal needs fresh proof that nothing happened plus an explicit
 // native refusal. External input that demonstrably moved the subject
-// elsewhere settles superseded-external; mere mismatches hold.
+// elsewhere holds without re-actuation; the core settles supersession
+// from the fresh native facts.
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
 import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter } from "./world-report";
@@ -81,6 +84,13 @@ export interface ApplyEnv {
     renameDesktop?: (nativeId: string, name: string) => boolean;
     removeDesktop: (nativeId: string) => boolean;
     focusWindow: (ref: object) => boolean;
+    // Exact KWin nonactivating maximize clear (`setMaximize(false, false)`
+    // through the Q_INVOKABLE, never a fake `maximized` property): returns
+    // the native boolean; throws propagate so the apply loop records the
+    // truthful setter. The caller proves through the `maximizeMode`
+    // readback. Optional only for offline doubles; production always
+    // provides it. Absent means hold with no attempt and no spend.
+    clearMaximized?: (ref: object) => boolean;
     desktopOccupants: (nativeId: string) => { total: number; readable: boolean };
     desktopVisible: (nativeId: string) => boolean | null;
     // Per-output live view (6.7): the current desktop id actually shown on
@@ -99,17 +109,13 @@ export interface ApplyResult {
     creations: number;
     removals: number;
     effects: number;
+    clears: number;
     held: number;
     stoppedMidApply: boolean;
 }
 
 function sameRect(a: { x: number; y: number; w: number; h: number }, b: [number, number, number, number]): boolean {
     return a.x === b[0] && a.y === b[1] && a.w === b[2] && a.h === b[3];
-}
-
-function clampKeyFor(win: string, frame: [number, number, number, number], observed: ObservedWindow): string {
-    const hints = `min${observed.hints.minW ?? "-"}/${observed.hints.minH ?? "-"}max${observed.hints.maxW ?? "-"}/${observed.hints.maxH ?? "-"}`;
-    return `${win}|${frame[0]},${frame[1]},${frame[2]},${frame[3]}|${hints}`;
 }
 
 // Reply freshness at setter time: the bound generation still matches, the
@@ -484,7 +490,7 @@ function liveViewShowsLogical(env: ApplyEnv, reply: WorldReply, out: string, log
 }
 
 // Log-only per-member migration trace: never throws, never actuates, never
-// changes settlement. All fields are bounded tags or counts, no raw ids.
+// changes core settlement. All fields are bounded tags or counts, no raw ids.
 function traceMigrate(env: ApplyEnv, message: string): void {
     try {
         env.log(message);
@@ -494,7 +500,7 @@ function traceMigrate(env: ApplyEnv, message: string): void {
 }
 
 // Follow-view after membership (D3): part of the same stable window
-// transfer operation, already marked possibly-executed before the membership
+// transfer operation, already dispatch-recorded before the membership
 // setter. Returns true only when the switch was actuated AND fresh visible
 // proof arrived on the TARGET output; already-visible views report through
 // the per-output live view instead so no phantom write is counted. Setter
@@ -553,7 +559,8 @@ function actuateViewForTransfer(
 // input interleaves between the two synchronous switches, so the entry
 // check plus exact-output read-back proof is the complete safety case:
 // wrong-output visibility never proves, throws stay ambiguous, and any
-// later external view move settles superseded instead of fighting.
+// view move holds instead of fighting (the core settles from fresh
+// facts).
 // Same-flight view-switch disposition: whether fresh proof shows the
 // target, plus the mechanical setter disposition (`null` when no setter
 // ran). The entry freshness check above is the freshness proof;
@@ -599,11 +606,12 @@ function actuateViewSameFlight(
     return actuateViewSameFlightNative(env, transfer.out, targetNative);
 }
 
-// Shared follow-view settlement for one window transfer whose membership
-// proof already arrived: already-visible settles with no write counted,
-// a proven switch settles with one view write, anything else holds the
-// same operation ambiguous (never a separate view identity). Applied window
-// targets are remembered for external-input causality.
+// Shared follow-view handling for one window transfer whose membership
+// proof already arrived: already-visible proceeds with no write counted,
+// a proven switch proceeds with one view write, anything else holds the
+// same operation (never a separate view identity). Proven native targets
+// are recorded for last-moment external-input safety; the core owns
+// settlement from the fresh view facts.
 function settleFollowView(
     env: ApplyEnv,
     reply: WorldReply,
@@ -613,16 +621,14 @@ function settleFollowView(
     result: ApplyResult,
 ): void {
     const { state } = env;
-    // Follow-view target in native terms for causality bookkeeping (live
+    // Follow-view target in native terms for safety bookkeeping (live
     // membership and views speak native; the reply row names logical).
     const targetNative = nativeWsOf(reply, transfer.out, transfer.ws);
     const appliedWs = targetNative ?? transfer.ws;
     if (!transfer.follow || (targetNative !== null && liveViewShowsOn(env, transfer.out, targetNative))) {
-        state.settleAttempt(transfer.op, "applied", "");
         state.noteAppliedWindowTarget(win, transfer.op, transfer.out, appliedWs);
     } else if (actuateViewForTransfer(env, reply, entryObs, transfer)) {
         result.viewWrites += 1;
-        state.settleAttempt(transfer.op, "applied", "");
         state.noteAppliedWindowTarget(win, transfer.op, transfer.out, appliedWs);
     } else {
         result.held += 1;
@@ -633,7 +639,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     const { state, observation, reply } = env;
     const result: ApplyResult = {
         geometryWrites: 0, membershipWrites: 0, viewWrites: 0,
-        creations: 0, removals: 0, effects: 0, held: 0, stoppedMidApply: false,
+        creations: 0, removals: 0, effects: 0, clears: 0, held: 0, stoppedMidApply: false,
     };
     // Watermark at apply start: mid-apply invalidation compares against
     // this dispatch fence, never against the dirty flag (self-sent dirty
@@ -712,58 +718,40 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 liveRect = null;
             }
             if (liveRect !== null && !sameRect(liveRect, targetFrame)) {
-                const key = clampKeyFor(row.win, targetFrame, observed);
-                // Authoritative convergence: the fresh live frame proves an
-                // earlier target under the same hints already converged
-                // (sync or delayed). Reset exactly that context; unrelated
-                // unachieved targets keep their own budgets.
-                state.resetClamp(clampKeyFor(row.win, [liveRect.x, liveRect.y, liveRect.w, liveRect.h], observed));
-                const attempts = state.clampAttempt(key);
-                if (attempts < 3) {
-                    if (!preSetterOk(env, reply, entryObs, observed, true)) {
-                        result.stoppedMidApply = true;
-                        break;
-                    }
-                    let ok = false;
-                    let threw = false;
+                if (!preSetterOk(env, reply, entryObs, observed, true)) {
+                    result.stoppedMidApply = true;
+                    break;
+                }
+                let ok = false;
+                let threw = false;
+                try {
+                    ok = env.setGeometry(observed.ref, { x: targetFrame[0], y: targetFrame[1], w: targetFrame[2], h: targetFrame[3] });
+                } catch (error) {
+                    void error;
+                    threw = true;
+                }
+                if (!threw && ok) {
+                    result.geometryWrites += 1;
+                    // The core owns clamp/transient suppression over the
+                    // mechanical fact below plus the fresh staged facts:
+                    // a still-mismatched pair suppresses the next desire
+                    // core-side, and any genuine change re-arms it. The
+                    // adapter keeps no local retry budget; every
+                    // core-authorized Controlled mismatch writes once per
+                    // apply and the attempt row tells the core.
+                    let converged: { x: number; y: number; w: number; h: number } | null = null;
                     try {
-                        ok = env.setGeometry(observed.ref, { x: targetFrame[0], y: targetFrame[1], w: targetFrame[2], h: targetFrame[3] });
+                        converged = env.readLiveRect(observed.ref);
                     } catch (error) {
                         void error;
-                        threw = true;
+                        converged = null;
                     }
-                    if (!threw && ok) {
-                        result.geometryWrites += 1;
-                        // Accepted-host convergence: a later observation that
-                        // still differs retries until the bounded budget ends,
-                        // then the context is retained (never reset per reply)
-                        // until a meaningful target/constraint change. Only
-                        // exact read-back convergence clears the just-written
-                        // context; anything else consumes one bounded retry
-                        // so a genuinely clamped target still spends.
-                        let converged: { x: number; y: number; w: number; h: number } | null = null;
-                        try {
-                            converged = env.readLiveRect(observed.ref);
-                        } catch (error) {
-                            void error;
-                            converged = null;
-                        }
-                        // Mechanical fact only: the setter disposition plus
-                        // the immediate readback (never a verdict). The core
-                        // owns clamp/transient suppression over this plus
-                        // the fresh facts; the local budget above stays as
-                        // the host retry fence.
-                        state.recordFrameAttempt({
-                            win: row.win, target: [targetFrame[0], targetFrame[1], targetFrame[2], targetFrame[3]],
-                            setter: "accepted", readback: converged === null ? null : [converged.x, converged.y, converged.w, converged.h],
-                            dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
-                        });
-                        if (converged !== null && sameRect(converged, targetFrame)) {
-                            state.resetClamp(key);
-                        } else {
-                            state.noteClampAttempt(key);
-                        }
-                    } else {
+                    state.recordFrameAttempt({
+                        win: row.win, target: [targetFrame[0], targetFrame[1], targetFrame[2], targetFrame[3]],
+                        setter: "accepted", readback: converged === null ? null : [converged.x, converged.y, converged.w, converged.h],
+                        dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
+                    });
+                } else {
                         // Setter booleans are not proof: a false that already
                         // converged counts as converged; a throw (or a false
                         // with no convergence) stays a narrow hold, never a
@@ -784,21 +772,19 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                             setter: sweepSetter, readback: proof === null ? null : [proof.x, proof.y, proof.w, proof.h],
                             dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
                         });
-                        if (proof !== null && sameRect(proof, targetFrame)) {
-                            state.resetClamp(key);
-                        } else if (!threw && !ok) {
-                            state.noteFeedback({ op: `prop-${row.win}`, kind: "property", outcome: "refused-proven", hold: "constraint-clamp" });
-                            result.held += 1;
-                        } else {
+                        // Setter booleans are not proof: a false that already
+                        // converged needs nothing further; anything else
+                        // holds narrowly while the recorded attempt plus
+                        // staged facts let the core suppress or resume.
+                        // No local retry budget.
+                        if (proof === null || !sameRect(proof, targetFrame)) {
                             result.held += 1;
                         }
                     }
-                } else {
-                    // Bounded budget spent: hold narrowly, never the system.
-                    result.held += 1;
-                }
             } else if (liveRect !== null) {
-                state.resetClamp(clampKeyFor(row.win, targetFrame, observed));
+                // Converged: live already matches the target, so no write
+                // and no hold. Suppression, when the core wants it, arrives
+                // as a held scope on a later reply.
             } else {
                 result.held += 1;
             }
@@ -807,8 +793,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         // Membership: only under a retained core window transfer naming this
         // window, reported under its stable operation id. No transfer
-        // authorizes no move here. Read-back confirmation settles even
-        // held/ambiguous operations; only unconfirmed ones hold without
+        // authorizes no move here. Read-back confirmation proceeds even for
+        // held/dispatched operations; only unconfirmed ones hold without
         // repeating.
         const transfer = reply.transfers.find((t) => t.kind === "window" && t.win === row.win);
         if (!memberControlled || transfer === undefined) {
@@ -838,25 +824,26 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         // Read-back confirmation first: already homed at the target
         // (observation lag after a previous flight, or external
-        // convergence). Confirmation settles even a held/ambiguous
+        // convergence). Confirmation proceeds even for a held/dispatched
         // operation with no new native call; the follow view rides the
         // same operation when requested.
         if (liveHome.out === targetOut && liveHome.ws === targetNative) {
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
             continue;
         }
-        if (transfer.held || state.isHeldAmbiguous(op)) {
+        if (transfer.held || state.isDispatched(op)) {
             result.held += 1;
             continue;
         }
         // Same-operation repeat after proven application elsewhere: the
-        // fresh observation shows the window left the applied target, so a
-        // stale core repeat proves newer external input and supersedes. A
-        // distinct operation id is always a fresh actuation.
+        // fresh observation shows the window left the proven target, so the
+        // repeat holds instead of re-actuating (never fights a user
+        // switch-back; the core settles the stale repeat from fresh native
+        // facts). A distinct operation id is always a fresh actuation.
         const appliedMem = state.appliedWindowTarget.get(row.win);
         if (appliedMem !== undefined && appliedMem.op === op &&
             (observed.out !== appliedMem.out || observed.ws !== appliedMem.ws)) {
-            state.settleAttempt(op, "superseded-external", "");
+            result.held += 1;
             continue;
         }
         const atSource = liveHome.out === observed.out && liveHome.ws === observed.ws;
@@ -864,9 +851,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             (liveHome.out === targetOut && liveHome.ws === observed.ws) ||
             (liveHome.out === observed.out && liveHome.ws === targetNative);
         if (!atSource && !partialProgress) {
-            // Fresh proof of newer external input elsewhere: the move is
-            // superseded, never fought. Every other mismatch holds.
-            state.settleAttempt(op, "superseded-external", "");
+            // Fresh proof of newer external input elsewhere: the move
+            // holds, never fought. The core settles supersession from the
+            // fresh native facts.
+            result.held += 1;
             continue;
         }
         if (!preSetterOk(env, reply, entryObs, observed, false)) {
@@ -908,8 +896,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 echoTgtView = null;
             }
         }
-        // Arm possibly-executed BEFORE the first native setter.
-        state.armPossiblyExecuted(op, "transfer", `${targetOut}/${targetWs}`);
+        // Arm the dispatch record BEFORE the first native setter.
+        state.markDispatched(op);
         let threw = false;
         let outOk = true;
         let outAttempted = false;
@@ -981,8 +969,11 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             : "skipped";
         const echoOk = echoGate === "ok";
         if (midHome === null || (!echoOk && ((midHome.out !== observed.out && midHome.out !== targetOut) || (midHome.ws !== observed.ws && midHome.ws !== targetNative)))) {
-            // Third-location proof arrived between the two setters: external
-            // input supersedes; never fight it.
+            // Third-location proof arrived between the two setters: hold
+            // without fighting it. The recorded attempt (when the output
+            // setter ran) plus the fresh native facts let the core settle
+            // supersession; the dispatch record stays so this op never
+            // re-actuates this generation.
             if (outAttempted) {
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
@@ -993,10 +984,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     attemptMs: stamp,
                 });
             }
-            state.settleAttempt(op, "superseded-external", "");
             if (outAttempted && outOk) {
                 result.membershipWrites += 1;
             }
+            result.held += 1;
             continue;
         }
         if (midHome.ws !== targetNative) {
@@ -1040,15 +1031,16 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
         } else if (!threw && (!outAttempted || !outOk) && (!wsAttempted || !wsOk) && proof !== null && proof.out === observed.out && proof.ws === observed.ws) {
             // Fresh proof nothing happened plus explicit native refusal on
-            // every attempted setter: settle proven. Throws and partial
-            // writes stay ambiguous (held, never repeated without proof).
-            state.settleAttempt(op, "refused-proven", "refused-target");
+            // every attempted setter: the refused attempt row above already
+            // rides the next report; the core owns refusal settlement.
+            // Throws and partial writes stay ambiguous (held, never
+            // repeated: the dispatch record stays).
             result.held += 1;
         } else {
             result.held += 1;
         }
-        // Mid-apply invalidation stops remaining unsafe writes. Self-sent
-        // feedback dirty never stops here; only a moved watermark does.
+        // Mid-apply invalidation stops remaining unsafe writes. The dirty
+        // flag alone never stops here; only a moved watermark does.
         if (midApplyStopped(env, entryObs)) {
             result.stoppedMidApply = true;
             break;
@@ -1063,12 +1055,13 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // never take frame writes here (the tiled path above already skips
     // floating windows, and no `Controlled` frame authority alone writes
     // float geometry). The correlated toggle-float result is provenance only
-    // and never dispatches a second write. Each placement arms
-    // possibly-executed BEFORE the native setter and settles applied only on
-    // fresh read-back proof; throws and partial writes hold ambiguously
-    // without repeating, and a provable post-apply manual move settles
-    // superseded-external instead of fighting the user. Unrelated later
-    // replies without the token never steal the native float frame.
+    // and never dispatches a second write. Each placement records its
+    // dispatch BEFORE the native setter; the immediate pre-write and
+    // post-write frames ride the next report as raw facts. Throws and
+    // partial writes hold without repeating, and a provable post-apply
+    // manual move holds instead of fighting the user (the core settles
+    // from the attempt plus fresh facts). Unrelated later replies without
+    // the token never steal the native float frame.
     for (const row of reply.windows as WorldReplyWindow[]) {
         const op = row.frame_op ?? "";
         if (op === "") {
@@ -1103,7 +1096,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             // hold the retained operation forever. Fixed-size windows ride
             // the setter truthfully (an explicit refusal records refused
             // evidence and the core settles it) instead of holding blind.
-            state.noteFeedback({ op, kind: "property", outcome: "unattempted", hold: "refused-target" });
             result.held += 1;
             continue;
         }
@@ -1114,7 +1106,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
-        if (state.isHeldAmbiguous(op)) {
+        if (state.isDispatched(op)) {
             result.held += 1;
             continue;
         }
@@ -1127,9 +1119,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         if (liveRect !== null && sameRect(liveRect, [target.x, target.y, target.w, target.h])) {
             state.markFloatSpent(op);
-            state.noteFeedback({ op, kind: "property", outcome: "applied", hold: "" });
             state.noteAppliedWindowTarget(row.win, op, row.out, row.ws);
-            state.resetClamp(clampKeyFor(row.win, [target.x, target.y, target.w, target.h], observed));
+            state.noteFollowup();
             continue;
         }
         if (liveRect === null) {
@@ -1144,34 +1135,42 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
-        // Stable post-apply departure: this same operation already applied
+        // Stable post-apply departure: this same operation already placed
         // (read-back proof recorded), but the stable native frame has left
-        // the target. That is provable newer external input: settle
-        // superseded-external instead of fighting the user. A stable frame
-        // that never reached the target and was never applied simply holds
-        // above (the core keeps the target until observation or feedback
-        // proves the outcome).
+        // the target. That is provable newer external input: hold instead
+        // of fighting the user; the core settles from the recorded attempt
+        // plus fresh facts. A stable frame that never reached the target
+        // and was never placed simply holds above (the core keeps the
+        // target until observation proves the outcome).
         {
             const appliedMem = state.appliedWindowTarget.get(row.win);
             if (appliedMem !== undefined && appliedMem.op === op &&
                 (observed.rect.x !== target.x || observed.rect.y !== target.y ||
                     observed.rect.w !== target.w || observed.rect.h !== target.h)) {
                 state.markFloatSpent(op);
-                state.noteFeedback({ op, kind: "property", outcome: "superseded-external", hold: "" });
+                state.noteFollowup();
                 continue;
             }
         }
+        if (!preSetterOk(env, reply, entryObs, observed, true)) {
+            // Stale homing/safety veto: stop before spending anything. A
+            // stale reply never consumes the one-shot token, so a fresh
+            // capture retries the still-undispatched desire.
+            result.stoppedMidApply = true;
+            break;
+        }
+        // Spend the one-shot token only after the final gate, immediately
+        // before the native dispatch: a vetoed reply spends nothing.
         if (!state.markFloatSpent(op)) {
             // Already placed for this operation (including across duplicate
             // replies): never double-place.
             continue;
         }
-        if (!preSetterOk(env, reply, entryObs, observed, true)) {
-            result.stoppedMidApply = true;
-            break;
-        }
-        // Arm possibly-executed BEFORE the first native setter.
-        state.armPossiblyExecuted(op, "property", `${row.out}/${row.ws}`);
+        // Record the dispatch BEFORE the first native setter: one stable
+        // operation actuates at most once this generation (duplicate
+        // suppression, not a verdict). The raw attempt below rides until
+        // the bound reply consumes it; the core owns settlement.
+        state.markDispatched(op);
         let threw = false;
         let floatOk = false;
         try {
@@ -1201,17 +1200,15 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         });
         if (proof !== null && sameRect(proof, [target.x, target.y, target.w, target.h])) {
             result.geometryWrites += 1;
-            state.noteFeedback({ op, kind: "property", outcome: "applied", hold: "" });
             state.noteAppliedWindowTarget(row.win, op, row.out, row.ws);
-            state.resetClamp(clampKeyFor(row.win, [target.x, target.y, target.w, target.h], observed));
         } else if (!threw && proof !== null && sameRect(proof, [liveRect.x, liveRect.y, liveRect.w, liveRect.h])) {
             // Fresh proof nothing happened plus an explicit native refusal:
-            // settle proven.
-            state.noteFeedback({ op, kind: "property", outcome: "refused-proven", hold: "constraint-clamp" });
+            // the refused attempt row above already rides the next report;
+            // the core owns refusal settlement. Narrow hold only.
             result.held += 1;
         } else {
-            // Throw or partial write: ambiguous hold, never repeated
-            // (already spent and armed possibly-executed).
+            // Throw or partial write: hold without repeating (already
+            // spent and dispatch-recorded).
             result.held += 1;
         }
         if (midApplyStopped(env, entryObs)) {
@@ -1222,13 +1219,17 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     if (result.stoppedMidApply) {
         return result;
     }
-    // 1c. Explicit retained maximize-clear verdicts: window rows carrying a
-    // stable core clear operation id (`clear_op`) settle exactly once per
-    // operation. Proof-only (Stage3 parks native clear actuation): a live
-    // read-back proving the window is already unmaximized spends the token
-    // and settles applied; a still-maximized target holds (the core retains
-    // the desire, the adapter never fights the user and never invents a
-    // write). Unreadable safety fails closed with a narrow hold.
+    // 1c. Explicit retained maximize-clear: window rows carrying a stable
+    // core clear operation id (`clear_op`, `op-<cmdSeq>`) clear exactly
+    // once per operation through the native nonactivating setter
+    // (`setMaximize(false, false)`; Stages 3 authorizes real actuation).
+    // Every dispatch disposition rides the next report as one raw
+    // `ClearAttempt` (setter plus fresh pre/post maximized states); the
+    // core owns confirmation, proven refusal, ambiguity, and abandonment.
+    // Already-unmaximized is fresh observation, never an invented attempt:
+    // the token spends with no row. Vetoes and unreadable/gesture races
+    // hold unspent with no row, so a later readable reply retries the
+    // still-undispatched desire.
     for (const row of reply.windows as WorldReplyWindow[]) {
         const op = row.clear_op ?? "";
         if (op === "") {
@@ -1251,33 +1252,174 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         if (state.clearSpent.has(op)) {
-            // Already settled for this operation (including across duplicate
-            // replies): never re-settle. Unsettled holds re-evaluate per
-            // reply until proof arrives.
+            // Already dispatched for this operation (including across
+            // duplicate replies): never re-actuate. The recorded attempt
+            // rides until the bound reply consumes it.
             continue;
         }
         if (observation.gesture) {
             result.held += 1;
             continue;
         }
-        let maximizedNow: boolean | null = null;
+        if (!env.isStillListed(observed.ref)) {
+            result.stoppedMidApply = true;
+            break;
+        }
+        let safety: { minimized: boolean | null; fullscreen: boolean | null; maximized: boolean | null; sticky: boolean | null } | null = null;
         try {
-            const safety = env.readLiveSafety(observed.ref);
-            maximizedNow = safety === null ? null : safety.maximized;
+            safety = env.readLiveSafety(observed.ref);
         } catch (error) {
             void error;
-            maximizedNow = null;
+            safety = null;
         }
-        if (maximizedNow === null) {
+        // Unreadable safety fails closed with a narrow unspent hold: the
+        // retained desire retries on a later readable reply.
+        if (safety === null || safety.maximized === null) {
             result.held += 1;
             continue;
         }
+        const maximizedNow = safety.maximized;
         if (maximizedNow === false) {
+            // Already unmaximized: fresh observation proves the outcome.
+            // Spend the token with no invented attempt; the core settles
+            // from the staged observation itself. The follow-up carries
+            // the fresh facts promptly.
             state.markClearSpent(op);
-            state.noteFeedback({ op, kind: "property", outcome: "applied", hold: "" });
+            state.noteFollowup();
             continue;
         }
-        result.held += 1;
+        if (safety.fullscreen === true) {
+            // Fullscreen overlay veto: never clear under a fullscreen (game)
+            // lane. Unspent hold with no row: no setter ran and no post
+            // state was read, so there is nothing truthful to report. The
+            // fresh fullscreen fact rides the report and the core owns
+            // abandonment. A later readable reply retries.
+            result.held += 1;
+            continue;
+        }
+        if (safety.minimized === true || safety.sticky === true) {
+            // Minimized/sticky lifetimes take no automatic clear write.
+            // Unspent hold: the retained desire retries on a later reply.
+            result.held += 1;
+            continue;
+        }
+        // Freshness of the dispatched observation: a homing that drifted
+        // since capture (or an unreadable one) holds unspent here (never
+        // a verdict, never a write); the frame-race gate below still
+        // guards the setter against a moved frame.
+        let liveHome: { out: string; ws: string } | null = null;
+        try {
+            liveHome = env.readLiveMembership(observed.ref);
+        } catch (error) {
+            void error;
+            liveHome = null;
+        }
+        if (liveHome === null || liveHome.out !== observed.out || liveHome.ws !== observed.ws) {
+            result.held += 1;
+            continue;
+        }
+        // Manual-change race: the native frame left the observed frame.
+        // Never fight the user; hold unspent for the next stable
+        // observation.
+        let liveRect: { x: number; y: number; w: number; h: number } | null = null;
+        try {
+            liveRect = env.readLiveRect(observed.ref);
+        } catch (error) {
+            void error;
+            liveRect = null;
+        }
+        if (liveRect === null ||
+            liveRect.x !== observed.rect.x || liveRect.y !== observed.rect.y ||
+            liveRect.w !== observed.rect.w || liveRect.h !== observed.rect.h) {
+            result.held += 1;
+            continue;
+        }
+        if (env.clearMaximized === undefined) {
+            // No native clear capability in this host (offline doubles):
+            // hold unspent with no invented evidence.
+            result.held += 1;
+            continue;
+        }
+        // Final freshness/identity/safety gate immediately before spending:
+        // re-read safety, homing, liveness, and the watermark after every
+        // veto and read above. A newer fullscreen/minimized/sticky flip,
+        // an unreadable re-read, a drifted homing, a vanished listing, or
+        // an advanced watermark holds unspent with no row — the clear
+        // intent (maximized, authorized above) stays retained core-side
+        // for a fresh reply. Never spends on a stale gate.
+        let finalSafety: { minimized: boolean | null; fullscreen: boolean | null; maximized: boolean | null; sticky: boolean | null } | null = null;
+        try {
+            finalSafety = env.readLiveSafety(observed.ref);
+        } catch (error) {
+            void error;
+            finalSafety = null;
+        }
+        let finalHome: { out: string; ws: string } | null = null;
+        try {
+            finalHome = env.readLiveMembership(observed.ref);
+        } catch (error) {
+            void error;
+            finalHome = null;
+        }
+        let finalListed = false;
+        try {
+            finalListed = env.isStillListed(observed.ref);
+        } catch (error) {
+            void error;
+            finalListed = false;
+        }
+        if (
+            finalSafety === null || finalSafety.maximized !== true ||
+            finalSafety.fullscreen === true || finalSafety.minimized === true || finalSafety.sticky === true ||
+            finalHome === null || finalHome.out !== observed.out || finalHome.ws !== observed.ws ||
+            !finalListed || state.currentInvalid !== entryObs
+        ) {
+            result.held += 1;
+            continue;
+        }
+        // Spend the one-shot token BEFORE the native call: synchronous
+        // KWin signals make the call reentrant, and a reentrant apply
+        // must see the op as dispatched rather than firing a second
+        // clear. Throws and partial states stay core-owned ambiguity.
+        if (!state.markClearSpent(op)) {
+            continue;
+        }
+        state.markDispatched(op);
+        let threw = false;
+        let ok = false;
+        try {
+            ok = env.clearMaximized(observed.ref);
+        } catch (error) {
+            void error;
+            threw = true;
+        }
+        let post: boolean | null = null;
+        try {
+            const safety = env.readLiveSafety(observed.ref);
+            post = safety === null ? null : safety.maximized;
+        } catch (error) {
+            void error;
+            post = null;
+        }
+        // One native clear ran: the mechanical disposition plus the fresh
+        // pre/post maximized states rides the next report under the stable
+        // operation correlation. The setter alone never proves completion;
+        // the core settles from this evidence plus the fresh facts.
+        state.recordClearAttempt({
+            op, win: row.win,
+            setter: threw ? "threw" : ok ? "accepted" : "refused",
+            pre: maximizedNow, post, attemptMs: stamp,
+        });
+        if (ok && !threw) {
+            result.clears += 1;
+        }
+        if (post !== false) {
+            result.held += 1;
+        }
+        if (midApplyStopped(env, entryObs)) {
+            result.stoppedMidApply = true;
+            break;
+        }
     }
     if (result.stoppedMidApply) {
         return result;
@@ -1330,7 +1472,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             before = null;
         }
         if (before === null) {
-            state.noteFeedback({ op, kind: "creation", outcome: "unattempted", hold: "incomplete-inventory" });
             result.held += 1;
             continue;
         }
@@ -1341,7 +1482,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         if (!state.markCreationSpent(op)) {
             continue;
         }
-        state.armPossiblyExecuted(op, "creation", out);
+        state.markDispatched(op);
         // Zero-based append position in [0, count] (virtualdesktops.cpp
         // clamp); the logical token rides as the native name only as a
         // diagnostic (identity comes from the id delta, never the name).
@@ -1427,7 +1568,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         const referenced = reply.transfers.some((t) => t.out === ws.out && t.ws === ws.id) ||
             reply.windows.some((w) => w.out === ws.out && w.ws === ws.id);
         if (referenced) {
-            state.noteFeedback({ op: `remove-${ws.bind}`, kind: "creation", outcome: "unattempted", hold: "occupied-removal" });
             result.held += 1;
             continue;
         }
@@ -1445,7 +1585,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         const pinned = observation.bindings.some((b) => b.native === ws.bind && b.pin);
         if (pinned) {
-            state.noteFeedback({ op: `remove-${ws.bind}`, kind: "creation", outcome: "unattempted", hold: "occupied-removal" });
             result.held += 1;
             continue;
         }
@@ -1455,7 +1594,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         if (occupants.total > 0) {
-            state.noteFeedback({ op: `remove-${ws.bind}`, kind: "creation", outcome: "unattempted", hold: "occupied-removal" });
             result.held += 1;
             continue;
         }
@@ -1493,9 +1631,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         return result;
     }
     // 3. Output views: retained core view transfer targets only (never
-    // invented here). Each switch arms possibly-executed under the stable
-    // transfer operation id first and settles applied only on fresh visible
-    // proof; throws stay ambiguous, explicit refusals settle proven.
+    // invented here). Each switch records its dispatch under the stable
+    // transfer operation id first; the mechanical disposition plus fresh
+    // same-turn native currents rides the next report. Throws stay held;
+    // refusals hold with the refused row. The core owns settlement.
     for (const t of reply.transfers) {
         if (t.kind !== "view") {
             continue;
@@ -1507,7 +1646,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // Paired migration-refill children stay owned by 3b while their
         // parent migration is outstanding in this reply: switching the
         // source view before member arrival proof would hide unmoved
-        // members. Once the parent settles (absent here), this normal
+        // members. Once the parent is gone (absent here), this normal
         // path actuates the child.
         const refillParentPending = reply.transfers.some(
             (m) => m.kind === "migration" && t.op === `${m.op}-refill`,
@@ -1520,25 +1659,25 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // logical workspace). Unbound or unknown targets hold.
         const targetNative = nativeWsOf(reply, t.out, t.ws);
         // Read-back confirmation first: the TARGET output actually showing
-        // the target settles even a held/ambiguous operation with no new
-        // native call. Any-output visibility never settles: the target
-        // output exact view decides.
+        // the target proceeds with no new native call. Any-output
+        // visibility never counts: the target output exact view decides.
+        // Proven native targets are recorded for last-moment safety.
         if (targetNative !== null && liveViewShowsOn(env, t.out, targetNative)) {
-            state.settleAttempt(t.op, "applied", "");
             state.noteAppliedViewTarget(t.out, t.op, targetNative);
             continue;
         }
-        if (t.held || state.isHeldAmbiguous(t.op)) {
+        if (t.held || state.isDispatched(t.op)) {
             result.held += 1;
             continue;
         }
         // Same-operation repeat after the output demonstrably left the
-        // applied view: newer external view input supersedes the stale
-        // repeat. Distinct operations always actuate.
+        // proven view: hold instead of re-actuating (never fights a user
+        // switch-back; the core settles the stale repeat from fresh native
+        // facts). Distinct operations always actuate.
         const appliedView = state.appliedViewTarget.get(t.out);
         if (appliedView !== undefined && appliedView.op === t.op &&
             topo !== undefined && topo.current !== appliedView.ws) {
-            state.settleAttempt(t.op, "superseded-external", "");
+            result.held += 1;
             continue;
         }
         if (!replyFresh(env, reply, entryObs)) {
@@ -1551,7 +1690,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
-        state.armPossiblyExecuted(t.op, "view", `${t.out}/${t.ws}`);
+        state.markDispatched(t.op);
         // Fresh same-turn native currents around the write; the baseline
         // is the entry observation's current for the target output.
         const viewPre = readNativeViewNow(env, t.out);
@@ -1577,12 +1716,11 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         });
         if (targetNative !== null && liveViewShowsOn(env, t.out, targetNative)) {
             result.viewWrites += 1;
-            state.settleAttempt(t.op, "applied", "");
             state.noteAppliedViewTarget(t.out, t.op, targetNative);
-        } else if (!threw) {
-            state.settleAttempt(t.op, "refused-proven", "refused-target");
-            result.held += 1;
         } else {
+            // Unproven (refused or threw): the recorded attempt row rides
+            // the next report; the core settles from it plus fresh facts.
+            // The dispatch record stays, so this op never re-actuates.
             result.held += 1;
         }
         if (midApplyStopped(env, entryObs)) {
@@ -1599,18 +1737,19 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // view). Members come from the core-published desired rows homed at the
     // target under a controlled target scope (never the requester-only
     // terminal, which external clients cannot expose to the actuator): a
-    // missing, held, or untouched scope authorizes no view and no
-    // settlement, while an empty desired set under a controlled scope is
+    // missing, held, or untouched scope authorizes no view and no refill,
+    // while an empty desired set under a controlled scope is
     // complete and proceeds to the view gates below. The source output
-    // comes from the advisory correlated result, else the paired refill
-    // child, else the pending members' shared observed homing. Each member
-    // actuates membership-only (D8: no geometry writes for fullscreen
-    // members; tiled frames converge on later reports), exactly once per
-    // stable operation id: confirmed members settle without new calls,
-    // ambiguous ones hold without repeats, third-location proof supersedes
-    // the whole migration. The transfer settles applied only when every
-    // member is homed AND both views prove; partial progress holds
-    // truthfully under the same stable id.
+    // comes only from core-published authority: the advisory correlated
+    // result, else the paired refill child. Never from native-derived
+    // member homing: observed homing is evidence, not the refill target.
+    // Each member actuates membership-only (D8: no geometry writes for
+    // fullscreen members; tiled frames converge on later reports), exactly
+    // once per stable operation id: confirmed members proceed without new
+    // calls, dispatched ones hold without repeats, third-location proof
+    // holds the whole migration. Views prove only when every member is
+    // homed AND both views show; partial progress holds truthfully under
+    // the same stable id.
     for (const t of reply.transfers) {
         if (t.kind !== "migration") {
             continue;
@@ -1673,19 +1812,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             (v) => v.kind === "view" && v.op === `${t.op}-refill` && v.ws !== "",
         );
         // Source output for the refill view: the correlated result names
-        // it, else the paired refill child, else the pending members'
-        // shared observed homing (all members leave the same source
-        // scope). Never the target where members already arrived.
+        // it, else the paired refill child. No native-derived fallback:
+        // member homing never authorizes the refill. Never the target
+        // where members already arrived.
         let sourceOut: string | null = advisorySourceOut;
         if (sourceOut === null && pairedRefill !== undefined && pairedRefill.out !== "") {
             sourceOut = pairedRefill.out;
-        }
-        if (sourceOut === null) {
-            const firstId = members.length > 0 ? members[0] as string : "";
-            const first = firstId !== "" ? byWin.get(firstId) : undefined;
-            if (first !== undefined) {
-                sourceOut = first.out;
-            }
         }
         if (sourceOut === t.out) {
             // Members already homed at the target: observed homing no
@@ -1694,10 +1826,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             // that names the source (paired child or correlated result).
             sourceOut = null;
         }
-        if (t.held || state.isHeldAmbiguous(t.op)) {
-            // Late full-membership proof settles an ambiguous parent
-            // without member replay (proof before hold); anything less
-            // holds without another native call.
+        if (t.held || state.isDispatched(t.op)) {
+            // Late full-membership proof proceeds without member replay
+            // (proof before hold); anything less holds without another
+            // native call. The dispatch record stays either way.
             let lateProof = members.length > 0;
             for (const id of members) {
                 const observed = byWin.get(id);
@@ -1727,8 +1859,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
         };
         // Third-location proof for any member: newer external input moved
-        // it somewhere unexpected; the migration supersedes as a whole
-        // rather than fighting per-member battles.
+        // it somewhere unexpected; the migration holds as a whole rather
+        // than fighting per-member battles. The core settles supersession
+        // from the fresh native facts; the dispatch record stays.
         let superseded = false;
         let scanIdx = -1;
         for (const id of members) {
@@ -1755,21 +1888,23 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 (home.out === observed.out && home.ws === targetNative);
             if (!atSource && !partialProgress) {
                 traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=superseded`);
-                state.settleAttempt(t.op, "superseded-external", "");
                 superseded = true;
                 break;
             }
             traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=pending`);
         }
         if (superseded) {
+            result.held += 1;
             if (midApplyStopped(env, entryObs)) {
                 result.stoppedMidApply = true;
                 break;
             }
             continue;
         }
-        // Arm possibly-executed ONCE per stable operation before the first
-        // member setter; every setter below rides the same identity.
+        // Record the dispatch ONCE per stable operation before the first
+        // member setter; every setter below rides the same identity. The
+        // record stays this generation (at-most-once dispatch); the raw
+        // attempt rows plus fresh facts let the core settle.
         let armed = false;
         let failed = false;
         let unproven = false;
@@ -1812,7 +1947,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
             if (!armed) {
                 armed = true;
-                state.armPossiblyExecuted(t.op, "transfer", `${t.out}/${t.ws}`);
+                state.markDispatched(t.op);
             }
             // Fresh per-output currents BEFORE the native output call, so
             // the pinned synchronous echo below is verifiable per member.
@@ -1901,7 +2036,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                         attemptMs: stamp,
                     });
                 }
-                state.settleAttempt(t.op, "superseded-external", "");
+                result.held += 1;
                 superseded = true;
                 break;
             }
@@ -1969,23 +2104,31 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // view switches until ALL fresh member arrival proof is in: a
         // partial failure or stale membership leaves every view untouched
         // so unmoved members stay visible.
-        // Each proves independently on its exact output; the transfer
-        // settles applied only with all members homed and both views
-        // proven. Wrong-output visibility never proves.
+        // Each proves independently on its exact output; views proceed
+        // only with all members homed and both views shown. Wrong-output
+        // visibility never proves.
         const membersProven = !failed && !unproven;
         const targetShown = liveViewShowsLogical(env, reply, t.out, t.ws);
         let refillChild = pairedRefill;
-        // Newer external input supersedes a proven-then-abandoned refill
-        // child: drop it for this apply with no replacement.
+        // Newer external input abandoned a proven refill child: drop it
+        // for this apply with no replacement and no re-actuation. The
+        // proven-target record stays so later repeats keep holding; the
+        // core settles from the fresh view facts.
         let refillAbandoned = false;
         if (refillChild !== undefined && sourceOut !== null) {
             const appliedView = state.appliedViewTarget.get(sourceOut);
             const topoNow = observation.topology.find((entry) => entry.out === sourceOut);
             if (appliedView !== undefined && appliedView.op === refillChild.op &&
                 topoNow !== undefined && topoNow.current !== appliedView.ws) {
-                state.settleAttempt(refillChild.op, "superseded-external", "");
                 refillChild = undefined;
                 refillAbandoned = true;
+                // Dropping a core-retained refill without actuating it is a
+                // dispatch-suppression decision the core must observe
+                // promptly: schedule one follow-up capture carrying the
+                // fresh facts so the refill retires instead of wedging.
+                // Self-extinguishing (the branch stops firing once the
+                // refill retires), so no steady-state hot loop.
+                state.noteFollowup();
             }
         }
         // Both views proven-then-abandoned (user switch, not lag): the
@@ -2041,18 +2184,18 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 }
             }
             if (refillWs !== null && refillChild !== undefined && sourceOut !== null && refillNative !== null && !liveViewShowsOn(env, sourceOut, refillNative)) {
-                if (state.isHeldAmbiguous(refillOp)) {
-                    // Never retry an ambiguous refill view under a fresh
+                if (state.isDispatched(refillOp)) {
+                    // Never retry a dispatched refill view under a fresh
                     // revision: hold for proof instead of a second call.
                     result.held += 1;
                 } else {
-                    // Stable child op identity arms possibly-executed
-                    // BEFORE the view setter, with proof/refusal
-                    // feedback. Same-flight switch: the entry check
-                    // above already proved freshness, so the target
-                    // switch's own synchronous signal cannot fail this
-                    // attempt closed.
-                    state.armPossiblyExecuted(refillOp, "view", `${sourceOut}/${refillWs}`);
+                    // Stable child op identity records the dispatch
+                    // BEFORE the view setter. Same-flight switch: the
+                    // entry check above already proved freshness, so the
+                    // target switch's own synchronous signal cannot fail
+                    // this attempt closed. The recorded attempt rides;
+                    // the core owns settlement.
+                    state.markDispatched(refillOp);
                     const refillPre = readNativeViewNow(env, sourceOut);
                     const refillBase = observationNativeView(observation, sourceOut);
                     const refillView = actuateViewSameFlight(env, reply, { ...refillChild, follow: false });
@@ -2068,7 +2211,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     }
                     if (refillView.proven) {
                         result.viewWrites += 1;
-                        state.settleAttempt(refillOp, "applied", "");
                         state.noteAppliedViewTarget(sourceOut, refillOp, refillNative ?? refillWs);
                     } else {
                         result.held += 1;
@@ -2079,9 +2221,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 (refillWs === null || (sourceOut !== null && refillNative !== null && liveViewShowsOn(env, sourceOut, refillNative)));
         }
         // All members homed is rechecked from the per-member proofs above:
-        // any held member blocks settlement without another native call.
+        // any held member blocks the views without another native call.
+        // Proven native targets are recorded for last-moment safety; the
+        // core settles the transfer from staged observations plus attempts.
         if (!failed && !unproven && viewsProven) {
-            state.settleAttempt(t.op, "applied", "");
             if (sourceOut !== null) {
                 state.noteAppliedViewTarget(t.out, t.op, targetNative);
             }
@@ -2100,10 +2243,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // duplicates and repeated diffs never reapply. Lost/stale effects drop
     // (at-most-once), never steal focus later. Target-output switch proof
     // before focus: while a follow transfer's target view is not yet live on
-    // its exact output, focus effects hold (the view must prove first); newer
-    // external input supersedes while causality is ambiguous. Raise/stack
-    // have no native actuation in this adapter: they spend at-most-once
-    // with explicit feedback and never trigger a focus write.
+    // its exact output, focus effects hold (the view must prove first).
+    // Raise/stack have no native actuation in this adapter: they spend
+    // at-most-once and never trigger a focus write. Spent effects never
+    // re-fire; holds are narrow and truthful, never verdicts.
     const followUnproven = reply.transfers.some((t) => {
         if (t.kind !== "window" || !t.follow) {
             return false;
@@ -2119,16 +2262,13 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         const observed = byWin.get(fx.target);
         if (observed === undefined) {
-            state.noteFeedback({ op: fx.id, kind: "effect", outcome: "superseded-external", hold: "" });
             continue;
         }
         if (fx.kind !== "focus") {
-            state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
             result.held += 1;
             continue;
         }
         if (followUnproven) {
-            state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
             result.held += 1;
             continue;
         }
@@ -2149,7 +2289,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                         ? "automatic-active"
                         : "floating-active";
                 env.log(`omnitiler:world:focus-skipped kind=effect reason=${reason} window=${focusedId} target=${fx.target} id=${fx.id}`);
-                state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
                 result.held += 1;
                 continue;
             }
@@ -2177,12 +2316,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             !(observed.fixedAuto === true && observed.fixedSuppress !== true);
         if (admissionFloatTarget) {
             if (observed.fullscreen || observed.maximized || observed.sticky) {
-                state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
                 result.held += 1;
                 continue;
             }
         } else if (observed.fitExcluded || observed.fullscreen || observed.sticky || observed.floating) {
-            state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
             result.held += 1;
             continue;
         }
@@ -2217,14 +2354,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 }
             });
             if (siblingBlocked === true) {
-                state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
                 result.held += 1;
                 continue;
             }
         }
         if (observation.gesture || !replyFresh(env, reply, entryObs)) {
             if (midApplyStopped(env, entryObs) || observation.gesture) {
-                state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "gesture-barrier" });
                 result.held += 1;
                 continue;
             }
@@ -2258,17 +2393,15 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         env.log(`omnitiler:world:automatic-focus-result req=${reply.req} rev=${reply.rev} target=${fx.target} reason=planned-focus outcome=${threw ? "threw" : ok ? "setter-accepted" : "setter-refused"} active=${active ? "true" : "false"}`);
         if (!threw && ok && active) {
             result.effects += 1;
-            state.noteFeedback({ op: fx.id, kind: "effect", outcome: "applied", hold: "" });
-        } else if (!threw && !ok) {
-            state.noteFeedback({ op: fx.id, kind: "effect", outcome: "refused-proven", hold: "" });
-            result.held += 1;
         } else {
-            // Throw, or a claimed focus with no active proof: hold narrowly
-            // without a false applied claim. The effect stays spent
-            // (at-most-once), so nothing repeats.
-            state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
+            // Refused, throw, or a claimed focus with no active proof:
+            // hold narrowly without a false applied claim. The effect
+            // stays spent (at-most-once), so nothing repeats. No outcome
+            // verdict is recorded: the trace lines above are the evidence.
+            // The follow-up observes the native outcome either way.
             result.held += 1;
         }
+        state.noteFollowup();
         if (midApplyStopped(env, entryObs)) {
             result.stoppedMidApply = true;
             break;

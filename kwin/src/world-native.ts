@@ -1358,6 +1358,21 @@ export function createWorldApplyHost(
                 return null;
             }
         },
+        clearMaximized: (ref) => {
+            // Exact KWin nonactivating maximize clear through the pinned
+            // v6.7.4 Q_INVOKABLE (`src/window.h:1107`
+            // `setMaximize(bool, bool, const RectF &)`; maximizeMode is
+            // read-only from scripts, so this is the only script write).
+            // Missing method fails closed (false); throws propagate so the
+            // apply loop records the truthful setter. The caller proves
+            // through the `maximizeMode` readback, never this boolean.
+            const method = readProp(ref, "setMaximize");
+            if (typeof method !== "function") {
+                return false;
+            }
+            Reflect.apply(method as (...a: ReadonlyArray<unknown>) => unknown, ref, [false, false]);
+            return true;
+        },
         minDesktops: 2,
     };
 }

@@ -124,11 +124,19 @@ function discover(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
     auto.callback(ACC(gen, b.source, b.nativeInvalid, "0"));
 }
 
-// Core-owned publication oracle: only core-published binds resolve to
-// logical views (the adapter owns no binding table; the inner report
-// carries no bindings lane).
+// Host-owned publication oracle: the adapter reports observed native
+// order plus the current native per output in `native[]` (never logical
+// views: the core derives receipts from its own bindings). Core-published
+// binds are proven by incorporation behavior (receipt retires, no
+// re-create), and the views lane stays empty throughout.
+function nativeOf(h: ReturnType<typeof makeTwoOutput>): Array<{ out: string; order: string[]; current: string }> {
+    return (JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { native: Array<{ out: string; order: string[]; current: string }> } }).report.native;
+}
 function viewsOf(h: ReturnType<typeof makeTwoOutput>): Array<{ out: string; view: string }> {
     return (JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { views: Array<{ out: string; view: string }> } }).report.views;
+}
+function assertViewsEmpty(h: ReturnType<typeof makeTwoOutput>): void {
+    assert.ok(viewsOf(h).every((b) => b.view === ""), `host-owned views lane stays empty, got ${JSON.stringify(viewsOf(h))}`);
 }
 
 // Retained creation receipts riding the last dispatched report lane.
@@ -148,9 +156,10 @@ function dispatchObserve(h: ReturnType<typeof makeTwoOutput>): { source: string;
     return JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
 }
 
-// Show a native desktop on an output (ordinary native view input): pending
-// bindings publish through the views lane only for the current native, so
-// observing publication requires the created desktop to be shown.
+// Show a native desktop on an output (ordinary native view input):
+// incorporation is observed through receipt retirement plus native
+// order/current evidence, so observing it requires the created desktop to
+// be shown.
 function showNative(h: ReturnType<typeof makeTwoOutput>, out: string, nativeId: string): void {
     const ref = h.world.desktops.find((d) => d.id === nativeId);
     assert.ok(ref !== undefined, `native ${nativeId} exists`);
@@ -173,13 +182,16 @@ describe("creation binding handoff", () => {
         const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
         assert.ok(native !== undefined);
         assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
-        // No core bind yet: the adapter publishes no logical view and claims
-        // only the causal receipt, never a binding.
+        // No core bind yet: the adapter publishes native order/current with
+        // an empty views lane, and claims only the causal receipt, never a
+        // binding.
         showNative(h, "out-secondary", native.id);
         dispatchObserve(h);
-        const pending = viewsOf(h).find((b) => b.out === "out-secondary");
-        assert.ok(pending !== undefined);
-        assert.equal(pending.view, "", "unbound logical publishes no view before the core binds");
+        assertViewsEmpty(h);
+        const pendingNative = nativeOf(h).find((b) => b.out === "out-secondary");
+        assert.ok(pendingNative !== undefined);
+        assert.ok(pendingNative.order.includes(native.id), "created native rides the observed order");
+        assert.equal(pendingNative.current, native.id, "shown native rides the current");
         const receipts = attemptsOf(h);
         assert.equal(receipts.length, 1, "one retained receipt rides the report lane");
         assert.equal(receipts[0]?.["op"], "op-native-1");
@@ -195,9 +207,14 @@ describe("creation binding handoff", () => {
         }));
         assert.equal(h.world.created.length, 1, "incorporation never re-creates");
         dispatchObserve(h);
-        const row = viewsOf(h).find((b) => b.view === "wl-1");
-        assert.ok(row !== undefined, `expected wl-1 view, got ${JSON.stringify(viewsOf(h))}`);
-        assert.equal(row.out, "out-secondary");
+        // The core bind incorporates the receipt (it retires with no second
+        // creation); the adapter keeps reporting native order/current with
+        // the views lane empty, never a logical receipt.
+        assertViewsEmpty(h);
+        const row = nativeOf(h).find((b) => b.out === "out-secondary");
+        assert.ok(row !== undefined);
+        assert.ok(row.order.includes(native.id), `expected created native in order, got ${JSON.stringify(nativeOf(h))}`);
+        assert.equal(row.current, native.id);
         assert.equal(attemptsOf(h).length, 0, "incorporated receipt retires");
         h.handle?.stop();
     });
@@ -228,10 +245,13 @@ describe("creation binding handoff", () => {
         assert.equal(h.world.created.length, 1, "spent desire must not re-create");
         showNative(h, "out-secondary", (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id);
         dispatchObserve(h);
-        const acked = viewsOf(h).find((b) => b.out === "out-secondary");
+        // The core bind incorporates the spent receipt; the adapter reports
+        // native order/current with the views lane empty.
+        assertViewsEmpty(h);
+        const acked = nativeOf(h).find((b) => b.out === "out-secondary");
         assert.ok(acked !== undefined);
-        assert.equal(acked.view, "wl-1");
-        assert.equal(acked.out, "out-secondary");
+        assert.ok(acked.order.includes(h.world.created[0] as string));
+        assert.equal(acked.current, h.world.created[0]);
         assert.equal(attemptsOf(h).length, 0, "incorporated receipt retires");
         // Later legitimate migration of the same native to a new output wins.
         const r4 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
@@ -243,10 +263,13 @@ describe("creation binding handoff", () => {
         }));
         showNative(h, "out-primary", native.id);
         dispatchObserve(h);
-        const migrated = viewsOf(h).find((b) => b.out === "out-primary");
+        // The migrated native rides the target output's order/current; the
+        // views lane stays empty and nothing re-creates.
+        assertViewsEmpty(h);
+        const migrated = nativeOf(h).find((b) => b.out === "out-primary");
         assert.ok(migrated !== undefined);
-        assert.equal(migrated.view, "wl-1");
-        assert.equal(migrated.out, "out-primary", "core migration wins");
+        assert.ok(migrated.order.includes(native.id));
+        assert.equal(migrated.current, native.id, "core migration wins");
         assert.equal(h.world.created.length, 1, "migration must not re-create");
         h.handle?.stop();
     });
@@ -290,9 +313,13 @@ describe("creation binding handoff", () => {
             ],
         }));
         dispatchObserve(h);
-        const row = viewsOf(h).find((b) => b.view === "wl-1");
-        assert.ok(row !== undefined, `core bind should publish, got ${JSON.stringify(viewsOf(h))}`);
-        assert.equal(row.out, "out-secondary");
+        // The core bind incorporates the threw receipt; the adapter reports
+        // native order/current with the views lane empty.
+        assertViewsEmpty(h);
+        const row = nativeOf(h).find((b) => b.out === "out-secondary");
+        assert.ok(row !== undefined);
+        assert.ok(row.order.includes("native-9"), `created native rides the order, got ${JSON.stringify(nativeOf(h))}`);
+        assert.equal(row.current, "native-9");
         assert.equal(attemptsOf(h).length, 0, "core bind incorporates the receipt");
         h.handle?.stop();
     });
@@ -315,14 +342,15 @@ describe("creation binding handoff", () => {
         assert.notEqual(n1.id, n2.id, "no duplicate native binding");
         assert.equal(n1.name, "Desktop 3");
         assert.equal(n2.name, "Desktop 4", "second token uses its own enumerated position");
-        // Before any core bind, the adapter publishes no logical views:
-        // both receipts ride causally instead.
+        // Before any core bind, the adapter publishes native order/current
+        // with an empty views lane: both receipts ride causally instead.
         showNative(h, "out-secondary", n1.id);
         showNative(h, "out-primary", n2.id);
         dispatchObserve(h);
-        const rows = viewsOf(h);
-        assert.equal(rows.find((b) => b.view === "wl-1"), undefined, "no binding, no view");
-        assert.equal(rows.find((b) => b.view === "wl-2"), undefined, "no binding, no view");
+        assertViewsEmpty(h);
+        const rows = nativeOf(h);
+        assert.ok(rows.find((b) => b.out === "out-secondary")?.order.includes(n1.id), "created native rides its output order");
+        assert.ok(rows.find((b) => b.out === "out-primary")?.order.includes(n2.id), "created native rides its output order");
         assert.equal(attemptsOf(h).length, 2, "both receipts preserved");
         // Ack only wl-1: the wl-2 receipt must survive (no map-wide clear).
         const ack = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
@@ -333,9 +361,11 @@ describe("creation binding handoff", () => {
             ],
         }));
         dispatchObserve(h);
-        const after = viewsOf(h);
-        assert.equal(after.find((b) => b.view === "wl-1")?.out, "out-secondary");
-        assert.equal(after.find((b) => b.view === "wl-2"), undefined, "unincorporated logical publishes no view");
+        // Only the wl-1 receipt incorporates; the views lane stays empty and
+        // the wl-2 receipt survives (no map-wide clear).
+        assertViewsEmpty(h);
+        const after = nativeOf(h);
+        assert.ok(after.find((b) => b.out === "out-secondary")?.order.includes(n1.id));
         assert.equal(attemptsOf(h).length, 1, "only the wl-2 receipt survives");
         assert.equal(h.world.created.length, 2);
         // The wl-2 desire stays spent: still no second native call.

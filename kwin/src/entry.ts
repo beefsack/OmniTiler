@@ -30,6 +30,16 @@ const planHandle = startWorldAdapterEntry({
     // namespace against the retained Planner instead of fencing as
     // superseded/consumed. The owner stays stable so sessions survive.
     adapter: mintAdapterIncarnation(),
+    // Native effect presentation-facts lane (Stage 3 ingress, read-only):
+    // the held WaitPresentationFacts call on the effect's well-known
+    // object, same callDBus shape as every other route.
+    effectCallDbus: (service, path, iface, method, payload, callback) => {
+        try {
+            callDBus(service, path, iface, method, payload, callback);
+        } catch (error) {
+            void error;
+        }
+    },
     // Development scope baked by the launcher build (`OMNITILER_SCOPE_CLASS`
     // env at `npm run build` time, "" when unset): exact `resourceClass`
     // filter, validated once at startup. Undefined (manual builds without

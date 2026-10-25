@@ -552,9 +552,9 @@ describe("world unequal-height occupied-target R4 through the production entry (
     // active window lives on the other output; the retained Reconcile
     // converges that focusless source with focus none instead of holding
     // it on `focus-mismatch` (which fenced the return pair as
-    // `operation-refused`). The clamp lifetime
-    // fix itself is proven by world-apply-clamp-lifetime (alternating A/B
-    // keeps writing).
+    // `operation-refused`). Frame anti-fighting is core-owned (constraint-
+    // clamp suppression in later desires, never an adapter retry budget);
+    // world-apply-clamp-lifetime proves stop/resume through the real Engine.
     it("replays left/right R4 across unequal-height outputs with near-side full-height arrivals", async () => {
         const h = await makeHarness();
         try {
@@ -585,8 +585,9 @@ describe("world unequal-height occupied-target R4 through the production entry (
             // (never a local move, never a capacity float), land full
             // height nearest the source with no far-side overlap, retain
             // exactly one unheld window transfer with a fresh stable op,
-            // and actuate natively (no clamp exhaustion: every leg writes
-            // geometry).
+            // and actuate natively (no adapter retry budget to exhaust:
+            // every leg writes geometry while the core desire stays
+            // Controlled).
             for (let leg = 0; leg < 8; leg += 1) {
                 const direction = leg % 2 === 0 ? "right" : "left";
                 const expectedOut = direction === "right" ? "out-right" : "out-left";
@@ -658,7 +659,7 @@ describe("world unequal-height occupied-target R4 through the production entry (
                     assert.ok(moverFrame.x + moverFrame.w <= 2048, `leg ${leg} mover never crosses the far side, got x+w=${moverFrame.x + moverFrame.w}`);
                 }
                 assert.equal(h.workspace["activeWindow"], h.mover, `leg ${leg} mover keeps focus`);
-                assert.ok(h.geometryWrites.length > geometryBefore, `leg ${leg} actuates geometry (no clamp exhaustion)`);
+                assert.ok(h.geometryWrites.length > geometryBefore, `leg ${leg} actuates geometry (adapter holds no retry budget)`);
                 const floats = (reply["windows"] as Array<Record<string, unknown>>).filter((entry) => entry["floating"] === true);
                 assert.equal(floats.length, 0, `leg ${leg} never floats/exhausts`);
             }

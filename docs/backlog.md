@@ -164,10 +164,14 @@ decisions of 2026-09-24 are under
   Deferred investigations: Activities/multi-desktop, async configure. Four
   minimal port discriminator rows keep untested native outcomes TBD; Activities
   defaults tentative pending KDE evidence. v1 KDE rows below keep their
-  historical evidence; replacement belongs to this port. Status: Stages 0/1/1b/2
-  complete offline, including B1 command wake and B2 native attempts/released-source
-  adoption; Rust 216/216 and JS 720/720. Stage 3+ and native acceptance remain
-  pending; tentative adoption decisions stay queued for the cross-platform review.
+  historical evidence; replacement belongs to this port. Status: Stages 0/1/1b/2/3
+  complete offline, including raw clear/float/transfer attempts, native
+  presentation ingress and deletion of local verdict/clamp/homing fallbacks;
+  Rust 216/216, exporter 14/14, JS 764/764, host-matched effect build and native
+  CTest 34/34 after final corrections. Stage 4 is next; renderer,
+  game-pause/unknown host facts and native acceptance remain pending. Tentative
+  adoption decisions and the oversized decorated-hint bound stay queued for
+  cross-platform review.
   [Record](changes/kde-world-v2-port.md).
 - P1 | Live fixture first use on macOS (2026-10-20) |
   `crates/tiler-live-fixture` is the standard agent live-test window
