@@ -134,6 +134,10 @@ decisions of 2026-09-24 are under
   [three-way shared classification](changes/macos-world-v2-port.md#shared-transient-classification-2026-10-25);
   `minimized` covering host-hidden; DPI/coordinate basis; and the neutral settling
   marker investigation ([guide](porting/world-adapter-guide.md#coordinates-and-safety)).
+  Include tentative host-owned native-only evidence, hybrid creation correlation,
+  native attempt preimages, released-source backing/fresh adoption and trailing
+  spare count ([KDE record](changes/kde-world-v2-port.md)); assess future GNOME
+  and ChromeOS fit as well as the three landed ports.
   Port delivery does not pre-approve these interface changes.
 - P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v1 consumers and the
   TypeScript born-maximized copy remain intentionally stale; the port replaces
@@ -154,12 +158,6 @@ decisions of 2026-09-24 are under
   assertions. Helper failure diagnostics improved; later stages and native
   acceptance remain pending.
   [Record](changes/kde-world-v2-port.md).
-- P2 | Comprehensive cross-platform core abstraction review once Windows, KDE and
-  macOS ports are complete: re-examine the tentative host-owned adoption decisions
-  (native-evidence-only reporting, hybrid creation correlation, native attempt
-  preimages, released source backing/fresh adoption, minimized as host-hidden,
-  trailing spare count) for a better general abstraction across Windows, KDE,
-  macOS, GNOME and ChromeOS. [Record](changes/kde-world-v2-port.md).
 - P1 | Live fixture first use on macOS (2026-10-20) |
   `crates/tiler-live-fixture` is the standard agent live-test window
   (KDE live-verified, KDE `--scope-class`). Windows first use and

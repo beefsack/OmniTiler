@@ -573,9 +573,12 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   and per-window native facts can prove later arrival, but these attempt rows
   cannot carry native refusal preimages or a proven-then-abandoned view.
 - The [shared native-preimage extension](../porting/world-adapter-guide.md#5-raw-attempts-and-settlement)
-  is still draft; KDE's [B2 dormant-source discriminator](kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
-  additionally needs an identity/return-provenance decision. Neither is solved
-  by inventing logical receipts or a host binding table. Reuse the
+  is still draft. Update from `9f0cfe22`: KDE's
+  [B2 source-view discriminator](kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
+  now has a tentative released-source/fresh-adoption decision, also applicable
+  to macOS; no dormant return binding or reverse provenance is intended.
+  Implementation and contradictory retention-oracle alignment remain blocked.
+  Neither is solved by inventing logical receipts or a host binding table. Reuse the
   [migration rewind row](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs)
   and the native refusal/delayed-arrival row below the macOS workspace heading.
 - Options: A, retain unknown attempt fields plus fresh native observations and
@@ -694,7 +697,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
 - Remaining exact next step: align the native-attempt evidence limitation with
-  the shared KDE B2 delivery/identity decision, then replace select/send/trailing
+  the shared KDE B2 delivery/oracle alignment, then replace select/send/trailing
   owners with reply-driven executors and raw native readbacks. Shared transient
   classification is integrated offline; later policy/executor/presentation and
   native acceptance stages remain open. Do not invent shared shapes in the adapter.
