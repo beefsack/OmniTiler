@@ -62,6 +62,69 @@ The user is unsure of the desired behavior; gather Tier 1 outcomes before decidi
 | --- | --- | --- | --- |
 | Switch to empty, then send | Keep B visible on R; focus A on L with cursor on L; press Win+digit to select an empty workspace on L; record focused output/window; immediately issue a workspace send | Does focus stay on empty L with no focused window (send has no subject), or move to B on R (send moves B)? | User physical 2026-10-20: focus moved to another output's window and the following send moved it. Desired outcome undecided; COSMIC, Hyprland, i3 and sway outcomes TBD. No fix or focus policy selected |
 
+<a id="workspace-no-focus-discriminators"></a>
+### Workspace arrival and navigation without window focus
+
+Source-only Tier 1 audit (2026-10-25): COSMIC, Hyprland, i3 and sway,
+per the [reference tiers](../decisions.md#reference-tiers). These rows do not
+select a fallback policy or change [R-WS-09](reference-outcomes/workspaces.md#r-ws-09-select-ws2-select-ws1-return-focus-and-viewport).
+"No window focus" distinguishes an absent keyboard target from focus on an
+internal split/workspace node; neither implies that the workspace is empty.
+Ordinary windows, no fullscreen, exclusive shell layer or custom mouse binding.
+The existing [empty-output switch](#empty-workspace-focus-across-outputs) row
+remains undecided; these single-output probes do not answer it.
+
+| Variant / minimal action sequence | COSMIC | Hyprland | i3 | sway |
+| --- | --- | --- | --- | --- |
+| Previously empty destination: visit empty WS2; elsewhere focus A then B; move A then B to WS2 without follow; select WS2 | Focus repair, when triggered, chooses stack-last, else first mapped (floating layer first), else fullscreen. With absent seat focus and empty stack, refresh instead keeps no focus. Whether this exact move sequence reaches the empty-stack branch is TBD (`NF-C-arrive`) | With no remembered target, fullscreen cover, then pointer-hit when `follow_mouse=1`, then top-left/first candidate. `follow_mouse=0` uses the candidate; a remembered floating window takes priority in both variants. Exact A/B identity depends on placement/pointer (`NF-H-arrive`) | Descends destination focus order. Attachment and movement maintain that order even without following; this is not an empty-memory fallback (`NF-I-arrive`). Exact A/B identity for the full sequence TBD | Selects first destination descendant in seat focus-stack order, otherwise the workspace node. Transfer preserves existing seat-node order; do not equate move order with focus order (`NF-S-arrive`). Exact A/B identity for the full sequence TBD |
+| Workspace-level no-window focus with A/B still shown, if reachable; issue directional focus on one output | No keyboard target makes `next_focus` return none; action may navigate workspace/output rather than select A/B in place. Reachability for this exact start TBD (`NF-C-direction`) | No window anchor attempts the directional monitor fallback; without an adjacent output this is a no-op (`NF-H-direction`) | Workspace-node focus attempts another output, else no-op. A focused internal split is different: it can select a sibling subtree and descend to a window (`NF-I-direction`) | Workspace-node focus attempts another output, else no-op. Explicit `focus child` / `focus tiling` are separate verbs (`NF-S-direction`) |
+| Focus B with A/B visible; click exposed desktop/root, not a client, decoration or shell surface | Empty hit does not request new focus; retains B (`NF-C-click`) | Empty hit skips the window-refocus branch; retains B. Empty-motion refocus is a separate path (`NF-H-click`) | Same-output root click retains focus; cross-output root click selects that output's active workspace. Exact gap-to-root hit testing TBD (`NF-I-click`) | A hit resolved as workspace node with no surface focuses that node, clearing client keyboard focus while windows may remain shown. Exact gap hit testing TBD (`NF-S-click`) |
+| Focus B with A/B shown; focus parent repeatedly to workspace level | Group-focus counterpart and exact keyboard target TBD | Native parent-focus counterpart TBD | Supported: focus can move to split/workspace while clients remain shown. A frame-less focused node is not client-window X focus (`NF-I-direction`, `NF-I-node`) | `focus parent` and workspace-node focus are supported; workspace focus has no client keyboard target (`NF-S-direction`, `NF-S-node`) |
+| Focus B with A/B shown; close B | Close removes B from focus stacks; repair can select remaining mapped A (`NF-C-close`) | Close chooses a surviving group/spatial candidate under the ordinary defaults (`NF-H-close`) | Activates the next focused survivor (`NF-I-close`) | Destruction chooses a surviving inactive view, otherwise a workspace node (`NF-S-close`) |
+| Focus B with A/B shown; minimize B; separately minimize the sole remaining window | Direct counterpart: middle minimize refocuses an unminimized survivor; sole minimize permits no focus. Reuse [R-MNZ-01](reference-outcomes/minimize.md#r-mnz-01-native-minimize-of-a-middle-tile) and `S(S-cos-minimize)` | No direct minimize counterpart established; special-workspace transfer is not a minimize vote. Reuse `S(S-hyp-mininv)` | Iconic requests are rejected/reverted; scratchpad transfer is not native minimize (`NF-I-minimize`) | Direct minimize counterpart TBD here. Scratchpad hide is a separate transfer: focuses inactive survivor or workspace; show focuses the shown container (`NF-S-scratchpad`) |
+
+Local-source citation keys (paths and line ranges at the stated pins; source
+branches are evidence, not a claim that every proposed sequence was run):
+
+- COSMIC pin `3d55cba06c9cf6f27609cdefb520f7857dba20af`:
+  - `NF-C-arrive`: `src/shell/focus/mod.rs:510-620,739-790` and
+    `src/shell/workspace.rs:1521-1524` @`3d55cba0` (refresh gating,
+    target fallback, floating-before-tiling mapped order).
+  - `NF-C-direction`: `src/shell/mod.rs:4082-4090` and
+    `src/input/actions.rs:745-810` @`3d55cba0`.
+  - `NF-C-click`: `src/input/mod.rs:881-900,1036-1048` @`3d55cba0`.
+  - `NF-C-close`: `src/shell/workspace.rs:648-688` and
+    `src/shell/focus/mod.rs:739-790` @`3d55cba0`.
+- Hyprland pin `19fb395d45314960e6f79f17994a84094f1cd4f6`:
+  - `NF-H-arrive`: `src/output/Monitor.cpp:1398-1420` and
+    `src/workspace/HLWorkspace.cpp:134-144` @`19fb395d`.
+  - `NF-H-direction`: `src/config/shared/actions/ConfigActions.cpp:104-138,447-453`
+    @`19fb395d`.
+  - `NF-H-click`: `src/managers/input/InputManager.cpp:607-619,898-912`
+    @`19fb395d`.
+  - `NF-H-close`: `src/desktop/view/window/Window.cpp:1668-1713`,
+    `src/config/values/ConfigValues.cpp:383-384` and
+    `src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:481-491` @`19fb395d`.
+- i3 pin `903bcd518df32b0e055b17f5da3f988a0187fd3d`:
+  - `NF-I-arrive`: `src/workspace.c:438-505`, `src/con.c:208-214` and
+    `src/con.c` (`_con_move_to_con`, step 6) @`903bcd51`.
+  - `NF-I-direction`: `src/tree.c:386-409,503-617` @`903bcd51`.
+  - `NF-I-node`: `src/x.c:1397-1401,1431-1455` @`903bcd51`.
+  - `NF-I-click`: `src/click.c:372-418` @`903bcd51`.
+  - `NF-I-close`: `src/tree.c:263-311` @`903bcd51`.
+  - `NF-I-minimize`: `src/handlers.c:847-857` @`903bcd51`.
+- sway pin `1652c54b73f67df17b7b4ab0b0f7048204aa8104`:
+  - `NF-S-arrive`: `sway/tree/workspace.c:731-740`,
+    `sway/input/seat.c:1361-1376`, `sway/commands/move.c:198-239,554-608`
+    and `sway/tree/container.c:1489-1526` @`1652c54b`.
+  - `NF-S-direction`: `sway/commands/focus.c:273-308,369-378,455-479`
+    @`1652c54b`.
+  - `NF-S-click`: `sway/input/seatop_default.c:372-380` @`1652c54b`.
+  - `NF-S-node`: `sway/input/seat.c` (`seat_set_workspace_focus`,
+    `seat_send_unfocus`, `seat_set_focus`) @`1652c54b`.
+  - `NF-S-close`: `sway/input/seat.c:260-324` @`1652c54b`.
+  - `NF-S-scratchpad`: `sway/tree/root.c:157-236` @`1652c54b`.
+
 <a id="cross-output-focus-edge-discriminator"></a>
 ### Cross-output focus: edge-nearest versus destination MRU
 
