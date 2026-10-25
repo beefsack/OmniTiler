@@ -113,7 +113,7 @@ impl WorldEngine {
                 held_scopes,
             ),
             WorldCommand::SwitchView { output, workspace } => {
-                self.retain_view(report, command_seq, output, workspace)
+                self.retain_view(report, command_seq, output, workspace, held_scopes, &by_id)
             }
             WorldCommand::SelectWorkspace { output, workspace } => {
                 // Global-unique visible-elsewhere swap: selecting a target
@@ -182,11 +182,14 @@ impl WorldEngine {
                                 }
                             }
                             self.note_command(command_seq);
-                            self.retain_view(report, command_seq, output, workspace);
-                            // retain_view pushed a second identical flight for
-                            // the active output; the views above already moved,
-                            // so one flight suffices.
-                            return CommandApplied::NoEffect;
+                            return self.retain_view(
+                                report,
+                                command_seq,
+                                output,
+                                workspace,
+                                held_scopes,
+                                &by_id,
+                            );
                         }
                         // Safety fences for the stateful move: complete
                         // inventory, live screens, no held scopes on any
@@ -392,6 +395,12 @@ impl WorldEngine {
                         // Commit mapping/views/history first (existing
                         // parked-history semantics: out-of-scope previous
                         // entries invalidate via observe).
+                        // R-WS-09 for the requested output: the destination
+                        // workspace's remembered leaf lives in its pre-move
+                        // source session; the post-commit staged lookup
+                        // misses on the stale observation and the pre-moved
+                        // views gate changed false, so capture before rekey.
+                        let swap_focus = self.remembered_view_focus(&src_b, held_scopes, &by_id);
                         let next =
                             crate::workspace_scope::apply_swap_assignments(&self.mapping, &plan);
                         self.mapping = next;
@@ -518,14 +527,35 @@ impl WorldEngine {
                             });
                         }
                         self.note_command(command_seq);
-                        self.retain_view(report, command_seq, output, workspace);
-                        // retain_view pushed a second identical flight for
-                        // the active output; the views above already moved,
-                        // so one flight suffices.
-                        return CommandApplied::NoEffect;
+                        let applied = self.retain_view(
+                            report,
+                            command_seq,
+                            output,
+                            workspace,
+                            held_scopes,
+                            &by_id,
+                        );
+                        // retain_view pushed the view flight for the active
+                        // output; the views above already moved. Its
+                        // post-commit lookup misses the stale staged domain
+                        // and gates changed false, so the pre-move capture
+                        // above carries the approved R-WS-09 intent.
+                        return match applied {
+                            CommandApplied::NoEffect => match swap_focus {
+                                Some(window) => {
+                                    CommandApplied::Effect(OneShotEffect::explicit_focus(
+                                        command_seq,
+                                        window,
+                                        self.state_revision + 1,
+                                    ))
+                                }
+                                None => CommandApplied::NoEffect,
+                            },
+                            other => other,
+                        };
                     }
                 }
-                self.retain_view(report, command_seq, output, workspace)
+                self.retain_view(report, command_seq, output, workspace, held_scopes, &by_id)
             }
             WorldCommand::SelectNumbered { output, index } => {
                 let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
@@ -543,7 +573,7 @@ impl WorldEngine {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(report, command_seq, &resolved, &target)
+                self.retain_view(report, command_seq, &resolved, &target, held_scopes, &by_id)
             }
             WorldCommand::SelectRelative { output, delta } => {
                 let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
@@ -562,7 +592,7 @@ impl WorldEngine {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(report, command_seq, &resolved, &target)
+                self.retain_view(report, command_seq, &resolved, &target, held_scopes, &by_id)
             }
             WorldCommand::SelectPrevious { output } => {
                 let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
@@ -577,9 +607,14 @@ impl WorldEngine {
                     let live: Vec<String> = self.selection_ring(report, &resolved);
                     let current = self.effective_view(&resolved).unwrap_or_default();
                     match self.history.resolve_shared_for(&live, &current) {
-                        PreviousTarget::Select(target) => {
-                            self.retain_view(report, command_seq, &resolved, &target)
-                        }
+                        PreviousTarget::Select(target) => self.retain_view(
+                            report,
+                            command_seq,
+                            &resolved,
+                            &target,
+                            held_scopes,
+                            &by_id,
+                        ),
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             self.note_command(command_seq);
                             CommandApplied::NoEffect
@@ -592,9 +627,14 @@ impl WorldEngine {
                         .history
                         .resolve_previous_for(&resolved.0, &live, &current)
                     {
-                        PreviousTarget::Select(target) => {
-                            self.retain_view(report, command_seq, &resolved, &target)
-                        }
+                        PreviousTarget::Select(target) => self.retain_view(
+                            report,
+                            command_seq,
+                            &resolved,
+                            &target,
+                            held_scopes,
+                            &by_id,
+                        ),
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             // No-op until the next recorded change: reconcile
                             // only, never retain or emit.
@@ -615,9 +655,14 @@ impl WorldEngine {
                 let occupied = self.ring_occupied(&resolved);
                 let selection = resolve_trailing(&ring, &occupied);
                 match selection {
-                    TrailingSelection::Reuse(target) => {
-                        self.retain_view(report, command_seq, &resolved, &target)
-                    }
+                    TrailingSelection::Reuse(target) => self.retain_view(
+                        report,
+                        command_seq,
+                        &resolved,
+                        &target,
+                        held_scopes,
+                        &by_id,
+                    ),
                     TrailingSelection::Create => {
                         // Trailing workspaces exist immediately in the
                         // logical contract: mint, then select.
@@ -629,7 +674,14 @@ impl WorldEngine {
                                 message: MSG_CREATION_EXHAUSTED,
                             };
                         };
-                        self.retain_view(report, command_seq, &resolved, &logical)
+                        self.retain_view(
+                            report,
+                            command_seq,
+                            &resolved,
+                            &logical,
+                            held_scopes,
+                            &by_id,
+                        )
                     }
                 }
             }

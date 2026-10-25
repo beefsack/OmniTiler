@@ -35,6 +35,11 @@
 - Existing approved remembered-focus policy is the repair boundary. A new
   fallback for a workspace genuinely lacking remembered focus requires a
   separate product decision.
+- Self-generated view notifications must not invalidate the same reply's
+  trailing remembered-focus dispatch; genuinely intervening user/app changes
+  must still win. Per-HWND wake suppression and cross-reply focus replay are
+  not selected. Any mechanism must preserve core policy ownership and the
+  existing at-most-once effect contract.
 - The reported trace uses one output. Numbered selection publishes empty focus
   effects while visibility changes succeed; the Windows effect dispatcher
   therefore never attempts foreground activation. The core selection route
@@ -97,10 +102,35 @@
   strict all-target clippy for both crates, workspace fmt and
   `git diff --check` passed after integrating the native-settlement changes.
   These green checks include diagnostics of the unresolved stale hold, not
-  native focus acceptance. Implementation and regression changes remain draft.
+  native focus acceptance.
 - Tier 1 source findings and unsupported cells are recorded in the
   [minimal no-focus discriminators](../spec/reference-outcomes.md#workspace-no-focus-discriminators).
   No new product policy is selected.
+
+## Offline-proven portions (2026-10-25)
+
+- Core selection emits the existing remembered tiled-focus intent and pager
+  marks only the current workspace. Independent review found two global-swap
+  routes dropping the new effect; regressions failed before correction and
+  pass after capturing the destination's remembered window before session
+  rekey. Empty destinations remain quiet. No new option, public contract,
+  unremembered-focus fallback, or adapter-owned focus policy is added.
+- Full core tests pass: 847 library tests and 436 integration tests. Full
+  Windows tests pass: 1,385 tests, one existing ignored test. Strict all-target
+  clippy passes for both crates. Native focus acceptance remains blocked.
+- Hook wakes now preserve exact foreground/create/destroy/show/hide/location
+  kinds, native thread/time fields, and a delivery-time PID/member-tag read.
+  Destroy stays unknown. A bounded, non-consuming diagnostic joins a token
+  only against a single matching PID/tag candidate and reports unknown or
+  mismatched generations explicitly. Delivery-time reads do not establish the
+  original event generation or its initiating operation. All existing
+  pending-event vetoes remain intact.
+- A matching HWND, event kind, timing interval and final state are not causal
+  proof: an application's own change can produce the same notification.
+  `ShowWindowAsync` and the delivered WinEvent carry no shared operation token.
+  No freshness exemption based only on those matches is accepted. In
+  particular, a foreground transition after hiding the active window cannot
+  simply be assumed to be a self-generated fallback.
 
 ## Remaining work
 
@@ -114,5 +144,5 @@
 - Verify foreground, visibility and actual pager-cell data on occupied workspace
   switches both ways, including the second destination arrival. Pager lifecycle
   traces and the current empty-workspace diagnostic do not meet that acceptance.
-- Shared/global-swap variants and floating remembered-focus coverage remain
-  outside the current draft's demonstrated acceptance.
+- Global-swap focus intent has offline regressions; shared variants and
+  floating remembered-focus coverage remain outside demonstrated acceptance.

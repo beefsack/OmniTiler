@@ -1149,3 +1149,185 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     assert_eq!(sticky.len(), 1, "arrived sticky: {sticky:?}");
     assert_eq!(sticky[0].output.0, "out-a");
 }
+
+#[test]
+fn global_unique_swap_occupied_current_emits_destination_remembered_focus() {
+    // R-WS-09 over the global-unique swap path (occupied <-> occupied):
+    // stale pre-command report, absent view echoes. The requested output
+    // lands on the occupied target, so the reply carries one explicit
+    // focus effect to that destination's remembered leaf.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let view_a = view_of(&first, "out-a").expect("view a");
+    let view_b = view_of(&first, "out-b").expect("view b");
+    assert_ne!(view_a, view_b);
+    let windows = vec![
+        fact("win-a1", "out-a", 0),
+        fact("win-a2", "out-a", 100),
+        fact("win-b1", "out-b", 800),
+        fact("win-b2", "out-b", 900),
+    ];
+    accepted(
+        &mut engine,
+        &report(2, 2, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "win-a2",
+            None,
+            None,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "win-b1",
+            None,
+            None,
+        ),
+    );
+    let swapped = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_b.clone(),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
+    assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
+    assert_eq!(swapped.effects.len(), 1, "{:?}", swapped.effects);
+    assert_eq!(swapped.effects[0].target.0, "win-b1");
+    assert_eq!(swapped.effects[0].id, "fx-11");
+}
+
+#[test]
+fn global_unique_swap_empty_current_emits_destination_remembered_focus() {
+    // Empty current (out-a) swaps with the occupied other side: same stale
+    // pre-command shape, absent echoes. The requested output lands on the
+    // occupied target, so its remembered leaf focuses.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let view_a = view_of(&first, "out-a").expect("view a");
+    let view_b = view_of(&first, "out-b").expect("view b");
+    assert_ne!(view_a, view_b);
+    let windows = vec![fact("win-b1", "out-b", 800), fact("win-b2", "out-b", 900)];
+    accepted(
+        &mut engine,
+        &report(2, 2, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "win-b1",
+            None,
+            None,
+        ),
+    );
+    let swapped = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_b.clone(),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
+    assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
+    assert_eq!(swapped.effects.len(), 1, "{:?}", swapped.effects);
+    assert_eq!(swapped.effects[0].target.0, "win-b1");
+    assert_eq!(swapped.effects[0].id, "fx-11");
+}
+
+#[test]
+fn global_unique_swap_to_empty_stays_quiet() {
+    // No-memory control: the requested output lands on the empty side, so
+    // no remembered window exists and the swap stays quiet.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let view_a = view_of(&first, "out-a").expect("view a");
+    let view_b = view_of(&first, "out-b").expect("view b");
+    assert_ne!(view_a, view_b);
+    let windows = vec![fact("win-a1", "out-a", 0)];
+    accepted(
+        &mut engine,
+        &report(2, 2, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "win-a1",
+            None,
+            None,
+        ),
+    );
+    let swapped = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_b.clone(),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
+    assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
+    assert!(
+        swapped.effects.is_empty(),
+        "empty destination stays quiet: {:?}",
+        swapped.effects
+    );
+}

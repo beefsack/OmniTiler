@@ -1006,14 +1006,14 @@ impl super::Session {
         })
     }
 
-    pub(super) fn focused_window_for(&self, leaf: &NodeId, key: &DomainKey) -> Option<WindowId> {
+    pub(crate) fn focused_window_for(&self, leaf: &NodeId, key: &DomainKey) -> Option<WindowId> {
         self.windows
             .values()
             .find(|l| &l.leaf == leaf && l.output == key.output && l.workspace == key.workspace)
             .map(|l| l.window.clone())
     }
 
-    pub(super) fn remembered_leaf(&self, target: &DomainKey) -> Option<NodeId> {
+    pub(crate) fn remembered_leaf(&self, target: &DomainKey) -> Option<NodeId> {
         let leaf = self.last_active.get(target)?.clone();
         let tree = self.trees.get(target).cloned().flatten()?;
         if !super::collect_leaves(&tree).contains(&leaf) {

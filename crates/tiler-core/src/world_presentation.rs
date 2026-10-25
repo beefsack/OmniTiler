@@ -671,17 +671,25 @@ impl WorldEngine {
                     }
                 }
                 let ordinal = index as u32 + 1;
+                let current = current_id.as_deref() == Some(id.as_str());
                 workspaces.push(PagerWorkspace {
                     id: id.clone(),
                     ordinal,
                     label: pager_workspace_label(ordinal),
-                    current: current_id.as_deref() == Some(id.as_str()),
+                    current,
                     occupied,
-                    contains_focused: focused_home.as_ref().is_some_and(
-                        |(focused_output, focused_workspace)| {
-                            focused_output == &output && focused_workspace == id
-                        },
-                    ),
+                    // Same-report focus/view epoch: the retained focus names
+                    // the pre-command foreground, but the views above already
+                    // moved. Only the current workspace may carry the mark;
+                    // a departed workspace never shows focused. No fallback
+                    // is invented: a stale or foreign focus simply marks
+                    // nothing until native observation catches up.
+                    contains_focused: current
+                        && focused_home.as_ref().is_some_and(
+                            |(focused_output, focused_workspace)| {
+                                focused_output == &output && focused_workspace == id
+                            },
+                        ),
                     windows,
                 });
             }

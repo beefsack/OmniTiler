@@ -707,6 +707,599 @@ fn view_switch_return_preserves_remembered_focus() {
 }
 
 #[test]
+fn numbered_select_return_emits_remembered_focus() {
+    // R-WS-09 over the numbered path (the dogfood SelectNumbered route):
+    // switching away stays quiet when the target holds no remembered
+    // focus, returning emits one explicit at-most-once effect to the
+    // remembered leaf. A redundant select on the shown view stays quiet.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    let other_index = index_of(&other);
+    let view_index = index_of(&view_a);
+    // Remember focus on win-b through the observed global focus. The
+    // pre-switch departing foreground stays truthful in the pager feed:
+    // the shown view carries the focus mark.
+    let focused = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-b",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_a).as_deref(),
+        Some("win-b")
+    );
+    assert!(pager_contains_focused(&focused, "out-a", &view_a));
+    // Switch away to the empty spare: no remembered focus there, so the
+    // accepted reply carries admission-only effects (none here).
+    let away = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: other_index,
+            }),
+        ),
+    );
+    assert!(
+        away.effects.is_empty(),
+        "empty target stays quiet: {:?}",
+        away.effects
+    );
+    assert_eq!(view_of(&away, "out-a"), other);
+    // Return: one explicit focus effect to the remembered leaf.
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: view_index,
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back, "out-a"), view_a);
+    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
+    assert_eq!(back.effects[0].target.0, "win-b");
+    assert_eq!(back.effects[0].id, "fx-12");
+    // Post-hide desktop observation: native focus is empty while the
+    // returned view is current, so the pager marks no workspace focused.
+    // The reply focus mark never invents the remembered leaf.
+    assert!(!pager_contains_focused_any(&back, "out-a"));
+    // Redundant select on the shown view stays quiet.
+    let calm = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: view_index,
+            }),
+        ),
+    );
+    assert!(
+        calm.effects.is_empty(),
+        "redundant select stays quiet: {:?}",
+        calm.effects
+    );
+}
+
+#[test]
+fn numbered_select_empty_and_minimized_targets_stay_quiet() {
+    // R-CLOSE-03: selecting an empty workspace emits nothing. A minimized
+    // remembered member never takes focus itself: the return follows the
+    // updated remembered survivor, and a sole-minimized workspace (REQ-MNZ-03)
+    // stays quiet.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    let other_index = index_of(&other);
+    let view_index = index_of(&view_a);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-b",
+            None,
+            None,
+        ),
+    );
+    let away = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: other_index,
+            }),
+        ),
+    );
+    assert!(away.effects.is_empty());
+    // Minimize the remembered win-b; the return must not target the
+    // minimized window. The updated remembered survivor win-a is the valid
+    // focus target.
+    let mut minimized_b = fact("win-b", "out-a", 100);
+    minimized_b.minimized = true;
+    minimized_b.rect = None;
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), minimized_b],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: view_index,
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back, "out-a"), view_a);
+    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
+    assert_eq!(back.effects[0].target.0, "win-a");
+    // Sole-minimized workspace (REQ-MNZ-03): no tiled survivor exists, so
+    // the return stays quiet.
+    let mut sole = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut sole,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    accepted(
+        &mut sole,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let mut minimized_a = fact("win-a", "out-a", 0);
+    minimized_a.minimized = true;
+    minimized_a.rect = None;
+    accepted(
+        &mut sole,
+        &report(
+            3,
+            vec![minimized_a.clone()],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&other),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut sole,
+        &report(
+            4,
+            vec![minimized_a],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&view_a),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back, "out-a"), view_a);
+    assert!(
+        back.effects.is_empty(),
+        "sole-minimized stays quiet: {:?}",
+        back.effects
+    );
+}
+
+fn pager_contains_focused(
+    reply: &crate::world_report::WorldReply,
+    output: &str,
+    workspace: &str,
+) -> bool {
+    reply
+        .presentation
+        .pager
+        .iter()
+        .find(|screen| screen.output == output)
+        .is_some_and(|screen| {
+            screen
+                .workspaces
+                .iter()
+                .any(|row| row.id == workspace && row.contains_focused)
+        })
+}
+
+fn pager_contains_focused_any(reply: &crate::world_report::WorldReply, output: &str) -> bool {
+    reply
+        .presentation
+        .pager
+        .iter()
+        .find(|screen| screen.output == output)
+        .is_some_and(|screen| screen.workspaces.iter().any(|row| row.contains_focused))
+}
+
+#[test]
+fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
+    // Incident shape (occupied WS1 <-> occupied WS2, R-WS-09): the return
+    // target must already hold a remembered leaf. A focused singleton
+    // newly admitted on WS2 records the leaf; a second WS2 arrival
+    // updates it. Returns in both directions emit the destination's
+    // remembered window. The two reports ride the realistic observation
+    // orderings: a stale departing foreground, then a post-hide desktop
+    // (empty) read. Pager assertions expose the existing mixed-epoch feed:
+    // a reply carries pre-switch focus on the departed view while logical
+    // current has already moved. This diagnoses the reported stale mark;
+    // it does not establish that presentation as the desired behavior.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let view_b = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    let index_a = index_of(&view_a);
+    let index_b = index_of(&view_b);
+    // Remember win-b on WS1 through the observed global focus.
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-b",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_a).as_deref(),
+        Some("win-b")
+    );
+    // Occupy WS2: select the spare, then admit a focused singleton.
+    let away = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_b,
+            }),
+        ),
+    );
+    assert!(away.effects.is_empty());
+    assert_eq!(view_of(&away, "out-a"), view_b);
+    let admitted = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+            ],
+            vec![("out-a", view_b.as_str())],
+            vec![],
+            "win-c",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(view_of(&admitted, "out-a"), view_b);
+    // The focused singleton newly admitted on WS2 records the leaf.
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_b).as_deref(),
+        Some("win-c")
+    );
+    // A second WS2 arrival, focused, updates the leaf.
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", view_b.as_str())],
+            vec![],
+            "win-d",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_b).as_deref(),
+        Some("win-d")
+    );
+    // Return to WS1 under a stale departing foreground: native still
+    // reports win-d focused although the view moves now.
+    let back_a = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", view_b.as_str())],
+            vec![],
+            "win-d",
+            Some(12),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_a,
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back_a, "out-a"), view_a);
+    assert_eq!(back_a.effects.len(), 1, "{:?}", back_a.effects);
+    assert_eq!(back_a.effects[0].target.0, "win-b");
+    assert_eq!(back_a.effects[0].id, "fx-12");
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_a).as_deref(),
+        Some("win-b")
+    );
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_b).as_deref(),
+        Some("win-d")
+    );
+    // Stale departing foreground: native still reports win-d focused
+    // although the view moves now. The departed WS2 never keeps the focus
+    // mark and the not-yet-observed WS1 carries none either: no workspace
+    // is marked until native observation catches up.
+    assert!(!pager_contains_focused(&back_a, "out-a", &view_a));
+    assert!(!pager_contains_focused(&back_a, "out-a", &view_b));
+    assert!(!pager_contains_focused_any(&back_a, "out-a"));
+    // Post-hide desktop observation: native focus is empty while WS1 is
+    // current, so no workspace carries a focus mark.
+    let calm_a = accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(view_of(&calm_a, "out-a"), view_a);
+    assert!(!pager_contains_focused_any(&calm_a, "out-a"));
+    // Native observation catches up: the current-workspace focus win-b is
+    // genuinely observed, so the returned-to WS1 carries the mark and the
+    // departed WS2 carries none. This is observed focus, never the
+    // remembered desire painted early.
+    let caught_up = accepted(
+        &mut engine,
+        &report(
+            8,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "win-b",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(view_of(&caught_up, "out-a"), view_a);
+    assert!(pager_contains_focused(&caught_up, "out-a", &view_a));
+    assert!(!pager_contains_focused(&caught_up, "out-a", &view_b));
+    // Foreign focus (unmanaged lifetime) marks nothing.
+    let foreign = accepted(
+        &mut engine,
+        &report(
+            9,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "ghost",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(view_of(&foreign, "out-a"), view_a);
+    assert!(!pager_contains_focused_any(&foreign, "out-a"));
+    // Return to WS2 under the desktop observation: the remembered win-d
+    // is still the emitted target.
+    let back_b = accepted(
+        &mut engine,
+        &report(
+            10,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_b,
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back_b, "out-a"), view_b);
+    assert_eq!(back_b.effects.len(), 1, "{:?}", back_b.effects);
+    assert_eq!(back_b.effects[0].target.0, "win-d");
+    assert_eq!(back_b.effects[0].id, "fx-13");
+    assert!(!pager_contains_focused_any(&back_b, "out-a"));
+    // Memory on both workspaces survives the roundtrip.
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_a).as_deref(),
+        Some("win-b")
+    );
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_b).as_deref(),
+        Some("win-d")
+    );
+}
+
+#[test]
 fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
     // Survivor with the mover focused: the collapsed single-leaf tree
     // cannot name the pre-send stack, so the sole survivor is exact by
