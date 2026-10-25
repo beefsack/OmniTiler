@@ -9,8 +9,9 @@ The staged implementation and parked boundaries are tracked in
 complete offline, including command wake, source-view rewind settlement,
 raw attempts and native presentation ingress. Stage 4 is partial: required raw
 candidate capture and Rust fixed-size wire classification are delivered, with
-role/born/gesture/toggle policy still outstanding. Stage 5 replaces renderer
-derivation. Native acceptance remains
+role/born/gesture/toggle policy still outstanding. Existing-core shortcuts now
+submit commands only; the native float-navigation policy is deleted. Stage 5
+replaces renderer derivation. Native acceptance remains
 outstanding; no logical receipt or offline test is native arrival proof.
 
 KWin source is read from the local sibling clone at the documented
@@ -114,7 +115,7 @@ JS adapter (`kwin/src/`):
   inventory, closes, completeness) and re-target it to v2 facts,
   observed logical receipts and presentation ingress. Geometry stays
   in the coherent KWin adapter space (KWin logical pixels).
-- `world-apply.ts`, `world-native.ts`, `world-float-nav.ts`: port to
+- `world-apply.ts`, `world-native.ts`: port to
   v2 desires and operation tokens (`frame_operation`,
   `clear_operation`, `op-<cmdSeq>` transfers). One-shot effects are
   spent before dispatch, never replayed.
@@ -131,7 +132,10 @@ JS adapter (`kwin/src/`):
   moved into `world-settings-live.ts`, not policy. Unused trailing/displacement
   helpers in `workspace-native.ts` and the refill selector were deleted.
   `scope-class.ts` remains the fixture-only safety filter; local fixed/born
-  and command/gesture policy deletion remains incomplete. Shared owners include
+  and gesture/toggle policy deletion remains incomplete. `world-float-nav.ts`
+  is deleted: directional shortcuts submit core commands, workspace selections
+  carry no implicit-output preselection, and keyboard sends carry the typed
+  home-then-cached-live source. Shared owners include
   `workspace_scope.rs`, `window_policy.rs`, `output_selection.rs`, `admission.rs`.
   `tray-publisher.ts` keeps native placement/anchoring/styling and
   click-to-command; pager content comes from core.

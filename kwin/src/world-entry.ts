@@ -18,7 +18,6 @@ import { connectSignal, readSignal } from "./signal-capability";
 import { createWorldDragRoute } from "./world-drag";
 import { registerWorldShortcuts } from "./world-shortcuts";
 import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
-import { createFloatNav } from "./world-float-nav";
 import {
     GROUP_HIGHLIGHT_CLEAR_METHOD,
     GROUP_HIGHLIGHT_INTERFACE,
@@ -80,7 +79,7 @@ import {
     cmdSendNumbered,
     cmdSendRelative,
     cmdSetWorkspaceTiling,
-    explicitSource,
+    implicitSource,
     isCoreWorldReply,
     isWorldQueueReply,
     isWorldRejection,
@@ -882,27 +881,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return true;
     };
 
-    // Float-origin directional focus/move lives in world-float-nav (native
-    // only, same semantics): the entry owns lifecycle state and flight
-    // ordering and injects them as one busy boolean plus callbacks, never
-    // copied state.
-    const floatNav = createFloatNav({
-        surface,
-        readProp,
-        log,
-        isBusy: () => state.inFlight !== null || pendingQueue.length > 0,
-        activeWindowId,
-        observe: route.observeForCommand,
-        liveRefById,
-        submitCommand,
-        invalidate: () => {
-            state.invalidate();
-        },
-        scheduleDispatch,
-    });
-    const handleFloatFocus = floatNav.handleFloatFocus;
-    const handleFloatMove = floatNav.handleFloatMove;
-
     // Explicit output send by direction: the adapter names the window and
     // direction only (no endpoint, no cross flag); the core resolves the
     // strict target plus its current desktop and owns the membership
@@ -941,19 +919,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     // Numbered workspace moves (follow/stay): positional send-numbered
-    // 0..9 straight to core (D2/D3). Index 0 is the trailing path: core
-    // reuses the live trailing empty or mints a stable pending token and
-    // pends the send until the binding is reported. Resolution is all core;
-    // this path never maps positions locally and never view-switches: stays
-    // (follow=false) keep the origin view because sends never switch views.
+    // 0..9 straight to core (D2/D3) with the keyboard implicit source
+    // (retained home, else cached-live, else first live). Index 0 is the
+    // trailing path: core reuses the live trailing empty or mints a stable
+    // pending token and pends the send until the binding is reported.
+    // Resolution is all core; this path never maps positions locally and
+    // never view-switches: stays (follow=false) keep the origin view
+    // because sends never switch views.
     const submitCatalogMove = (action: string, index: number, follow: boolean): void => {
-        const out = activeOutputName();
         const w = activeWindowId();
-        if (out === null || w === null || !Number.isInteger(index) || index < 0 || index > 9) {
+        if (w === null || !Number.isInteger(index) || index < 0 || index > 9) {
             shortcutFailed(action);
             return;
         }
-        const cmd = cmdSendNumbered(w, explicitSource(out), index, follow);
+        const cmd = cmdSendNumbered(w, implicitSource("home-then-cached-live"), index, follow);
         if (cmd === null || !submitCommand(cmd, action)) {
             shortcutFailed(action);
         }
@@ -1260,16 +1239,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // Drain-time subject resolution for queued tiled directional focus
-    // and move. The queue retains the direction intent; the subject
-    // rebinds here to the authoritative current native focus, validated
-    // against the fresh observation. A vanished subject (no active
-    // window, unknown to the observation, or with no live ref) or a
-    // subject that has become a float/sticky exception drops narrowly
+    // Drain-time subject resolution for queued directional focus and
+    // move. The queue retains the direction intent; the subject rebinds
+    // here to the authoritative current native focus, validated against
+    // the fresh observation. A vanished subject (no active window,
+    // unknown to the observation, or with no live ref) drops narrowly
     // with one bounded line and no native writes; the next queued intent
-    // then resolves in turn. Float-origin focus fallback intents
-    // (keepSubject true) keep their explicit press-time window identity
-    // and pass through untouched, as do non-directional commands.
+    // then resolves in turn. Floating/sticky subjects pass through like
+    // tiled ones: the core owns the float-focus lattice and half-snap
+    // geometry. Non-directional commands pass through untouched.
     const resolveHeadCommand = (observation: WorldObservation): QueuedIntent | null => {
         if (state.observationOnlyCatchup) {
             return null;
@@ -1331,11 +1309,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (subject === null || liveRefById(current) === null) {
                 pendingQueue.shift();
                 log(`omnitiler:world:command-dropped reason=${reasonPrefix}-vanished`);
-                continue;
-            }
-            if (subject.floating === true || subject.sticky === true) {
-                pendingQueue.shift();
-                log(`omnitiler:world:command-dropped reason=${reasonPrefix}-float`);
                 continue;
             }
             if (current === (rec["win"] as string)) {
@@ -3299,8 +3272,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         isDirection,
         shortcutFailed,
         submitCommand,
-        handleFloatFocus,
-        handleFloatMove,
         submitCatalogMove,
         submitOutputSend,
         submitMigration,
@@ -3413,14 +3384,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("focus");
                 return;
             }
-            const floatOutcome = handleFloatFocus(direction);
-            if (floatOutcome === "handled") {
-                return;
-            }
-            if (floatOutcome === "failed") {
-                shortcutFailed("focus");
-                return;
-            }
+            // Command-only: floating/sticky subjects route the same
+            // direction-only command; the core owns the float lattice.
             const w = activeWindowId();
             if (w === null) {
                 shortcutFailed("focus");
@@ -3436,14 +3401,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("move");
                 return;
             }
-            const floatOutcome = handleFloatMove(direction);
-            if (floatOutcome === "handled") {
-                return;
-            }
-            if (floatOutcome === "failed") {
-                shortcutFailed("move");
-                return;
-            }
+            // Command-only: floating/sticky subjects route the same
+            // direction-only command; the core owns half-snap geometry.
             const w = activeWindowId();
             if (w === null) {
                 shortcutFailed("move");
@@ -3536,13 +3495,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         },
         requestWorkspaceSelect: (index) => {
-            const out = activeOutputName();
-            if (out === null || !Number.isInteger(index)) {
+            // Neutral selection: core resolves the output cursor-first.
+            if (!Number.isInteger(index)) {
                 shortcutFailed("workspace-select");
                 return;
             }
             const n = index as number;
-            const cmd = n === 0 ? cmdSelectTrailing(out) : cmdSelectNumbered(out, n);
+            const cmd = n === 0 ? cmdSelectTrailing(null) : cmdSelectNumbered(null, n);
             if (cmd === null || !submitCommand(cmd, "workspace-select")) {
                 shortcutFailed("workspace-select");
             }
@@ -3555,24 +3514,21 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             submitCatalogMove("workspace-move", index as number, follow !== false);
         },
         requestWorkspacePrevious: () => {
-            const out = activeOutputName();
-            if (out === null || !submitCommand(cmdSelectPrevious(out), "workspace-previous")) {
+            if (!submitCommand(cmdSelectPrevious(null), "workspace-previous")) {
                 shortcutFailed("workspace-previous");
             }
         },
         requestWorkspaceRelative: (delta) => {
-            const out = activeOutputName();
-            const cmd = out === null || (delta !== -1 && delta !== 1) ? null : cmdSelectRelative(out, delta);
+            const cmd = delta !== -1 && delta !== 1 ? null : cmdSelectRelative(null, delta);
             if (cmd === null || !submitCommand(cmd, "workspace-relative")) {
                 shortcutFailed("workspace-relative");
             }
         },
         requestWorkspaceRelativeMove: (delta, follow) => {
-            const out = activeOutputName();
             const w = activeWindowId();
-            const cmd = out === null || w === null || (delta !== -1 && delta !== 1)
+            const cmd = w === null || (delta !== -1 && delta !== 1)
                 ? null
-                : cmdSendRelative(w, explicitSource(out), delta, follow !== false);
+                : cmdSendRelative(w, implicitSource("home-then-cached-live"), delta, follow !== false);
             if (cmd === null || !submitCommand(cmd, "workspace-relative-move")) {
                 shortcutFailed("workspace-relative-move");
             }

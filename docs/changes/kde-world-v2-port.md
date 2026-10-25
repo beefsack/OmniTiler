@@ -8,8 +8,9 @@
   [adapter guide](../porting/world-adapter-guide.md) are authoritative.
 - Stages 0/1/1b/2/3 are complete offline. Stage 4 is partial: strict raw capture,
   Rust fixed-size wire classification and obsolete selector deletion are
-  delivered offline; remaining role, born, gesture and command policy is not
-  deleted. All 758 current KDE JS tests pass. Native acceptance remains TBD
+  delivered offline; directional shortcuts and implicit workspace selection/send
+  now submit existing core commands only. Role, born, gesture and toggle policy
+  remain. All 762 current KDE JS tests pass. Native acceptance remains TBD
   and this record stays active for the whole port. Renderer, host integration
   and the documented unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
@@ -33,7 +34,7 @@
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
-| 4. Shared policy only | Partial offline: required raw candidate capture and shared Rust fixed-size wire classification; obsolete refill/trailing/displacement selectors removed. Role normalization, born lifetime, gesture/shortcut/toggle policy remain | Rust corpus and real-normalizer engine tests pass; full stage acceptance not claimed; birth-clear and neutral-toggle core requests parked |
+| 4. Shared policy only | Partial offline: required raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation policy removed; existing-core shortcuts command-only. Role normalization, born lifetime, gesture/toggle policy remain | Rust corpus and real-normalizer engine tests pass; full stage acceptance not claimed; birth-clear and neutral-toggle core requests parked |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; independent active-border and pager-focused-window colors, default system accent, full-strength border/dimmer fill | Declaration/source checks and adapter tests; independent overrides; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
@@ -1144,3 +1145,86 @@
   Activities/configure questions remain parked. Next action: implement the
   existing gesture lifecycle transport; separately review N5/N6 and fullscreen
   safety before claiming the remaining policy deletions or Stage 4 closure.
+
+## Stage 4 command-only outcome and remaining blockers (2026-10-26)
+
+- Delivered only the independently verified command slice. Directional focus/move
+  for tiled, floating and sticky subjects now submit the same existing core
+  commands; removed the drain-time float/sticky rejection. Core already owns
+  float focus selection, half-snap geometry and clear/placement operations
+  (`world_operations.rs`). Deleted `kwin/src/world-float-nav.ts` and its native
+  focus/geometry route, not the core's existing behavior.
+- Numbered/trailing/previous/relative selections now carry `out:null`; core
+  resolves the configured cursor/focused output. Keyboard numbered/relative sends
+  carry `HomeThenCachedLive`, preserving retained-home-first resolution without
+  adapter output preselection. Genuine explicit-output commands remain valid.
+  Native sticky/maximize/fullscreen toggles lack equivalent core commands and
+  remain unchanged. N6 tiling-toggle, birth-clear and game/fullscreen suspension
+  paths are untouched; no core, protocol, dependency or native-effect change.
+- Accepted gates through the declared development environment: locked all-target
+  service build, tests 252/252 (183 library, 42 flow, 11 tray, 16 example), strict
+  all-target clippy, workspace fmt/whitespace; JS typecheck/build and full suite
+  762/762, zero failures/skips/cancels; exact world acceptance 6/6. Independent
+  review reproduced the 11 command-routing tests. Synthetic service refusals
+  prove adapter surfacing, not native arrival or engine policy. Core-only full
+  gates were not rerun because shared source is unchanged. No live acceptance.
+
+### N5 existing-entry experiment: parked, no production change
+
+- A direct `classify_membership` experiment was rejected and removed. Passing
+  native minimized into `SafetyFacts` produces `LeaveUnmanaged`; projecting that
+  as `floating=false` still makes it a member and collapses the verdict into the
+  tile lane. Omitting it instead loses KDE's existing retained-minimized facts.
+  Neither outcome is accepted. No false safety defaults or membership code from
+  that experiment remains.
+- Cross-host examples clarify the missing distinction: a minimized ordinary KDE
+  window is retained with `WindowFact.minimized`; macOS filters minimized/hidden
+  windows before its all-clear membership call; Windows owned/dialog safety
+  exclusions remain unmanaged. A KWin normal transient/parent link is not by
+  itself a Windows owned-dialog exclusion, nor is `wantsInput=false` an HWND
+  no-activate style. A real KWin dialog has `normalWindow=false` and is currently
+  filtered before capture; `normalWindow=true,dialog=true` is not a real type
+  combination (`v6.7.4:src/window.h`, `isNormalWindow`/`isDialog`).
+- The raw lane also lacks visibility evidence: readable geometry is not proof
+  of visibility. KWin's script-visible `hidden` exists at the pin but is not
+  carried; gathering it is not itself a solution to the retention distinction.
+  Cloaked/privileged/tool facts must never be manufactured from unrelated flags.
+- Options: preserve the existing candidate path; explicitly separate retained
+  membership from immediate safety eligibility in shared classification; or omit
+  minimized members. Recommendation: retain current behavior and review the
+  smallest neutral membership/retention contract before another mapping attempt.
+  Windows safety gates must stay; KDE, macOS, GNOME and ChromeOS must not inherit
+  an HWND-style ownership/visibility model or lose host-hidden membership by
+  projection. Native/reference outcomes remain TBD in the existing role row.
+
+### Gesture transport: unaccepted draft, correlation decision required
+
+- Two transport approaches failed semantic review: window-only effect witness
+  matching, then script adoption of effect serials using same-window/open and
+  start-frame similarity. An unconsumed old open witness can still bind a new
+  script START; stateless broker equality checks cannot establish causality.
+  Fast START/Esc/finish before the witness arrives also emits an unsupported
+  release before real cancel evidence. Stop this approach; no gesture deletion
+  or native change is included in the delivered command slice.
+- Other unaccepted draft defects: one unavailable effect interval disables later
+  witness binding until reset, despite script ids already being monotonic; null
+  preview while open can leave an old shape shown. Passing draft tests encode
+  these paths and do not override the blockers. No final native gate or native
+  acceptance is claimed for that draft.
+- Options: make one native lifecycle source authoritative for gesture identity
+  and frozen start/finish/cancel facts, folding script cursor/hit facts in the
+  broker; or establish an explicit causally acknowledged cross-source binding.
+  Recommendation: review the single-native-source boundary first, avoiding
+  frame/window/age heuristics and retaining truthful unsupported facts when the
+  source is unavailable. This is a transport ownership decision, not permission
+  to change core gesture policy. A first-seen revision alone cannot prove that
+  a delayed witness belongs to a newer script START.
+- Core-produced drop preview must be forwarded separately from group underlay
+  bounds and requester command results. Capture-only forwarding is feasible in
+  the draft, but is not a substitute for correct lifecycle correlation. Native
+  warp remains unsupported and never applied.
+- Stage 4 remains partial; Stage 5 and native acceptance remain outstanding.
+  Exact next action: choose the gesture capture identity boundary above, add the
+  stale-open and fast-Esc discriminators, then replace the unaccepted transport.
+  N5/N6 and the existing fullscreen/game, hint-bound, native-order, sticky,
+  Activities/configure and directional product questions remain parked.

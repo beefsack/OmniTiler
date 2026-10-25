@@ -14,7 +14,7 @@ import {
     cmdSelectTrailing,
     cmdSendRelative,
     cmdSetWorkspaceTiling,
-    explicitSource,
+    implicitSource,
     type WorldCommand,
 } from "./world-report";
 import { workspaceShortcutCatalog } from "./workspace-native";
@@ -85,8 +85,6 @@ export interface WorldShortcutsEnv {
     isDirection: (value: unknown) => value is "left" | "right" | "up" | "down";
     shortcutFailed: (action: string) => void;
     submitCommand: (command: WorldCommand, label: string) => boolean;
-    handleFloatFocus: (direction: string) => "not-float" | "handled" | "failed";
-    handleFloatMove: (direction: string) => "not-float" | "handled" | "failed";
     submitCatalogMove: (action: string, index: number, follow: boolean) => void;
     submitOutputSend: (direction: string, follow: boolean) => boolean;
     submitMigration: (direction: string) => boolean;
@@ -110,7 +108,6 @@ export interface WorldShortcutsEnv {
 export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
     const {
         readProp, isDirection, shortcutFailed, submitCommand,
-        handleFloatFocus, handleFloatMove,
         submitCatalogMove, submitOutputSend, submitMigration, submitFloat,
         setStickyNative, setMaximizedNative, setFullscreenNative,
         activeOutputName, activeWindowId, activeWindowRef,
@@ -157,19 +154,9 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             { direction: "right", key: "L", arrow: "Right" },
         ] as const;
         const submitFocus = (d: string): void => {
-            // Float-origin first (legacy parity, native): a floating/sticky
-            // subject focuses natively or falls back direction-only with
-            // floatSubject true. Tiled subjects route the direction-only
-            // Planner command below; the core owns crossing (left/right
-            // cross, up/down stay local) with local fallback.
-            const floatOutcome = handleFloatFocus(d);
-            if (floatOutcome === "handled") {
-                return;
-            }
-            if (floatOutcome === "failed") {
-                shortcutFailed(`focus-${d}`);
-                return;
-            }
+            // Command-only: every subject (tiled, floating, sticky) routes
+            // the direction-only Planner command; the core owns the
+            // float-focus lattice, crossing (left/right) and local fallback.
             const w = focusedWin();
             if (!isDirection(d) || w === null) {
                 shortcutFailed(`focus-${d}`);
@@ -181,18 +168,9 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             }
         };
         const submitMove = (d: string): void => {
-            // Float-origin moves half-snap natively (no Planner path for
-            // float moves); tiled subjects route the direction-only Planner
-            // command below; the core owns crossing (all four directions)
-            // with local R1-R3 fallback.
-            const floatOutcome = handleFloatMove(d);
-            if (floatOutcome === "handled") {
-                return;
-            }
-            if (floatOutcome === "failed") {
-                shortcutFailed(`move-${d}`);
-                return;
-            }
+            // Command-only: every subject routes the direction-only Planner
+            // command; the core owns float half-snap geometry, crossing
+            // (all four directions) and local R1-R3 fallback.
             const w = focusedWin();
             if (w === null) {
                 shortcutFailed(`move-${d}`);
@@ -288,12 +266,10 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             const kind = row.kind;
             if (kind === "select") {
                 tryRegister(row.action, row.text, row.sequence, () => {
-                    const out = outName();
-                    if (out === null) {
-                        shortcutFailed(row.action);
-                        return;
-                    }
-                    const cmd = row.index === 0 ? cmdSelectTrailing(out) : cmdSelectNumbered(out, row.index);
+                    // Neutral selection: core resolves the output from the
+                    // cursor-first switch target (no cached active-output
+                    // preselection on the wire).
+                    const cmd = row.index === 0 ? cmdSelectTrailing(null) : cmdSelectNumbered(null, row.index);
                     if (cmd === null || !submitCommand(cmd, row.action)) {
                         shortcutFailed(row.action);
                     }
@@ -308,16 +284,14 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 });
             } else if (kind === "previous") {
                 tryRegister(row.action, row.text, row.sequence, () => {
-                    const out = outName();
-                    if (out === null || !submitCommand(cmdSelectPrevious(out), row.action)) {
+                    if (!submitCommand(cmdSelectPrevious(null), row.action)) {
                         shortcutFailed(row.action);
                     }
                 });
             } else if (kind === "relative") {
                 const delta = row.delta ?? 1;
                 tryRegister(row.action, row.text, row.sequence, () => {
-                    const out = outName();
-                    const cmd = out === null ? null : cmdSelectRelative(out, delta);
+                    const cmd = delta !== -1 && delta !== 1 ? null : cmdSelectRelative(null, delta);
                     if (cmd === null || !submitCommand(cmd, row.action)) {
                         shortcutFailed(row.action);
                     }
@@ -326,9 +300,8 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 const delta = row.delta ?? 1;
                 const follow = kind === "send-relative";
                 tryRegister(row.action, row.text, row.sequence, () => {
-                    const out = outName();
                     const w = focusedWin();
-                    const cmd = out === null || w === null ? null : cmdSendRelative(w, explicitSource(out), delta, follow);
+                    const cmd = w === null ? null : cmdSendRelative(w, implicitSource("home-then-cached-live"), delta, follow);
                     if (cmd === null || !submitCommand(cmd, row.action)) {
                         shortcutFailed(row.action);
                     }

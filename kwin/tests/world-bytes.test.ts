@@ -520,7 +520,7 @@ describe("world shared byte fixtures", () => {
         for (const row of rows) {
             assert.ok(!("fixedAuto" in row) && !("hints" in row), "no wire verdicts");
         }
-        // Accepted, never catchup-held: the explicit select rides the next
+        // Accepted, never catchup-held: the neutral select rides the next
         // dispatch instead of being dropped to observation-only.
         replyCall(flow, "DescribeWorld")(acceptEmpty(body["source"], "1", "1"));
         flow.handle.requestWorkspaceSelect(2);
@@ -533,7 +533,7 @@ describe("world shared byte fixtures", () => {
         const cmd = selectQueued["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "select-numbered");
         assert.equal(cmd["index"], 2);
-        assert.equal(cmd["out"], "out-1");
+        assert.equal(cmd["out"], null);
         flow.handle.stop();
     });
 

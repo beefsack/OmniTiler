@@ -388,8 +388,6 @@ describe("world shortcut settings", () => {
                 commands.push(command);
                 return true;
             },
-            handleFloatFocus: (_d: string): "not-float" | "handled" | "failed" => "not-float",
-            handleFloatMove: (_d: string): "not-float" | "handled" | "failed" => "not-float",
             submitCatalogMove: (_a: string, _i: number, _f: boolean): void => {},
             submitOutputSend: (_d: string, _f: boolean): boolean => false,
             submitMigration: (_d: string): boolean => false,

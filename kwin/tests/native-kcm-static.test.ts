@@ -576,8 +576,6 @@ describe("native KCM static contract", () => {
                 value === "left" || value === "right" || value === "up" || value === "down",
             shortcutFailed: () => {},
             submitCommand: () => true,
-            handleFloatFocus: () => "not-float",
-            handleFloatMove: () => "not-float",
             submitCatalogMove: () => {},
             submitOutputSend: () => true,
             submitMigration: () => true,
