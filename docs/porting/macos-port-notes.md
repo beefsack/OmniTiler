@@ -108,9 +108,9 @@ with the fixture-first rules and the signed bundle in
 - KDE stage 1b owns creation-attempt correlation, optional native current and
   authoritative native order; it landed in `4bd4aca9` (native-only view
   settlement `28c3cff2`). Consume those shapes, never a separate macOS equivalent.
-- Stage-2 policy removal is incomplete: eliminating the current automatic-float
-  echo exposes a core D2 hint-loss retile mismatch. Existing behavior/tests are
-  preserved pending a core correction; no host policy expansion is selected.
+- Stage-2 policy removal is incomplete. The approved D2 hint-loss correction
+  now preserves automatic floats in core without a native floating echo;
+  macOS removes its automatic assertion cache in a separate checkpoint.
   [Mechanical coverage, blocker and sticky verification plan](../changes/macos-world-v2-port.md#stage-2-mechanical-evidence-and-policy-blocker-2026-10-25).
 - Activities default stays tentative pending KDE evidence (see
   [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):

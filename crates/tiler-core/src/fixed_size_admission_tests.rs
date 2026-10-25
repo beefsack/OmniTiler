@@ -592,6 +592,78 @@ fn hint_transitions_never_reclassify_either_direction() {
 }
 
 #[test]
+fn automatic_hint_loss_with_native_unfloat_stays_floating_until_explicit_win() {
+    // D2: a known automatic float observed native floating:false with
+    // hintless hints keeps floating with its marker (no fresh
+    // admission, so no new geometry or focus); only a genuine
+    // explicit win (suppress signal, retained override) tiles.
+    let mut session = fixed_session();
+    admit_plain(&mut session, "win-a", "c-a");
+    let base = session.accepted_revision();
+    session
+        .converge_observation(
+            &observation(base, vec![plain("win-a"), fixed("win-f")]),
+            None,
+        )
+        .expect("admit fixed");
+    let id = WindowId("win-f".to_owned());
+    assert!(
+        session.is_automatic_fixed_float(&id),
+        "automatic marker set"
+    );
+    let base = session.accepted_revision();
+    let result = session
+        .converge_observation(
+            &observation(base, vec![plain("win-a"), plain("win-f")]),
+            None,
+        )
+        .expect("hint loss converges");
+    assert_eq!(
+        (result.removed, result.admitted),
+        (0, 0),
+        "no fresh admission"
+    );
+    assert!(session.is_exception(&id), "still floating");
+    assert!(
+        session.is_automatic_fixed_float(&id),
+        "marker kept across hint loss"
+    );
+    assert!(!session.has_fixed_tile_override(&id), "no inferred win");
+    // An observed suppress signal with the same hintless hints is a
+    // genuine explicit win: it tiles and records the override.
+    let base = session.accepted_revision();
+    let suppressed = obs(
+        "win-f",
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        WindowSizeHints::none(),
+    );
+    session
+        .converge_observation(&observation(base, vec![plain("win-a"), suppressed]), None)
+        .expect("suppress converges");
+    assert!(!session.is_exception(&id), "tiled");
+    assert!(session.has_fixed_tile_override(&id), "win recorded");
+    // The retained override keeps it tiled across restored or lost hints.
+    for hints in [fixed_hints(), WindowSizeHints::none()] {
+        let base = session.accepted_revision();
+        let shown = obs("win-f", false, false, false, false, false, false, hints);
+        let result = session
+            .converge_observation(&observation(base, vec![plain("win-a"), shown]), None)
+            .expect("resync converges");
+        assert_eq!(
+            (result.removed, result.admitted),
+            (0, 0),
+            "override keeps tile"
+        );
+        assert_eq!(tiled_ids(&session).len(), 2, "stays tiled");
+    }
+}
+
+#[test]
 fn floating_fixed_without_origin_signal_stays_intentional() {
     // Known floating intent is never inferred automatic from hints
     // alone: without the adapter's explicit fixed_auto origin the

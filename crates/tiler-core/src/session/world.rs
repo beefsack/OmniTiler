@@ -1341,9 +1341,12 @@ impl super::Session {
             flags_adopted += 1;
         }
         // Known floating observed tiled. D5 first exits and D6 enable
-        // rechecks float fixed windows without explicit wins; only an
-        // observed suppress signal records a tile win (D3). The
-        // still-fullscreen hold below is opt-in only: legacy retile
+        // rechecks keep automatic floats without explicit wins; only an
+        // observed suppress signal or a retained override records a
+        // tile win (D3). Hint changes never reclassify (D2): an
+        // automatic float keeps floating across hint loss until a
+        // genuine explicit win. The still-fullscreen hold below is
+        // opt-in only: legacy retile
         // keeps its exact behavior with the opt-in off. Diagnostic
         // capacity origin grants no leniency (D4): a capacity float
         // observed floating:false re-admits exactly like an ordinary
@@ -1367,7 +1370,7 @@ impl super::Session {
             let was_automatic = new_automatic.contains(id);
             let fixed_now =
                 crate::size_hints::is_fixed_size_with(entry.hints, self.fixed_predicate);
-            if self.fixed_admission && was_automatic && !suppressed && fixed_now {
+            if self.fixed_admission && was_automatic && !suppressed && !overridden {
                 flags_adopted += 1;
                 continue;
             }

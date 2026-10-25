@@ -1850,6 +1850,11 @@ platform API behavior.
   - D2 hint changes: admission-only in both directions as delivered;
     keep reacting to windows resizing themselves to avoid
     gaps/overlaps. No new hint-signal work requested.
+    User-approved correction 2026-10-25: a known automatic float keeps floating
+    across fixed-hint loss, including native `floating=false`, unless an
+    observed suppress signal, retained fixed tile override or explicit
+    ToggleFloat supplies a genuine tile win. This aligns convergence with D2,
+    not a policy change. [Regression and port evidence](changes/macos-world-v2-port.md#approved-d2-core-correction-2026-10-25).
   - D3 user override: explicit tile/sticky-off-to-tile wins for the
     same live client (hide/show, cross-domain observation, workspace
     re-adoption); no setting. A new client classifies again; sticky

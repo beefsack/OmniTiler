@@ -3,8 +3,9 @@
 ## Goal and status
 
 - Stage 0 reviewed; stage 1 complete offline; stage 2 and independent offline
-  stage-3 work are partial, with app-hidden option B selected. Policy removal
-  needs resolution of the D2 core mismatch below. Stage 0 evidence is from `a0f54105`
+  stage-3 work are partial, with app-hidden option B selected. The approved D2
+  core correction is verified; automatic-float echo removal follows separately.
+  Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
 - Replace the retired macOS contract, not wrap it. One `WorldEngine` owns policy;
@@ -354,6 +355,39 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   membership. This is not accepted as the tentative `None` edge implementation;
   the fact-ownership unit must keep those lifetimes truthful and fenced.
 
+## Approved D2 core correction (2026-10-25)
+
+- Known automatic floats now retain floating across fixed-hint loss with native
+  `floating=false`; observed suppression or retained tile override still tiles.
+  Explicit ToggleFloat remains a genuine tile win. Only the existing retained
+  exception condition changed; no new type, transport or compatibility route.
+- `automatic_hint_loss_with_native_unfloat_stays_floating_until_explicit_win`
+  distinguishes the missing native-unfloat case, preserves the automatic marker
+  without admission, then proves hintless suppress-to-tile and retained override
+  across hint changes. Existing D2/D3/D5/D6 and ToggleFloat tests stay green.
+- Locked core/protocol build and full tests PASS (1,287 tests, 0 failed), strict
+  all-target clippy PASS, workspace fmt PASS, ordered acceptance PASS (6/6).
+  Portable Windows tests PASS (724 tests); Windows-only `tiling_sys` tests need
+  their native test environment. No Windows source changed.
+- Windows `capture_floating` (`tiling_sys/world_capture.rs:667-701`) reports true
+  for sticky, the adapter's retained `fixed_auto_seen` latch without a tile win,
+  and its float/restart/born intent sets. It does not directly copy a core reply
+  floating row. Thus its automatic lane already supplies `floating=true` while
+  that latch remains; the new core regression covers the missing false-input lane.
+- KDE test execution is blocked by absent project test dependencies; no install
+  was performed. Fixed-float TS tests mostly mock core observations, but some
+  engine-backed fixture tests do invoke Rust. Do not infer a passing KDE suite
+  from that source inspection; native KDE/CI verification remains required.
+- The correction is D2 conformance, not a new policy. macOS echo removal is a
+  separate adapter change so its existing `cold_fixed_only_floats_automatic`
+  gate proves the core alone preserves the contract.
+
+### Parked post-port review
+
+- Review whether `WindowFact.floating` should carry genuine host float signals
+  only, rather than adapter echoes of core state. This review is after the port;
+  no field semantics or intentional-float echo change is selected here.
+
 ## Stage-2 mechanical evidence and policy blocker (2026-10-25)
 
 - Added fake-native tests through production `apply_scoped_frame` for a first
@@ -378,7 +412,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   admission-only, but `:1354-1386` retiles a non-floating observation when
   `was_automatic && !fixed_now`. The selected D2 test and existing echo remain
   unchanged; the unaccepted removal was withdrawn, not blessed by repinning it.
-- Proposed core correction, not implemented: retain known automatic floats
+- Historical proposal (now implemented above): retain known automatic floats
   across hint loss while preserving explicit tile/suppression wins. This would
   allow removal of the adapter assertion cache without changing D2. Re-scoping
   D2 instead is a product change. Any shared-core edit needs separate review.
@@ -520,7 +554,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: resolve the proposed D2 core correction before
-  removing the automatic-float echo, then finish shared classification and native
+- Remaining exact next step: remove the automatic-float echo in macOS, then
+  finish shared classification and native
   lifetime/inventory ownership. Native executors can consume the now-landed
   stage-1b contract; no new shared shape should be invented in the adapter.
