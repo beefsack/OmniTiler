@@ -78,6 +78,16 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   acceptance depend on that delivery. Stages 1, 2, 4 and offline stage-3
   translation/executors/readback/fake-native work proceed independently. No
   temporary adapter-minted logical workspace policy or fake native bindings.
+- Update 2026-10-25: `c76ba5f1` delivers capability-gated
+  `MemberAttempt.native_pre/native_post` and
+  `ViewAttempt.native_pre/native_post/native_baseline` (`nativePre/nativePost/nativeBase`).
+  Host-owned settlement uses native evidence only; core alone translates through
+  its bindings. Non-null native evidence without the capability refuses.
+  `9890c733` consumes these fields in KDE and closes its Stage 2 offline. The
+  macOS compatibility edits already stage view pre/post and member post from raw
+  Space reads; member pre and observation-time view baseline remain unknown until
+  the native executor cutover captures them. Consume this delivery directly;
+  native refusal/supersession proof is no longer blocked by absent shared fields.
 
 ## Reviewed outcomes (2026-10-24)
 
@@ -269,22 +279,29 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   accessory, nonstandard-role, native-workspace, underlay and drag rows. No parked
   result or foreign WM outcome is selected.
 
-## Tentative decisions
+## Decisions and review status
 
-| Decision | Alternatives | Reason |
+User review 2026-10-25 confirms the implementation decisions below, retires the
+two superseded interim choices, and leaves classification and `None` membership
+edge cases tentative. Acceptance of an approach does not claim native evidence.
+
+| Status | Decision | Alternatives / reason |
 | --- | --- | --- |
-| Make the first implementation checkpoint an atomic compiling v2 boundary replacement, including the old drag oracle/harness | Re-export internals, shim v1, or leave a build-breaking intermediate route | One executable contract and meaningful macOS gates; no compatibility debt |
-| Reuse sequencer and native thread/proof ownership, rewriting only their obsolete contract/policy surfaces | Replace concurrency infrastructure wholesale | Existing observation watermark, per-app AX isolation and spend-before-dispatch gates are native mechanics worth preserving |
-| Normalize all report geometry to current CG/AX logical points and preserve nearest whole-point frame rounding; document fixture/hint conversion separately | Switch all AX/CG observations to physical pixels or mix spaces | Least native conversion churn and one coherent adapter space; no invented DPI |
-| Reuse existing shared policy entry points before proposing richer ingress | Keep the native classifier as policy, or immediately widen core | Consumer-driven fit test; preserves policy ownership while exposing genuine unrepresentable facts |
-| Treat missing native proof as inability/hold, not successful logical settlement | Success-by-dispatch or desired-state echo | Native arrival, visibility and focus must remain independently falsifiable |
-| Interim app-hidden A treats the window as gone, pending the reviewed evidence comparison | B: report minimized; C: neutral kept-but-hidden core state | Preserve current legacy behavior without a new core state; not a final hidden-window product choice |
-| Retain skipped outputs as incomplete screen rows, not absent topology | Omit outputs when native Space homing is unreadable | Avoid treating a transient observation gap as display removal/hotplug displacement |
-| Use the current reply as a live binding/lifetime lookup; temporarily echo only previously asserted automatic-float facts | Read private core sessions or infer automatic provenance from indistinguishable float replies | Preserve the compile-cutover behavior without private API access; stage 2 must remove classification policy/cache ownership, not promote this assertion set to a new policy model |
-| Gesture terminals do not use observation-only dispatch retries; a stale reply hides the preview until a fresh sample | Retry terminal ingress or show stale output | Stable core gesture IDs own terminal consumption; never replay a commit or paint stale shapes |
-| Remove obsolete per-predicate Windows conformance pairs; keep real public classifier comparisons and fixture expectations | Restore removed Windows wrappers or compare core predicates with themselves | Shared predicate tests belong in core; self-comparison cannot establish platform conformance |
-| Preserve the existing automatic-float echo until D2 is resolved in core | Remove the echo and accept retile on hint loss, or expand host policy | Keeps the selected product expectation and current regressions intact; does not claim completed policy ownership or add a workaround |
-| Tentative shared classification A: one neutral transient fact yields tile, float member or leave unmanaged in process | Retain native transient float policy, or widen the wire roster | Small additive classifier; macOS normalizes sheets/dialogs/modals and projects the verdict into existing floating facts. Windows Dialog and OwnedDialog exclusions remain unchanged |
+| Confirmed 2026-10-25 | Atomic compiling v2 boundary replacement, including drag oracle/harness | No shim, private re-export or parallel route |
+| Confirmed 2026-10-25 | Reuse sequencer and native thread/proof ownership | Preserve mechanical watermark, AX isolation and spend-before-dispatch gates |
+| Confirmed 2026-10-25 | CG/AX logical points with nearest whole-point rounding | One coordinate space; no invented DPI; fixture/hint conversion stays explicit |
+| Confirmed 2026-10-25 | Existing shared policy entry points first | No copied native policy or speculative richer ingress |
+| Confirmed 2026-10-25 | Missing native proof means inability/hold | Dispatch and desired-state echoes are not arrival proof |
+| Retired, superseded | Interim app-hidden A omits the window | Selected option B reports minimized with lifetime/close retention |
+| Confirmed 2026-10-25 | Skipped outputs remain incomplete screen rows | Transient unreadability is not display removal |
+| Confirmed 2026-10-25 | Current-reply binding/lifetime lookup | No private inspection or durable adapter binding table; automatic echo is retired separately |
+| Confirmed 2026-10-25 | No observation-only retry for gesture terminals | Stale reply hides preview; never replay a commit |
+| Confirmed 2026-10-25 | Remove vacuous per-predicate conformance pairs | Keep real classifier comparisons and fixture expectations |
+| Retired, superseded | Keep automatic-float echo until D2 | Core D2 correction and separate adapter echo removal have landed |
+| Confirmed 2026-10-25 | Never guess output affinity | Require uniquely grounded FULL-screen overlap; ambiguous output holds |
+| Confirmed 2026-10-25 | Missing AX with live/unreadable CG retains and holds | Only covering AX absence plus fresh complete CG absence proves close |
+| Tentative | Three-way shared classifier A: tile, float member, unmanaged | One neutral transient fact; Windows Dialog/OwnedDialog exclusions unchanged |
+| Tentative | Fullscreen, all-Spaces and unreadable membership use `None` | No guessed home or sticky proof; shared edge tests and native scope evidence remain pending |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -573,7 +590,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   and per-window native facts can prove later arrival, but these attempt rows
   cannot carry native refusal preimages or a proven-then-abandoned view.
 - The [shared native-preimage extension](../porting/world-adapter-guide.md#5-raw-attempts-and-settlement)
-  is still draft. Update from `9f0cfe22`: KDE's
+  was still draft at this checkpoint. Update from `9f0cfe22`: KDE's
   [B2 source-view discriminator](kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
   now has a tentative released-source/fresh-adoption decision, also applicable
   to macOS; no dormant return binding or reverse provenance is intended.
@@ -587,6 +604,10 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   those executor discriminators (recommended). No additional shared change or
   adapter settlement workaround is selected here. Reply-driven targeting can
   be separated from this evidence limitation, but cannot close stage 3 alone.
+- Superseding update: option B is selected and the shared dependency has landed
+  in `c76ba5f1`, paired with KDE `9890c733` (see dependency status above). Capture
+  native member pre/post and view pre/post/observation baseline directly, then
+  prove async arrival, refusal and supersession through production executors.
 
 ## Stage-2 hide/unhide evidence (2026-10-25)
 
@@ -696,8 +717,8 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: align the native-attempt evidence limitation with
-  the shared KDE B2 delivery/oracle alignment, then replace select/send/trailing
-  owners with reply-driven executors and raw native readbacks. Shared transient
+- Remaining exact next step: replace select/send/trailing owners and pre-reply
+  numbered claims with reply-driven executors and complete raw native readbacks,
+  consuming the delivered KDE B2 fields. Shared transient
   classification is integrated offline; later policy/executor/presentation and
   native acceptance stages remain open. Do not invent shared shapes in the adapter.

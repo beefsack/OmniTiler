@@ -146,6 +146,9 @@ decisions of 2026-09-24 are under
   native attempt preimages, released-source backing/fresh adoption and trailing
   spare count ([KDE record](changes/kde-world-v2-port.md)); assess future GNOME
   and ChromeOS fit as well as the three landed ports.
+  Review distinct `NativeWorkspaceId`/`LogicalWorkspaceId` newtypes (both plain
+  `String` today): adapters flatten composite native identities into canonical
+  opaque keys; core never parses them.
   Port delivery does not pre-approve these interface changes.
 - P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v1 consumers and the
   TypeScript born-maximized copy remain intentionally stale; the port replaces

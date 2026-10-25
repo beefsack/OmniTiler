@@ -4618,6 +4618,18 @@ User-approved 2026-10-24 (final confirmations):
   is added. Windows Settings uses "Workspaces span displays" without changing
   the stored `shared` token. The KDE warning is a port requirement.
 
+## macOS v2 implementation decisions 2026-10-25
+
+User-confirmed: atomic v2 cutover; reuse mechanical sequencing/thread proofs;
+CG/AX logical points with nearest whole-point rounding; shared policy entry
+points first; missing proof holds; skipped outputs stay incomplete; current-reply
+binding lookup without an adapter binding table; no gesture-terminal replay;
+remove vacuous conformance checks; never guess output; and retain/hold missing
+AX lifetimes when CG is live or unreadable. Interim app-hidden omission and the
+automatic-float echo are superseded by option B and the D2 correction/echo removal.
+Three-way classification and `None` membership edge cases remain tentative.
+See the [reviewed table](changes/macos-world-v2-port.md#decisions-and-review-status).
+
 ## Native adoption 2026-10-24
 
 User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
