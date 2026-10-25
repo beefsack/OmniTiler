@@ -11,8 +11,8 @@
 use super::rmax03_adapter_tests::test_state;
 use super::world_capture::{capture_world, resolve_cursor_hit};
 use super::world_diff::{
-    ApplyStats, FakeNative, FreshHost, FreshWindow, HostDiff, MAX_CLEAR_HOLD_DIAG, NativeOps,
-    apply_world_reply,
+    ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, HostDiff, MAX_CLEAR_HOLD_DIAG,
+    NativeOps, apply_world_reply,
 };
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
@@ -985,6 +985,9 @@ impl NativeOps for InvalidateAfterWrites {
     fn poll_external_invalidation(&mut self) -> bool {
         self.inner.poll_external_invalidation()
     }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
 }
 
 #[test]
@@ -1091,6 +1094,9 @@ impl NativeOps for InvalidateAfterViewSwitch {
     }
     fn poll_external_invalidation(&mut self) -> bool {
         self.inner.poll_external_invalidation()
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
     }
 }
 
@@ -1232,6 +1238,9 @@ impl NativeOps for ProdContractNative {
     fn poll_external_invalidation(&mut self) -> bool {
         self.inner.pending_invalidation
     }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
 }
 
 impl ProdContractNative {
@@ -1253,6 +1262,9 @@ fn nonconsuming_pending_stops_until_drained() {
     // live-reveal path with the effect spent exactly once.
     let (rig, mut diff, fresh, mut native) = view_return_base();
     native.pending_invalidation = true;
+    // A real switch always has an entry foreground; the offline seed
+    // leaves none, so plant one for the guard baseline.
+    native.foreground = Some("w2".to_owned());
     let mut probe = ProdContractNative { inner: native };
     let reply = view_return_reply(&rig);
     let run =
@@ -1301,6 +1313,720 @@ fn nonconsuming_pending_stops_until_drained() {
     assert_eq!(row.setter, "accepted");
     assert!(row.foreground);
     assert_eq!(row.hold, None);
+}
+
+/// Pumped switch arms a queue edge; the nonactivating variant does not.
+struct PumpedVsNonactivating {
+    inner: FakeNative,
+}
+
+impl NativeOps for PumpedVsNonactivating {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        let result = self.inner.switch_view(output, logical);
+        if result == Ok(true) {
+            self.inner.pending_invalidation = true;
+        }
+        result
+    }
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view(output, logical)
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.inner.focus_window(token)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.poll_external_invalidation()
+    }
+}
+
+/// Nonactivating switch moves native foreground to an unmanaged window.
+struct ForeignDuringNonactivating {
+    inner: FakeNative,
+}
+
+impl NativeOps for ForeignDuringNonactivating {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view(output, logical)
+    }
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        let result = self.inner.switch_view(output, logical);
+        if result == Ok(true) {
+            self.inner.foreground = Some("foreign".to_owned());
+        }
+        result
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.inner.focus_window(token)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.poll_external_invalidation()
+    }
+}
+
+#[test]
+fn remembered_focus_pure_view_nonactivating_dispatches_without_queue() {
+    // Desired: a remembered-focus pure-view switch takes the nonactivating
+    // path (no pump, no queue), so the trailing focus dispatches even
+    // though the legacy pumped path would hold the same reply stale.
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    let mut probe = PumpedVsNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 1);
+    assert!(probe.inner.is_foreground("w1"));
+    assert!(!stats.stopped_mid_apply);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "accepted");
+    assert!(row.foreground);
+    assert_eq!(row.hold, None);
+    assert!(!diff.effects.mark_effect_spent("fx-9"));
+}
+
+#[test]
+fn remembered_focus_pure_view_foreign_foreground_vetoes_with_empty_queue() {
+    // Desired: a genuine foreign foreground move during a pump-free switch
+    // wins even with no callbacks delivered. The focus holds without
+    // dispatch and without being marked spent.
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    let mut probe = ForeignDuringNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert!(!probe.inner.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.setter, "skipped");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("foreground-changed"));
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(!probe.inner.is_foreground("w1"));
+}
+
+/// Zero-baseline foreground guard: verifiably no foreground at entry and
+/// at dispatch proves nothing about the switch, so the focus holds unless
+/// the target already holds foreground.
+#[test]
+fn remembered_focus_double_zero_foreground_fails_closed() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = None;
+    native.pending_invalidation = false;
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("foreground-changed"));
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+}
+
+/// Nonactivating view proof still required: a throwing nonactivating
+/// switch proves nothing, so the trailing focus holds for the view
+/// without dispatch and without spending.
+#[test]
+fn remembered_focus_nonactivating_failed_reveal_holds_for_view() {
+    struct ThrowingNonactivating {
+        inner: FakeNative,
+    }
+    impl NativeOps for ThrowingNonactivating {
+        fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+            self.inner.read_window(token)
+        }
+        fn read_frame(&mut self, token: &str) -> Option<Rect> {
+            self.inner.read_frame(token)
+        }
+        fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+            self.inner.read_homing(token)
+        }
+        fn read_view(&mut self, output: &str) -> Option<String> {
+            self.inner.read_view(output)
+        }
+        fn is_foreground(&mut self, token: &str) -> bool {
+            self.inner.is_foreground(token)
+        }
+        fn gesture_barrier(&mut self) -> bool {
+            self.inner.gesture_barrier()
+        }
+        fn read_dpi(&mut self, token: &str) -> Option<u32> {
+            self.inner.read_dpi(token)
+        }
+        fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+            self.inner.write_frame(token, rect)
+        }
+        fn move_membership(
+            &mut self,
+            token: &str,
+            out: &str,
+            ws: &str,
+            frame: Option<Rect>,
+        ) -> Result<bool, ()> {
+            self.inner.move_membership(token, out, ws, frame)
+        }
+        fn switch_view(&mut self, _o: &str, _l: &str) -> Result<bool, ()> {
+            self.inner.switch_view(_o, _l)
+        }
+        fn switch_view_nonactivating(&mut self, _o: &str, _l: &str) -> Result<bool, ()> {
+            Err(())
+        }
+        fn foreground_state(&mut self) -> ForegroundState {
+            self.inner.foreground_state()
+        }
+        fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+            self.inner.focus_window(token)
+        }
+        fn read_cursor(&mut self) -> Option<(i32, i32)> {
+            self.inner.read_cursor()
+        }
+        fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+            self.inner.move_cursor(x, y)
+        }
+        fn poll_external_invalidation(&mut self) -> bool {
+            self.inner.poll_external_invalidation()
+        }
+    }
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    let mut probe = ThrowingNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 0);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("view-not-shown"));
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+}
+
+/// Recycled HWND still stops: a live key drift fails the pre-setter fence
+/// before any foreground guard, so the focus holds without dispatch and
+/// without spending.
+#[test]
+fn remembered_focus_nonactivating_recycled_hwnd_stops() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.key.hwnd = 9999;
+    }
+    let mut probe = PumpedVsNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("pre-setter-stop"));
+    assert!(stats.stopped_mid_apply);
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+}
+
+/// Refused focus setter still reports dispatched-but-unproven: the
+/// foreground guard passes (no foreign move), the setter runs, the proof
+/// fails, and the one-shot spends exactly once.
+#[test]
+fn remembered_focus_nonactivating_refused_focus_spends_once() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.fail_focus.insert("w1".to_owned());
+    let mut probe = PumpedVsNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "refused");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("foreground-unproven"));
+    assert!(!diff.effects.mark_effect_spent("fx-9"));
+}
+
+/// Duplicate focus delivery never re-dispatches: the second pass holds
+/// already-spent with no new view write.
+#[test]
+fn remembered_focus_nonactivating_duplicate_holds_spent() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    let mut probe = PumpedVsNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let first = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(first.effects, 1);
+    let second = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(second.view_writes, 0);
+    assert_eq!(second.effects, 0);
+    assert_eq!(second.focus_dispatch.len(), 1);
+    let row = &second.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("already-spent"));
+}
+
+/// Lane-counting switch: distinguishes pumped vs nonactivating view calls.
+struct CountingViews {
+    inner: FakeNative,
+    pumped: usize,
+    na: usize,
+}
+
+impl NativeOps for CountingViews {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.pumped += 1;
+        self.inner.switch_view(output, logical)
+    }
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.na += 1;
+        self.inner.switch_view(output, logical)
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.inner.focus_window(token)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.poll_external_invalidation()
+    }
+}
+
+#[test]
+fn remembered_focus_unrelated_view_stays_pumped() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    let out2 = format!("{}-2", rig.out);
+    native.views.insert(out2.clone(), "ws-other2".to_owned());
+    let mut probe = CountingViews {
+        inner: native,
+        pumped: 0,
+        na: 0,
+    };
+    let mut reply = reply_shell(
+        7,
+        1,
+        &[(rig.out.as_str(), rig.ws.as_str()), (out2.as_str(), "ws-x")],
+    );
+    reply
+        .transfers
+        .push(view_transfer("op-v", &rig.out, &rig.ws));
+    reply.transfers.push(view_transfer("op-v2", &out2, "ws-x"));
+    reply.effects.push(OneShotEffect {
+        id: "fx-9".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("w1".to_owned()),
+        issued_revision: 1,
+    });
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 2);
+    assert_eq!(probe.na, 1);
+    assert_eq!(probe.pumped, 1);
+    assert_eq!(stats.effects, 1);
+    assert!(probe.inner.is_foreground("w1"));
+}
+
+#[test]
+fn remembered_focus_recycled_same_token_foreground_vetoes() {
+    struct RecycleLeaving {
+        inner: FakeNative,
+    }
+    impl NativeOps for RecycleLeaving {
+        fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+            self.inner.read_window(token)
+        }
+        fn read_frame(&mut self, token: &str) -> Option<Rect> {
+            self.inner.read_frame(token)
+        }
+        fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+            self.inner.read_homing(token)
+        }
+        fn read_view(&mut self, output: &str) -> Option<String> {
+            self.inner.read_view(output)
+        }
+        fn is_foreground(&mut self, token: &str) -> bool {
+            self.inner.is_foreground(token)
+        }
+        fn gesture_barrier(&mut self) -> bool {
+            self.inner.gesture_barrier()
+        }
+        fn read_dpi(&mut self, token: &str) -> Option<u32> {
+            self.inner.read_dpi(token)
+        }
+        fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+            self.inner.write_frame(token, rect)
+        }
+        fn move_membership(
+            &mut self,
+            token: &str,
+            out: &str,
+            ws: &str,
+            frame: Option<Rect>,
+        ) -> Result<bool, ()> {
+            self.inner.move_membership(token, out, ws, frame)
+        }
+        fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+            self.inner.switch_view(output, logical)
+        }
+        fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+            let result = self.inner.switch_view(output, logical);
+            if result == Ok(true)
+                && let Some(live) = self.inner.windows.get_mut("w2")
+            {
+                live.key.pid = live.key.pid.wrapping_add(1);
+                live.key.creation = format!("{}-recycled", live.key.creation);
+            }
+            result
+        }
+        fn foreground_state(&mut self) -> ForegroundState {
+            self.inner.foreground_state()
+        }
+        fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+            self.inner.focus_window(token)
+        }
+        fn read_cursor(&mut self) -> Option<(i32, i32)> {
+            self.inner.read_cursor()
+        }
+        fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+            self.inner.move_cursor(x, y)
+        }
+        fn poll_external_invalidation(&mut self) -> bool {
+            self.inner.poll_external_invalidation()
+        }
+    }
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    let mut probe = RecycleLeaving { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("foreground-changed"));
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+}
+
+#[test]
+fn remembered_focus_move_size_start_vetoes_with_empty_queue() {
+    struct MoveSizeDuringSwitch {
+        inner: FakeNative,
+    }
+    impl NativeOps for MoveSizeDuringSwitch {
+        fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+            self.inner.read_window(token)
+        }
+        fn read_frame(&mut self, token: &str) -> Option<Rect> {
+            self.inner.read_frame(token)
+        }
+        fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+            self.inner.read_homing(token)
+        }
+        fn read_view(&mut self, output: &str) -> Option<String> {
+            self.inner.read_view(output)
+        }
+        fn is_foreground(&mut self, token: &str) -> bool {
+            self.inner.is_foreground(token)
+        }
+        fn gesture_barrier(&mut self) -> bool {
+            self.inner.gesture_barrier()
+        }
+        fn read_dpi(&mut self, token: &str) -> Option<u32> {
+            self.inner.read_dpi(token)
+        }
+        fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+            self.inner.write_frame(token, rect)
+        }
+        fn move_membership(
+            &mut self,
+            token: &str,
+            out: &str,
+            ws: &str,
+            frame: Option<Rect>,
+        ) -> Result<bool, ()> {
+            self.inner.move_membership(token, out, ws, frame)
+        }
+        fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+            self.inner.switch_view(output, logical)
+        }
+        fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+            let result = self.inner.switch_view(output, logical);
+            if result == Ok(true) {
+                self.inner.move_size.insert("w1".to_owned());
+            }
+            result
+        }
+        fn foreground_state(&mut self) -> ForegroundState {
+            self.inner.foreground_state()
+        }
+        fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+            self.inner.focus_window(token)
+        }
+        fn read_cursor(&mut self) -> Option<(i32, i32)> {
+            self.inner.read_cursor()
+        }
+        fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+            self.inner.move_cursor(x, y)
+        }
+        fn poll_external_invalidation(&mut self) -> bool {
+            self.inner.poll_external_invalidation()
+        }
+    }
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    let mut probe = MoveSizeDuringSwitch { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "refused");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("foreground-unproven"));
+    assert!(!diff.effects.mark_effect_spent("fx-9"));
 }
 
 #[test]
@@ -2402,6 +3128,9 @@ impl NativeOps for ViewProbe {
     }
     fn poll_external_invalidation(&mut self) -> bool {
         self.inner.poll_external_invalidation()
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
     }
 }
 

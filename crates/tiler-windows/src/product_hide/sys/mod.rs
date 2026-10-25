@@ -630,31 +630,26 @@ fn pump_once() {
     crate::ffi::drain_messages();
 }
 
-/// Post one visibility effect without blocking, then pump until the
-/// readback observes it. `ShowWindowAsync` queues behind earlier posts so
-/// hide/show ordering per window is preserved, a hung target cannot wedge
-/// the caller, and no orphan setter thread outlives the call. Success
-/// requires the observed effect, never the post alone.
+/// Post one visibility effect, then pump until the readback observes it.
 fn post_visibility(hwnd_u64: u64, cmd: i32, expect_visible: bool, timeout_ms: u64) -> Result<()> {
     if !post_async(hwnd_u64, cmd) {
         return Err(err("error: visibility post failed"));
     }
-    let start = Instant::now();
-    let budget = Duration::from_millis(timeout_ms);
-    loop {
-        pump_once();
-        // Fake-aware readback (identical native calls in production), so the
-        // shared post semantics hold on both paths.
-        match batch_is_visible(hwnd_u64) {
-            None => return Err(err("absent: hwnd destroyed")),
-            Some(visible) if visible == expect_visible => return Ok(()),
-            Some(_) => {}
-        }
-        if start.elapsed() >= budget {
-            return Err(err("uncertain: visibility not observed"));
-        }
-        std::thread::sleep(Duration::from_millis(25));
+    poll_visibility(hwnd_u64, expect_visible, timeout_ms, true)
+}
+
+/// Pump-free nonactivating visibility post for remembered-focus view
+/// switches. Reuses the existing budgets and sleep cadence.
+fn post_visibility_pos(
+    hwnd_u64: u64,
+    hide: bool,
+    expect_visible: bool,
+    timeout_ms: u64,
+) -> Result<()> {
+    if !post_async_pos(hwnd_u64, hide) {
+        return Err(err("error: visibility post failed"));
     }
+    poll_visibility(hwnd_u64, expect_visible, timeout_ms, false)
 }
 
 /// ---- Joint hide/reveal primitives (select/send/rollback) ---- ///
@@ -735,18 +730,22 @@ pub(crate) fn commit_hide_claim(
     result
 }
 
-/// Post one async visibility effect without blocking or waiting:
-/// `ShowWindowAsync` queues behind earlier posts so per-window ordering is
-/// preserved and a hung target cannot wedge the caller. The per-window
-/// poll posts share this helper, reporting the identical post verdict.
-/// Returns `false` when the post itself refused.
+/// Visibility actuation mode: pumped `ShowWindowAsync` versus
+/// nonactivating `SetWindowPos` for remembered-focus pure views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisibilityMode {
+    PumpedShowAsync,
+    NonactivatingPos,
+}
+
+/// Async visibility post. Returns `false` when the post refused.
 fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
     #[cfg(test)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
         if fake::active(hwnd_u64) {
             let hide = cmd == SW_HIDE;
-            fake::record_post(hwnd_u64, hide);
+            fake::record_post(hwnd_u64, hide, true);
             return fake::with_mut(hwnd_u64, |w| {
                 if !w.alive || !w.post_ok {
                     return false;
@@ -760,6 +759,61 @@ fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
         }
     }
     crate::ffi::show_window_async(hwnd_u64, cmd)
+}
+
+/// Nonactivating async visibility post via `SetWindowPos` with
+/// `SWP_ASYNCWINDOWPOS` (hide `0x4097`, show `0x4057`). The caller never
+/// pumps, so edges the wait would deliver stay undelivered during the wait.
+fn post_async_pos(hwnd_u64: u64, hide: bool) -> bool {
+    #[cfg(test)]
+    {
+        if fake::active(hwnd_u64) {
+            fake::record_post(hwnd_u64, hide, false);
+            return fake::with_mut(hwnd_u64, |w| {
+                if !w.alive || !w.post_ok {
+                    return false;
+                }
+                if !w.defer {
+                    w.visible = !hide;
+                }
+                true
+            })
+            .unwrap_or(false);
+        }
+    }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SWP_ASYNCWINDOWPOS, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        SWP_SHOWWINDOW,
+    };
+    let flags = SWP_NOMOVE
+        | SWP_NOSIZE
+        | SWP_NOZORDER
+        | SWP_NOACTIVATE
+        | SWP_ASYNCWINDOWPOS
+        | if hide { SWP_HIDEWINDOW } else { SWP_SHOWWINDOW };
+    crate::ffi::set_window_pos(hwnd_u64, 0, 0, 0, 0, flags)
+}
+
+/// Shared visibility poll. Reuses the existing budgets and sleep cadence.
+fn poll_visibility(hwnd_u64: u64, expect_visible: bool, timeout_ms: u64, pump: bool) -> Result<()> {
+    let start = Instant::now();
+    let budget = Duration::from_millis(timeout_ms);
+    loop {
+        if pump {
+            pump_once();
+        }
+        // Fake-aware readback (identical native calls in production), so the
+        // shared post semantics hold on both paths.
+        match batch_is_visible(hwnd_u64) {
+            None => return Err(err("absent: hwnd destroyed")),
+            Some(visible) if visible == expect_visible => return Ok(()),
+            Some(_) => {}
+        }
+        if start.elapsed() >= budget {
+            return Err(err("uncertain: visibility not observed"));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Fake-aware HWND liveness for the prepare path: the scripted `alive`
@@ -1453,6 +1507,17 @@ pub fn hide_managed_claim(
     claim: &WindowIdentity,
     dir: &Path,
 ) -> Result<WindowIdentity> {
+    hide_managed_claim_with_mode(store, owner, claim, dir, VisibilityMode::PumpedShowAsync)
+}
+
+/// Mode-parameterized hide. Only the visibility post differs.
+pub(crate) fn hide_managed_claim_with_mode(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    dir: &Path,
+    mode: VisibilityMode,
+) -> Result<WindowIdentity> {
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
     // Shape refusal takes no cleanup, as before.
     check_claim_shape(claim)?;
@@ -1470,7 +1535,15 @@ pub fn hide_managed_claim(
         return Err(e);
     }
     let _ = &held;
-    match post_visibility(claim.hwnd, SW_HIDE, false, HIDE_TIMEOUT_MS) {
+    let post_result = match mode {
+        VisibilityMode::PumpedShowAsync => {
+            post_visibility(claim.hwnd, SW_HIDE, false, HIDE_TIMEOUT_MS)
+        }
+        VisibilityMode::NonactivatingPos => {
+            post_visibility_pos(claim.hwnd, true, false, HIDE_TIMEOUT_MS)
+        }
+    };
+    match post_result {
         Ok(()) => {}
         Err(e) if e.to_string().starts_with("absent:") => {
             let _ = remove_product_note(store, owner, claim.hwnd, &mut ledger_ms);
@@ -1480,6 +1553,16 @@ pub fn hide_managed_claim(
     }
     finish_hide_confirm(owner, claim, &held, pre.pid)?;
     Ok(durable)
+}
+
+/// Nonactivating hide for remembered-focus pure-view switches.
+pub fn hide_managed_claim_nonactivating(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    dir: &Path,
+) -> Result<WindowIdentity> {
+    hide_managed_claim_with_mode(store, owner, claim, dir, VisibilityMode::NonactivatingPos)
 }
 
 fn commit_windows(
@@ -1548,14 +1631,46 @@ pub fn reveal_product_claim_to(
     claim: &WindowIdentity,
     minimized: bool,
 ) -> std::result::Result<super::ProductTeardown, DynError> {
+    reveal_product_claim_to_with_mode(
+        store,
+        owner,
+        claim,
+        minimized,
+        VisibilityMode::PumpedShowAsync,
+    )
+}
+
+/// Mode-parameterized reveal sharing all safety with
+/// [`reveal_product_claim_to`]. Pumped posts the durable show command;
+/// nonactivating posts `SetWindowPos` show, except a minimized restore
+/// keeps the pumped `SW_SHOWMINNOACTIVE` post to preserve exact semantics.
+pub(crate) fn reveal_product_claim_to_with_mode(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    minimized: bool,
+    mode: VisibilityMode,
+) -> std::result::Result<super::ProductTeardown, DynError> {
     use super::ProductTeardown;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
     let mut ledger_ms = 0;
     let ready = prepare_reveal(store, owner, claim, minimized, &mut ledger_ms)?;
     let prep = match ready {
         RevealReady::Done(teardown) => return Ok(teardown),
         RevealReady::Post(prep) => prep,
     };
-    match post_visibility(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS) {
+    let post_result = match mode {
+        VisibilityMode::PumpedShowAsync => {
+            post_visibility(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS)
+        }
+        VisibilityMode::NonactivatingPos if prep.show_cmd == SW_SHOWMINNOACTIVE => {
+            post_visibility(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS)
+        }
+        VisibilityMode::NonactivatingPos => {
+            post_visibility_pos(claim.hwnd, false, true, REVEAL_TIMEOUT_MS)
+        }
+    };
+    match post_result {
         Ok(()) => {}
         Err(e) if e.to_string().starts_with("absent:") => {
             remove_product_note(store, owner, claim.hwnd, &mut ledger_ms)?;
@@ -1569,6 +1684,22 @@ pub fn reveal_product_claim_to(
         claim,
         Some((&prep.held, prep.pid)),
         &mut ledger_ms,
+    )
+}
+
+/// Nonactivating reveal for remembered-focus pure-view switches.
+pub fn reveal_product_claim_to_nonactivating(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    minimized: bool,
+) -> std::result::Result<super::ProductTeardown, DynError> {
+    reveal_product_claim_to_with_mode(
+        store,
+        owner,
+        claim,
+        minimized,
+        VisibilityMode::NonactivatingPos,
     )
 }
 
@@ -1677,6 +1808,8 @@ pub(crate) mod fake {
         static WINDOWS: RefCell<HashMap<u64, FakeWindow>> = RefCell::new(HashMap::new());
         /// Posted effects in call order: `(hwnd, hide)`.
         static POST_LOG: RefCell<Vec<(u64, bool)>> = const { RefCell::new(Vec::new()) };
+        /// Post dispatch in call order: `(hwnd, hide, pumped)`.
+        static POST_MODE_LOG: RefCell<Vec<(u64, bool, bool)>> = const { RefCell::new(Vec::new()) };
         /// Visibility snapshot reads in call order (confirmations only).
         static SNAPSHOT_LOG: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
         /// Combined post/snapshot order: `('p' | 's', hwnd)`.
@@ -1707,6 +1840,7 @@ pub(crate) mod fake {
         WINDOWS.with(|map| map.borrow_mut().clear());
         FLOAT_MARKS.with(|map| map.borrow_mut().clear());
         POST_LOG.with(|log| log.borrow_mut().clear());
+        POST_MODE_LOG.with(|log| log.borrow_mut().clear());
         SNAPSHOT_LOG.with(|log| log.borrow_mut().clear());
         OP_LOG.with(|log| log.borrow_mut().clear());
     }
@@ -1749,9 +1883,14 @@ pub(crate) mod fake {
         }
     }
 
-    pub(crate) fn record_post(hwnd: u64, hide: bool) {
+    pub(crate) fn record_post(hwnd: u64, hide: bool, pumped: bool) {
         POST_LOG.with(|log| log.borrow_mut().push((hwnd, hide)));
+        POST_MODE_LOG.with(|log| log.borrow_mut().push((hwnd, hide, pumped)));
         OP_LOG.with(|log| log.borrow_mut().push(('p', hwnd)));
+    }
+
+    pub(crate) fn post_modes() -> Vec<(u64, bool, bool)> {
+        POST_MODE_LOG.with(|log| log.borrow().clone())
     }
 
     pub(crate) fn record_snapshot(hwnd: u64) {
@@ -1804,5 +1943,167 @@ pub(crate) mod fake {
             Ok(held) => Some(Ok(held)),
             Err(e) => Some(Err(super::err(format!("error: target held {e}")))),
         }
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::fake::{self, FakeWindow};
+    use super::{VisibilityMode, hide_managed_claim_with_mode, reveal_product_claim_to_with_mode};
+    use crate::model::{
+        LEDGER_SCHEMA_VERSION, ProcessIdentity, RecoveryLedger, WindowClaimKind, WindowIdentity,
+        WindowShowState,
+    };
+    use crate::storage::LedgerStore;
+    use std::path::PathBuf;
+
+    const TAG: &str = "abcdef0123456789";
+
+    fn owner() -> ProcessIdentity {
+        ProcessIdentity {
+            pid: 999,
+            process_creation: "owner-creation".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\owner.exe".to_owned(),
+        }
+    }
+
+    fn target_process() -> ProcessIdentity {
+        ProcessIdentity {
+            pid: 4242,
+            process_creation: "proc-creation".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        }
+    }
+
+    fn open_store(tag: &str, owner: &ProcessIdentity, windows: Vec<WindowIdentity>) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("omnitiler-na-mode-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let store = LedgerStore::open(&dir).expect("ledger open");
+        store
+            .commit(&RecoveryLedger {
+                v: LEDGER_SCHEMA_VERSION,
+                owner: owner.clone(),
+                windows,
+                mouse_snap: None,
+            })
+            .expect("seed ledger");
+        dir
+    }
+
+    fn hide_claim(hwnd: u64, minimized: bool) -> WindowIdentity {
+        WindowIdentity {
+            hwnd,
+            process: target_process(),
+            tag: TAG.to_owned(),
+            kind: WindowClaimKind::Product,
+            show: WindowShowState {
+                minimized,
+                maximized: false,
+            },
+        }
+    }
+
+    fn register_window(hwnd: u64, visible: bool, iconic: bool, nonce: Option<String>) {
+        fake::register(
+            hwnd,
+            FakeWindow {
+                pid: 4242,
+                process: target_process(),
+                integrity_rid: 0x2000,
+                nonce,
+                member_tag: Some("member-tag-1".to_owned()),
+                visible,
+                iconic,
+                maximized: false,
+                alive: true,
+                post_ok: true,
+                defer: false,
+            },
+        );
+    }
+
+    #[test]
+    fn pumped_hide_records_pumped_post() {
+        let owner = owner();
+        let dir = open_store("hide-pumped", &owner, Vec::new());
+        let store = LedgerStore::open(&dir).expect("ledger reopen");
+        register_window(9001, true, false, Some(TAG.to_owned()));
+        let claim = hide_claim(9001, false);
+        hide_managed_claim_with_mode(
+            &store,
+            &owner,
+            &claim,
+            &dir,
+            VisibilityMode::PumpedShowAsync,
+        )
+        .expect("pumped hide");
+        assert_eq!(fake::post_modes(), vec![(9001, true, true)]);
+        fake::unregister_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonactivating_hide_records_unpumped_post() {
+        let owner = owner();
+        let dir = open_store("hide-na", &owner, Vec::new());
+        let store = LedgerStore::open(&dir).expect("ledger reopen");
+        register_window(9002, true, false, Some(TAG.to_owned()));
+        let claim = hide_claim(9002, false);
+        hide_managed_claim_with_mode(
+            &store,
+            &owner,
+            &claim,
+            &dir,
+            VisibilityMode::NonactivatingPos,
+        )
+        .expect("na hide");
+        assert_eq!(fake::post_modes(), vec![(9002, true, false)]);
+        fake::unregister_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonactivating_reveal_minimized_falls_back_to_pumped() {
+        let owner = owner();
+        let claim = hide_claim(9003, true);
+        let dir = open_store("reveal-min", &owner, vec![claim.clone()]);
+        let store = LedgerStore::open(&dir).expect("ledger reopen");
+        register_window(9003, false, false, Some(TAG.to_owned()));
+        reveal_product_claim_to_with_mode(
+            &store,
+            &owner,
+            &claim,
+            false,
+            VisibilityMode::NonactivatingPos,
+        )
+        .expect("na minimized reveal");
+        assert_eq!(fake::post_modes(), vec![(9003, false, true)]);
+        fake::unregister_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonactivating_reveal_plain_uses_unpumped_post() {
+        let owner = owner();
+        let claim = hide_claim(9004, false);
+        let dir = open_store("reveal-plain", &owner, vec![claim.clone()]);
+        let store = LedgerStore::open(&dir).expect("ledger reopen");
+        register_window(9004, false, false, Some(TAG.to_owned()));
+        reveal_product_claim_to_with_mode(
+            &store,
+            &owner,
+            &claim,
+            false,
+            VisibilityMode::NonactivatingPos,
+        )
+        .expect("na plain reveal");
+        assert_eq!(fake::post_modes(), vec![(9004, false, false)]);
+        fake::unregister_all();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

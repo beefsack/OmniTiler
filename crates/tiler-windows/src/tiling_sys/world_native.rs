@@ -148,6 +148,24 @@ pub(super) struct NativePrimitives {
     ) -> Result<WindowIdentity, String>,
     pub reveal_claim:
         fn(&LedgerStore, &ProcessIdentity, &WindowIdentity, bool) -> Result<Revealed, String>,
+    /// Pump-free nonactivating hide/reveal for remembered-focus pure views.
+    /// No-effect and no-memory switches never take these lanes.
+    pub hide_claim_na: fn(
+        &LedgerStore,
+        &ProcessIdentity,
+        &WindowIdentity,
+        &Path,
+    ) -> Result<WindowIdentity, String>,
+    pub reveal_claim_na:
+        fn(&LedgerStore, &ProcessIdentity, &WindowIdentity, bool) -> Result<Revealed, String>,
+    /// Live move/size modal-loop probe for one HWND's thread.
+    /// `None` when unreadable (fail closed).
+    pub move_size: fn(u64) -> Option<bool>,
+    /// Fresh facts read of a hidden window, bypassing only the visible
+    /// gate. The caller proves the exact owned committed hidden claim
+    /// first (ledger plus identity/lifetime gates); this lane only reads.
+    pub observe_hidden:
+        fn(u64, &ProcessIdentity, &[Rect], &mut TokenMap) -> Result<ObservedWindow, ObserveError>,
 }
 
 /// Erased observation failure: the production actuator only needs to know
@@ -165,6 +183,16 @@ fn real_observe(
     tokens: &mut TokenMap,
 ) -> Result<ObservedWindow, ObserveError> {
     super::observe::observe_window(hwnd as isize as HWND, me, fulls, tokens)
+        .map_err(|_| ObserveError::Unknown)
+}
+
+fn real_observe_hidden(
+    hwnd: u64,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    tokens: &mut TokenMap,
+) -> Result<ObservedWindow, ObserveError> {
+    super::observe::observe_window_hidden_verified(hwnd as isize as HWND, me, fulls, tokens)
         .map_err(|_| ObserveError::Unknown)
 }
 
@@ -235,6 +263,10 @@ fn real_read_topmost(hwnd: u64) -> bool {
     super::workspace_mode::read_topmost_now(hwnd)
 }
 
+fn real_move_size(hwnd: u64) -> Option<bool> {
+    crate::ffi::move_size_active(hwnd)
+}
+
 fn real_admit(
     hwnd: u64,
     me: &ProcessIdentity,
@@ -282,6 +314,32 @@ fn real_reveal_claim(
     }
 }
 
+fn real_hide_claim_nonactivating(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    dir: &Path,
+) -> Result<WindowIdentity, String> {
+    crate::product_hide::sys::hide_managed_claim_nonactivating(store, owner, claim, dir)
+        .map_err(|e| e.to_string())
+}
+
+fn real_reveal_claim_nonactivating(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    minimized: bool,
+) -> Result<Revealed, String> {
+    match crate::product_hide::sys::reveal_product_claim_to_nonactivating(
+        store, owner, claim, minimized,
+    )
+    .map_err(|e| e.to_string())?
+    {
+        crate::product_hide::ProductTeardown::Retired => Ok(Revealed::Retired),
+        _ => Ok(Revealed::Shown),
+    }
+}
+
 impl Default for NativePrimitives {
     fn default() -> Self {
         Self {
@@ -302,6 +360,10 @@ impl Default for NativePrimitives {
             admit: real_admit,
             hide_claim: real_hide_claim,
             reveal_claim: real_reveal_claim,
+            hide_claim_na: real_hide_claim_nonactivating,
+            reveal_claim_na: real_reveal_claim_nonactivating,
+            move_size: real_move_size,
+            observe_hidden: real_observe_hidden,
         }
     }
 }
@@ -351,6 +413,13 @@ pub(super) struct LiveNative<'a> {
     pub member_tags: &'a BTreeMap<WindowKey, String>,
     pub member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
     pub hidden_claims: &'a mut BTreeMap<WindowKey, HiddenRecord>,
+    /// Same-pass nonactivating departure hidden by this actuator instance:
+    /// the entry foreground when the nonactivating view switch started,
+    /// kept only when its hide committed and it still read invisible. The
+    /// focus lane reads hidden facts only for this exact key; a stale
+    /// hidden claim from a prior pass never matches because a fresh
+    /// `assemble` starts with `None`.
+    na_hidden_departure: Option<(WindowKey, ProcessIdentity)>,
     pub sticky: &'a BTreeMap<WindowKey, bool>,
     pub float_topmost_prev: &'a BTreeMap<WindowKey, bool>,
     pub scope: &'a [String],
@@ -416,6 +485,7 @@ impl<'a> LiveNative<'a> {
             member_tags,
             member_identity,
             hidden_claims,
+            na_hidden_departure: None,
             sticky,
             float_topmost_prev,
             scope,
@@ -533,6 +603,124 @@ impl<'a> LiveNative<'a> {
             Ok(w) => w.facts.captionless_fullscreen,
             Err(_) => true,
         }
+    }
+
+    /// Focus-only fullscreen-foreground read with one narrow same-pass
+    /// path: when the foreground is the departure this actuator instance
+    /// just hid in its nonactivating switch (entry foreground, committed
+    /// hide, still invisible), hidden facts are read fresh and run through
+    /// the same fullscreen plus focus-eligibility predicate as a visible
+    /// read. Anything else unreadable still vetoes, and frame writes keep
+    /// the strict [`Self::write_vetoed`] unknown veto.
+    ///
+    /// Ownership for the same-pass departure rests on the ephemeral record
+    /// plus live rechecks, not on any older ledger entry: the hide commit
+    /// verified the product nonce against the claim before posting (see the
+    /// hide claim path), the record exists only in this `LiveNative`
+    /// lifetime, and this lane additionally requires the exact committed
+    /// claim shape, full live process identity, the current
+    /// visible-membership tag, continued invisibility, and the foreground
+    /// still naming the same window before the setter runs.
+    fn focus_write_vetoed(&mut self, hwnd: u64) -> bool {
+        let fg = (self.prims.foreground)();
+        if fg == 0 || fg == hwnd {
+            return false;
+        }
+        if let Ok(w) = (self.prims.observe)(fg, self.me, self.fulls, &mut self.tokens) {
+            return w.facts.captionless_fullscreen;
+        }
+        // Hidden lane, same-pass departure only. A newly visible
+        // foreground never rides here (its visible read above decided).
+        if (self.prims.is_visible)(fg) {
+            return true;
+        }
+        let Some((dep_key, dep_expected)) = self.na_hidden_departure.clone() else {
+            return true;
+        };
+        if fg != dep_key.hwnd {
+            return true;
+        }
+        let Some(expected) = self.member_identity.get(&dep_key).cloned() else {
+            return true;
+        };
+        if expected != dep_expected {
+            return true;
+        }
+        let Some(record) = self.hidden_claims.get(&dep_key).cloned() else {
+            return true;
+        };
+        if !crate::model::valid_claim_tag(&record.claim.tag)
+            || record.claim.hwnd != dep_key.hwnd
+            || record.claim.process.pid != dep_key.pid
+            || record.claim.process.process_creation != dep_key.creation
+        {
+            return true;
+        }
+        if !self.identity_ok(&dep_key, &expected) || !self.lifetime_ok(&dep_key) {
+            return true;
+        }
+        let w = match (self.prims.observe_hidden)(fg, self.me, self.fulls, &mut self.tokens) {
+            Ok(w) => w,
+            Err(_) => return true,
+        };
+        if w.hwnd != dep_key.hwnd
+            || w.identity.pid != dep_key.pid
+            || w.identity.process_creation != dep_key.creation
+            || w.identity.exe_path != expected.exe_path
+            || w.identity.user_sid != expected.user_sid
+            || w.identity.session_id != expected.session_id
+        {
+            return true;
+        }
+        if self
+            .stored_tag(&dep_key)
+            .is_some_and(|stored| w.member_tag.as_deref().is_none_or(|live| live != stored))
+        {
+            return true;
+        }
+        if w.facts.captionless_fullscreen {
+            return true;
+        }
+        // Hidden is expected here, so the focus-eligibility predicate runs
+        // with visible coerced: cloaked, elevated, shell, tool, owned,
+        // dialog, no-activate, or minimized still veto.
+        let mut facts = w.facts;
+        facts.visible = true;
+        if crate::tiling::classify_focus(&facts).is_err() {
+            return true;
+        }
+        // Finish rechecks against a foreign reappearance between the entry
+        // read and the hidden read: still invisible, foreground still the
+        // same window, identity still live.
+        if (self.prims.is_visible)(fg)
+            || (self.prims.foreground)() != fg
+            || (self.prims.window_pid)(fg) != dep_key.pid
+            || !self.identity_ok(&dep_key, &expected)
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Live move/size veto independent of the hook queue: the target or
+    /// foreground thread runs a move/size modal loop, or the probe is
+    /// unreadable (fail closed).
+    fn move_size_vetoed(&mut self, target: u64) -> bool {
+        let fg = (self.prims.foreground)();
+        let mut hwnds = [target, fg];
+        if hwnds[0] == hwnds[1] {
+            hwnds[1] = 0;
+        }
+        for hwnd in hwnds {
+            if hwnd == 0 {
+                continue;
+            }
+            match (self.prims.move_size)(hwnd) {
+                Some(false) => continue,
+                _ => return true,
+            }
+        }
+        false
     }
 
     /// Screen-affinity arrival: the live frame sits on the desired wire
@@ -674,6 +862,17 @@ impl<'a> LiveNative<'a> {
         expected: &ProcessIdentity,
         iconic: bool,
     ) -> Result<(), AdmitOutcome> {
+        self.commit_hide_with(key, expected, iconic, false)
+    }
+
+    /// Mode-parameterized hide; `true` takes the nonactivating lane.
+    fn commit_hide_with(
+        &mut self,
+        key: &WindowKey,
+        expected: &ProcessIdentity,
+        iconic: bool,
+        nonactivating: bool,
+    ) -> Result<(), AdmitOutcome> {
         self.admit_gates(key, expected)?;
         if !self.identity_ok(key, expected) {
             return Err(AdmitOutcome::IdentityChanged);
@@ -684,16 +883,20 @@ impl<'a> LiveNative<'a> {
             (self.prims.read_topmost)(key.hwnd),
         );
         let claim = (self.prims.admit)(key.hwnd, self.me, expected, &stored, allow_topmost)?;
-        let committed =
-            (self.prims.hide_claim)(self.store, self.me, &claim, self.dir).map_err(|message| {
-                if message.starts_with("absent:") {
-                    AdmitOutcome::OriginVanished
-                } else if message.starts_with("uncertain:") {
-                    AdmitOutcome::Uncertain
-                } else {
-                    AdmitOutcome::Refused
-                }
-            })?;
+        let hide = if nonactivating {
+            self.prims.hide_claim_na
+        } else {
+            self.prims.hide_claim
+        };
+        let committed = hide(self.store, self.me, &claim, self.dir).map_err(|message| {
+            if message.starts_with("absent:") {
+                AdmitOutcome::OriginVanished
+            } else if message.starts_with("uncertain:") {
+                AdmitOutcome::Uncertain
+            } else {
+                AdmitOutcome::Refused
+            }
+        })?;
         self.hidden_claims.insert(
             key.clone(),
             HiddenRecord {
@@ -711,6 +914,16 @@ impl<'a> LiveNative<'a> {
         &mut self,
         key: &WindowKey,
         expected: &ProcessIdentity,
+    ) -> Result<(), AdmitOutcome> {
+        self.commit_reveal_with(key, expected, false)
+    }
+
+    /// Mode-parameterized reveal; `true` takes the nonactivating lane.
+    fn commit_reveal_with(
+        &mut self,
+        key: &WindowKey,
+        expected: &ProcessIdentity,
+        nonactivating: bool,
     ) -> Result<(), AdmitOutcome> {
         let record = self.hidden_claims.get(key).cloned();
         let Some(record) = record else {
@@ -732,7 +945,12 @@ impl<'a> LiveNative<'a> {
             }
         }
         let iconic = record.iconic || (self.prims.is_iconic)(key.hwnd);
-        match (self.prims.reveal_claim)(self.store, self.me, &record.claim, iconic) {
+        let reveal = if nonactivating {
+            self.prims.reveal_claim_na
+        } else {
+            self.prims.reveal_claim
+        };
+        match reveal(self.store, self.me, &record.claim, iconic) {
             Ok(_) => {
                 self.hidden_claims.remove(key);
                 Ok(())
@@ -774,6 +992,107 @@ impl<'a> LiveNative<'a> {
         }
         out.sort();
         out
+    }
+
+    /// Shared view-batch core; only the hide/reveal lane differs.
+    /// Full native view proof still gates the caller exactly as before.
+    fn switch_view_inner(
+        &mut self,
+        output: &str,
+        logical: &str,
+        nonactivating: bool,
+    ) -> Result<bool, ()> {
+        if (self.prims.hook_pending)() {
+            return Err(());
+        }
+        if !self
+            .core_rings
+            .get(output)
+            .is_some_and(|ring| ring.iter().any(|id| id == logical))
+        {
+            return Ok(false);
+        }
+        if self
+            .proven_views
+            .get(output)
+            .is_some_and(|view| view == logical)
+            && self.read_view(output).as_deref() == Some(logical)
+        {
+            return Ok(true);
+        }
+        let leaving: Vec<(WindowKey, ProcessIdentity)> = self
+            .core_homing
+            .iter()
+            .filter(|(_, (member_out, ws))| member_out == output && ws != logical)
+            .filter_map(|(token, _)| {
+                let key = self.key_of(token)?;
+                if self.sticky.contains_key(&key) {
+                    return None;
+                }
+                let identity = self.member_identity.get(&key).cloned()?;
+                Some((key, identity))
+            })
+            .collect();
+        let entering: Vec<(WindowKey, ProcessIdentity)> = self
+            .core_homing
+            .iter()
+            .filter(|(_, (member_out, ws))| member_out == output && ws == logical)
+            .filter_map(|(token, _)| {
+                let key = self.key_of(token)?;
+                if !self.hidden_claims.contains_key(&key) {
+                    return None;
+                }
+                let identity = self.member_identity.get(&key).cloned()?;
+                Some((key, identity))
+            })
+            .collect();
+        let mut ambiguous = false;
+        let mut refused = false;
+        // Same-pass departure record for the focus lane: only the entry
+        // foreground hidden by this nonactivating switch, only on a
+        // successful commit that still reads invisible. Pumped switches
+        // never record.
+        let entry_fg = nonactivating.then(|| (self.prims.foreground)());
+        for (key, expected) in &leaving {
+            if self.committed_hidden(key) {
+                continue;
+            }
+            let iconic = (self.prims.is_iconic)(key.hwnd);
+            match self.commit_hide_with(key, expected, iconic, nonactivating) {
+                Ok(()) => {
+                    if nonactivating
+                        && Some(key.hwnd) == entry_fg
+                        && !(self.prims.is_visible)(key.hwnd)
+                    {
+                        self.na_hidden_departure = Some((key.clone(), expected.clone()));
+                    }
+                }
+                Err(AdmitOutcome::Refused) | Err(AdmitOutcome::OriginVanished) => {
+                    refused = true;
+                }
+                Err(_) => {
+                    ambiguous = true;
+                }
+            }
+        }
+        for (key, expected) in &entering {
+            match self.commit_reveal_with(key, expected, nonactivating) {
+                Ok(()) => {}
+                Err(AdmitOutcome::Refused) | Err(AdmitOutcome::OriginVanished) => {
+                    refused = true;
+                }
+                Err(_) => {
+                    ambiguous = true;
+                }
+            }
+        }
+        if ambiguous {
+            return Err(());
+        }
+        if refused {
+            return Ok(false);
+        }
+        Ok(true)
     }
 }
 
@@ -1213,98 +1532,11 @@ impl NativeOps for LiveNative<'_> {
     }
 
     fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
-        if (self.prims.hook_pending)() {
-            return Err(());
-        }
-        if !self
-            .core_rings
-            .get(output)
-            .is_some_and(|ring| ring.iter().any(|id| id == logical))
-        {
-            return Ok(false);
-        }
-        // Act whenever the last proven view differs from the request, even
-        // though the core already desires the target. Desired core views
-        // never short-circuit: incorporation is not native arrival.
-        if self
-            .proven_views
-            .get(output)
-            .is_some_and(|view| view == logical)
-            && self.read_view(output).as_deref() == Some(logical)
-        {
-            return Ok(true);
-        }
-        // Batch completion with evidence for all prior/next members: hide
-        // every leaving non-sticky member that still reads visible, reveal
-        // every entering hidden member. Logical views stay core-owned: the
-        // adapter performs only native hide/reveal effects and proves the
-        // flip afterwards through `read_view`. Any uncertain/throwing leg
-        // makes the batch ambiguous (never a partial Applied); explicit
-        // refusals hold dirty.
-        let leaving: Vec<(WindowKey, ProcessIdentity)> = self
-            .core_homing
-            .iter()
-            .filter(|(_, (member_out, ws))| member_out == output && ws != logical)
-            .filter_map(|(token, _)| {
-                let key = self.key_of(token)?;
-                if self.sticky.contains_key(&key) {
-                    return None;
-                }
-                let identity = self.member_identity.get(&key).cloned()?;
-                Some((key, identity))
-            })
-            .collect();
-        let entering: Vec<(WindowKey, ProcessIdentity)> = self
-            .core_homing
-            .iter()
-            .filter(|(_, (member_out, ws))| member_out == output && ws == logical)
-            .filter_map(|(token, _)| {
-                let key = self.key_of(token)?;
-                if !self.hidden_claims.contains_key(&key) {
-                    return None;
-                }
-                let identity = self.member_identity.get(&key).cloned()?;
-                Some((key, identity))
-            })
-            .collect();
-        let mut ambiguous = false;
-        let mut refused = false;
-        for (key, expected) in &leaving {
-            if self.committed_hidden(key) {
-                continue;
-            }
-            let iconic = (self.prims.is_iconic)(key.hwnd);
-            match self.commit_hide(key, expected, iconic) {
-                Ok(()) => {}
-                Err(AdmitOutcome::Refused) | Err(AdmitOutcome::OriginVanished) => {
-                    refused = true;
-                }
-                Err(_) => {
-                    ambiguous = true;
-                }
-            }
-        }
-        for (key, expected) in &entering {
-            match self.commit_reveal(key, expected) {
-                Ok(()) => {}
-                Err(AdmitOutcome::Refused) | Err(AdmitOutcome::OriginVanished) => {
-                    refused = true;
-                }
-                Err(_) => {
-                    ambiguous = true;
-                }
-            }
-        }
-        // No local flip: the core owns the view and `read_view` visibility
-        // evidence proves it on the next pass. A torn batch never claims its
-        // view here.
-        if ambiguous {
-            return Err(());
-        }
-        if refused {
-            return Ok(false);
-        }
-        Ok(true)
+        self.switch_view_inner(output, logical, false)
+    }
+
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.switch_view_inner(output, logical, true)
     }
 
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
@@ -1332,7 +1564,10 @@ impl NativeOps for LiveNative<'_> {
         if crate::tiling::classify_focus(&w.facts).is_err() {
             return Ok(false);
         }
-        if self.write_vetoed(key.hwnd) {
+        if self.focus_write_vetoed(key.hwnd) {
+            return Ok(false);
+        }
+        if self.move_size_vetoed(key.hwnd) {
             return Ok(false);
         }
         let ok = (self.prims.focus)(key.hwnd);
@@ -1344,6 +1579,30 @@ impl NativeOps for LiveNative<'_> {
 
     fn poll_external_invalidation(&mut self) -> bool {
         (self.prims.hook_pending)()
+    }
+
+    fn foreground_state(&mut self) -> super::world_diff::ForegroundState {
+        use super::world_diff::{ForegroundIdentity, ForegroundState};
+        let hwnd = (self.prims.foreground)();
+        if hwnd == 0 {
+            return ForegroundState::None;
+        }
+        let pid = (self.prims.window_pid)(hwnd);
+        if pid == 0 {
+            return ForegroundState::Unknown;
+        }
+        let ident = match (self.prims.process_identity)(hwnd) {
+            Some(ident) => ident,
+            None => return ForegroundState::Unknown,
+        };
+        if ident.pid != pid {
+            return ForegroundState::Unknown;
+        }
+        ForegroundState::Known(ForegroundIdentity {
+            hwnd,
+            pid,
+            creation: ident.process_creation,
+        })
     }
 
     fn read_cursor(&mut self) -> Option<(i32, i32)> {

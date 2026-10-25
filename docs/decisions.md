@@ -15,6 +15,9 @@ Superseded excerpts moved out on 2026-10-24 live in
 current product policy.
 
 Tentative index (user review pending; not approved product rules):
+- Windows nonactivating remembered-focus view application, live foreground/
+  gesture proof and same-pass hidden foreground facts
+  ([change record](changes/archive/windows-workspace-focus-restore.md#alternative-native-mechanism-2026-10-25))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))
 - macOS adapter defaults, focus oracle, observation recovery, scoped input

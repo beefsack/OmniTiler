@@ -76,7 +76,7 @@ decisions of 2026-09-24 are under
   payloads verified. Still P0: occupied native switches emit the correct target
   but hold focus `stale` on pumped hook events. A causal self-event discriminator
   preserving genuine supersession is unproven; no exemption or replay added
-  ([record](changes/windows-workspace-focus-restore.md)). No-remembered-focus
+  ([record](changes/archive/windows-workspace-focus-restore.md)). No-remembered-focus
   fallback remains undecided ([Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
   Physical shortcut/application checks remain user-owned after native repair.
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform

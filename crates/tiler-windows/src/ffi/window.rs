@@ -432,6 +432,28 @@ pub fn set_window_pos_detailed(
     (ok, err)
 }
 
+/// Move/size modal-loop probe for one window's thread: `Some(true)` while
+/// that thread runs a move/size modal loop, `Some(false)` when it does
+/// not, `None` when unreadable (fail closed). Read-only.
+pub fn move_size_active(hwnd: u64) -> Option<bool> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GUITHREADINFO;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GUI_INMOVESIZE, GetGUIThreadInfo};
+    if hwnd == 0 {
+        return None;
+    }
+    let tid = window_thread_id(hwnd);
+    if tid == 0 {
+        return None;
+    }
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+    let ok = unsafe { GetGUIThreadInfo(tid, &mut info) };
+    if ok == 0 {
+        return None;
+    }
+    Some((info.flags & GUI_INMOVESIZE) != 0)
+}
+
 /// Best-effort status title on one window; `false` when the call refuses.
 /// Never reads title text.
 pub fn set_window_text(hwnd: u64, text: &str) -> bool {

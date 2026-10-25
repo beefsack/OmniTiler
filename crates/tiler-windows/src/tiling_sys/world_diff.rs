@@ -310,6 +310,25 @@ impl DiffGate {
     }
 }
 
+/// Foreground identity for the remembered-focus guard: HWND plus PID plus
+/// process creation. Recycled HWNDs and changed foreign windows compare
+/// unequal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ForegroundIdentity {
+    pub hwnd: u64,
+    pub pid: u32,
+    pub creation: String,
+}
+
+/// Foreground state for the remembered-focus guard: `Unknown` (unreadable,
+/// fail closed) is distinct from `None` (verifiably no foreground).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ForegroundState {
+    None,
+    Unknown,
+    Known(ForegroundIdentity),
+}
+
 /// Native proof/mutation boundary. Reads are fresh re-reads, never cached
 /// observations; writes return `Ok(true)` accepted, `Ok(false)` explicit
 /// refusal, `Err(())` throw/ambiguous (may have executed). Occupant,
@@ -378,6 +397,19 @@ pub(super) trait NativeOps {
         false
     }
     fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()>;
+    /// Nonactivating pure-view switch for a remembered-focus return. Same
+    /// ledger and view proof as [`Self::switch_view`] but async
+    /// `SetWindowPos` without pumping. Defaults to the pumped path.
+    /// Only matching pure views use it; everything else stays pumped.
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.switch_view(output, logical)
+    }
+    /// Current foreground state (`Unknown` when unreadable: fail closed).
+    /// Compared by HWND plus PID plus process creation, so a recycled HWND
+    /// or a changed foreign window never equals the baseline.
+    fn foreground_state(&mut self) -> ForegroundState {
+        ForegroundState::Unknown
+    }
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
     /// Live cursor position in adapter units (same space as screen FULL
     /// rects and fact frames), `None` when unreadable. Read-only; the
@@ -406,6 +438,9 @@ pub(super) struct FakeNative {
     pub(super) views: HashMap<String, String>,
     pub(super) foreground: Option<String>,
     pub(super) gesture: bool,
+    /// Tokens whose thread runs a move/size modal loop (offline stand-in
+    /// for `GetGUIThreadInfo`).
+    pub(super) move_size: HashSet<String>,
     pub(super) fail_frame: HashSet<String>,
     pub(super) throw_frame: HashSet<String>,
     /// Setter accepts but the app holds its frame: the write reports
@@ -457,6 +492,21 @@ impl FakeNative {
     }
 
     fn note_write(&mut self) {}
+}
+
+/// Offline stand-in for an unmanaged foreign foreground: stable per-token
+/// HWND plus PID plus creation, distinct across foreign tokens.
+#[cfg(test)]
+fn synthetic_foreign_identity(token: &str) -> ForegroundIdentity {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    let hwnd = hasher.finish().max(0x1_0000_0001);
+    ForegroundIdentity {
+        hwnd,
+        pid: u32::MAX,
+        creation: token.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -547,9 +597,30 @@ impl NativeOps for FakeNative {
         self.note_write();
         Ok(true)
     }
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.switch_view(output, logical)
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        let token = match self.foreground.as_deref() {
+            None => return ForegroundState::None,
+            Some(token) => token,
+        };
+        if let Some(w) = self.windows.get(token) {
+            return ForegroundState::Known(ForegroundIdentity {
+                hwnd: w.key.hwnd,
+                pid: w.key.pid,
+                creation: w.key.creation.clone(),
+            });
+        }
+        ForegroundState::Known(synthetic_foreign_identity(token))
+    }
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
         if self.throw_focus.contains(token) {
             return Err(());
+        }
+        if self.move_size.contains(token) {
+            self.note_write();
+            return Ok(false);
         }
         if self.fail_focus.contains(token) {
             self.note_write();
@@ -1390,6 +1461,12 @@ pub(super) fn apply_world_reply(
 
     let HostDiff { gate, effects } = state;
 
+    // Entry foreground for the NA remembered-focus guard.
+    let mut fg_baseline = ops.foreground_state();
+    // Outputs whose pure view took the nonactivating lane; only effects
+    // homed there take the identity guard.
+    let mut na_views: HashSet<(String, String)> = HashSet::new();
+
     // 1. Window rows: per-property authority against FRESH proof.
     for row in &reply.windows {
         if gate.current_obs != entry_obs {
@@ -2105,7 +2182,19 @@ pub(super) fn apply_world_reply(
             stats.held += 1;
             continue;
         }
-        let result = ops.switch_view(&out, &ws);
+        // The nonactivating lane only for a pure view matching a focus
+        // target's proven live homing. Everything else stays pumped.
+        let na = reply.effects.iter().any(|effect| {
+            effect.kind == EffectKind::Focus
+                && ops
+                    .read_homing(&effect.target.0)
+                    .is_some_and(|(o, w)| o == out && w == ws)
+        });
+        let result = if na {
+            ops.switch_view_nonactivating(&out, &ws)
+        } else {
+            ops.switch_view(&out, &ws)
+        };
         let proof = ops.read_view(&out);
         // Mechanical facts only: the setter boolean is never proof, and
         // no outcome is claimed here. The core settles from this attempt
@@ -2125,6 +2214,9 @@ pub(super) fn apply_world_reply(
         });
         if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
             stats.view_writes += 1;
+            if na {
+                na_views.insert((out.clone(), ws.clone()));
+            }
         } else {
             // Setter refusal, throw, or unreadable proof: the reported raw
             // attempt holds the core without re-actuation.
@@ -2551,6 +2643,25 @@ pub(super) fn apply_world_reply(
             stats.held += 1;
             continue;
         }
+        // NA-only foreground identity guard: a changed or unreadable
+        // foreground during the nonactivating switch vetoes unless the
+        // target already holds it. Pumped paths keep existing behavior.
+        // No fallback exemption: a fallback move also vetoes. A double
+        // zero baseline (None/None) also fails closed: verifiably no
+        // foreground at both reads proves nothing about the switch, so
+        // only a target already holding foreground proceeds.
+        if na_views.contains(&(live_out.clone(), live_ws.clone())) {
+            let fg_live = ops.foreground_state();
+            let changed_or_unknown = match (&fg_baseline, &fg_live) {
+                (ForegroundState::Known(a), ForegroundState::Known(b)) => a != b,
+                _ => true,
+            };
+            if changed_or_unknown && !ops.is_foreground(&effect.target.0) {
+                push_focus!(false, "skipped", false, Some("foreground-changed"));
+                stats.held += 1;
+                continue;
+            }
+        }
         if !effects.mark_effect_spent(&effect.id) {
             push_focus!(false, "skipped", false, Some("already-spent"));
             continue;
@@ -2570,6 +2681,7 @@ pub(super) fn apply_world_reply(
         if foreground {
             push_focus!(true, setter, true, None);
             stats.effects += 1;
+            fg_baseline = ops.foreground_state();
         } else {
             push_focus!(true, setter, false, Some("foreground-unproven"));
             stats.held += 1;

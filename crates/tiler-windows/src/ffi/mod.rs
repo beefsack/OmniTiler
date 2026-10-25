@@ -134,13 +134,13 @@ pub use tray::{
 pub use window::{
     MinmaxQuery, PositionAfter, attach_thread_input, class_name, cloaked, current_thread_id,
     desktop_window, dpi_for_window, extended_frame_bounds, foreground_window, get_prop,
-    hit_test_at, is_iconic, is_visible, is_window, is_zoomed, owner_of, parent_of, post_close,
-    query_minmax, reapply_frame, remove_prop, seed_minmax_info, set_foreground_window, set_prop,
-    set_topmost, set_window_placement, set_window_pos, set_window_pos_after,
-    set_window_pos_detailed, set_window_style, set_window_text, shell_window, show_window,
-    show_window_async, show_window_prev_visible, take_prop, try_class_name, window_at_point,
-    window_exstyle, window_pid, window_placement, window_rect, window_style, window_style_checked,
-    window_thread_id,
+    hit_test_at, is_iconic, is_visible, is_window, is_zoomed, move_size_active, owner_of,
+    parent_of, post_close, query_minmax, reapply_frame, remove_prop, seed_minmax_info,
+    set_foreground_window, set_prop, set_topmost, set_window_placement, set_window_pos,
+    set_window_pos_after, set_window_pos_detailed, set_window_style, set_window_text, shell_window,
+    show_window, show_window_async, show_window_prev_visible, take_prop, try_class_name,
+    window_at_point, window_exstyle, window_pid, window_placement, window_rect, window_style,
+    window_style_checked, window_thread_id,
 };
 
 fn hwnd_of(hwnd: u64) -> windows_sys::Win32::Foundation::HWND {

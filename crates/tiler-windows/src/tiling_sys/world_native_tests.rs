@@ -143,6 +143,7 @@ thread_local! {
         RefCell::new(HashMap::new());
     static S_REVEAL: RefCell<HashMap<u64, Result<Revealed, String>>> =
         RefCell::new(HashMap::new());
+    static S_MOVE_SIZE: RefCell<HashMap<u64, Option<bool>>> = RefCell::new(HashMap::new());
     static S_ADMIT_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     /// Scripted live cursor position (`None` = unreadable). Warp writes
     /// update it so re-reads observe the move, like the real position.
@@ -168,6 +169,7 @@ fn reset_script() {
     S_ADMIT.with(|m| m.borrow_mut().clear());
     S_HIDE.with(|m| m.borrow_mut().clear());
     S_REVEAL.with(|m| m.borrow_mut().clear());
+    S_MOVE_SIZE.with(|m| m.borrow_mut().clear());
     S_ADMIT_CALLS.with(|m| m.borrow_mut().clear());
     S_DPI.with(|m| m.borrow_mut().clear());
     S_MONITORS.with(|m| m.borrow_mut().clear());
@@ -202,6 +204,24 @@ fn valid_claim(hwnd: u64, identity: &ProcessIdentity) -> WindowIdentity {
 }
 
 fn s_observe(
+    hwnd: u64,
+    _me: &ProcessIdentity,
+    _fulls: &[Rect],
+    _tokens: &mut super::super::TokenMap,
+) -> Result<super::super::ObservedWindow, super::ObserveError> {
+    // Production contract: the visible reader rejects hidden windows as
+    // Unknown (see `observe_window` line 950), so the scripted lane must
+    // too. Prior fakes returned hidden entries here and masked the
+    // self-hidden departure veto.
+    if !S_VISIBLE.with(|m| m.borrow().contains(&hwnd)) {
+        return Err(super::ObserveError::Unknown);
+    }
+    S_OBSERVE
+        .with(|m| m.borrow().get(&hwnd).cloned())
+        .ok_or(super::ObserveError::Unknown)
+}
+
+fn s_observe_hidden(
     hwnd: u64,
     _me: &ProcessIdentity,
     _fulls: &[Rect],
@@ -267,6 +287,26 @@ fn scripted() -> NativePrimitives {
                     .unwrap_or(Err("refused: scripted".to_owned()))
             })
         },
+        hide_claim_na: |_store, _me, claim, _dir| {
+            S_HIDE.with(|m| {
+                m.borrow()
+                    .get(&claim.hwnd)
+                    .cloned()
+                    .unwrap_or(Err("refused: scripted".to_owned()))
+            })
+        },
+        reveal_claim_na: |_store, _me, claim, _min| {
+            S_REVEAL.with(|m| {
+                m.borrow()
+                    .get(&claim.hwnd)
+                    .cloned()
+                    .unwrap_or(Err("refused: scripted".to_owned()))
+            })
+        },
+        move_size: |hwnd| {
+            S_MOVE_SIZE.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(Some(false)))
+        },
+        observe_hidden: s_observe_hidden,
     }
 }
 
@@ -1203,6 +1243,572 @@ fn switch_view_preserves_source_homing_and_activates() {
 }
 
 #[test]
+fn switch_view_nonactivating_uses_na_claim_lanes() {
+    let mut env = env_with(110_021);
+    let ws1 = "ws1".to_owned();
+    let ws2 = "ws2".to_owned();
+    let out = env.state.output_token(DEV1);
+    let leaving = win_key(110_021, 2121, "proc-41");
+    let entering = win_key(110_022, 2122, "proc-42");
+    admit_member(&mut env, &leaving, &ws1, "w1", false);
+    admit_member(&mut env, &entering, &ws2, "w2", true);
+    let identity = identity_of(&entering);
+    env.state.hidden_claims.insert(
+        entering.clone(),
+        super::super::HiddenRecord {
+            claim: script_claim(entering.hwnd, &identity),
+            iconic: false,
+        },
+    );
+    for key in [&leaving, &entering] {
+        S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
+        S_IDENT.with(|m| m.borrow_mut().insert(key.hwnd, identity_of(key)));
+        S_ADMIT.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_HIDE.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
+    }
+    S_VISIBLE.with(|m| m.borrow_mut().insert(leaving.hwnd));
+    env.state.applied_views.insert(out.clone(), ws1.clone());
+    let mut prims = scripted();
+    prims.hide_claim = |_, _, _, _| Err("refused: pumped".to_owned());
+    prims.hide_claim_na = s_hide_conceal;
+    let mut native = assemble_with_views(&mut env, prims, Some((out.clone(), ws2.clone())));
+    assert_eq!(native.switch_view(&out, &ws2), Ok(false));
+    assert!(!native.hidden_claims.contains_key(&leaving));
+    assert_eq!(native.switch_view_nonactivating(&out, &ws2), Ok(true));
+    assert!(native.hidden_claims.contains_key(&leaving));
+    assert!(!native.hidden_claims.contains_key(&entering));
+}
+
+#[test]
+fn focus_window_refuses_during_move_size() {
+    let mut env = env_with(110_031);
+    let ws1 = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_031, 2131, "proc-51");
+    admit_member(&mut env, &key, &ws1, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out.clone(), ws1.clone());
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(true)));
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, None));
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(false)));
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(key.hwnd, true));
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(true));
+}
+
+/// A stale prior hidden claim never authorizes the hidden lane: without
+/// a same-pass nonactivating hide of the entry foreground by this
+/// actuator instance, even an exact committed claim with fresh
+/// non-fullscreen hidden facts still vetoes.
+#[test]
+fn focus_vetoes_stale_prior_hidden_claim() {
+    let mut env = env_with(110_041);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_041, 2141, "proc-61");
+    let departed = win_key(110_042, 2142, "proc-62");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    // Departure reads hidden: no S_VISIBLE entry, so the visible reader
+    // rejects it as Unknown while the hidden reader still sees facts.
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            observed_for(&departed, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| m.borrow_mut().insert(departed.hwnd, identity_of(&departed)));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(departed.hwnd, "member-tag-1".to_owned())
+    });
+    env.state.hidden_claims.insert(
+        departed.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(departed.hwnd, &identity_of(&departed)),
+            iconic: false,
+        },
+    );
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+}
+
+/// Same-pass departure passes: the nonactivating switch hides the entry
+/// foreground, and the trailing focus reads its fresh hidden facts
+/// (positively non-fullscreen) through the same fullscreen plus
+/// focus-eligibility predicate.
+#[test]
+fn focus_succeeds_with_same_pass_hidden_departure() {
+    let mut env = env_with(110_045);
+    let ws1 = "ws1".to_owned();
+    let ws2 = "ws2".to_owned();
+    let out = env.state.output_token(DEV1);
+    let leaving = win_key(110_045, 2145, "proc-65");
+    let entering = win_key(110_046, 2146, "proc-66");
+    admit_member(&mut env, &leaving, &ws1, "w1", false);
+    admit_member(&mut env, &entering, &ws2, "w2", false);
+    env.state.hidden_claims.insert(
+        entering.clone(),
+        super::super::HiddenRecord {
+            claim: script_claim(entering.hwnd, &identity_of(&entering)),
+            iconic: false,
+        },
+    );
+    script_live(&leaving, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            entering.hwnd,
+            observed_for(&entering, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(entering.hwnd, entering.pid));
+    for key in [&leaving, &entering] {
+        S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
+        S_IDENT.with(|m| m.borrow_mut().insert(key.hwnd, identity_of(key)));
+        S_ADMIT.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_HIDE.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(valid_claim(key.hwnd, &identity_of(key))))
+        });
+        S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
+    }
+    S_FG.with(|m| *m.borrow_mut() = leaving.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(entering.hwnd, true));
+    env.state.applied_views.insert(out.clone(), ws1.clone());
+    let mut native =
+        assemble_with_views(&mut env, moving_prims(), Some((out.clone(), ws2.clone())));
+    assert_eq!(native.switch_view_nonactivating(&out, &ws2), Ok(true));
+    assert!(native.hidden_claims.contains_key(&leaving));
+    assert!(!S_VISIBLE.with(|m| m.borrow().contains(&leaving.hwnd)));
+    assert_eq!(native.focus_window("w2"), Ok(true));
+}
+
+/// Same-pass departure with fullscreen hidden facts still vetoes.
+#[test]
+fn focus_vetoes_same_pass_hidden_fullscreen_departure() {
+    let mut env = env_with(110_047);
+    let ws1 = "ws1".to_owned();
+    let ws2 = "ws2".to_owned();
+    let out = env.state.output_token(DEV1);
+    let leaving = win_key(110_047, 2147, "proc-67");
+    let entering = win_key(110_048, 2148, "proc-68");
+    admit_member(&mut env, &leaving, &ws1, "w1", false);
+    admit_member(&mut env, &entering, &ws2, "w2", false);
+    env.state.hidden_claims.insert(
+        entering.clone(),
+        super::super::HiddenRecord {
+            claim: script_claim(entering.hwnd, &identity_of(&entering)),
+            iconic: false,
+        },
+    );
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            leaving.hwnd,
+            observed_for(&leaving, "w1", rect(0, 0, 1920, 1080), fg_facts),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(leaving.hwnd, leaving.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(leaving.hwnd));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(leaving.hwnd, "member-tag-1".to_owned())
+    });
+    S_IDENT.with(|m| m.borrow_mut().insert(leaving.hwnd, identity_of(&leaving)));
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            entering.hwnd,
+            observed_for(&entering, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(entering.hwnd, entering.pid));
+    for key in [&leaving, &entering] {
+        S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
+        S_ADMIT.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_HIDE.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(valid_claim(key.hwnd, &identity_of(key))))
+        });
+        S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
+    }
+    S_IDENT.with(|m| m.borrow_mut().insert(entering.hwnd, identity_of(&entering)));
+    S_FG.with(|m| *m.borrow_mut() = leaving.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(entering.hwnd, true));
+    env.state.applied_views.insert(out.clone(), ws1.clone());
+    let mut native =
+        assemble_with_views(&mut env, moving_prims(), Some((out.clone(), ws2.clone())));
+    assert_eq!(native.switch_view_nonactivating(&out, &ws2), Ok(true));
+    assert_eq!(native.focus_window("w2"), Ok(false));
+}
+
+/// Same-pass departure with a lifetime tag drift before the setter still
+/// vetoes.
+#[test]
+fn focus_vetoes_same_pass_hidden_tag_drift() {
+    let mut env = env_with(110_049);
+    let ws1 = "ws1".to_owned();
+    let ws2 = "ws2".to_owned();
+    let out = env.state.output_token(DEV1);
+    let leaving = win_key(110_049, 2149, "proc-69");
+    let entering = win_key(110_050, 2150, "proc-70");
+    admit_member(&mut env, &leaving, &ws1, "w1", false);
+    admit_member(&mut env, &entering, &ws2, "w2", false);
+    env.state.hidden_claims.insert(
+        entering.clone(),
+        super::super::HiddenRecord {
+            claim: script_claim(entering.hwnd, &identity_of(&entering)),
+            iconic: false,
+        },
+    );
+    script_live(&leaving, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            entering.hwnd,
+            observed_for(&entering, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(entering.hwnd, entering.pid));
+    for key in [&leaving, &entering] {
+        S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
+        S_IDENT.with(|m| m.borrow_mut().insert(key.hwnd, identity_of(key)));
+        S_ADMIT.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_HIDE.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(valid_claim(key.hwnd, &identity_of(key))))
+        });
+        S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
+    }
+    S_FG.with(|m| *m.borrow_mut() = leaving.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(entering.hwnd, true));
+    env.state.applied_views.insert(out.clone(), ws1.clone());
+    let mut native =
+        assemble_with_views(&mut env, moving_prims(), Some((out.clone(), ws2.clone())));
+    assert_eq!(native.switch_view_nonactivating(&out, &ws2), Ok(true));
+    S_TAG.with(|m| m.borrow_mut().insert(leaving.hwnd, "stale-tag".to_owned()));
+    assert_eq!(native.focus_window("w2"), Ok(false));
+}
+
+/// Same-pass departure lost to a foreign foreground reappearance before
+/// the setter still vetoes.
+#[test]
+fn focus_vetoes_same_pass_hidden_foreground_moved() {
+    let mut env = env_with(110_052);
+    let ws1 = "ws1".to_owned();
+    let ws2 = "ws2".to_owned();
+    let out = env.state.output_token(DEV1);
+    let leaving = win_key(110_052, 2152, "proc-72");
+    let entering = win_key(110_053, 2153, "proc-73");
+    admit_member(&mut env, &leaving, &ws1, "w1", false);
+    admit_member(&mut env, &entering, &ws2, "w2", false);
+    env.state.hidden_claims.insert(
+        entering.clone(),
+        super::super::HiddenRecord {
+            claim: script_claim(entering.hwnd, &identity_of(&entering)),
+            iconic: false,
+        },
+    );
+    script_live(&leaving, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            entering.hwnd,
+            observed_for(&entering, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(entering.hwnd, entering.pid));
+    for key in [&leaving, &entering] {
+        S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
+        S_IDENT.with(|m| m.borrow_mut().insert(key.hwnd, identity_of(key)));
+        S_ADMIT.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_HIDE.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(valid_claim(key.hwnd, &identity_of(key))))
+        });
+        S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
+    }
+    S_FG.with(|m| *m.borrow_mut() = leaving.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(entering.hwnd, true));
+    env.state.applied_views.insert(out.clone(), ws1.clone());
+    let mut native =
+        assemble_with_views(&mut env, moving_prims(), Some((out.clone(), ws2.clone())));
+    assert_eq!(native.switch_view_nonactivating(&out, &ws2), Ok(true));
+    let foreign = win_key(110_054, 2154, "proc-74");
+    S_VISIBLE.with(|m| m.borrow_mut().insert(foreign.hwnd));
+    S_PID.with(|m| m.borrow_mut().insert(foreign.hwnd, foreign.pid));
+    S_FG.with(|m| *m.borrow_mut() = foreign.hwnd);
+    assert_eq!(native.focus_window("w2"), Ok(false));
+}
+
+/// Hidden fullscreen departure still vetoes: fresh hidden facts show a
+/// captionless covering frame.
+#[test]
+fn focus_vetoes_hidden_fullscreen_departure() {
+    let mut env = env_with(110_051);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_051, 2151, "proc-63");
+    let departed = win_key(110_052, 2152, "proc-64");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            observed_for(&departed, "w2", rect(0, 0, 1920, 1080), fg_facts),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| m.borrow_mut().insert(departed.hwnd, identity_of(&departed)));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(departed.hwnd, "member-tag-1".to_owned())
+    });
+    env.state.hidden_claims.insert(
+        departed.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(departed.hwnd, &identity_of(&departed)),
+            iconic: false,
+        },
+    );
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+}
+
+/// Hidden departure with no fresh hidden facts still vetoes (unknown).
+#[test]
+fn focus_vetoes_hidden_unreadable_departure() {
+    let mut env = env_with(110_061);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_061, 2161, "proc-65");
+    let departed = win_key(110_062, 2162, "proc-66");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    // No S_OBSERVE entry for the departure: both readers stay Unknown.
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| m.borrow_mut().insert(departed.hwnd, identity_of(&departed)));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(departed.hwnd, "member-tag-1".to_owned())
+    });
+    env.state.hidden_claims.insert(
+        departed.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(departed.hwnd, &identity_of(&departed)),
+            iconic: false,
+        },
+    );
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+}
+
+/// Hidden foreground without an exact committed claim still vetoes.
+#[test]
+fn focus_vetoes_hidden_unowned_foreground() {
+    let mut env = env_with(110_071);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_071, 2171, "proc-67");
+    let departed = win_key(110_072, 2172, "proc-68");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            observed_for(&departed, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| m.borrow_mut().insert(departed.hwnd, identity_of(&departed)));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(departed.hwnd, "member-tag-1".to_owned())
+    });
+    // No hidden_claims entry: unowned hidden foreground.
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+}
+
+/// Recycled hidden departure (identity drift) still vetoes.
+#[test]
+fn focus_vetoes_hidden_recycled_departure() {
+    let mut env = env_with(110_081);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_081, 2181, "proc-69");
+    let departed = win_key(110_082, 2182, "proc-70");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            observed_for(&departed, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            ProcessIdentity {
+                process_creation: "proc-70-recycled".to_owned(),
+                ..identity_of(&departed)
+            },
+        )
+    });
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(departed.hwnd, "member-tag-1".to_owned())
+    });
+    env.state.hidden_claims.insert(
+        departed.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(departed.hwnd, &identity_of(&departed)),
+            iconic: false,
+        },
+    );
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+}
+
+/// Lifetime tag drift on the hidden departure still vetoes.
+#[test]
+fn focus_vetoes_hidden_tag_drift_departure() {
+    let mut env = env_with(110_091);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_091, 2191, "proc-71");
+    let departed = win_key(110_092, 2192, "proc-72");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            observed_for(&departed, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| m.borrow_mut().insert(departed.hwnd, identity_of(&departed)));
+    S_TAG.with(|m| m.borrow_mut().insert(departed.hwnd, "stale-tag".to_owned()));
+    env.state.hidden_claims.insert(
+        departed.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(departed.hwnd, &identity_of(&departed)),
+            iconic: false,
+        },
+    );
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+}
+
+/// A newly visible foreign foreground still vetoes: it reads visible,
+/// so the hidden-verified lane never engages.
+#[test]
+fn focus_vetoes_newly_visible_foreign() {
+    let mut env = env_with(110_101);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_101, 2201, "proc-73");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    let foreign = win_key(110_102, 2202, "proc-74");
+    S_VISIBLE.with(|m| m.borrow_mut().insert(foreign.hwnd));
+    // No observe entry and no hidden claim: visible yet unreadable.
+    S_PID.with(|m| m.borrow_mut().insert(foreign.hwnd, foreign.pid));
+    S_FG.with(|m| *m.borrow_mut() = foreign.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window("w1"), Ok(false));
+}
+
+/// Frame writes keep the strict unknown veto: a hidden departure with
+/// no visible facts still holds the geometry write even though focus
+/// would proceed through the hidden-verified lane.
+#[test]
+fn frame_write_vetoes_hidden_departure_unknown() {
+    let mut env = env_with(110_111);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_111, 2211, "proc-75");
+    let departed = win_key(110_112, 2212, "proc-76");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            observed_for(&departed, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| m.borrow_mut().insert(departed.hwnd, identity_of(&departed)));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(departed.hwnd, "member-tag-1".to_owned())
+    });
+    env.state.hidden_claims.insert(
+        departed.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(departed.hwnd, &identity_of(&departed)),
+            iconic: false,
+        },
+    );
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.write_frame("w1", rect(10, 10, 400, 300)), Ok(false));
+}
+
+#[test]
 fn partial_reveal_never_proves_entire_view() {
     let mut env = env_with(111_001);
     let ws2 = "ws2".to_owned();
@@ -1518,6 +2124,8 @@ fn moving_prims() -> NativePrimitives {
     prims.set_outer = s_set_outer_moving;
     prims.hide_claim = s_hide_conceal;
     prims.reveal_claim = s_reveal_show;
+    prims.hide_claim_na = s_hide_conceal;
+    prims.reveal_claim_na = s_reveal_show;
     prims
 }
 

@@ -946,11 +946,37 @@ pub(super) fn observe_window(
     fulls: &[Rect],
     tokens: &mut TokenMap,
 ) -> std::result::Result<ObservedWindow, ObserveFailure> {
+    observe_window_inner(hwnd, me, fulls, tokens, false)
+}
+
+/// Fresh facts read of a hidden window the caller already proved: the
+/// caller holds the exact owned committed hidden claim (ledger plus
+/// identity/lifetime gates) for this HWND, and the window still reads
+/// invisible. Bypasses only the visible gate; every other read (identity,
+/// iconic, frames, cloak, style, class, fullscreen predicate) is the
+/// shared path, so the facts carry the same classification as a visible
+/// read. The caller decides the safety use; this never proves visibility.
+pub(super) fn observe_window_hidden_verified(
+    hwnd: HWND,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    tokens: &mut TokenMap,
+) -> std::result::Result<ObservedWindow, ObserveFailure> {
+    observe_window_inner(hwnd, me, fulls, tokens, true)
+}
+
+fn observe_window_inner(
+    hwnd: HWND,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    tokens: &mut TokenMap,
+    allow_hidden: bool,
+) -> std::result::Result<ObservedWindow, ObserveFailure> {
     use ObserveFailure::{Known, Unknown};
-    if !crate::ffi::is_visible(hwnd as usize as u64) {
+    let hwnd_u64 = hwnd as usize as u64;
+    if !allow_hidden && !crate::ffi::is_visible(hwnd_u64) {
         return Err(Unknown);
     }
-    let hwnd_u64 = hwnd as usize as u64;
     let identity = window_identity(hwnd, hwnd_u64, me).ok_or(Unknown)?;
     let token = tokens.token_for(hwnd_u64, &identity.process_creation);
     // Token clones below are per-failure (cold paths); the final use moves.
@@ -990,7 +1016,7 @@ pub(super) fn observe_window(
     let class = class_of(hwnd);
     let captionless = style & WS_CAPTION == 0;
     let facts = WindowFacts {
-        visible: true,
+        visible: crate::ffi::is_visible(hwnd_u64),
         minimized: crate::ffi::is_iconic(hwnd_u64),
         maximized: crate::ffi::is_zoomed(hwnd_u64),
         cloaked,

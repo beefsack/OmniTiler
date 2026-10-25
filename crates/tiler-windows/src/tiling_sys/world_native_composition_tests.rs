@@ -1794,6 +1794,10 @@ fn cycle_prims() -> NativePrimitives {
         admit: real.admit,
         hide_claim: real.hide_claim,
         reveal_claim: real.reveal_claim,
+        hide_claim_na: real.hide_claim_na,
+        reveal_claim_na: real.reveal_claim_na,
+        move_size: |_| Some(false),
+        observe_hidden: s_observe_hidden,
     }
 }
 

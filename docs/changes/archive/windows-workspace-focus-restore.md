@@ -104,7 +104,7 @@
   These green checks include diagnostics of the unresolved stale hold, not
   native focus acceptance.
 - Tier 1 source findings and unsupported cells are recorded in the
-  [minimal no-focus discriminators](../spec/reference-outcomes.md#workspace-no-focus-discriminators).
+   [minimal no-focus discriminators](../../spec/reference-outcomes.md#workspace-no-focus-discriminators).
   No new product policy is selected.
 
 ## Offline-proven portions (2026-10-25)
@@ -181,19 +181,104 @@
   shell, licenses and notices jobs pass. These failures remain outside this
   Windows focus repair; package-scoped local gates are not full-CI acceptance.
 
-## Remaining work
+## Alternative native mechanism (2026-10-25)
 
-- The current WinEvent/async-visibility mechanism lacks a proven causal
-  discriminator for the required self-event exemption. Resolve that mechanism
-  before changing freshness gates; matching HWND/kind/timing/final state alone
-  is insufficient. Do not substitute per-HWND suppression, a blanket exemption,
-  or cross-reply replay. Any new contract or core behavior needs a separate
-  decision; none is introduced by these partial repairs.
-- After a mechanism is established, add the desired-behavior regression against
-  the non-consuming native contract, then prove occupied native focus landing
-  both ways and genuine supersession. Departing pager marks are now verified;
-  current-target catch-up still needs successful native focus.
-- Global-swap focus intent has offline regressions; shared variants and
-  floating remembered-focus coverage remain outside demonstrated acceptance.
-- Physical shortcuts and ordinary-application dogfooding remain user-owned;
-  the blocked native fixture focus check is not a physical-input-only remainder.
+- Standalone fixture comparison found that `ShowWindowAsync(SW_HIDE)` moved
+  foreground from the departing fixture window to another window, whereas
+  `SetWindowPos` with `SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS`
+  kept its foreground HWND unchanged after visibility became false. Matching
+  nonactivating reveal restored both owned windows; fixture shutdown and
+  native process absence verified cleanup. This is a primitive experiment,
+  not integrated workspace acceptance.
+- **Tentative, pending user review:** use nonactivating async visibility
+  writes with non-pumping confirmation only for a pure view matching the
+  focus target's live homing. Retain full destination-view proof before
+  focus, existing visibility deadlines, ledger/recovery fencing and the
+  non-consuming pending-event veto. Unrelated views, migration/refill and
+  switches without focus intent retain their existing path; minimized
+  reveal retains its existing pumped restore command and fails closed if
+  that produces pending events.
+- **Tentative, pending user review:** compare full native foreground identity
+  before/after the switch; changed or unreadable foreground prevents focus
+  dispatch. Re-prove native move/size state independently of delayed hooks.
+  The existing fullscreen/game, lifetime and at-most-once gates remain.
+- **Tentative, pending user review:** for the departing foreground hidden by
+  this same nonactivating switch only, read fresh hidden-window facts under
+  the exact committed claim and live identity/member-tag fences. Apply the
+  fullscreen and eligibility predicates to these facts rather than treating
+  expected invisibility as unreadable. Old hidden claims, unknown facts,
+  fullscreen, recycled lifetimes, tag drift or foreground drift refuse;
+  frame writes retain their original unreadable-foreground veto.
+- Activating before departure hides was not selected: it would require
+  narrowing the existing full-view-before-focus gate. Native nonactivating
+  visibility instead offers a way to retain that gate without classifying
+  queued events as self-generated.
+
+## Accepted outcome (2026-10-26)
+
+- The alternative removes the stale-event blocker without classifying,
+  suppressing or exempting queued events. No new core change, option,
+  public contract, no-memory fallback or cross-reply replay was needed.
+- Desired-behavior regressions failed before the repair: self fallout held
+  focus stale; foreign foreground with an empty delivered queue incorrectly
+  allowed dispatch. Both pass, alongside matching-view routing, unchanged
+  unrelated-view routing, failed reveal, duplicate effects, lifetime drift,
+  minimized restoration and native move/size refusal tests.
+- Initial integrated checks exposed a second causal blocker: the fullscreen
+  guard's visible-only reader rejected the intentionally hidden departure,
+  refusing before the native focus setter. A foreground-rights positive
+  control proved real movement between visible windows, and an explicit
+  rights grant did not repair the return. The same-pass hidden-facts repair
+  above resolves that blocker; production-seam tests now model the reader's
+  actual hidden-window refusal instead of returning fabricated visible facts.
+- Final fixture-only native run: A observed focused on WS1; B then C observed
+  focused on WS2. Selecting WS1 moved native foreground C to visible A;
+  selecting WS2 moved it back to visible C. Fixture visibility/focus agreed.
+  Both setters accepted. Immediate foreground proof was still false during
+  the native transition; subsequent independent native reads and fresh
+  observations, not setter acceptance, establish landing. The forward
+  pre-switch field was omitted by the harness; bracketing native A/C reads,
+  unchanged intervening focus and dispatch-time false proof establish movement.
+- Actual renderer `pager-cells` payloads caught up from no highlight to A on
+  current WS1 and C on current WS2; departed cells retained their miniatures
+  without focus marks. WS2's second miniature, not its first, was highlighted.
+- A separate unmanaged fixture window received genuine foreground from an
+  exact-departure hide-event watcher during the final switch. The owner held
+  `foreground-changed` without dispatch; independent native reads confirmed
+  the competitor retained foreground and the pager showed no managed focus.
+  Earlier checks also demonstrated this guard twice before the final repair.
+- Test-only foreground rights used an explicit owner grant; guarded input,
+  where needed to establish grant rights, targeted an identity-verified owned
+  fixture. No product input filter or focus privilege mechanism was changed.
+  Graceful stop, independent restore, all fixture shutdowns and native process
+  absence passed. Settings bytes and sampled taskbar/Mouse Snap state matched
+  preimages; no recovery ledger or owned control residue remained. Raw restore
+  count zero is not used as visibility evidence.
+- Final gates: core 847 library plus 436 integration tests; Windows 1001
+  library tests, one existing ignored test, 413 integration and four doc tests.
+  All pass. Strict all-target clippy for core, Windows and fixture, workspace
+  fmt and `git diff --check` pass. Final native owner artifact SHA-256:
+  `1d60cae8fe4fb0c2c535a4917d0d4675520771742d7b1aabc0530a69d3c0461f`.
+
+## CI classification (2026-10-26)
+
+- Prior CI [40188690771](https://github.com/beefsack/OmniTiler/actions/runs/40188690771)
+  repeats the same KDE catalog partition failure and four macOS-version
+  refusals on Windows as 40187337758. Its extra
+  `wrong_sid_arrival_is_unproven_without_replay` failure is the same scripted
+  topology-row exhaustion, not a Windows focus-effect regression.
+- The macOS source and that test's execution cone are unchanged across these
+  focus repairs. The exact test passes at pre-focus parent `a081a7f1` and in
+  15 consecutive isolated current runs. Its fixed four-row script is sensitive
+  to extra deadline-loop reads; an early timeout is a plausible trigger, not
+  a reproduced causal diagnosis. Classify it as pre-existing test fragility,
+  not proven new focus behavior. No unrelated macOS correction is included.
+- Package gates are green; full CI is not claimed green from these results.
+
+## Remaining verification and decisions
+
+- Physical workspace chords, ordinary applications, multiple-output/shared
+  variants, floating remembered windows and game behavior were not established
+  by this single-output fixture run. Global-swap intent has offline coverage.
+- A workspace genuinely lacking remembered focus still has no selected fallback
+  policy; the pinned Tier 1 discriminator rows remain the decision evidence.
