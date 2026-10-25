@@ -374,6 +374,15 @@ export interface WorldPresentationReply {
     windows: WorldReplyWindow[];
     presentation: WorldPresentation;
 }
+// Wait-lane replies (WaitWorldWake): the long-held call completes when
+// queued work can drain. `wake` carries the advanced server epoch cursor
+// (the follow-up capture drains it); `lease` is the idle server lease
+// with the cursor unchanged (re-arm with the same cursor); `superseded`
+// answers a waiter replaced by a newer registration.
+export type WorldWaitReply =
+    | { outcome: "wake"; gen: string; cursor: string }
+    | { outcome: "lease"; gen: string; cursor: string }
+    | { outcome: "superseded"; gen: string };
 
 const DIRECTIONS = new Set(["left", "right", "up", "down"]);
 
@@ -536,7 +545,7 @@ export function parseDiscoveryReply(text: string): WorldReply | WorldRejection |
 // refuse; counters must be canonical decimal strings. v2 only: v1 refuses.
 export function parseWorldReply(
     text: string,
-): WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | null {
+): WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null {
     let value: unknown;
     try {
         value = JSON.parse(text);
@@ -586,7 +595,7 @@ function hasExactKeys(r: Record<string, unknown>, keys: ReadonlyArray<string>): 
 function parseLaneReply(
     r: Record<string, unknown>,
     outcome: string,
-): WorldQueueReply | WorldTakeReply | WorldPresentationReply | null {
+): WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null {
     const gen = typeof r["gen"] === "string" ? (r["gen"] as string) : null;
     if (gen === null || !isGenerationId(gen)) {
         return null;
@@ -659,6 +668,22 @@ function parseLaneReply(
     }
     if (outcome === "presentation") {
         return parsePresentationReply(r, gen);
+    }
+    if (outcome === "wake" || outcome === "lease") {
+        if (!hasExactKeys(r, ["v", "outcome", "gen", "cursor"])) {
+            return null;
+        }
+        const cursor = r["cursor"];
+        if (typeof cursor !== "string" || !isCanonicalU64(cursor)) {
+            return null;
+        }
+        return { outcome, gen, cursor };
+    }
+    if (outcome === "superseded") {
+        if (!hasExactKeys(r, ["v", "outcome", "gen"])) {
+            return null;
+        }
+        return { outcome: "superseded", gen };
     }
     return null;
 }
@@ -1327,7 +1352,7 @@ function parseResult(value: unknown): WorldReplyResult | null {
 }
 
 export function isWorldRejection(
-    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | null,
+    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null,
 ): value is WorldRejection {
     return (
         value !== null &&
@@ -1340,7 +1365,7 @@ export function isWorldRejection(
 // capture): present rev with no lane outcome. Rejections and the
 // queue/take/presentation lanes never satisfy this.
 export function isCoreWorldReply(
-    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | null,
+    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null,
 ): value is WorldReply {
     return (
         value !== null &&
@@ -1349,13 +1374,25 @@ export function isCoreWorldReply(
     );
 }
 
-export function isWorldQueueReply(    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | null,
+export function isWorldQueueReply(    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null,
 ): value is WorldQueueReply {
     if (value === null) {
         return false;
     }
     const outcome = (value as { outcome?: unknown }).outcome;
     return outcome === "queued" || (outcome === "duplicate" && (value as { client?: unknown }).client !== undefined);
+}
+
+// Narrow a parsed reply to the wait lane (WaitWorldWake): wake, lease, or
+// superseded. Any other lane (including rejections) never satisfies this.
+export function isWorldWaitReply(
+    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null,
+): value is WorldWaitReply {
+    if (value === null) {
+        return false;
+    }
+    const outcome = (value as { outcome?: unknown }).outcome;
+    return outcome === "wake" || outcome === "lease" || outcome === "superseded";
 }
 
 // Strict envelope builders: the exact broker wire (world_broker.rs). The
@@ -1386,6 +1423,14 @@ export function buildQueueRequest(client: string, gen: string, clientCmd: string
 
 export function buildTakeRequest(client: string, gen: string, clientCmd: string): string {
     return `{"v":${WORLD_CONTRACT_VERSION},"gen":${JSON.stringify(gen)},"client":${JSON.stringify(client)},"clientCmd":${JSON.stringify(clientCmd)}}`;
+}
+
+// Strict wait envelope (world_broker.rs parse_wait_request): the
+// discovery-bound producer lifetime, the serving generation, the waiter
+// correlation fencing stale completions, and the last delivered wake
+// cursor (canonical decimal u64, "0" before the first wake).
+export function buildWaitRequest(adapter: string, gen: string, nonce: string, cursor: string): string {
+    return `{"v":${WORLD_CONTRACT_VERSION},"gen":${JSON.stringify(gen)},"adapter":${JSON.stringify(adapter)},"nonce":${JSON.stringify(nonce)},"cursor":${JSON.stringify(cursor)}}`;
 }
 
 export function buildReadRequest(req: string): string {

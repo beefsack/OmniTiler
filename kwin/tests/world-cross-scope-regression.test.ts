@@ -132,6 +132,14 @@ function makeHarness(wins: FakeWindow[], screens: Array<{ name: string; geometry
     const runTimers = (): void => {
         for (let i = 0; i < timers.length; i += 1) {
             const t = timers[i] as { delay: number; cb: () => void };
+            // Host-deadline timers (25 s verified host call deadline, see
+            // WAIT_HOST_DEADLINE_MS) never fire in these offline flows: the
+            // production wait/discovery chains re-arm them host-causally,
+            // and flushing them would collapse production cadence into a
+            // sync loop. Debounce/timeout timers flush normally.
+            if (t.delay >= 25000) {
+                continue;
+            }
             timers.splice(i, 1);
             i -= 1;
             t.cb();
@@ -375,6 +383,15 @@ describe("world directional intent (core-owned crossing)", () => {
             runTimers: () => {
                 for (let i = 0; i < timers.length; i += 1) {
                     const t = timers[i] as { delay: number; cb: () => void };
+                    // Host-deadline timers (25 s verified host call
+                    // deadline, see WAIT_HOST_DEADLINE_MS) never fire in
+                    // these offline flows: the production wait/discovery
+                    // chains re-arm them host-causally, and flushing them
+                    // would collapse production cadence into a sync loop.
+                    // Debounce/timeout timers flush normally.
+                    if (t.delay >= 25000) {
+                        continue;
+                    }
                     timers.splice(i, 1);
                     i -= 1;
                     t.cb();

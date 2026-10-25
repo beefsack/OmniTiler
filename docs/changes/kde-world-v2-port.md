@@ -10,8 +10,9 @@
   host-owned adoption in core/protocol. KDE remains unported and native
   acceptance remains TBD. This record stays active for the whole port;
   stage 2 has a partial paired implementation, not accepted as a completed
-  stage: the five original integration oracles are resolved, but B1 and the
-  restored B2 source-view discriminator remain parked. Stages 3 onward remain outstanding except for the
+  stage: the five original integration oracles are resolved, but the
+  restored B2 source-view discriminator remains parked; B1 wake is delivered
+  offline. Stages 3 onward remain outstanding except for the
   observation/actuation vocabulary required by the atomic wire cutover.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
@@ -32,7 +33,7 @@
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
-| 2. Broker and strict v2 cutover | Partial: strict broker, creation consumption, raw dispatched attempts and core-owned migration/lifecycle oracles delivered offline; B1 wake and B2 source-view settlement remain parked | Rust 192/192; JS 707/708, only restored both-view rewind red; no native or completion claim |
+| 2. Broker and strict v2 cutover | Partial: strict broker, creation consumption, raw attempts, migration/lifecycle oracles and B1 wake delivered offline; B2 dormant-source ownership parked | Rust 216/216; JS 719/720, only original both-view rewind red; no native or completion claim |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
@@ -80,7 +81,8 @@
   refuse. The JS callback also fences invalidation during flight.
 - Bounded units: Rust broker and authorization; paired JS wire/entry and minimum
   v2 observation/actuation carriers; independent boundary review; complete KDE
-  offline gates and documentation reconciliation. No core changes are planned.
+  offline gates and documentation reconciliation. B2 now includes the separately
+  approved tentative native-attempt core extension; other core policy is unchanged.
 - Core command rejections are explicit terminal failures for their requester,
   not fabricated null successes or arbitrary retries; the same fresh facts then
   enter the observation-only lane. Malformed capture never retires a command.
@@ -280,29 +282,46 @@
   and future GNOME/ChromeOS native domains all need truthful operation/backing
   correlation without assumed id equality or fabricated cross-output binding.
 
-### B1. External command wake delivery (parked)
+### B1. External command wake delivery (offline complete)
 
-- The draft exposes same-user queue/query routes and emits `WorldWake`, but
-  KWin JS `callDBus` has no signal-subscription primitive. An external queued
-  command waits for a subsequent native-event capture. This is not accepted
-  command responsiveness or a completed broker cutover.
-- Tentative direction (2026-10-25): one long-held asynchronous `callDBus` wait
-  request completed by the service when work is available, re-armed on reply.
-  Any timeout re-arm must name a verified host-limit deadline, not idle polling.
-  Implementation belongs to the next package.
+- `WaitWorldWake` holds one asynchronous `callDBus` request. Queue insertion
+  and actual head drain advance a broker wake cursor; only pending work with an
+  advanced cursor completes a wake. The subsequent fresh capture drains one
+  command. Rejected/no-drain captures and exact replay cannot cause a hot loop.
+- Wait request: `{v:2,gen,adapter,nonce,cursor}`; replies are `wake` with the
+  advanced cursor, `lease` with the unchanged cursor, `superseded`, or bounded
+  rejection. Wait requires the same UID and live KWin owner as capture, plus
+  the bound producer and generation. It neither executes core nor takes the
+  capture lock. One server slot, owned-nonce cleanup, supersession and generation
+  displacement bound stale/dead waiters.
 - Pinned KWin `v6.7.4`, `src/scripting/scripting.cpp:301-376`: `callDBus`
   uses nonblocking `sessionBus().asyncCall(message)` with no timeout argument;
   its pending-call watcher belongs to the script. Only successful replies call
   JS; errors/timeouts merely log and return. Script teardown destroys the
   watcher, so callback-only timeout recovery is not available. The signature
   (`src/scripting/scripting.h:115-125`) exposes no timeout option.
-- Event-driven waiting is mechanically plausible, but not proven end-to-end.
-  Qt's effective default timeout value remains unverified; do not invent a
-  deadline. Next-package feasibility must establish that bound, normal service
-  deadline replies, no-callback error recovery and reload/dead-waiter cleanup
-  without periodic polling. No core hook or dependency change is implied.
+- Timeout chain: Qt `v6.11.1`, `src/dbus/qdbusconnection.cpp:439-446` and
+  `qdbusintegrator.cpp:2190-2220`, passes default `-1` to libdbus. At
+  `dbus-1.16.2`, `dbus/dbus-connection-internal.h:48` and
+  `dbus/dbus-pending-call.c:130` resolve it to 25,000 ms. Qt exposes no
+  additional maximum here; plain KWin JS exposes no override.
+- Service lease is 20,000 ms, a heuristic below that host limit, not a proven
+  scheduling margin. Every wait has one cancelable 25,000 ms host-deadline
+  watchdog. Silent errors/timeouts and absent-service discovery chain from that
+  limit, even with no native event. Successful idle lease replies re-arm the
+  held call without capturing; there is no idle capture or arbitrary retry
+  interval. Persistent refusal/supersession stands down to the host deadline.
+  Script stop cancels client timers; stale callbacks cannot clear newer waits.
+- A timerless recovery proposal was rejected because silent errors still waited
+  for a native event. Initial watchdog recovery then reproduced a bound-but-
+  waitless stall and immediate rejection/supersession loops; regression-backed
+  corrections retain the discovery deadline chain and bound re-arm. A private-
+  bus test additionally caught swapped generation/lifetime arguments at the
+  endpoint; correcting the tuple restores the real wake/queue/capture route.
 - This is host transport, not a core policy hook. Other remote hosts must be
   able to use their own event delivery without a KWin-shaped core abstraction.
+
+<a id="b1-external-command-wake-delivery-parked"></a>
 
 ### B2. Source-view rewind during migration (parked)
 
@@ -332,24 +351,43 @@
   macOS, GNOME and ChromeOS need host-owned native-domain evidence without
   synchronous-switch, ordinal, logical-id-equality or Windows-local assumptions.
   Any shared representation/settlement change needs a separate product decision.
+- User-selected option 1 (tentative, 2026-10-25; review after KDE/macOS land)
+  authorizes capability-gated native attempt pre/post/baseline evidence, translated
+  only by core. Matching outstanding work settles; other changes are outside
+  input. Windows logical evidence remains unchanged. The late-send/intermediate-
+  readings discriminator must settle, not adopt the tiler's move as outside input.
+- The uncommitted draft uses `MemberAttempt.native_pre/native_post` and
+  `ViewAttempt.native_pre/native_post/native_baseline`, optional `String`s;
+  wire `nativePre/nativePost/nativeBase`. Non-null native evidence without
+  `hostOwned` refuses; host-owned ignores logical attempt evidence. KDE captures
+  native reads around actual setters without an adapter binding table.
+- Blocking discriminator: the exact old source native remains in the native
+  order, but `(source, native)` still maps to the logical workspace now owned by
+  the destination. `native_echo_for` cannot resolve it in the source ring.
+  Native preimages resolve a switch to another surviving bound desktop, not this
+  dormant desktop. The original KDE test remains unmodified and red.
+- Options: retain the dormant binding and hold (current behavior); adopt the
+  selected vacated desktop as a new source logical row and separately preserve
+  reverse-migration provenance; or settle without adopting the current (violates
+  switch-wins, not recommended). Recommendation: decide the second option's
+  identity/provenance contract before implementation; retain hold meanwhile.
+  Do not silently sacrifice reverse-migration backing or weaken the test.
+- Neutrality: Windows keeps its logical domain; KDE/macOS and future GNOME/
+  ChromeOS must represent a selected vacated host desktop without assuming a
+  native id is the migrating logical id or stealing its return binding.
 
 ### Existing deferred product boundaries
 
-- Minimized is not strict retained-unmanaged: migration, output loss and pending
-  transfers can move it. Unknown float-sticky membership also loses its reply
-  row rather than preserving a slot; tiled-sticky becomes a minimized slot.
-  These are parked neutral core representation concerns, not port-side fixes.
-  Options: qualify existing semantics, or review a neutral retained-unmanaged /
-  all-desktop retention contract. Recommendation: preserve core behavior, do not
-  claim the stronger Activities promise, and resolve the contract before use.
-- Activities/multi-desktop: existing tentative default retains inactive-activity
-  windows unmanaged with slots held; all-desktop maps to sticky; subsets float
-  without rehome. Options: retain this default or propose a native-evidence-backed
-  alternative; recommendation: investigate fixture-first and preserve core.
-- Pending Activities decision: encode inactive-Activity windows as existing
-  minimized facts with qualified relocation semantics, or introduce a neutral
-  host-hidden state. Neither option is implemented by this package; the tentative
-  Activities promise is not silently reworded.
+- Host-hidden decision (2026-10-25, tentative until native Activities testing):
+  KDE inactive-Activity and macOS Cmd+H windows report existing
+  `WindowFact.minimized=true`; no new core state. Inactive-Activity windows are
+  retained and never tiled, focused or moved by core except with their workspace
+  (migration/swap), when the host removes their display, or to complete a transfer
+  pending before the hide. Activities support is later work, not implemented here.
+- All-desktop maps to existing sticky; subsets float without rehome. Unknown
+  float-sticky membership can lose its reply row; tiled-sticky retains a minimized
+  slot. Neutral all-desktop home/slot retention remains parked; preserve current
+  behavior and investigate fixture-first, never fabricate current membership.
 - Async configure versus application clamp: options are existing convergence or
   a new neutral pending/completion representation. Recommendation: reproduce
   natively first, inspect pinned KWin completion evidence, then propose only if
@@ -574,3 +612,38 @@
 - Exact next action: review B2 native-view supersession evidence and choose its
   core-owned resolution. B1 remains the separately scoped wake package; stages
   3+ and native testing are not started by this delivery.
+
+## B1 delivery and B2 draft evidence (2026-10-25)
+
+- B1 locked `omnitiler` build and tests: 216 passed (167 library, 38 flow,
+  11 tray); strict all-target clippy, formatting and whitespace pass. Private-bus
+  `private_bus_wait_wake_end_to_end_does_not_block_queue` proves owner-only wait,
+  independent queue progress while parked, wake before drain, and issuer-only
+  terminal collection. JS typecheck/build pass; 719/720 tests pass, only original
+  B2 fails, zero skipped/cancelled. Wake suite 12/12; timeout/reload/stale-waiter,
+  supersession, burst and no-hotloop regressions pass. No native acceptance.
+- B2 draft remains uncommitted, not accepted delivery: core/protocol/Windows
+  locked all-target build/tests and strict clippy pass, 2,043 tests across 53
+  suites; native-attempt suite 8/8 and acceptance 6/6. macOS all targets compile;
+  library 1,122 pass plus the same four non-macOS version-read failures. Native-
+  only precedence and cross-output refusal corrections have regressions. These
+  gates do not resolve dormant-source identity or make the original B2 green.
+  Final formatting/whitespace pass; KDE service build, 192 tests and strict
+  all-target clippy pass with the draft. JS remains 707/708, only original B2 red.
+- Shared Cargo intermediates reproduced stale-schema build failures; rebuilding
+  package artifacts and isolating worktree intermediates restored correct inputs.
+  Earlier parallel JS runs showed timing failures in two engine tests; both pass
+  in isolation and the final full run has only the original B2 failure.
+- After integrating subsequent core/macOS changes, locked core/protocol/Windows/
+  service builds, strict clippy and all-target tests pass: 2,251 tests across 57
+  suites (2,035 core/protocol/Windows plus 216 service). Formatting/whitespace,
+  acceptance 6/6 and JS typecheck/build pass. Final full JS run is 719/720, only
+  original B2 red. An initial run additionally saw a helper exit 101 (stderr
+  discarded by its harness, cause unproven) and a discovery timeout; both cases
+  pass individually and in the subsequent full run without source changes.
+  macOS all-target check and 58 world-filtered tests pass; full native acceptance
+  remains separate.
+- Stages 0/1/1b remain complete offline, Stage 2 partial, Stages 3+ and native
+  acceptance untouched. Next: decide dormant-source identity/return provenance,
+  then complete B2, re-run all gates and close Stage 2 only with a green original
+  discriminator. The port record remains active, not archived.

@@ -42,6 +42,8 @@ Tentative index (user review pending; not approved product rules):
 - Host-owned native-only receipts, optional current, authoritative order and
   hybrid creation correlation ([below](#native-adoption-2026-10-24)); review
   after both KDE and macOS changes land
+- Host-owned native attempt preimages/settlement (B2 option 1)
+  ([below](#native-adoption-2026-10-24)); review after KDE/macOS land
 - KDE broker capture-lifetime reset and sender/generation-bound command transport
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 - KDE v2 migration/backing and native-bound empty lifecycle oracle reconciliation
@@ -4669,15 +4671,24 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   spares remain unbound until needed. These are existing core outcomes, not a
   new native reuse/deletion policy. Eligible-unbound reuse remains parked;
   [source-view supersession B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
-  is separately unresolved, with no shared behavior change selected.
-- **Parked retained-unmanaged representation, 2026-10-25:** `minimized=true`
-  suppresses geometry and ordinary send/focus, but workspace migration, output
-  removal and an already-pending transfer can relocate it. It therefore does not
-  establish the tentative inactive-Activity promise "never move". Options: accept
-  minimized relocation semantics for host-hidden windows, or add a separately
-  reviewed neutral retained-unmanaged state. Recommendation: keep core behavior,
-  do not claim equivalence, and resolve the product promise before Activities
-  consumption. Host-hidden macOS use needs the same explicit qualification.
+  still needs dormant-source identity/return-provenance resolution.
+- **Tentative native attempt settlement (option 1), user-selected 2026-10-25;
+  review after KDE and macOS land:** optional capability-gated native
+  before/after/baseline ids extend `MemberAttempt`/`ViewAttempt`. Non-null
+  evidence without host-owned capability refuses, like `WindowFact.native_workspace`.
+  Core alone translates native ids through its own bindings and uses the existing
+  rule: matching outstanding work settles; otherwise outside input is adopted.
+  The user's switch back wins, migration stays and the paired source refill
+  retires permanently. Windows logical preimages remain unchanged. Also pin a
+  late tiler send observed with intermediate readings settling as the tiler's
+  transfer, not an outside move. Implementation is draft, not delivered: the
+  exact old source desktop has dormant backing after migration, requiring the
+  [B2 ownership choice](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked).
+- **Tentative host-hidden representation, user-selected 2026-10-25; native
+  Activities testing pending:** KDE inactive-Activity and macOS Cmd+H windows
+  use existing `WindowFact.minimized=true`, no new core state. Qualified
+  workspace/output-loss/pending-transfer relocation is intentional; the
+  Activities default below replaces the earlier strict "never move" promise.
 - **Parked unknown sticky membership, 2026-10-25:** native `None` is the truthful
   encoding for all-desktop membership, but core cannot assign an initial single
   home from it. A retained float-sticky loses its published exception row on
@@ -4691,9 +4702,12 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
 User-approved 2026-10-24:
 
 - Activities default stays tentative pending KDE evidence:
-  inactive-activity windows stay retained unmanaged (never tile, move,
-  focus or lose their slots) until active; all-desktop maps to sticky
-  (existing core); subset-of-desktops floats and never rehomes. The
+  inactive-Activity windows are retained and never tiled, focused or moved by
+  core except with their workspace (migration/swap), when the host removes their
+  display, or to complete a transfer pending before the hide. Report host-hidden
+  windows with existing `WindowFact.minimized=true`, no new core state.
+  All-desktop maps to sticky (existing core); subset-of-desktops floats and never
+  rehomes. Activities support is later port work, not implemented here. The
   port may propose an evidence-backed alternative; any core change
   needs user approval.
 - Async configure: first reproduce the KDE/Wayland pending leg

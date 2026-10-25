@@ -10,8 +10,9 @@ at the core-only boundary; KDE runtime adoption and native acceptance remain
 outstanding. Stage 1b core creation correlation and its KDE consumer are delivered
 offline. Stage 2 remains partial: the five former integration oracles now pass
 with core-owned migration/lifecycle expectations and raw dispatch attempts;
-event-driven external-command delivery (B1) and the restored source-view-rewind
-settlement discriminator (B2) remain parked. The draft pulls in only the v2 observation,
+event-driven external-command delivery (B1) is delivered offline, while the
+restored source-view-rewind settlement discriminator (B2) remains parked.
+The draft pulls in only the v2 observation,
 token and target-resolution pieces needed by the wire cutover; no stage 3
 or native acceptance is claimed.
 
@@ -63,9 +64,13 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   only the authenticated issuing sender. Presentation queries contain neither
   one-shot work nor write-operation tokens. Lost queue/take replies retain their
   identity rather than minting duplicate commands.
-- This is not a deployable cutover yet: KWin JS cannot hear `WorldWake` through
-  `callDBus`; external commands currently await another native event. No idle
-  polling workaround is selected. See [B1](../changes/kde-world-v2-port.md#b1-external-command-wake-delivery-parked).
+- KWin JS cannot hear `WorldWake` through `callDBus`; `WaitWorldWake` now holds
+  one asynchronous call completed by queued work. A broker cursor advances on
+  enqueue/drain; only pending work wakes, so bursts drain and rejected captures
+  cannot hot-loop. A 20 s server lease and verified 25 s host-limit watchdog
+  recover silent errors/restarts without native events or idle captures. Owner
+  auth, generation/producer/nonce fences and bounded dead-waiter cleanup apply.
+  See [B1 evidence](../changes/kde-world-v2-port.md#b1-external-command-wake-delivery-offline-complete).
 - Actual v2 reply fixtures now come from the Rust `world_wire_fixtures` example;
   retired `logical` workspace fields refuse. The entry-only TS engine harness
   does not prove broker authentication/replay; Rust flow/private-bus tests do.
@@ -302,9 +307,8 @@ request fixtures pin the JS producer, including populated raw attempts.
   never replace missing transport with TypeScript policy copies. A shared
   classification-ingress redesign is not implemented here.
 
-- Strict v2 wire gates do not resolve B1 command wake or B2 host-owned
-  source-view supersession. No passing transport or logical receipt is native
-  settlement evidence; both blockers remain explicit in the port record.
+- B1 command wake passes offline; B2 exact dormant-source rewind remains parked.
+  No passing transport or logical receipt is native settlement evidence.
 - Fractional KWin rounding and the style-unit conversion path have no
   documented port proof yet; keep both inside the adapter and record
   the evidence with the port.

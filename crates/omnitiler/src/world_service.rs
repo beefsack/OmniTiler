@@ -37,6 +37,10 @@
 
 use std::sync::{Arc, Mutex};
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, is_valid_adapter_id, is_valid_request_id,
 };
@@ -55,6 +59,25 @@ pub const QUEUE_METHOD: &str = "QueueWorldCommand";
 pub const TAKE_METHOD: &str = "TakeCommandResult";
 /// Presentation query route: cached accepted presentation, no one-shot lanes.
 pub const READ_METHOD: &str = "ReadWorldPresentation";
+/// External wait route: one long-held `WaitWorldWake` call per generation.
+/// The parked call completes on queued work, supersession, or the idle
+/// lease below. The wait never executes native work or engine logic and
+/// never holds the capture single-flight lock; the follow-up capture does
+/// the draining.
+pub const WAIT_METHOD: &str = "WaitWorldWake";
+/// Idle server lease in milliseconds: the parked wait answers `lease`
+/// (cursor unchanged) at the latest after this long. A heuristic under the
+/// 25 s host call deadline, NOT a proven scheduling margin: the client
+/// watchdog covers late or missing replies.
+pub const WAIT_LEASE_MS: u64 = 20_000;
+/// Verified host call deadline in milliseconds: KWin `callDBus` issues a
+/// nonblocking `sessionBus().asyncCall` with no timeout argument (default
+/// -1), Qt passes that through to libdbus, and libdbus substitutes
+/// `_DBUS_DEFAULT_TIMEOUT_VALUE` (25 s); errors and timeouts only log and
+/// never invoke the JS callback. Every long-held `callDBus` therefore
+/// carries a watchdog at this deadline that rediscovers and re-arms even
+/// with zero native events.
+pub const HOST_CALL_DEADLINE_MS: u64 = 25_000;
 /// Bounded world request cap (mirrors the protocol/core budget).
 pub const WORLD_SERVICE_MAX_REQUEST: usize = WORLD_MAX_REQUEST_BYTES;
 /// Bounded world reply cap (mirrors the protocol/core budget).
@@ -164,10 +187,16 @@ impl WorldService {
             Err(poison) => {
                 // Poisoned backend: replace under a fresh generation, then
                 // serve discovery from the replacement (never from partial
-                // state). The adapter must re-observe; nothing is claimed
-                // to have survived.
+                // state). A displaced parked waiter wakes immediately with
+                // generation-mismatch instead of sleeping out its lease.
+                // The adapter must re-observe; nothing is claimed to have
+                // survived.
                 let mut backend = poison.into_inner();
+                let displaced = backend.broker.take_parked_waiter();
                 *backend = WorldBackend::fresh();
+                if let Some(waiter) = displaced {
+                    backend.broker.complete_displaced(waiter);
+                }
                 let reply = backend
                     .broker
                     .discovery_body(adapter_incarnation, request_id);
@@ -243,6 +272,47 @@ impl WorldService {
         self.run_broker(|broker| broker.read_presentation(request))
     }
 
+    /// Park one `WaitWorldWake` call: immediate wake when the broker epoch
+    /// advanced past the cursor with work pending, in-band rejection for a
+    /// stale generation or unknown lifetime, otherwise a parked waiter that
+    /// completes on queued work, supersession, or the idle lease. The
+    /// future never holds the backend lock across an await and never takes
+    /// the capture single-flight lock. Poison replaces the backend under a
+    /// fresh generation first, so the stranded call answers
+    /// generation-mismatch and the waiter re-establishes after
+    /// re-discovery.
+    pub fn wait_for_wake(
+        &self,
+        lifetime: String,
+        generation: String,
+        nonce: String,
+        cursor: u64,
+    ) -> WorldWait {
+        self.wait_with_lease(lifetime, generation, nonce, cursor, WAIT_LEASE_MS)
+    }
+
+    /// Lease-parameterized wait constructor. The production lease is
+    /// [`WAIT_LEASE_MS`]; tests drive shorter leases through this seam
+    /// without a public option.
+    fn wait_with_lease(
+        &self,
+        lifetime: String,
+        generation: String,
+        nonce: String,
+        cursor: u64,
+        lease_ms: u64,
+    ) -> WorldWait {
+        WorldWait {
+            service: self.clone(),
+            lifetime,
+            generation,
+            nonce,
+            cursor,
+            lease_ms,
+            timer: None,
+        }
+    }
+
     /// Run one broker operation under the backend lock: poison replaces the
     /// backend under a fresh generation first, counter exhaustion rotates
     /// the backend and fails closed (the caller re-discovers; a retry
@@ -260,7 +330,11 @@ impl WorldService {
             }
             Err(poison) => {
                 let mut backend = poison.into_inner();
+                let displaced = backend.broker.take_parked_waiter();
                 *backend = WorldBackend::fresh();
+                if let Some(waiter) = displaced {
+                    backend.broker.complete_displaced(waiter);
+                }
                 eprintln!("omnitiler:world-fault kind=poisoned-lock detail=replaced-with-fresh");
                 let outcome = op(&mut backend.broker);
                 self.backend.clear_poison_if_needed();
@@ -305,6 +379,136 @@ impl WorldService {
 impl Default for WorldService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// One parked `WaitWorldWake` call. Registration (immediate wake, park, or
+/// rejection) happens under a single short backend critical section on the
+/// first poll; completion, supersession, and lease expiry each re-lock
+/// briefly. The backend lock is never held across an await.
+pub struct WorldWait {
+    service: WorldService,
+    lifetime: String,
+    generation: String,
+    nonce: String,
+    cursor: u64,
+    lease_ms: u64,
+    timer: Option<Pin<Box<async_io::Timer>>>,
+}
+
+impl Drop for WorldWait {
+    fn drop(&mut self) {
+        // Best-effort owned-nonce cleanup: try-lock only, never block in
+        // Drop. Only this nonce's waiter slot and its uncollected ready are
+        // touched, so a dropped waiter can never displace a newer one;
+        // supersession and lease expiry self-heal anything left behind.
+        if let Ok(mut backend) = self.service.backend.try_lock() {
+            backend.broker.expire_wait(&self.nonce);
+            backend.broker.take_wait_ready(&self.nonce);
+        }
+    }
+}
+
+impl Future for WorldWait {
+    type Output = String;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<String> {
+        let this = &mut *self;
+        if this.timer.is_none() {
+            // Single registration critical section: immediate wake, park
+            // with this waker, or in-band rejection.
+            match this.service.backend.lock() {
+                Ok(mut backend) => {
+                    match backend.broker.wait_immediate(
+                        &this.lifetime,
+                        &this.generation,
+                        this.cursor,
+                    ) {
+                        Ok(Some(wake)) => {
+                            this.service.backend.clear_poison_if_needed();
+                            return Poll::Ready(wake);
+                        }
+                        Ok(None) => {
+                            backend.broker.wait_park(
+                                &this.nonce,
+                                this.cursor,
+                                Some(cx.waker().clone()),
+                            );
+                            this.service.backend.clear_poison_if_needed();
+                            this.timer = Some(Box::pin(async_io::Timer::after(
+                                std::time::Duration::from_millis(this.lease_ms),
+                            )));
+                        }
+                        Err(rejection) => {
+                            this.service.backend.clear_poison_if_needed();
+                            return Poll::Ready(rejection);
+                        }
+                    }
+                }
+                Err(poison) => {
+                    let mut backend = poison.into_inner();
+                    *backend = WorldBackend::fresh();
+                    let reply = backend
+                        .broker
+                        .error_body("generation-mismatch", "generation mismatch");
+                    eprintln!(
+                        "omnitiler:world-fault kind=poisoned-lock detail=replaced-with-fresh"
+                    );
+                    this.service.backend.clear_poison_if_needed();
+                    return Poll::Ready(reply);
+                }
+            }
+        }
+        // Parked: a delivered wake wins over expiry, and expiry wins over
+        // further parking. A stale bound generation answers mismatch, never
+        // superseded. All clocks here are relative lease durations; the
+        // broker clock stays the authority for attempt stamps.
+        match this.service.backend.lock() {
+            Ok(mut backend) => {
+                if let Some(wake) = backend.broker.take_wait_ready(&this.nonce) {
+                    this.service.backend.clear_poison_if_needed();
+                    return Poll::Ready(wake);
+                }
+                if this.generation != backend.broker.generation() {
+                    let reply = backend
+                        .broker
+                        .error_body("generation-mismatch", "generation mismatch");
+                    this.service.backend.clear_poison_if_needed();
+                    return Poll::Ready(reply);
+                }
+                if backend.broker.waiter_nonce() != Some(this.nonce.as_str()) {
+                    let reply = backend.broker.wait_superseded_body();
+                    this.service.backend.clear_poison_if_needed();
+                    return Poll::Ready(reply);
+                }
+                let timer = this.timer.as_mut().expect("wait timer is armed");
+                match timer.as_mut().poll(cx) {
+                    Poll::Ready(_) => {
+                        let cursor = backend
+                            .broker
+                            .expire_wait(&this.nonce)
+                            .unwrap_or(this.cursor);
+                        let reply = backend.broker.wait_lease_body(cursor);
+                        this.service.backend.clear_poison_if_needed();
+                        Poll::Ready(reply)
+                    }
+                    Poll::Pending => {
+                        this.service.backend.clear_poison_if_needed();
+                        Poll::Pending
+                    }
+                }
+            }
+            Err(poison) => {
+                let mut backend = poison.into_inner();
+                *backend = WorldBackend::fresh();
+                let reply = backend
+                    .broker
+                    .error_body("generation-mismatch", "generation mismatch");
+                eprintln!("omnitiler:world-fault kind=poisoned-lock detail=replaced-with-fresh");
+                this.service.backend.clear_poison_if_needed();
+                Poll::Ready(reply)
+            }
+        }
     }
 }
 
@@ -447,6 +651,15 @@ fn ingress_identity(request: &str) -> (String, String, String) {
             "-".to_owned(),
         );
     }
+    if object.and_then(|o| o.get("nonce")).is_some() {
+        let correlation = world_id_token(
+            object
+                .and_then(|o| o.get("nonce"))
+                .and_then(serde_json::Value::as_str),
+            "-",
+        );
+        return (correlation, "wait".to_owned(), "-".to_owned());
+    }
     let correlation = world_id_token(
         object
             .and_then(|o| o.get("req"))
@@ -513,6 +726,11 @@ pub fn world_egress_summary(request: &str, reply: &str) -> String {
         "queued" | "ready" | "failed" | "duplicate" => world_counter_token(
             object
                 .and_then(|o| o.get("globalCmd"))
+                .and_then(serde_json::Value::as_str),
+        ),
+        "wake" | "lease" => world_counter_token(
+            object
+                .and_then(|o| o.get("cursor"))
                 .and_then(serde_json::Value::as_str),
         ),
         "pending" => "-".to_owned(),
@@ -750,5 +968,314 @@ mod tests {
             world_ingress_summary(read),
             "omnitiler:world-summary direction=ingress req=read-3 cmd=read nwinv=-"
         );
+        let wait =
+            "{\"v\":2,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
+        assert_eq!(
+            world_ingress_summary(wait),
+            "omnitiler:world-summary direction=ingress req=wait-7 cmd=wait nwinv=-"
+        );
+    }
+
+    fn discovered_generation(service: &WorldService) -> (String, String) {
+        let discovery: serde_json::Value =
+            serde_json::from_str(&service.discovery_body("adapter-1", "req-0"))
+                .expect("valid JSON");
+        (
+            discovery["gen"].as_str().expect("gen").to_owned(),
+            discovery["adapter"]
+                .as_str()
+                .expect("incarnation")
+                .to_owned(),
+        )
+    }
+
+    fn queue_select_numbered(service: &WorldService, generation: &str, client_cmd: &str) {
+        let request = format!(
+            "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+              \"clientCmd\":\"{client_cmd}\",\
+              \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let reply: serde_json::Value =
+            serde_json::from_str(&service.queue_command(":1.42", &request).expect("in-band"))
+                .expect("valid JSON");
+        assert_eq!(reply["outcome"], "queued");
+    }
+
+    #[test]
+    fn wait_future_answers_immediate_wake_and_rejections() {
+        let service = WorldService::new();
+        let (generation, _incarnation) = discovered_generation(&service);
+        queue_select_numbered(&service, &generation, "1");
+        let wake: serde_json::Value =
+            serde_json::from_str(&async_io::block_on(service.wait_for_wake(
+                "adapter-1".to_owned(),
+                generation.clone(),
+                "wait-1".to_owned(),
+                0,
+            )))
+            .expect("wake JSON");
+        assert_eq!(wake["outcome"], "wake");
+        assert_eq!(wake["gen"], serde_json::Value::String(generation.clone()));
+        assert_eq!(wake["cursor"], "1");
+        // Stale generations and unknown lifetimes reject in-band.
+        let stale = async_io::block_on(service.wait_for_wake(
+            "adapter-1".to_owned(),
+            "w-stale".to_owned(),
+            "wait-2".to_owned(),
+            0,
+        ));
+        let stale_value: serde_json::Value = serde_json::from_str(&stale).expect("valid JSON");
+        assert_eq!(stale_value["outcome"], "rejected");
+        assert_eq!(stale_value["kind"], "generation-mismatch");
+        let unknown = async_io::block_on(service.wait_for_wake(
+            "other".to_owned(),
+            generation.clone(),
+            "wait-3".to_owned(),
+            0,
+        ));
+        let unknown_value: serde_json::Value = serde_json::from_str(&unknown).expect("valid JSON");
+        assert_eq!(unknown_value["outcome"], "rejected");
+        assert_eq!(unknown_value["kind"], "unknown-adapter");
+    }
+
+    #[test]
+    fn wait_future_delivers_queued_work_to_a_parked_call() {
+        let service = WorldService::new();
+        let (generation, _incarnation) = discovered_generation(&service);
+        let parked = service.clone();
+        let waiter = std::thread::spawn(move || {
+            async_io::block_on(parked.wait_for_wake(
+                "adapter-1".to_owned(),
+                generation.clone(),
+                "wait-parked".to_owned(),
+                0,
+            ))
+        });
+        // Let the waiter park; the queue then completes it without any
+        // capture or native event.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        queue_select_numbered(&service, &service.generation(), "1");
+        let wake: serde_json::Value =
+            serde_json::from_str(&waiter.join().expect("waiter resolves")).expect("wake JSON");
+        assert_eq!(wake["outcome"], "wake");
+        assert_eq!(wake["cursor"], "1");
+    }
+
+    #[test]
+    fn wait_future_lease_keeps_the_cursor() {
+        let service = WorldService::new();
+        let (generation, _incarnation) = discovered_generation(&service);
+        let lease: serde_json::Value =
+            serde_json::from_str(&async_io::block_on(service.wait_with_lease(
+                "adapter-1".to_owned(),
+                generation.clone(),
+                "wait-idle".to_owned(),
+                0,
+                50,
+            )))
+            .expect("lease JSON");
+        assert_eq!(lease["outcome"], "lease");
+        assert_eq!(lease["gen"], serde_json::Value::String(generation));
+        assert_eq!(lease["cursor"], "0");
+    }
+
+    #[test]
+    fn wait_future_answers_superseded_to_the_replaced_call() {
+        let service = WorldService::new();
+        let (generation, _incarnation) = discovered_generation(&service);
+        let first = service.clone();
+        let first_generation = generation.clone();
+        let replaced = std::thread::spawn(move || {
+            async_io::block_on(first.wait_with_lease(
+                "adapter-1".to_owned(),
+                first_generation,
+                "wait-old".to_owned(),
+                0,
+                5_000,
+            ))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // A newer registration supersedes the parked call; the lease on the
+        // replacement is short so this test never hangs.
+        let superseding = async_io::block_on(service.wait_with_lease(
+            "adapter-1".to_owned(),
+            generation.clone(),
+            "wait-new".to_owned(),
+            0,
+            50,
+        ));
+        let superseding_value: serde_json::Value =
+            serde_json::from_str(&superseding).expect("valid JSON");
+        assert_eq!(superseding_value["outcome"], "lease");
+        let replaced_value: serde_json::Value =
+            serde_json::from_str(&replaced.join().expect("replaced resolves")).expect("valid JSON");
+        assert_eq!(replaced_value["outcome"], "superseded");
+        assert_eq!(replaced_value["gen"], serde_json::Value::String(generation));
+    }
+
+    #[test]
+    fn wait_summaries_name_wake_and_lease_without_content() {
+        let request =
+            "{\"v\":2,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
+        let wake = "{\"v\":2,\"outcome\":\"wake\",\"gen\":\"w-1\",\"cursor\":\"4\"}";
+        assert_eq!(
+            world_egress_summary(request, wake),
+            "omnitiler:world-summary direction=egress req=wait-7 \
+             outcome=wake kind=- rev=4 msg=-"
+        );
+        let lease = "{\"v\":2,\"outcome\":\"lease\",\"gen\":\"w-1\",\"cursor\":\"3\"}";
+        assert_eq!(
+            world_egress_summary(request, lease),
+            "omnitiler:world-summary direction=egress req=wait-7 \
+             outcome=lease kind=- rev=3 msg=-"
+        );
+        let superseded = "{\"v\":2,\"outcome\":\"superseded\",\"gen\":\"w-1\"}";
+        assert_eq!(
+            world_egress_summary(request, superseded),
+            "omnitiler:world-summary direction=egress req=wait-7 \
+             outcome=superseded kind=- rev=- msg=-"
+        );
+    }
+
+    fn park_wait(
+        service: &WorldService,
+        lifetime: &str,
+        generation: &str,
+        nonce: &str,
+    ) -> std::sync::mpsc::Receiver<String> {
+        let parked = service.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (lifetime, generation, nonce) =
+            (lifetime.to_owned(), generation.to_owned(), nonce.to_owned());
+        std::thread::spawn(move || {
+            let reply = async_io::block_on(parked.wait_for_wake(lifetime, generation, nonce, 0));
+            let _ = tx.send(reply);
+        });
+        // Let the waiter park; every assertion below resolves through the
+        // waker or not at all (never through a lease sleep).
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        rx
+    }
+
+    fn recv_immediate(rx: &std::sync::mpsc::Receiver<String>) -> serde_json::Value {
+        let reply = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("displacement wakes immediately, never sleeps the lease");
+        serde_json::from_str(&reply).expect("valid JSON")
+    }
+
+    #[test]
+    fn rotation_wakes_the_parked_waiter_with_mismatch_immediately() {
+        let service = WorldService::new();
+        let (generation, _) = discovered_generation(&service);
+        let rx = park_wait(&service, "adapter-1", &generation, "wait-parked");
+        let rotated: serde_json::Value =
+            serde_json::from_str(&service.discovery_body("adapter-2", "req-1"))
+                .expect("valid JSON");
+        let fresh = rotated["gen"].as_str().expect("gen").to_owned();
+        assert_ne!(fresh, generation);
+        let value = recv_immediate(&rx);
+        assert_eq!(value["outcome"], "rejected");
+        assert_eq!(value["kind"], "generation-mismatch");
+        assert_eq!(value["gen"], serde_json::Value::String(fresh));
+    }
+
+    #[test]
+    fn poison_wakes_the_parked_waiter_with_mismatch_immediately() {
+        let service = WorldService::new();
+        let (generation, _) = discovered_generation(&service);
+        let rx = park_wait(&service, "adapter-1", &generation, "wait-parked");
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = service.backend.lock().unwrap();
+            panic!("intentional poison for waiter displacement coverage");
+        }));
+        assert!(poisoned.is_err());
+        // The next backend op replaces the poisoned backend and displaces
+        // the waiter against the fresh generation first.
+        let replaced: serde_json::Value =
+            serde_json::from_str(&service.discovery_body("adapter-1", "req-9"))
+                .expect("valid JSON");
+        let fresh = replaced["gen"].as_str().expect("gen").to_owned();
+        assert_ne!(fresh, generation);
+        let value = recv_immediate(&rx);
+        assert_eq!(value["outcome"], "rejected");
+        assert_eq!(value["kind"], "generation-mismatch");
+        assert_eq!(value["gen"], serde_json::Value::String(fresh));
+        assert!(!service.backend.is_poisoned());
+    }
+
+    #[test]
+    fn concurrent_wait_clobber_settles_without_lost_work() {
+        let service = WorldService::new();
+        let (generation, _) = discovered_generation(&service);
+        let rx_old = park_wait(&service, "adapter-1", &generation, "wait-old");
+        // A newer registration supersedes the parked call: the old waiter
+        // answers superseded while the new one parks.
+        let fresh = service.clone();
+        let fresh_generation = generation.clone();
+        let newer = std::thread::spawn(move || {
+            async_io::block_on(fresh.wait_for_wake(
+                "adapter-1".to_owned(),
+                fresh_generation,
+                "wait-new".to_owned(),
+                0,
+            ))
+        });
+        let old: serde_json::Value = serde_json::from_str(
+            &rx_old
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("superseded promptly"),
+        )
+        .expect("valid JSON");
+        assert_eq!(old["outcome"], "superseded");
+        // Queued work still wakes the live waiter: no lost work.
+        queue_select_numbered(&service, &generation, "1");
+        let new: serde_json::Value =
+            serde_json::from_str(&newer.join().expect("live waiter resolves")).expect("valid JSON");
+        assert_eq!(new["outcome"], "wake");
+        assert_eq!(new["cursor"], "1");
+    }
+
+    #[test]
+    fn dropped_waiter_clears_only_its_own_slot() {
+        use std::task::{Context, Waker};
+        let service = WorldService::new();
+        let (generation, _) = discovered_generation(&service);
+        // A live waiter owns the slot first.
+        let rx = park_wait(&service, "adapter-1", &generation, "wait-live");
+        // A second future parks and is dropped mid-park: it supersedes the
+        // live waiter (which answers superseded), and its Drop clears only
+        // its own nonce, so the slot stays reusable and bounded.
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut ghost = service.wait_with_lease(
+            "adapter-1".to_owned(),
+            generation.clone(),
+            "wait-ghost".to_owned(),
+            0,
+            60_000,
+        );
+        assert!(std::pin::Pin::new(&mut ghost).poll(&mut cx).is_pending());
+        drop(ghost);
+        queue_select_numbered(&service, &generation, "1");
+        // The live waiter answers superseded (displaced by the ghost), and
+        // the ghost's Drop left no wedge behind: a fresh waiter wakes.
+        let old: serde_json::Value = serde_json::from_str(
+            &rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("superseded promptly"),
+        )
+        .expect("valid JSON");
+        assert_eq!(old["outcome"], "superseded");
+        // The ghost's Drop left no wedge behind: a fresh waiter wakes
+        // immediately on the still-pending work (no lost work).
+        let rx_new = park_wait(&service, "adapter-1", &generation, "wait-new");
+        let new: serde_json::Value = serde_json::from_str(
+            &rx_new
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("fresh waiter wakes"),
+        )
+        .expect("valid JSON");
+        assert_eq!(new["outcome"], "wake");
+        assert_eq!(new["cursor"], "1");
     }
 }

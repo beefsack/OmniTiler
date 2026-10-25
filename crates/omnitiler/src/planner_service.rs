@@ -651,6 +651,67 @@ impl PlannerEndpoint {
         Ok(reply)
     }
 
+    /// External wait route. Same authentication as the capture/discovery
+    /// routes (same-UID plus the current live KWin owner as the single
+    /// active adapter); the generation and producer lifetime additionally
+    /// bind inside the broker. The call parks while idle and completes on
+    /// queued work (`wake`), supersession (`superseded`), or the idle
+    /// server lease (`lease`, cursor unchanged). It never takes the
+    /// capture single-flight lock and never touches the engine: the
+    /// follow-up capture drains. Malformed requests and authorization
+    /// failures return bounded in-band errors; only oversize/closed surface
+    /// as D-Bus errors.
+    #[zbus(name = "WaitWorldWake")]
+    async fn wait_world_wake(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            emit_plan_early_exit(PlanEarlyExit::Oversize);
+            return Err(PlannerError::Unavailable(
+                "request exceeds size bound".to_owned(),
+            ));
+        }
+        if emitter.connection().is_closed() {
+            emit_plan_early_exit(PlanEarlyExit::Closed);
+            return Err(PlannerError::Unavailable(
+                "planner serving connection was lost".to_owned(),
+            ));
+        }
+        let caller = header.sender().map(ToString::to_string);
+        let Some(caller) = caller.as_deref() else {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        };
+        if !verify_planner_caller(emitter.connection(), caller).await {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        }
+        if let Err(reason) = authorize_intent_sender(emitter.connection(), caller).await {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body(reason, reason));
+        }
+        let (generation, lifetime, nonce, cursor) =
+            match crate::world_broker::parse_wait_request(&request) {
+                Ok(parsed) => parsed,
+                Err((kind, message)) => return Ok(self.world.error_body(kind, message)),
+            };
+        let reply = self
+            .world
+            .wait_for_wake(lifetime, generation, nonce, cursor)
+            .await;
+        if reply.len() > WORLD_SERVICE_MAX_REPLY {
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
+        eprintln!("{}", world_ingress_summary(&request));
+        eprintln!("{}", world_egress_summary(&request, &reply));
+        Ok(reply)
+    }
+
     /// Float-intent read route. Authenticated same-UID caller that must also
     /// be the current KWin owner; the namespace is derived from the serving
     /// bus, never from the caller. Returns the stored membership (pruned to
@@ -1224,13 +1285,14 @@ mod tests {
     #[test]
     fn world_method_identity_is_exact_and_distinct() {
         use crate::world_service::{
-            DISCOVERY_METHOD, QUEUE_METHOD, READ_METHOD, TAKE_METHOD, WORLD_METHOD,
+            DISCOVERY_METHOD, QUEUE_METHOD, READ_METHOD, TAKE_METHOD, WAIT_METHOD, WORLD_METHOD,
         };
         assert_eq!(WORLD_METHOD, "DescribeWorld");
         assert_eq!(DISCOVERY_METHOD, "DiscoverWorld");
         assert_eq!(QUEUE_METHOD, "QueueWorldCommand");
         assert_eq!(TAKE_METHOD, "TakeCommandResult");
         assert_eq!(READ_METHOD, "ReadWorldPresentation");
+        assert_eq!(WAIT_METHOD, "WaitWorldWake");
         assert_eq!(WORLD_WAKE_SIGNAL, "WorldWake");
         let methods = [
             WORLD_METHOD,
@@ -1238,6 +1300,7 @@ mod tests {
             QUEUE_METHOD,
             TAKE_METHOD,
             READ_METHOD,
+            WAIT_METHOD,
         ];
         for (i, first) in methods.iter().enumerate() {
             for second in &methods[i + 1..] {
@@ -1829,6 +1892,144 @@ mod tests {
             replay, accepted_text,
             "redelivery replays the bound response"
         );
+    }
+
+    #[test]
+    fn private_bus_wait_wake_end_to_end_does_not_block_queue() {
+        use crate::world_service::{
+            DISCOVERY_METHOD, QUEUE_METHOD, TAKE_METHOD, WAIT_METHOD, WORLD_METHOD,
+        };
+        let Some(bus) = PrivateBus::start() else {
+            eprintln!("SKIP: dbus-daemon unavailable for hermetic wait test");
+            return;
+        };
+        let Some(server) = bus.session() else {
+            eprintln!("SKIP: private bus daemon never listened");
+            return;
+        };
+        serve_intent_endpoint(&server, PlannerEndpoint::new());
+        let Some(owner) = bus.session() else {
+            eprintln!("SKIP: private bus daemon dropped the second connection");
+            return;
+        };
+        owner
+            .request_name(KWIN_SERVICE)
+            .expect("claim KWin name on private bus");
+        let Some(outsider) = bus.session() else {
+            eprintln!("SKIP: private bus daemon dropped the third connection");
+            return;
+        };
+        let owner_proxy = intent_proxy(&owner);
+        let outsider_proxy = intent_proxy(&outsider);
+        let discovery: serde_json::Value = serde_json::from_str(&call_intent(
+            &owner_proxy,
+            DISCOVERY_METHOD,
+            r#"{"v":2,"adapter":"test-adapter","req":"d-wait-e2e"}"#,
+        ))
+        .expect("discovery reply is JSON");
+        assert_eq!(discovery["ready"], false);
+        let generation = discovery["gen"].as_str().expect("gen").to_owned();
+        let wait_req = format!(
+            "{{\"v\":2,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+              \"nonce\":\"wait-e2e-1\",\"cursor\":\"0\"}}"
+        );
+        // Park the KWin-owner waiter on its own thread: the blocking proxy
+        // holds the long-lived D-Bus call open until queued work wakes it.
+        let waiter_conn = owner.clone();
+        let waiter_req = wait_req.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let proxy = intent_proxy(&waiter_conn);
+            let reply: (String,) = proxy
+                .call(WAIT_METHOD, &(waiter_req,))
+                .expect("wait answers");
+            let _ = tx.send(reply.0);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // A same-UID non-owner waiter rejects in-band without displacing the
+        // parked KWin waiter.
+        let rejected: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            WAIT_METHOD,
+            &format!(
+                "{{\"v\":2,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+                  \"nonce\":\"wait-outsider\",\"cursor\":\"0\"}}"
+            ),
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(rejected["outcome"], "rejected");
+        assert_eq!(rejected["kind"], "not-kwin-owner");
+        // Queue from the independent command role while the wait is parked:
+        // the parked call must complete on the wake event, never by sleeping
+        // out the production lease.
+        let queued: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            QUEUE_METHOD,
+            &format!(
+                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                  \"clientCmd\":\"1\",\
+                  \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+            ),
+        ))
+        .expect("queue reply is JSON");
+        assert_eq!(queued["outcome"], "queued");
+        let wake: serde_json::Value = serde_json::from_str(
+            &rx.recv_timeout(std::time::Duration::from_secs(10))
+                .expect("wait wakes promptly on queued command, never sleeps the lease"),
+        )
+        .expect("wake reply is JSON");
+        assert_eq!(wake["outcome"], "wake");
+        assert_eq!(wake["gen"], serde_json::Value::String(generation.clone()));
+        assert_eq!(wake["cursor"], "1");
+        // The wake precedes the drain: the issuer still sees pending until
+        // the follow-up capture runs.
+        let pending: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            TAKE_METHOD,
+            &format!(
+                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                  \"clientCmd\":\"1\"}}"
+            ),
+        ))
+        .expect("take reply is JSON");
+        assert_eq!(pending["outcome"], "pending");
+        // The follow-up capture drains exactly once for the issuer.
+        let inner = "{\"v\":2,\"mode\":\"per-output-local\",\
+          \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+          \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}],\
+          \"windows\":[],\"views\":[{\"out\":\"DP-1\",\"view\":\"\"}],\"closed\":[],\
+          \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
+          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
+          \"defaultTiled\":true,\"focused\":\"\",\
+          \"complete\":true,\"gesture\":false,\"switchTarget\":\"cursor-output\",\
+          \"freshPlacement\":\"cursor-output-last-focused\",\
+          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"actionOutputs\":[\"DP-1\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
+          \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+          \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
+          \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\
+          \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
+          \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}";
+        let envelope = format!(
+            "{{\"v\":2,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
+              \"source\":\"actuator-1\",\"sourceSeq\":\"1\",\
+              \"nativeInvalid\":\"1\",\"report\":{inner}}}"
+        );
+        let accepted: serde_json::Value =
+            serde_json::from_str(&call_intent(&owner_proxy, WORLD_METHOD, &envelope))
+                .expect("capture reply is JSON");
+        assert_eq!(accepted["ready"], true);
+        let ready: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            TAKE_METHOD,
+            &format!(
+                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                  \"clientCmd\":\"1\"}}"
+            ),
+        ))
+        .expect("take reply is JSON");
+        assert_eq!(ready["outcome"], "ready");
+        assert_eq!(ready["globalCmd"], "1");
     }
 
     #[test]

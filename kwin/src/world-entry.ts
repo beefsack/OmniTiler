@@ -67,6 +67,7 @@ import {
     buildDiscoveryRequest,
     buildQueueRequest,
     buildTakeRequest,
+    buildWaitRequest,
     buildWorldInnerReportJson,
     cmdFocusDirectional,
     cmdMigrateDirectional,
@@ -83,12 +84,14 @@ import {
     isCoreWorldReply,
     isWorldQueueReply,
     isWorldRejection,
+    isWorldWaitReply,
     parseDiscoveryReply,
     parseWorldReply,
     type WorldCommand,
     type WorldReply,
     type WorldReplyResult,
     type WorldTakeReply,
+    type WorldWaitReply,
 } from "./world-report";
 import { captureWorldObservation, type WorldObservation } from "./world-observe";
 import { WorldAdapterState, type CaptureFlight, type QueuedIntent } from "./world-state";
@@ -121,6 +124,16 @@ export const WORLD_READ_METHOD = "ReadWorldPresentation";
 export const WORLD_WAKE_SIGNAL = "WorldWake";
 export const WORLD_TIMEOUT_MS = 2000;
 export const WORLD_DEBOUNCE_MS = 120;
+export const WORLD_WAIT_METHOD = "WaitWorldWake";
+// Host call deadline for long-held callDBus (verified, not invented):
+// KWin scripting.cpp uses sessionBus().asyncCall(message) with no timeout
+// argument (default -1); Qt passes it to libdbus, which substitutes
+// _DBUS_DEFAULT_TIMEOUT_VALUE (25 s); errors and timeouts only log and
+// never invoke the JS callback. Every long-held callDBus (the generation
+// wait below, plus host-deadline discovery recovery) therefore carries a
+// watchdog at this deadline that rediscovers and re-arms even with zero
+// native events. Normal 2 s capture/command timing is untouched.
+export const WAIT_HOST_DEADLINE_MS = 25000;
 
 export interface WorldEntryOverrides {
     readonly workspace?: unknown;
@@ -1061,12 +1074,34 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const payload = buildDiscoveryRequest(adapter, reqId);
         let settled = false;
         discoverOutstanding = true;
+        discoverChainActive = true;
         const timeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
             if (!settled) {
                 settled = true;
                 discoverOutstanding = false;
                 log("omnitiler:world:discover-timeout recovery=on-next-event");
             }
+        });
+        // Host-deadline discovery recovery: when the host kills the call
+        // without a callback (errors never call back), the 2 s timer above
+        // already gave up waiting on a native event that may never come.
+        // Retry once per host deadline until an answer lands: host-chained,
+        // never idle polling. A bound generation is not proof of liveness
+        // (the wait watchdog proved silence), so the chain persists while
+        // no answer arrived. Sending cancels any previous host timer so
+        // exactly one chain stays live across overlapping discovers.
+        try {
+            discoverHostCancel?.();
+        } catch (error) {
+            void error;
+        }
+        discoverHostCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            discoverHostCancel = null;
+            if (stopped || !discoverChainActive) {
+                return;
+            }
+            log("omnitiler:world:discover-host-timeout recovery=rediscover");
+            discover();
         });
         try {
             (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
@@ -1079,16 +1114,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     discoverOutstanding = false;
                     timeoutCancel();
                     if (typeof reply !== "string") {
-                        log("omnitiler:world:discover-transport recovery=on-next-event");
+                        log("omnitiler:world:discover-transport recovery=rearm");
+                        cancelDiscoverChain();
+                        armWait();
                         return;
                     }
                     if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
-                        log("omnitiler:world:discover-oversize recovery=on-next-event");
+                        log("omnitiler:world:discover-oversize recovery=rearm");
+                        cancelDiscoverChain();
+                        armWait();
                         return;
                     }
                     const parsed = parseDiscoveryReply(reply);
                     if (parsed === null || isWorldRejection(parsed)) {
-                        log("omnitiler:world:discover-rejected recovery=on-next-event");
+                        log("omnitiler:world:discover-rejected recovery=rearm");
+                        cancelDiscoverChain();
+                        armWait();
                         return;
                     }
                     // Authenticated discovery: the bootstrap reply must be a
@@ -1097,7 +1138,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // discovery req. Anything else binds nothing and resets
                     // nothing.
                     if (parsed.ready !== false || parsed.adapter === adapter || parsed.req !== reqId) {
-                        log("omnitiler:world:discover-rejected recovery=on-next-event");
+                        log("omnitiler:world:discover-rejected recovery=rearm");
+                        cancelDiscoverChain();
+                        armWait();
                         return;
                     }
                     const changed = state.onDiscovery(parsed.gen, parsed.adapter, adapter, parsed.req, reqId);
@@ -1115,13 +1158,21 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                     }
                     log(`omnitiler:world:discovered gen=${token(parsed.gen)}`);
+                    cancelDiscoverChain();
+                    waitHoldForDiscovery = false;
+                    if (changed) {
+                        waitCursor = "0";
+                        wakePendingCapture = false;
+                    }
                     state.invalidate();
                     void dispatch(false);
+                    armWait();
                 },
             );
         } catch (error) {
             void error;
             timeoutCancel();
+            cancelDiscoverChain();
             discoverOutstanding = false;
             log("omnitiler:world:discover-transport recovery=on-next-event");
         }
@@ -1293,6 +1344,41 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // front), on generation rotation, and on stop. Oversize payloads never
     // retain: identical bytes could never file.
     let unackedQueue: { head: QueuedIntent; clientCmd: string; payload: string } | null = null;
+    // External-command wait lifecycle (B1): one outstanding long-held
+    // WaitWorldWake per generation. waitCursor is the last delivered wake
+    // cursor ("0" before the first wake): it advances only on a delivered
+    // wake, persists across same-generation rediscovery, and resets on a
+    // new generation, so a lost reply re-armed with the old cursor can
+    // never skip unseen work. waitHoldForDiscovery blocks re-arming while
+    // a generation-mismatch recovery is outstanding. wakePendingCapture
+    // marks a wake owed a capture when it arrived mid-flight; sendCapture
+    // consumes it on start and wakeFollowup drains it at flight end, so no
+    // wake is lost to single-flight contention.
+    let waitCursor = "0";
+    let waitNonceCounter = 0;
+    let waitNonce = "";
+    let waitGen: string | null = null;
+    let waitOutstanding = false;
+    let waitWatchdogCancel: (() => void) | null = null;
+    let waitRetryCancel: (() => void) | null = null;
+    let discoverHostCancel: (() => void) | null = null;
+    // Host-deadline discovery chain: set on every discover send, cleared
+    // only when an answer lands (any callback) or on stop. While set, the
+    // host-deadline timer keeps retrying even with a bound (but silent)
+    // generation, so recovery is always host-deadline causal and never
+    // waits on a native event.
+    let discoverChainActive = false;
+    const cancelDiscoverChain = (): void => {
+        discoverChainActive = false;
+        try {
+            discoverHostCancel?.();
+        } catch (error) {
+            void error;
+        }
+        discoverHostCancel = null;
+    };
+    let waitHoldForDiscovery = false;
+    let wakePendingCapture = false;
 
     // Terminal take collection for one filed queue-client command. The
     // capture reply never carries the result (requester-only even when the
@@ -1366,6 +1452,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             if (state.boundGen === takeGen) {
                                 dropDeadGenerationIntents();
                                 killPending("generation-mismatch");
+                                waitHoldForDiscovery = true;
+                                wakePendingCapture = false;
                                 log("omnitiler:world:generation-mismatch recovery=rediscover");
                                 discover();
                             } else {
@@ -1871,12 +1959,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Dirty work coalesces to the newest full report on the
                     // native debounce; queued directionals drain zero-delay
                     // instead (sync effects already ran, so the next-tick
-                    // capture is fresh).
+                    // capture is fresh). An owed wake drains even from a
+                    // clean accept with an empty local queue: the work is
+                    // foreign (another sender queued it).
                     if (pendingQueue.length > 0) {
                         scheduleDrain();
                     } else if (state.dirty) {
                         scheduleDispatch();
                     }
+                    wakeFollowup();
     };
 
     // One capture flight: the inner report is ALWAYS commandless (the broker
@@ -1941,6 +2032,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (flight === null) {
             return;
         }
+        // A fresh capture consumes any owed wake: it drains at most one
+        // head server-side (or observes when the queue is empty).
+        wakePendingCapture = false;
         let settled = false;
         const timeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
             if (!settled) {
@@ -1951,6 +2045,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 state.noteRejectedOrTransportError();
                 killPending("timeout");
                 drainAfterFailure(flight);
+                wakeFollowup();
             }
         });
         log(`omnitiler:world:dispatch src=${token(source)} nwinv=${flight.watermark} cmd=${headOp === null ? "observe" : token(headOp)}`);
@@ -1968,6 +2063,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("transport");
                         drainAfterFailure(flight);
+                        wakeFollowup();
                         return;
                     }
                     if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
@@ -1975,6 +2071,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight);
+                        wakeFollowup();
                         return;
                     }
                     const parsed = parseWorldReply(reply);
@@ -1983,6 +2080,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight);
+                        wakeFollowup();
                         return;
                     }
                     if (isWorldRejection(parsed)) {
@@ -1996,6 +2094,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             log("omnitiler:world:generation-mismatch recovery=rediscover");
                             state.inFlight = null;
                             killPending("generation-mismatch");
+                            waitHoldForDiscovery = true;
+                            wakePendingCapture = false;
                             discover();
                             return;
                         }
@@ -2003,12 +2103,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             state.noteRejectedOrTransportError();
                             killPending("busy");
                             drainAfterFailure(flight);
+                            wakeFollowup();
                             return;
                         }
                         log(`omnitiler:world:rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight);
+                        wakeFollowup();
                         return;
                     }
                     if (!isCoreWorldReply(parsed)) {
@@ -2042,6 +2144,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         if (state.dirty || pendingQueue.length > 0) {
                             scheduleDispatch();
                         }
+                        wakeFollowup();
                         return;
                     }
                     if (state.currentInvalid !== flight.watermark) {
@@ -2055,6 +2158,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             if (state.dirty || pendingQueue.length > 0) {
                                 scheduleDispatch();
                             }
+                            wakeFollowup();
                         });
                         return;
                     }
@@ -2070,6 +2174,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             if (state.dirty || pendingQueue.length > 0) {
                                 scheduleDispatch();
                             }
+                            wakeFollowup();
                             return;
                         }
                         postAcceptCapture(parsed, flight, prevReply, takeResult);
@@ -2082,6 +2187,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             state.noteRejectedOrTransportError();
             killPending("transport");
             drainAfterFailure(flight);
+            wakeFollowup();
         }
     };
 
@@ -2111,6 +2217,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 state.noteRejectedOrTransportError();
                 killPending("timeout");
                 drainAfterFailure({ clientCmd });
+                wakeFollowup();
             }
         });
         log(`omnitiler:world:queue clientCmd=${token(clientCmd)} op=${token(headOp)}`);
@@ -2129,6 +2236,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("transport");
                         drainAfterFailure({ clientCmd });
+                        wakeFollowup();
                         return;
                     }
                     if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
@@ -2137,6 +2245,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure({ clientCmd });
+                        wakeFollowup();
                         return;
                     }
                     const parsed = parseWorldReply(reply);
@@ -2152,6 +2261,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 if (state.boundGen === filedGen) {
                                     dropDeadGenerationIntents();
                                     killPending("generation-mismatch");
+                                    waitHoldForDiscovery = true;
+                                    wakePendingCapture = false;
                                     log("omnitiler:world:generation-mismatch recovery=rediscover");
                                     discover();
                                 } else {
@@ -2173,6 +2284,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             pendingQueue.unshift(head);
                             state.noteRejectedOrTransportError();
                             killPending("rejected");
+                            wakeFollowup();
                             return;
                         }
                         log("omnitiler:world:queue-malformed recovery=on-next-event");
@@ -2180,6 +2292,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure({ clientCmd });
+                        wakeFollowup();
                         return;
                     }
                     // Filed (or duplicate of an already-filed command, which
@@ -2225,6 +2338,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             state.noteRejectedOrTransportError();
             killPending("transport");
             drainAfterFailure({ clientCmd });
+            wakeFollowup();
         }
     };
 
@@ -2288,6 +2402,241 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         fileQueue(head, clientCmd, queuePayload, observation, mark, filedGen);
+    };
+
+    // A wake owed a capture drains at flight end: every sendCapture tail
+    // calls this after its existing recovery. It fires only when no
+    // flight owns the wire anymore; sendCapture consumes the flag on start
+    // (exactly one follow-up capture per owed wake, never a retry storm).
+    const wakeFollowup = (): void => {
+        if (wakePendingCapture && !stopped && state.inFlight === null) {
+            wakePendingCapture = false;
+            scheduleDispatch();
+        }
+    };
+
+    // One outstanding long-held WaitWorldWake for the current generation.
+    // Re-arm FIRST on every terminal wait reply (before dispatching): the
+    // server parks the new waiter (no epoch advance yet), then the capture
+    // drains and the epoch wakes it again if work remains. The 25 s host
+    // watchdog rediscovers and re-arms with the SAME cursor when the host
+    // kills the call without a callback (errors never call back), so an
+    // external command wakes the adapter with zero native events.
+    const armWait = (): void => {
+        if (stopped || waitOutstanding || waitHoldForDiscovery) {
+            return;
+        }
+        if (state.boundGen === null || state.brokerIncarnation === null || discoverOutstanding) {
+            return;
+        }
+        const gen = state.boundGen;
+        waitNonceCounter += 1;
+        let rand = "0";
+        try {
+            rand = Math.floor(Math.random() * 0x100000000).toString(36);
+        } catch (error) {
+            void error;
+            rand = "0";
+        }
+        const nonce = `wait-${waitNonceCounter.toString(36)}-${rand}`;
+        waitNonce = nonce;
+        waitGen = gen;
+        waitOutstanding = true;
+        const payload = buildWaitRequest(adapter, gen, nonce, waitCursor);
+        if (utf8ByteLength(payload) > WORLD_MAX_REQUEST_BYTES) {
+            // Unreachable with bounded fields; fail closed without a loop.
+            waitOutstanding = false;
+            return;
+        }
+        let settled = false;
+        waitWatchdogCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            if (settled || stopped || nonce !== waitNonce) {
+                return;
+            }
+            settled = true;
+            waitOutstanding = false;
+            waitWatchdogCancel = null;
+            log("omnitiler:world:wait-host-timeout recovery=rediscover");
+            if (!discoverOutstanding) {
+                discover();
+            }
+            armWait();
+        });
+        log(`omnitiler:world:wait nonce=${token(nonce)} nwinv=${state.currentInvalid} cursor=${token(waitCursor)}`);
+        try {
+            (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
+                WORLD_DBUS_SERVICE, WORLD_DBUS_OBJECT, WORLD_DBUS_INTERFACE,
+                WORLD_WAIT_METHOD, payload, (reply: unknown) => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    const cancel = waitWatchdogCancel;
+                    waitWatchdogCancel = null;
+                    try {
+                        cancel?.();
+                    } catch (error) {
+                        void error;
+                    }
+                    onWaitReply(nonce, gen, reply);
+                },
+            );
+        } catch (error) {
+            void error;
+            settled = true;
+            waitOutstanding = false;
+            try {
+                waitWatchdogCancel?.();
+            } catch (discardError) {
+                void discardError;
+            }
+            waitWatchdogCancel = null;
+            log("omnitiler:world:wait-transport recovery=host-deadline");
+            scheduleWaitRecovery();
+        }
+    };
+
+    // Single host-bound wait recovery chain: at most one live 25 s
+    // timer; scheduling while one lives keeps the original deadline (never
+    // overwritten). On fire, an unbound or held generation rediscovers
+    // (guarded against a duplicate in-flight discover); otherwise the wait
+    // re-arms. Discovery success clears the hold and arms the wait, so the
+    // chain always terminates host-deadline causally.
+    const cancelWaitRecovery = (): void => {
+        try {
+            waitRetryCancel?.();
+        } catch (error) {
+            void error;
+        }
+        waitRetryCancel = null;
+    };
+    const scheduleWaitRecovery = (): void => {
+        if (stopped || waitRetryCancel !== null) {
+            return;
+        }
+        waitRetryCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            waitRetryCancel = null;
+            if (stopped || waitOutstanding) {
+                return;
+            }
+            if (state.boundGen === null || waitHoldForDiscovery) {
+                if (!discoverOutstanding) {
+                    discover();
+                }
+                return;
+            }
+            armWait();
+        });
+    };
+    // Terminal reply of one wait call. The nonce plus generation fence
+    // stale completions FIRST (a host-timeout recovery already re-armed
+    // under a fresh nonce owns the slot; a late callback must neither
+    // clear it nor re-arm beside it). Every later path re-arms for the
+    // current generation unless a mismatch holds for rediscovery; misses
+    // never dispatch (a lease is not work).
+    const onWaitReply = (nonce: string, gen: string, reply: unknown): void => {
+        if (stopped) {
+            return;
+        }
+        if (nonce !== waitNonce || gen !== waitGen) {
+            log("omnitiler:world:wait-stale recovery=ignore");
+            return;
+        }
+        waitOutstanding = false;
+        if (typeof reply !== "string") {
+            log("omnitiler:world:wait-transport recovery=host-deadline");
+            scheduleWaitRecovery();
+            return;
+        }
+        if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
+            log("omnitiler:world:wait-oversize recovery=host-deadline");
+            scheduleWaitRecovery();
+            return;
+        }
+        const parsed = parseWorldReply(reply);
+        if (parsed === null) {
+            log("omnitiler:world:wait-malformed recovery=host-deadline");
+            scheduleWaitRecovery();
+            return;
+        }
+        if (isWorldRejection(parsed)) {
+            if (parsed.kind === "generation-mismatch") {
+                if (state.boundGen === gen) {
+                    dropDeadGenerationIntents();
+                    killPending("generation-mismatch");
+                    waitHoldForDiscovery = true;
+                    wakePendingCapture = false;
+                    log("omnitiler:world:generation-mismatch recovery=rediscover");
+                    discover();
+                } else {
+                    log("omnitiler:world:wait-stale recovery=rearm");
+                    armWait();
+                }
+                return;
+            }
+            if (parsed.gen !== gen || parsed.gen !== state.boundGen || nonce !== waitNonce) {
+                log("omnitiler:world:wait-stale recovery=host-deadline");
+                scheduleWaitRecovery();
+                return;
+            }
+            if (parsed.kind === "unknown-adapter") {
+                // Our producer lifetime is not bound server-side: hold the
+                // wait for a host-deadline rediscovery. Never touch the
+                // active producer binding or re-arm against the stale one.
+                waitHoldForDiscovery = true;
+                log(`omnitiler:world:wait-rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=host-deadline`);
+                scheduleWaitRecovery();
+                return;
+            }
+            // Any other in-band wait refusal carries no work: stand down to
+            // the host chain (never an immediate re-arm of this call).
+            log(`omnitiler:world:wait-rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=host-deadline`);
+            scheduleWaitRecovery();
+            return;
+        }
+        if (!isWorldWaitReply(parsed)) {
+            log("omnitiler:world:wait-malformed recovery=rearm");
+            armWait();
+            return;
+        }
+        const waitReply = parsed as WorldWaitReply;
+        if (waitReply.gen !== state.boundGen || waitReply.gen !== gen || nonce !== waitNonce) {
+            log("omnitiler:world:wait-stale recovery=rearm");
+            armWait();
+            return;
+        }
+        if (waitReply.outcome === "superseded") {
+            // A newer registration replaced this waiter (possibly an
+            // overlapping script): stand down to the host chain instead of
+            // re-superseding the live owner. The deadline retry re-arms
+            // exactly one wait.
+            log("omnitiler:world:wait-superseded recovery=host-deadline");
+            scheduleWaitRecovery();
+            return;
+        }
+        if (waitReply.outcome === "lease") {
+            // Idle server lease: the cursor is unchanged by construction.
+            // A cursor that advanced anyway is a wake in disguise: adopt
+            // it and drain.
+            if (waitReply.cursor !== waitCursor) {
+                waitCursor = waitReply.cursor;
+                armWait();
+                wakePendingCapture = true;
+                void dispatch(false);
+                return;
+            }
+            armWait();
+            return;
+        }
+        // Wake: queued work can drain. Adopt the advanced cursor, re-arm
+        // first for continuous coverage, then capture (owed when a flight
+        // owns the wire). Reply cursors only advance on delivered wakes,
+        // and the re-armed waiter parks (no epoch advance yet), so burst
+        // work drains capture-by-capture with no hot loop.
+        waitCursor = waitReply.cursor;
+        armWait();
+        wakePendingCapture = true;
+        void dispatch(false);
     };
 
 
@@ -2659,6 +3008,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     return {
         stop: () => {
             stopped = true;
+            // Wait teardown: cancel the host watchdog and any
+            // host-deadline retry, drop the owed wake, and release the
+            // outstanding slot so late callbacks no-op on the fence.
+            waitOutstanding = false;
+            waitHoldForDiscovery = false;
+            wakePendingCapture = false;
+            try {
+                waitWatchdogCancel?.();
+            } catch (error) {
+                void error;
+            }
+            waitWatchdogCancel = null;
+            cancelWaitRecovery();
+            cancelDiscoverChain();
             // Per-window homing teardown first so no stale window
             // callback can fire after stop; workspace detaches below
             // are idempotent and also release the per-window set.

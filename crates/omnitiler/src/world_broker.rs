@@ -113,10 +113,30 @@
 //!
 //! Wake signal (best-effort, emitted by the service layer, never here):
 //! `WorldWake(gen, rev, kind)` with kind `presentation-updated` after an
-//! accepted capture or `command-queued` after a new queue entry. The actuator
-//! answers a command-queued wake with a fresh capture (which drains the
-//! queue); query clients answer a presentation-updated wake with a fresh
-//! read; command issuers poll take after either wake.
+//! accepted capture or `command-queued` after a new queue entry. The KWin
+//! scripting surface cannot hear signals, so the actuator additionally
+//! holds one long-lived `WaitWorldWake` call per generation: the service
+//! parks it while idle and completes it when queued work can drain. The
+//! wait route never executes native work or engine logic; the follow-up
+//! capture does that.
+//!
+//! Wait wire (strict v2, same auth as capture/discover: same-UID plus the
+//! live KWin owner plus the bound producer lifetime and generation):
+//! wait:     {"v":2,"gen":G,"adapter":A,"nonce":N,"cursor":"C"}
+//!   `adapter` is the discovery-bound producer lifetime, `nonce` the
+//!   waiter correlation fencing stale completions, `cursor` the last
+//!   delivered wake cursor ("0" before the first wake), all canonical.
+//!   Immediate `{"v":2,"outcome":"wake","gen":G,"cursor":"E"}` when the
+//!   broker event epoch `E` advanced past `cursor` AND a command is
+//!   pending; otherwise the single bounded server waiter parks (new
+//!   waiters supersede parked ones, rotations drop them). Epoch `E`
+//!   advances only on a newly queued command or an actual head drain
+//!   (never on exact-capture replay, malformed captures, or
+//!   rejected/no-drain captures), and the reply cursor only advances on a
+//!   delivered wake, so a lease `{"v":2,"outcome":"lease","gen":G,
+//!   "cursor":"C"}` (idle server lease, cursor unchanged) or a lost reply
+//!   re-armed with the old cursor can never skip unseen work.
+//!   `{"v":2,"outcome":"superseded","gen":G}` answers a replaced waiter.
 //!
 //! Projected `WindowFact` capture stays allowed pending the Stage 4 raw
 //! capture work: the broker passes the inner report through verbatim and
@@ -304,6 +324,31 @@ pub struct WorldBroker {
     /// as reused.
     responses: HashMap<String, (Vec<u8>, String)>,
     response_order: VecDeque<String>,
+    /// Broker-owned wake event epoch (the server wake cursor): advances on
+    /// a newly queued command and on an actual head drain only, never on
+    /// exact-capture replay or on rejected/no-drain captures. Scoped to the
+    /// generation/lifetime: rotation replaces the whole broker.
+    wake_epoch: u64,
+    /// Single bounded parked server waiter: the outstanding `WaitWorldWake`
+    /// correlation, its last delivered cursor, and its waker. New waiters
+    /// supersede parked ones (the old waker fires with a superseded
+    /// answer); rotations drop the slot with the broker.
+    waiter: Option<BrokerWaiter>,
+    /// Delivered-but-uncollected wake reply keyed by waiter nonce. The
+    /// parked task collects exactly its own nonce; a lease expiry never
+    /// creates one, so a lost wake reply re-uses the old cursor.
+    wait_ready: Option<(String, String)>,
+}
+
+/// Single parked server waiter. `waker` wakes the parked service task when
+/// queued work (or a superseding waiter) completes it; tests park without
+/// one and collect through `take_wait_ready` instead. Crate-visible for the
+/// poison-handoff seam in [`crate::world_service`].
+#[derive(Debug)]
+pub(crate) struct BrokerWaiter {
+    nonce: String,
+    cursor: u64,
+    waker: Option<std::task::Waker>,
 }
 
 /// Mint a broker adapter incarnation (`broker-<nanos>-<pid>-<counter>`):
@@ -396,14 +441,23 @@ impl WorldBroker {
             watermarks: HashMap::new(),
             responses: HashMap::new(),
             response_order: VecDeque::new(),
+            wake_epoch: 0,
+            waiter: None,
+            wait_ready: None,
         }
     }
 
     /// Replace backend state under a fresh generation/incarnation (poison or
     /// counter exhaustion). Queued and settled command state drops with the
-    /// old namespace; issuers re-establish after re-discovery.
+    /// old namespace; issuers re-establish after re-discovery. A displaced
+    /// parked waiter wakes immediately with generation-mismatch against the
+    /// fresh generation instead of sleeping out its lease.
     pub fn rotate(&mut self) {
+        let displaced = self.take_parked_waiter();
         *self = Self::fresh();
+        if let Some(waiter) = displaced {
+            self.complete_displaced(waiter);
+        }
     }
 
     /// Serving core generation (the discovery/bootstrap binding).
@@ -442,8 +496,12 @@ impl WorldBroker {
     #[must_use]
     pub fn discovery_body(&mut self, adapter: &str, request_id: &str) -> String {
         if self.capture_lifetime.as_deref() != Some(adapter) {
+            let displaced = self.take_parked_waiter();
             *self = Self::fresh();
             self.capture_lifetime = Some(adapter.to_owned());
+            if let Some(waiter) = displaced {
+                self.complete_displaced(waiter);
+            }
         }
         let incarnation = self.incarnation.clone();
         encode_reply(&self.engine.bootstrap_reply(&incarnation, request_id))
@@ -732,7 +790,7 @@ impl WorldBroker {
         let commanded = match decode_request(&stamped) {
             Ok(report) => report,
             Err(error) => {
-                self.pop_settle_failed(queued, error.kind, error.message);
+                self.pop_settle_failed(queued, error.kind, error.message)?;
                 return self.dispatch_plain_fallback(plain_stamped);
             }
         };
@@ -745,11 +803,11 @@ impl WorldBroker {
                     return Err(BrokerError::Oversized);
                 }
                 let result = result_of(&encoded);
-                self.pop_settle_ready(queued, result);
+                self.pop_settle_ready(queued, result)?;
                 Ok(FreshOutcome::Reply(encoded))
             }
             WorldOutcome::Rejected { kind, message } => {
-                self.pop_settle_failed(queued, kind, message);
+                self.pop_settle_failed(queued, kind, message)?;
                 self.dispatch_plain_fallback(plain_stamped)
             }
         }
@@ -796,18 +854,33 @@ impl WorldBroker {
 
     /// Pop the drained head and settle it terminally as ready with the
     /// reply's terminal result (possibly null when the snapshot alone is
-    /// the outcome).
-    fn pop_settle_ready(&mut self, queued: &QueuedCommand, result: serde_json::Value) {
+    /// the outcome). An actual head drain advances the wake epoch and
+    /// completes a parked waiter while work remains.
+    fn pop_settle_ready(
+        &mut self,
+        queued: &QueuedCommand,
+        result: serde_json::Value,
+    ) -> Result<(), BrokerError> {
         let key = queued.key();
         self.pending.pop_front();
         let global_seq = queued.global_seq;
         self.insert_settlement(key, Settlement::Ready { global_seq, result });
+        self.take_wake_epoch()?;
+        self.complete_waiter_if_work();
+        Ok(())
     }
 
     /// Pop the drained head and settle it terminally as failed with the
     /// explicit rejection kind/message. Never a null result masquerading as
-    /// success.
-    fn pop_settle_failed(&mut self, queued: &QueuedCommand, kind: &str, message: &str) {
+    /// success. Like the ready drain, this is an actual head drain: the
+    /// wake epoch advances and a parked waiter completes while work
+    /// remains.
+    fn pop_settle_failed(
+        &mut self,
+        queued: &QueuedCommand,
+        kind: &str,
+        message: &str,
+    ) -> Result<(), BrokerError> {
         let key = queued.key();
         self.pending.pop_front();
         let global_seq = queued.global_seq;
@@ -819,6 +892,9 @@ impl WorldBroker {
                 message: message.to_owned(),
             },
         );
+        self.take_wake_epoch()?;
+        self.complete_waiter_if_work();
+        Ok(())
     }
 
     /// File one external command. Duplicates at or below the per-sender
@@ -883,6 +959,10 @@ impl WorldBroker {
             global_seq,
             command,
         });
+        // A newly queued command advances the wake epoch and completes a
+        // parked waiter: the actuator's follow-up capture drains it.
+        self.take_wake_epoch()?;
+        self.complete_waiter_if_work();
         Ok(queue_reply(
             "queued",
             &self.generation,
@@ -972,6 +1052,166 @@ impl WorldBroker {
         let seq = self.next_command_seq;
         self.next_command_seq = seq.checked_add(1).ok_or(BrokerError::Rotate)?;
         Ok(seq)
+    }
+
+    /// Advance the wake event epoch. Counter exhaustion rotates like every
+    /// other broker sequence (the caller fails closed; issuers
+    /// re-discover).
+    fn take_wake_epoch(&mut self) -> Result<u64, BrokerError> {
+        let epoch = self.wake_epoch.checked_add(1).ok_or(BrokerError::Rotate)?;
+        self.wake_epoch = epoch;
+        Ok(epoch)
+    }
+
+    /// Complete the parked waiter when its cursor is behind the epoch and
+    /// work is still pending. The reply cursor is the epoch itself, so it
+    /// only advances on a delivered wake; a lease expiry stores no reply
+    /// and a lost reply re-uses the old cursor. No work pending means no
+    /// wake even past the epoch (a drained queue leaves nothing to
+    /// drain).
+    fn complete_waiter_if_work(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let Some(waiter) = self.waiter.take() else {
+            return;
+        };
+        if self.wake_epoch <= waiter.cursor {
+            self.waiter = Some(waiter);
+            return;
+        }
+        let reply = format!(
+            "{{\"v\":2,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
+            self.generation, self.wake_epoch
+        );
+        self.wait_ready = Some((waiter.nonce.clone(), reply));
+        if let Some(waker) = waiter.waker {
+            waker.wake();
+        }
+    }
+
+    /// Evaluate one wait registration: bind the serving generation and the
+    /// discovery-bound producer lifetime, answer immediately when the epoch
+    /// advanced past the cursor with work pending, or park. `Err` is an
+    /// in-band rejection body (stale generation or unknown lifetime).
+    pub fn wait_immediate(
+        &mut self,
+        lifetime: &str,
+        generation: &str,
+        cursor: u64,
+    ) -> Result<Option<String>, String> {
+        if generation != self.generation {
+            return Err(self.error_body("generation-mismatch", "generation mismatch"));
+        }
+        if self.capture_lifetime.as_deref() != Some(lifetime) {
+            return Err(self.error_body("unknown-adapter", "unknown adapter"));
+        }
+        if self.wake_epoch > cursor && !self.pending.is_empty() {
+            return Ok(Some(self.wait_wake_body()));
+        }
+        Ok(None)
+    }
+
+    /// Park one waiter, superseding any parked one: the previous waker
+    /// fires so its call answers superseded instead of hanging. Call only
+    /// after `wait_immediate` returned `Ok(None)` under the same lock.
+    /// Tests park with `None` and collect through `take_wait_ready`. A
+    /// stale uncollected ready under a different nonce is dropped here so
+    /// the single bounded slot never wedges on an orphaned reply.
+    pub fn wait_park(&mut self, nonce: &str, cursor: u64, waker: Option<std::task::Waker>) {
+        if self
+            .wait_ready
+            .as_ref()
+            .is_some_and(|(ready_nonce, _)| ready_nonce != nonce)
+        {
+            self.wait_ready = None;
+        }
+        if let Some(previous) = self.waiter.replace(BrokerWaiter {
+            nonce: nonce.to_owned(),
+            cursor,
+            waker,
+        }) && let Some(waker) = previous.waker
+        {
+            waker.wake();
+        }
+    }
+
+    /// Take the parked waiter for a rotation/poison handoff. The caller
+    /// replaces the broker first, then completes the waiter against the
+    /// fresh generation so it wakes immediately instead of sleeping out
+    /// its lease.
+    pub(crate) fn take_parked_waiter(&mut self) -> Option<BrokerWaiter> {
+        self.waiter.take()
+    }
+
+    /// Complete a displaced waiter against this (fresh) broker: store a
+    /// generation-mismatch reply under its nonce and wake it immediately.
+    /// A stale generation answers mismatch, never superseded.
+    pub(crate) fn complete_displaced(&mut self, waiter: BrokerWaiter) {
+        let reply = self.error_body("generation-mismatch", "generation mismatch");
+        self.wait_ready = Some((waiter.nonce.clone(), reply));
+        if let Some(waker) = waiter.waker {
+            waker.wake();
+        }
+    }
+
+    /// Collect the delivered wake reply for exactly this waiter nonce.
+    pub fn take_wait_ready(&mut self, nonce: &str) -> Option<String> {
+        match &self.wait_ready {
+            Some((ready_nonce, _)) if ready_nonce == nonce => {
+                self.wait_ready.take().map(|(_, reply)| reply)
+            }
+            _ => None,
+        }
+    }
+
+    /// Current parked waiter nonce, if any.
+    #[must_use]
+    pub fn waiter_nonce(&self) -> Option<&str> {
+        self.waiter.as_ref().map(|waiter| waiter.nonce.as_str())
+    }
+
+    /// Expire one parked waiter at the server lease: removes it only when
+    /// the nonce still owns the slot and returns its unchanged cursor, so
+    /// the lease reply can never consume unseen work.
+    pub fn expire_wait(&mut self, nonce: &str) -> Option<u64> {
+        if self
+            .waiter
+            .as_ref()
+            .is_some_and(|waiter| waiter.nonce == nonce)
+        {
+            let waiter = self.waiter.take().expect("waiter is present");
+            return Some(waiter.cursor);
+        }
+        None
+    }
+
+    /// Immediate wake body: the cursor is the current epoch (pending work
+    /// is already established by the caller).
+    fn wait_wake_body(&self) -> String {
+        format!(
+            "{{\"v\":2,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
+            self.generation, self.wake_epoch
+        )
+    }
+
+    /// Idle lease body: the cursor is unchanged, so re-arming with it can
+    /// never skip unseen work.
+    #[must_use]
+    pub fn wait_lease_body(&self, cursor: u64) -> String {
+        format!(
+            "{{\"v\":2,\"outcome\":\"lease\",\"gen\":\"{}\",\"cursor\":\"{cursor}\"}}",
+            self.generation
+        )
+    }
+
+    /// Superseded body for a waiter replaced by a newer registration.
+    #[must_use]
+    pub fn wait_superseded_body(&self) -> String {
+        format!(
+            "{{\"v\":2,\"outcome\":\"superseded\",\"gen\":\"{}\"}}",
+            self.generation
+        )
     }
 
     /// Insert one terminal settlement under its sender-bound key. Bounded:
@@ -1281,6 +1521,64 @@ fn parse_take_request(
         .and_then(|s| s.parse::<u64>().ok())
         .ok_or(("unknown-value", "request contains an unknown value"))?;
     Ok((generation.to_owned(), client.to_owned(), client_cmd))
+}
+
+/// Strict wait-request parse: exact keys (`v,gen,adapter,nonce,cursor`),
+/// v2, serving-generation binding, discovery-bound producer lifetime,
+/// opaque waiter correlation, canonical cursor.
+pub fn parse_wait_request(
+    request: &str,
+) -> Result<(String, String, String, u64), (&'static str, &'static str)> {
+    let value: serde_json::Value =
+        serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
+    let map = value
+        .as_object()
+        .ok_or(("malformed", "request is malformed"))?;
+    if map.len() != 5
+        || !map.contains_key("v")
+        || !map.contains_key("gen")
+        || !map.contains_key("adapter")
+        || !map.contains_key("nonce")
+        || !map.contains_key("cursor")
+    {
+        if map
+            .keys()
+            .any(|k| k != "v" && k != "gen" && k != "adapter" && k != "nonce" && k != "cursor")
+        {
+            return Err(("unknown-field", "request contains an unknown field"));
+        }
+        return Err(("malformed", "request is malformed"));
+    }
+    if map.get("v").and_then(serde_json::Value::as_u64) != Some(u64::from(BROKER_VERSION)) {
+        return Err(("unsupported-version", "unsupported contract version"));
+    }
+    let generation = map
+        .get("gen")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| is_generation_token(s))
+        .ok_or(("unknown-value", "request contains an unknown value"))?;
+    let adapter = map
+        .get("adapter")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| is_valid_adapter_id(s))
+        .ok_or(("unknown-value", "request contains an unknown value"))?;
+    let nonce = map
+        .get("nonce")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| is_valid_request_id(s))
+        .ok_or(("unknown-value", "request contains an unknown value"))?;
+    let cursor = map
+        .get("cursor")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| is_canonical_u64(s))
+        .and_then(|s| s.parse::<u64>().ok())
+        .ok_or(("unknown-value", "request contains an unknown value"))?;
+    Ok((
+        generation.to_owned(),
+        adapter.to_owned(),
+        nonce.to_owned(),
+        cursor,
+    ))
 }
 
 /// Strict read-request parse: exact keys, v2, opaque correlation.

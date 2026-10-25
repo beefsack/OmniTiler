@@ -8,7 +8,7 @@
 //! Boundary values are realistic: UUID native desktop ids, opaque window
 //! and output ids, D-Bus unique-name senders, canonical decimal counters.
 
-use omnitiler::world_broker::MAX_REMEMBERED_SOURCES;
+use omnitiler::world_broker::{MAX_REMEMBERED_SOURCES, WorldBroker, parse_wait_request};
 use omnitiler::world_service::{WORLD_SERVICE_MAX_REPLY, WorldService, WorldServiceError};
 
 const UUID_A: &str = "550e8400-e29b-41d4-a716-446655440001";
@@ -1419,4 +1419,463 @@ fn discovery_binds_a_single_lifetime_and_rotates_on_change() {
     );
     assert_eq!(fresh["rev"], "1");
     assert_eq!(fresh["adapter"].as_str(), Some(incarnation_b.as_str()));
+}
+
+/// Strict wait-request shape: exact keys, v2, generation binding, producer
+/// lifetime, waiter correlation, canonical cursor.
+fn wait_req(generation: &str, adapter: &str, nonce: &str, cursor: &str) -> String {
+    format!(
+        "{{\"v\":2,\"gen\":\"{generation}\",\"adapter\":\"{adapter}\",\
+          \"nonce\":\"{nonce}\",\"cursor\":\"{cursor}\"}}"
+    )
+}
+
+fn noop_park(broker: &mut WorldBroker, nonce: &str, cursor: u64) {
+    broker.wait_park(nonce, cursor, None);
+}
+
+/// Fresh broker with a discovered actuator binding, plus its generation.
+fn discovered_broker() -> (WorldBroker, String) {
+    let mut broker = WorldBroker::new();
+    let discovery: serde_json::Value =
+        serde_json::from_str(&broker.discovery_body(ADAPTER, "req-0")).expect("bootstrap");
+    assert_eq!(discovery["ready"], false);
+    let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    (broker, generation)
+}
+
+fn select_numbered_command() -> &'static str {
+    "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}"
+}
+
+#[test]
+fn wait_request_shape_is_strict_v2() {
+    let (_, generation) = discovered_broker();
+    let (wait_gen, adapter, nonce, cursor) =
+        parse_wait_request(&wait_req(&generation, ADAPTER, "wait-1", "0"))
+            .expect("producer wait parses");
+    assert_eq!(wait_gen, generation);
+    assert_eq!(adapter, ADAPTER);
+    assert_eq!(nonce, "wait-1");
+    assert_eq!(cursor, 0);
+    // v1 refuses; unknown fields refuse; non-canonical cursors refuse.
+    assert!(parse_wait_request("{\"v\":1}").is_err());
+    assert!(
+        parse_wait_request(&format!(
+            "{},\"x\":1}}",
+            wait_req(&generation, ADAPTER, "wait-1", "0").trim_end_matches('}')
+        ))
+        .is_err()
+    );
+    assert!(parse_wait_request(&wait_req(&generation, ADAPTER, "wait-1", "01")).is_err());
+    assert!(parse_wait_request(&wait_req(&generation, ADAPTER, "", "0")).is_err());
+}
+
+#[test]
+fn wait_rejects_stale_generation_and_unknown_lifetime() {
+    let (mut broker, generation) = discovered_broker();
+    let stale = broker
+        .wait_immediate(ADAPTER, "w-stale", 0)
+        .expect_err("stale generation rejects");
+    let stale_value: serde_json::Value = serde_json::from_str(&stale).expect("in-band JSON");
+    assert_eq!(stale_value["outcome"], "rejected");
+    assert_eq!(stale_value["kind"], "generation-mismatch");
+    let unknown = broker
+        .wait_immediate("other-lifetime", &generation, 0)
+        .expect_err("unknown lifetime rejects");
+    let unknown_value: serde_json::Value = serde_json::from_str(&unknown).expect("in-band JSON");
+    assert_eq!(unknown_value["outcome"], "rejected");
+    assert_eq!(unknown_value["kind"], "unknown-adapter");
+    assert_eq!(broker.waiter_nonce(), None, "rejections park nothing");
+}
+
+#[test]
+fn wait_parks_while_idle_and_wakes_on_queued_command() {
+    let (mut broker, generation) = discovered_broker();
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-1", 0);
+    assert_eq!(broker.waiter_nonce(), Some("wait-1"));
+    assert_eq!(broker.take_wait_ready("wait-1"), None);
+    // A newly queued command advances the epoch and completes the waiter.
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    let wake = broker.take_wait_ready("wait-1").expect("wake delivered");
+    let wake_value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
+    assert_eq!(wake_value["outcome"], "wake");
+    assert_eq!(
+        wake_value["gen"],
+        serde_json::Value::String(generation.clone())
+    );
+    assert_eq!(wake_value["cursor"], "1");
+    assert_eq!(broker.waiter_nonce(), None, "delivery clears the slot");
+    // A foreign nonce collects nothing.
+    assert_eq!(broker.take_wait_ready("wait-2"), None);
+}
+
+#[test]
+fn wait_is_immediate_once_the_epoch_advanced_with_pending_work() {
+    let (mut broker, generation) = discovered_broker();
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    let immediate = broker
+        .wait_immediate(ADAPTER, &generation, 0)
+        .expect("binds")
+        .expect("immediate wake");
+    let value: serde_json::Value = serde_json::from_str(&immediate).expect("wake JSON");
+    assert_eq!(value["outcome"], "wake");
+    assert_eq!(value["cursor"], "1");
+    assert_eq!(broker.waiter_nonce(), None, "immediate wake parks nothing");
+}
+
+#[test]
+fn wait_stays_parked_after_the_queue_drains() {
+    let (mut broker, generation) = discovered_broker();
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    let inner = inner_report(&[], true, false, "");
+    broker
+        .dispatch_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+        .expect("drains");
+    // The drain advanced the epoch, but nothing is pending: a waiter at the
+    // older cursor still parks instead of hot-looping on a drained queue.
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 1)
+            .expect("binds"),
+        None
+    );
+    noop_park(&mut broker, "wait-drained", 1);
+    assert_eq!(broker.take_wait_ready("wait-drained"), None);
+    // Lease expiry keeps the cursor: re-arming with it can never skip work.
+    assert_eq!(broker.expire_wait("wait-drained"), Some(1));
+    assert_eq!(broker.waiter_nonce(), None);
+    assert_eq!(broker.expire_wait("wait-drained"), None);
+    let lease = broker.wait_lease_body(1);
+    let lease_value: serde_json::Value = serde_json::from_str(&lease).expect("lease JSON");
+    assert_eq!(lease_value["outcome"], "lease");
+    assert_eq!(lease_value["cursor"], "1");
+}
+
+#[test]
+fn rejected_capture_never_advances_the_epoch_or_wakes() {
+    let (mut broker, generation) = discovered_broker();
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-1", 0);
+    // A malformed capture rejects without draining: the epoch is
+    // untouched, so the waiter stays parked (no hot-loop on re-arm).
+    let rejected = broker
+        .dispatch_capture("{\"v\":2,\"bogus\":true}")
+        .expect("in-band");
+    let rejected_value: serde_json::Value =
+        serde_json::from_str(&rejected).expect("rejection JSON");
+    assert_eq!(rejected_value["outcome"], "rejected");
+    assert_eq!(broker.waiter_nonce(), Some("wait-1"));
+    assert_eq!(broker.take_wait_ready("wait-1"), None);
+    // The next queue still wakes from the same cursor: nothing was lost.
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    let wake = broker.take_wait_ready("wait-1").expect("wake delivered");
+    let wake_value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
+    assert_eq!(wake_value["cursor"], "1");
+}
+
+#[test]
+fn exact_capture_replay_never_wakes() {
+    let (mut broker, generation) = discovered_broker();
+    let inner = inner_report(&[], true, false, "");
+    let envelope = capture(ADAPTER, &generation, 1, 1, &inner);
+    let first = broker.dispatch_capture(&envelope).expect("accepted");
+    // Park at the current epoch (no pending work, no epoch advance).
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("binds"),
+        None
+    );
+    noop_park(&mut broker, "wait-replay", 0);
+    let replayed = broker.dispatch_capture(&envelope).expect("replays");
+    assert_eq!(replayed, first, "exact redelivery replays byte-identically");
+    assert_eq!(broker.waiter_nonce(), Some("wait-replay"));
+    assert_eq!(broker.take_wait_ready("wait-replay"), None);
+}
+
+#[test]
+fn newer_waiter_supersedes_the_parked_one() {
+    let (mut broker, generation) = discovered_broker();
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-old", 0);
+    noop_park(&mut broker, "wait-new", 0);
+    assert_eq!(broker.waiter_nonce(), Some("wait-new"));
+    assert_eq!(broker.take_wait_ready("wait-old"), None);
+    let superseded = broker.wait_superseded_body();
+    let value: serde_json::Value = serde_json::from_str(&superseded).expect("superseded JSON");
+    assert_eq!(value["outcome"], "superseded");
+    assert_eq!(value["gen"], serde_json::Value::String(generation));
+}
+
+#[test]
+fn burst_commands_wake_capture_by_capture() {
+    let (mut broker, generation) = discovered_broker();
+    for client_cmd in ["1", "2", "3"] {
+        broker
+            .queue_command(
+                SENDER_A,
+                &queue_req(
+                    &generation,
+                    "panel-1",
+                    client_cmd,
+                    select_numbered_command(),
+                ),
+            )
+            .expect("queued");
+    }
+    // One immediate wake covers the whole burst at the current epoch.
+    let immediate = broker
+        .wait_immediate(ADAPTER, &generation, 0)
+        .expect("binds")
+        .expect("immediate wake");
+    let value: serde_json::Value = serde_json::from_str(&immediate).expect("wake JSON");
+    assert_eq!(value["cursor"], "3");
+    // Park at the delivered cursor; each draining capture advances the
+    // epoch and re-wakes while work remains.
+    let inner = inner_report(&[], true, false, "");
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 3)
+            .expect("binds"),
+        None
+    );
+    noop_park(&mut broker, "wait-burst", 3);
+    broker
+        .dispatch_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+        .expect("drains one");
+    let wake = broker.take_wait_ready("wait-burst").expect("re-wake");
+    let wake_value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
+    assert_eq!(wake_value["cursor"], "4");
+    // Cursor semantics: a lease at the delivered cursor keeps it, so the
+    // next waiter still sees the remaining two commands.
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 4)
+            .expect("binds"),
+        None
+    );
+    noop_park(&mut broker, "wait-tail", 4);
+    broker
+        .dispatch_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
+        .expect("drains two");
+    let tail = broker.take_wait_ready("wait-tail").expect("tail wake");
+    let tail_value: serde_json::Value = serde_json::from_str(&tail).expect("wake JSON");
+    assert_eq!(tail_value["cursor"], "5");
+}
+
+#[test]
+fn lifetime_rotation_drops_the_waiter_and_resets_the_epoch() {
+    let (mut broker, generation) = discovered_broker();
+    // Park while idle, then queue: the waiter wakes at the first epoch.
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-1", 0);
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    let wake = broker.take_wait_ready("wait-1").expect("wake delivered");
+    let wake_value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
+    assert_eq!(wake_value["cursor"], "1");
+    // Re-park at the delivered cursor; rotation drops the waiter and
+    // resets the epoch under a fresh generation.
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 1)
+            .expect("binds"),
+        None
+    );
+    noop_park(&mut broker, "wait-2", 1);
+    let rotated: serde_json::Value =
+        serde_json::from_str(&broker.discovery_body("lifetime-b", "req-1")).expect("bootstrap");
+    let fresh_generation = rotated["gen"].as_str().expect("gen").to_owned();
+    assert_ne!(fresh_generation, generation);
+    assert_eq!(broker.waiter_nonce(), None, "rotation drops the waiter");
+    // The old cursor is past the reset epoch: no phantom wake, just park.
+    assert_eq!(
+        broker
+            .wait_immediate("lifetime-b", &fresh_generation, 1)
+            .expect("binds"),
+        None
+    );
+    assert!(parse_wait_request(&wait_req(&generation, ADAPTER, "wait-1", "0")).is_ok());
+}
+
+#[test]
+fn rotation_wakes_the_displaced_waiter_with_mismatch() {
+    let (mut broker, generation) = discovered_broker();
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-1", 0);
+    // A new producer lifetime rotates the broker: the displaced waiter
+    // wakes immediately with generation-mismatch against the fresh
+    // generation instead of sleeping out its lease (and never superseded:
+    // a stale generation answers mismatch).
+    let rotated: serde_json::Value =
+        serde_json::from_str(&broker.discovery_body("lifetime-b", "req-1")).expect("bootstrap");
+    let fresh = rotated["gen"].as_str().expect("gen").to_owned();
+    assert_ne!(fresh, generation);
+    assert_eq!(broker.waiter_nonce(), None);
+    let displaced = broker
+        .take_wait_ready("wait-1")
+        .expect("displaced waiter wakes");
+    let value: serde_json::Value = serde_json::from_str(&displaced).expect("mismatch JSON");
+    assert_eq!(value["outcome"], "rejected");
+    assert_eq!(value["kind"], "generation-mismatch");
+    assert_eq!(value["gen"], serde_json::Value::String(fresh.clone()));
+    // The old generation stays mismatched (never superseded) after rotation.
+    let stale = broker
+        .wait_immediate(ADAPTER, &generation, 0)
+        .expect_err("rotated generation mismatches");
+    let stale_value: serde_json::Value = serde_json::from_str(&stale).expect("mismatch JSON");
+    assert_eq!(stale_value["kind"], "generation-mismatch");
+    assert_eq!(stale_value["gen"], serde_json::Value::String(fresh));
+}
+
+#[test]
+fn park_clears_a_stale_ready_for_another_nonce() {
+    let (mut broker, generation) = discovered_broker();
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-orphan", 0);
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    assert!(broker.take_wait_ready("wait-orphan").is_some());
+    // Re-parking under a new nonce drops the orphaned ready: the single
+    // bounded slot never wedges on an uncollected reply.
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 1)
+            .expect("binds"),
+        None
+    );
+    noop_park(&mut broker, "wait-live", 1);
+    assert_eq!(broker.take_wait_ready("wait-orphan"), None);
+    // The live waiter still wakes on the next queued work: no lost work
+    // for the live slot after the orphaned ready was dropped.
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "2", select_numbered_command()),
+        )
+        .expect("queued");
+    let wake = broker
+        .take_wait_ready("wait-live")
+        .expect("live waiter wakes");
+    let value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
+    assert_eq!(value["outcome"], "wake");
+    assert_eq!(value["cursor"], "2");
+}
+
+#[test]
+fn expiry_and_collection_touch_only_the_owned_nonce() {
+    let (mut broker, generation) = discovered_broker();
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-owned", 0);
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    // A foreign expiry or collection touches nothing: the owned ready and
+    // waiter survive intact.
+    assert_eq!(broker.expire_wait("wait-foreign"), None);
+    assert_eq!(broker.take_wait_ready("wait-foreign"), None);
+    assert_eq!(broker.waiter_nonce(), None, "delivery cleared the slot");
+    let wake = broker
+        .take_wait_ready("wait-owned")
+        .expect("owned ready survives");
+    let value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
+    assert_eq!(value["cursor"], "1");
+}
+
+#[test]
+fn dropped_waiter_cannot_displace_a_newer_one() {
+    let (mut broker, generation) = discovered_broker();
+    assert_eq!(
+        broker
+            .wait_immediate(ADAPTER, &generation, 0)
+            .expect("parks"),
+        None
+    );
+    noop_park(&mut broker, "wait-old", 0);
+    noop_park(&mut broker, "wait-new", 0);
+    // The dropped old waiter cleans up only its own nonce: the newer slot
+    // survives, and the next drain still wakes it (no lost work).
+    assert_eq!(broker.expire_wait("wait-old"), None);
+    assert_eq!(broker.take_wait_ready("wait-old"), None);
+    assert_eq!(broker.waiter_nonce(), Some("wait-new"));
+    broker
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "panel-1", "1", select_numbered_command()),
+        )
+        .expect("queued");
+    let wake = broker
+        .take_wait_ready("wait-new")
+        .expect("newer waiter wakes");
+    let value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
+    assert_eq!(value["outcome"], "wake");
+    assert_eq!(value["cursor"], "1");
 }

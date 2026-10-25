@@ -139,11 +139,9 @@ decisions of 2026-09-24 are under
   Deferred investigations: Activities/multi-desktop, async configure. Four
   minimal port discriminator rows keep untested native outcomes TBD; Activities
   defaults tentative pending KDE evidence. v1 KDE rows below keep their
-  historical evidence; replacement belongs to this port. Status: staged plan
-  recorded; host-owned native adoption and its revision (native evidence
-  only, hybrid creation correlation, optional native current) delivered
-  core-only with KDE consumption (native acceptance pending); Stage 2 v2
-  broker cutover partial with five migration/reuse/lifecycle oracles failing.
+  historical evidence; replacement belongs to this port. Status: adoption and
+  B1 command wake delivered offline; Stage 2 remains partial on B2 dormant-source
+  identity/return provenance, with later stages and native acceptance pending.
   [Record](changes/kde-world-v2-port.md).
 - P1 | Live fixture first use on macOS (2026-10-20) |
   `crates/tiler-live-fixture` is the standard agent live-test window

@@ -7,7 +7,7 @@ refuse and are never shimmed.
 
 KDE's paired cutover remains parked, not an accepted implementation of this
 guide. Its [port record](../changes/kde-world-v2-port.md#stage-2-implementation-boundary)
-tracks partial offline evidence, parked command wake transport and host-owned
+  tracks partial offline evidence, delivered command wake transport and parked host-owned
 source-view supersession. Fresh backing correlation and the former five KDE
 oracles pass offline; native settlement must not be inferred from wire acceptance.
 
@@ -185,10 +185,15 @@ missing facts. Shape:
   evidence locally until readable, preserve the original write stamp, and do not
   invent an empty after-order. A later-turn list delta is uncorrelated (`created`
   null); it cannot supply KDE's same-turn causal proof.
+- Host-hidden windows (KDE inactive Activity, macOS Cmd+H) use existing
+  `WindowFact.minimized=true`, no new state (tentative pending native Activities
+  testing). Activities support remains later port work.
 - `minimized=true` is not "never move": frame/clear work and ordinary focus/send
   refuse, and occupancy retains the workspace, but whole-workspace migration,
   output displacement and in-flight membership transfers can relocate it. Do not
-  claim it implements strict retained-unmanaged Activities/host-hidden semantics.
+  claim strict retained-unmanaged semantics: the qualified Activities promise
+  permits workspace migration/swap, host display removal and completion of a
+  transfer pending before hide.
   Unknown float-sticky membership can omit its reply row (not a close); unknown
   newcomers remain unhomed. Strict sticky slot retention is parked, not proven.
 
@@ -345,6 +350,17 @@ facts only, at most one latest-wins entry per window/operation/phase:
   proven-then-abandoned source-view supersession; KDE's
   [B2 discriminator](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
   remains red pending a neutral core-owned resolution.
+- Approved tentative B2 extension (draft, not yet delivered):
+  `MemberAttempt.native_pre/native_post: Option<String>` and
+  `ViewAttempt.native_pre/native_post/native_baseline: Option<String>`, wire
+  `nativePre/nativePost/nativeBase`. Non-null without host-owned capability
+  refuses; missing/null/empty native values mean unknown. Host-owned settlement
+  ignores logical attempt evidence and translates native ids only through core
+  bindings; tiler-owned domains keep logical preimages. Capture real native
+  reads around writes and the observation-time view baseline, never desires or
+  an adapter binding table. A matching outstanding change settles; other input
+  is adopted. The exact dormant-source B2 rewind still needs identity/return-
+  provenance resolution before this extension is accepted.
 - Acknowledgement never copies desires into observations. Incorporation
   receipts bind to the incorporating generation; foreign-generation,
   foreign-adapter and wrong-request replies apply nothing.
