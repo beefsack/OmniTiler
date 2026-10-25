@@ -114,8 +114,10 @@ with the fixture-first rules and the signed bundle in
   first-sight hint-policy copy. The unchanged D2 integration test passes.
   Synthetic born-fullscreen floating and adapter slot/member inference are also
   removed; native fullscreen facts now use core's own slotless/first-exit policy.
-  Shared classifier integration remains open: selected transient float members
-  cannot simply become shared eligibility refusals without changing behavior.
+  Tentative shared classification A is now integrated offline: one neutral
+  transient fact selects float membership through `classify_membership`, then
+  projects into the existing floating flag. Native exclusions/normalization
+  remain macOS-owned; Windows Dialog/OwnedDialog exclusions are unchanged.
   Per-app native rosters now retain unknown/hidden lifetimes and incompleteness
   independently of other apps; closes are flat and homing-independent. Fresh
   full-CG liveness corroborates missing AX windows before close, including

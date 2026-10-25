@@ -26,7 +26,8 @@
 //!   normally.
 //! - Dialogs and sheets float as normalized exception members. Windows-style
 //!   owned-dialog exclusions are a deliberate platform difference and are NOT
-//!   mapped here.
+//!   mapped here. The transient float-vs-tile decision lives in the shared
+//!   core ([`tiler_core::window_policy::classify_membership`]).
 //! - The crate's own bundle is excluded outright; Ghostty is an ordinary app
 //!   (no product exclusion; only live tests protect it).
 //!
@@ -43,6 +44,7 @@
 //! close.
 
 use tiler_core::size_hints::WindowSizeHints;
+use tiler_core::window_policy::{MembershipVerdict, SafetyFacts, classify_membership};
 
 use crate::runtime_types::ObservedWindow;
 
@@ -351,35 +353,49 @@ pub fn classify_window(
     if app.hidden {
         return base(Disposition::Excluded(ExcludeReason::HiddenApp));
     }
-    // 4. Sheets float as normalized exception members (no parent
-    //    resolution without live acquisition). A sheet reporting fullscreen
-    //    keeps both facts: the float origin plus the overlay flag. Sheets
-    //    keep their exception at any CG layer.
-    if ax.role.as_deref() == Some(ROLE_SHEET) {
-        return base(Disposition::Float(FloatReason::Sheet));
-    }
-    // 5. Dialog-family subroles float as normalized exception members,
-    //    fullscreen or not and at any CG layer: the overlay flag rides
-    //    alongside truthfully and the wire hold keys off it, so the float
-    //    origin is never dropped.
-    if let Some(subrole) = ax.subrole.as_deref()
-        && FLOAT_SUBROLES.contains(&subrole)
+    // 4. Transient float policy is shared core ownership (R-SPC-01).
+    //    The adapter normalizes native facts into the float reason; the
+    //    core decides float-member vs tile from its presence. Safety input
+    //    is all-clear by construction: every macOS exclusion above already
+    //    returned, and owned-dialog exclusion stays Windows-only.
+    let float_reason = if ax.role.as_deref() == Some(ROLE_SHEET) {
+        Some(FloatReason::Sheet)
+    } else if ax
+        .subrole
+        .as_deref()
+        .is_some_and(|subrole| FLOAT_SUBROLES.contains(&subrole))
     {
-        return base(Disposition::Float(FloatReason::DialogSubrole));
+        Some(FloatReason::DialogSubrole)
+    } else if ax.modal {
+        Some(FloatReason::Modal)
+    } else {
+        None
+    };
+    match classify_membership(
+        &SafetyFacts {
+            visible: true,
+            ..SafetyFacts::default()
+        },
+        float_reason.is_some(),
+    ) {
+        MembershipVerdict::FloatMember => {
+            return base(Disposition::Float(
+                float_reason.expect("transient float verdict needs a native float reason"),
+            ));
+        }
+        MembershipVerdict::Tile => {}
+        MembershipVerdict::LeaveUnmanaged => {
+            unreachable!("macOS passes all-clear safety facts; exclusions precede this call");
+        }
     }
-    // 6. Modal windows float (product R-SPC-01 transient rule), likewise
-    //    orthogonal to the overlay fact and independent of CG layer.
-    if ax.modal {
-        return base(Disposition::Float(FloatReason::Modal));
-    }
-    // 7. Nonordinary CG layer with no recognized float exception: the
+    // 5. Nonordinary CG layer with no recognized float exception: the
     //    shapes above already returned, so this is conservative exclusion
     //    pending an explicit TBD layer discriminator — never a claim about
     //    what lives at any layer.
     if cg.layer != 0 {
         return base(Disposition::Excluded(ExcludeReason::NonordinaryLayer));
     }
-    // 8. Only standard windows tile. A present non-window role, or a
+    // 6. Only standard windows tile. A present non-window role, or a
     //    missing/unknown/other subrole, excludes conservatively (yabai
     //    ignores `AXUnknown`; rift/AeroSpace filter nonstandard popups).
     //    A missing role stays admissible (rift parity for synthesized
@@ -391,13 +407,13 @@ pub fn classify_window(
     if ax.subrole.as_deref() != Some(SUBROLE_STANDARD) {
         return base(Disposition::Excluded(ExcludeReason::UnknownRole));
     }
-    // 9. Native fullscreen without a float origin: submitted with the
+    // 7. Native fullscreen without a float origin: submitted with the
     //    truthful overlay flag and no float. The core holds born arrivals
     //    slotless and keeps retained members' reserved slot with no writes.
     if ax.fullscreen {
         return base(Disposition::Fullscreen);
     }
-    // 10. Ordinary tile candidate. Hints pass through for the core's
+    // 8. Ordinary tile candidate. Hints pass through for the core's
     //     admission-only fixed classifier; `size_settable` is carried, never
     //     consulted (TBD lane: no resizability inference).
     base(Disposition::Tile)
@@ -494,6 +510,84 @@ mod tests {
         ax.modal = true;
         let out = classify(&ax, &cg, &app);
         assert_eq!(out.disposition, Disposition::Float(FloatReason::Modal));
+    }
+
+    #[test]
+    fn transient_float_policy_follows_shared_core_verdict() {
+        use tiler_core::window_policy::{MembershipVerdict, SafetyFacts, classify_membership};
+        // Wiring pin: the adapter passes all-clear safety facts (exclusions
+        // are decided from native facts above the shared call), so the core
+        // verdict is float-member exactly for transient shapes.
+        let all_clear = SafetyFacts {
+            visible: true,
+            ..SafetyFacts::default()
+        };
+        assert_eq!(
+            classify_membership(&all_clear, true),
+            MembershipVerdict::FloatMember
+        );
+        assert_eq!(
+            classify_membership(&all_clear, false),
+            MembershipVerdict::Tile
+        );
+        // Every transient shape floats as a member; ordinary tiles.
+        let (mut ax, cg, app) = facts();
+        assert_eq!(classify(&ax, &cg, &app).disposition, Disposition::Tile);
+        ax.role = Some(ROLE_SHEET.to_owned());
+        ax.subrole = Some(SUBROLE_STANDARD.to_owned());
+        assert_eq!(
+            classify(&ax, &cg, &app).disposition,
+            Disposition::Float(FloatReason::Sheet)
+        );
+        ax.role = Some(ROLE_WINDOW.to_owned());
+        ax.subrole = Some(SUBROLE_SYSTEM_DIALOG.to_owned());
+        assert_eq!(
+            classify(&ax, &cg, &app).disposition,
+            Disposition::Float(FloatReason::DialogSubrole)
+        );
+        ax.subrole = Some(SUBROLE_STANDARD.to_owned());
+        ax.modal = true;
+        assert_eq!(
+            classify(&ax, &cg, &app).disposition,
+            Disposition::Float(FloatReason::Modal)
+        );
+    }
+
+    #[test]
+    fn exclusions_win_over_transient_float_origins() {
+        // Safety/exclusion order precedes the shared transient verdict:
+        // minimized, hidden-app, own-bundle, and accessory-policy facts
+        // omit even sheets, dialogs, and modals (never a close report).
+        let (mut ax, cg, mut app) = facts();
+        ax.role = Some(ROLE_SHEET.to_owned());
+        ax.subrole = Some(SUBROLE_STANDARD.to_owned());
+        ax.minimized = true;
+        assert_eq!(
+            classify(&ax, &cg, &app).disposition,
+            Disposition::Excluded(ExcludeReason::Minimized)
+        );
+        ax.minimized = false;
+        app.hidden = true;
+        assert_eq!(
+            classify(&ax, &cg, &app).disposition,
+            Disposition::Excluded(ExcludeReason::HiddenApp)
+        );
+        app.hidden = false;
+        app.is_own_bundle = true;
+        ax.role = Some(ROLE_WINDOW.to_owned());
+        ax.subrole = Some(SUBROLE_DIALOG.to_owned());
+        assert_eq!(
+            classify(&ax, &cg, &app).disposition,
+            Disposition::Excluded(ExcludeReason::OwnBundle)
+        );
+        app.is_own_bundle = false;
+        app.activation_policy = ActivationPolicy::Accessory;
+        ax.subrole = Some(SUBROLE_STANDARD.to_owned());
+        ax.modal = true;
+        assert_eq!(
+            classify(&ax, &cg, &app).disposition,
+            Disposition::Excluded(ExcludeReason::AccessoryPolicy)
+        );
     }
 
     #[test]

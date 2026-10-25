@@ -226,6 +226,15 @@ predicates stay in core too. Native role/type, ownership/modal relationships,
 controllability and client size hints must be grounded before normalization;
 app identity for rules stays truthful, not a policy verdict fabricated by JS.
 
+Tentative shared classification A (2026-10-25) adds in-process
+`classify_membership(&SafetyFacts, transient)` and `MembershipVerdict` (tile,
+float member, leave unmanaged). The single neutral transient fact describes a
+dialog/sheet/modal rather than a standalone document; existing safety exclusions
+win. macOS uses this verdict and projects float membership into the existing
+`WindowFact.floating` flag. Windows still uses its unchanged geometry/focus
+entry points: both `Dialog` and `OwnedDialog` remain exclusions, not float
+members. No raw classification field or wire version is added.
+
 Current `WorldReport::windows` is already the projected `WindowFact` roster;
 the v2 codec does not carry raw `SafetyFacts`, richer native role/app-rule facts,
 or a remote classification request. Windows calls the shared policy in-process.

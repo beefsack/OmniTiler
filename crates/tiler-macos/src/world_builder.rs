@@ -2376,7 +2376,7 @@ mod tests {
 
     #[test]
     fn native_ax_dispatch_seam_preserves_admission_shapes() {
-        use crate::classifier::{AxFacts, SUBROLE_DIALOG, SUBROLE_UNKNOWN};
+        use crate::classifier::{AxFacts, ROLE_SHEET, SUBROLE_DIALOG, SUBROLE_UNKNOWN};
         // Ordinary standard window: plain tile, everything truthful.
         let fact = collected(4242, &classified(1, AxFacts::standard()));
         assert_eq!(fact.window.0, "4242_1");
@@ -2394,6 +2394,12 @@ mod tests {
         let mut modal = AxFacts::standard();
         modal.modal = true;
         assert!(collected(4242, &classified(3, modal)).floating);
+        // Sheet role: float exception with a standard subrole.
+        let mut sheet = AxFacts::standard();
+        sheet.role = Some(ROLE_SHEET.to_owned());
+        let fact = collected(4242, &classified(8, sheet));
+        assert!(fact.floating, "sheet rides as float exception");
+        assert!(!fact.fullscreen && !fact.fixed_auto);
         // Fullscreen standard: truthful overlay, no synthetic float.
         let mut fullscreen = AxFacts::standard();
         fullscreen.fullscreen = true;

@@ -5,7 +5,8 @@
 - Stage 0 reviewed; stage 1 complete offline; stage 2 and independent offline
   stage-3 work are partial, with app-hidden option B selected. The approved D2
   core correction, separate macOS automatic-float echo removal, born-state policy
-  deletion and per-app native lifetime/flat-close path are verified offline.
+  deletion, per-app native lifetime/flat-close path and tentative shared transient
+  classifier integration are verified offline.
   Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
@@ -283,6 +284,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 | Gesture terminals do not use observation-only dispatch retries; a stale reply hides the preview until a fresh sample | Retry terminal ingress or show stale output | Stable core gesture IDs own terminal consumption; never replay a commit or paint stale shapes |
 | Remove obsolete per-predicate Windows conformance pairs; keep real public classifier comparisons and fixture expectations | Restore removed Windows wrappers or compare core predicates with themselves | Shared predicate tests belong in core; self-comparison cannot establish platform conformance |
 | Preserve the existing automatic-float echo until D2 is resolved in core | Remove the echo and accept retile on hint loss, or expand host policy | Keeps the selected product expectation and current regressions intact; does not claim completed policy ownership or add a workaround |
+| Tentative shared classification A: one neutral transient fact yields tile, float member or leave unmanaged in process | Retain native transient float policy, or widen the wire roster | Small additive classifier; macOS normalizes sheets/dialogs/modals and projects the verdict into existing floating facts. Windows Dialog and OwnedDialog exclusions remain unchanged |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -532,6 +534,57 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   policy deletion/native executor integration remain open; no new shared core
   abstraction was introduced.
 
+## Shared transient classification (2026-10-25)
+
+- Tentative option A adds `MembershipVerdict` and `classify_membership` to
+  `window_policy.rs`: existing safety gates leave unmanaged; otherwise the one
+  neutral `transient` fact selects float membership versus ordinary tile
+  eligibility. Fullscreen/maximized remain orthogonal; existing geometry/focus
+  entry points and the wire contract are unchanged.
+- macOS normalizes sheet role, dialog-family subrole and modal facts, preserving
+  their diagnostic priority and existing native exclusions. Shared core now
+  selects float membership; the existing builder projects it into
+  `WindowFact.floating`. No float echo, minimized-comment or born-state change.
+- Windows inspection confirms generic unowned `#32770` dialogs normalize to
+  `SafetyFacts.dialog` and refuse `Dialog`; owned windows refuse `OwnedDialog`
+  first. Its production classifier is unchanged. Both exclusions remain even
+  with a hypothetical transient fact, preserving the intentional divergence.
+- Coverage: all 512 safety combinations crossed with transient, all three
+  macOS transient shapes through the production classifier/builder seam,
+  native exclusion precedence, and Windows ordinary/dialog/owned combinations.
+  Source/diff review found no blocking issue or wire change.
+- Locked build PASS for core/protocol/macOS; full core/protocol tests PASS
+  (1,288), macOS PASS (1,310), portable Windows PASS (725), all zero failures.
+  Strict all-target clippy for all four crates, workspace fmt/whitespace and
+  ordered core acceptance (6/6) PASS. Windows-native and KDE runtime suites are
+  not claimed. No live or signed-bundle acceptance performed.
+
+## Native executor interface checkpoint (2026-10-25)
+
+- The remaining product select route still interprets ordinals/relative/previous
+  and trailing locally in `SelectionState::execute`; send-follow updates its
+  previous-history table. `runtime_thread.rs` also binds numbered claims before
+  the core reply. These owners must be replaced with reply-driven native
+  executors, not merely have their stale-target safety fences removed.
+- Confirmed fit limitation: `MemberAttempt.pre/post` and
+  `ViewAttempt.pre/post/baseline` carry logical workspaces only.
+  `WorldSession::stage_view_attempt` and `stage_member_attempt` consequently
+  discard native Space readbacks and publish unknown pre/post. Fresh `native[]`
+  and per-window native facts can prove later arrival, but these attempt rows
+  cannot carry native refusal preimages or a proven-then-abandoned view.
+- The [shared native-preimage extension](../porting/world-adapter-guide.md#5-raw-attempts-and-settlement)
+  is still draft; KDE's [B2 dormant-source discriminator](kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
+  additionally needs an identity/return-provenance decision. Neither is solved
+  by inventing logical receipts or a host binding table. Reuse the
+  [migration rewind row](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs)
+  and the native refusal/delayed-arrival row below the macOS workspace heading.
+- Options: A, retain unknown attempt fields plus fresh native observations and
+  mechanical arrival checks, leaving refusal/supersession acceptance open;
+  B, consume the coordinated neutral native-attempt delivery before completing
+  those executor discriminators (recommended). No additional shared change or
+  adapter settlement workaround is selected here. Reply-driven targeting can
+  be separated from this evidence limitation, but cannot close stage 3 alone.
+
 ## Stage-2 hide/unhide evidence (2026-10-25)
 
 - Stage 1 landed as `d7a87d82`. Interim app-hidden A is unchanged; this checkpoint
@@ -640,6 +693,8 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: review the shared classification interface gap,
-  then finish select/send/trailing policy removal and native executor integration
-  on the landed stage-1b contract. Do not invent shared shapes in the adapter.
+- Remaining exact next step: align the native-attempt evidence limitation with
+  the shared KDE B2 delivery/identity decision, then replace select/send/trailing
+  owners with reply-driven executors and raw native readbacks. Shared transient
+  classification is integrated offline; later policy/executor/presentation and
+  native acceptance stages remain open. Do not invent shared shapes in the adapter.

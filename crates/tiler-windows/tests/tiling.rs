@@ -2,7 +2,8 @@
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIntent, classify_gesture, prefer_modal_move};
 use tiler_core::window_policy::{
-    born_keep_latch, float_toggle_refusal, overlay_refusal, should_clear_maximize_at_admission,
+    MembershipVerdict, SafetyFacts, born_keep_latch, classify_membership, float_toggle_refusal,
+    overlay_refusal, should_clear_maximize_at_admission,
     should_clear_maximize_at_admission_with_mode, should_hold_born_fullscreen,
 };
 use tiler_windows::tiling::{
@@ -169,6 +170,77 @@ fn eligibility_exclusions() {
     facts.owned = true;
     facts.dialog = true;
     assert_eq!(classify(&facts), Err(SkipReason::OwnedDialog));
+}
+
+/// Neutral safety projection mirroring the production `classify`
+/// normalization (elevated to privileged, tool_window to tool, owned to
+/// owned_dialog; overlays ride separately and never affect membership).
+fn safety_of(facts: &WindowFacts) -> SafetyFacts {
+    SafetyFacts {
+        visible: facts.visible,
+        minimized: facts.minimized,
+        cloaked: facts.cloaked,
+        privileged: facts.elevated,
+        shell: facts.shell,
+        tool: facts.tool_window,
+        owned_dialog: facts.owned,
+        dialog: facts.dialog,
+        no_activate: facts.no_activate,
+    }
+}
+
+#[test]
+fn windows_dialog_outcomes_stay_exclusions_under_shared_membership() {
+    // Windows invokes the shared ordered geometry classifier in process
+    // and never marks its dialogs transient, so every Windows outcome is
+    // unchanged: an unowned generic `#32770` dialog reports `Dialog`, an
+    // owned window (including an owned generic dialog) reports
+    // `OwnedDialog`, and neither floats. The shared three-way membership
+    // verdict agrees with that exclusion: dialog/owned-dialog safety facts
+    // leave unmanaged even when transient, pinning the intentional
+    // owned-dialog divergence (exclusion remains, never a float member).
+    let ordinary = eligible_facts();
+    assert!(classify(&ordinary).is_ok());
+    assert_eq!(
+        classify_membership(&safety_of(&ordinary), false),
+        MembershipVerdict::Tile
+    );
+    // The transient half documents verdict meaning only: Windows never
+    // passes transient, so no Windows outcome changes.
+    assert_eq!(
+        classify_membership(&safety_of(&ordinary), true),
+        MembershipVerdict::FloatMember
+    );
+    let mut dialog = eligible_facts();
+    dialog.dialog = true;
+    assert_eq!(classify(&dialog), Err(SkipReason::Dialog));
+    assert_eq!(
+        classify_membership(&safety_of(&dialog), false),
+        MembershipVerdict::LeaveUnmanaged
+    );
+    assert_eq!(
+        classify_membership(&safety_of(&dialog), true),
+        MembershipVerdict::LeaveUnmanaged
+    );
+    let mut owned_dialog = eligible_facts();
+    owned_dialog.owned = true;
+    owned_dialog.dialog = true;
+    assert_eq!(classify(&owned_dialog), Err(SkipReason::OwnedDialog));
+    assert_eq!(
+        classify_membership(&safety_of(&owned_dialog), false),
+        MembershipVerdict::LeaveUnmanaged
+    );
+    assert_eq!(
+        classify_membership(&safety_of(&owned_dialog), true),
+        MembershipVerdict::LeaveUnmanaged
+    );
+    let mut owned = eligible_facts();
+    owned.owned = true;
+    assert_eq!(classify(&owned), Err(SkipReason::OwnedDialog));
+    assert_eq!(
+        classify_membership(&safety_of(&owned), true),
+        MembershipVerdict::LeaveUnmanaged
+    );
 }
 
 #[test]

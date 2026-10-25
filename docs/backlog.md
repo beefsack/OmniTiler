@@ -126,6 +126,15 @@ decisions of 2026-09-24 are under
   verdict ingress removed); remaining cleanup/abstraction review stays open, no
   known correctness defect waived. Coordinate with the P2 fixture follow-ups
   row and the repository cleanup pass.
+- P1 | Full core/platform interface, API and ownership review | After the macOS
+  and KDE v2 ports land, review the complete Windows/KDE/macOS boundary together.
+  Start with the [macOS abstraction-fit review](changes/macos-world-v2-port.md#abstraction-fit-review)
+  and [parked float-fact review](changes/macos-world-v2-port.md#parked-post-port-review):
+  `WindowFact.floating` adapter echoes versus genuine host signals; tentative
+  [three-way shared classification](changes/macos-world-v2-port.md#shared-transient-classification-2026-10-25);
+  `minimized` covering host-hidden; DPI/coordinate basis; and the neutral settling
+  marker investigation ([guide](porting/world-adapter-guide.md#coordinates-and-safety)).
+  Port delivery does not pre-approve these interface changes.
 - P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v1 consumers and the
   TypeScript born-maximized copy remain intentionally stale; the port replaces
   them together with no dual route, per the finalized

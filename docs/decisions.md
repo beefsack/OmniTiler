@@ -51,6 +51,9 @@ Tentative index (user review pending; not approved product rules):
 - KDE v2 migration/backing and native-bound empty lifecycle oracle reconciliation
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions));
   preserves existing core behavior, not a new reuse/removal policy
+- Shared transient three-way classification A
+  ([port record](changes/macos-world-v2-port.md#shared-transient-classification-2026-10-25));
+  in-process only, Windows dialog exclusions unchanged
 
 ## KDE rapid directional input
 
@@ -4014,6 +4017,12 @@ platform API behavior.
   fullscreen, stop and return to the user. Implementation gaps are closed
   offline; [native verification](backlog.md) remains pending, outcome TBD.
 - R-SPC-01: transient dialogs float rather than tile; Windows owned-dialog exclusion remains an intentional divergence, with parent-focus/modal legs TBD (User 2026-10-10, 0.1 triage D02).
+  Tentative implementation A (2026-10-25): one neutral transient host fact drives
+  the shared in-process tile/float-member/leave-unmanaged classifier. macOS
+  normalizes sheet/dialog/modal facts and projects the verdict into existing
+  `WindowFact.floating`; no wire change. Existing safety gates win, and Windows
+  `Dialog` as well as `OwnedDialog` exclusions stay unchanged. This interface
+  choice remains tentative for the post-port core/platform review.
 - R-FLT-13: ordinary floats hide while their workspace is not shown and retain their frame across the switch (User 2026-10-10, 0.1 triage D19).
 - R-FLT-12: focusing an overlapping float raises it; no project lower verb for
   now (User 2026-10-10, 0.1 triage D20). KDE automatic fixed floats share the

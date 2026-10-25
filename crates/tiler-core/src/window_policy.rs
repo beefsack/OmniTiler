@@ -173,6 +173,34 @@ pub const fn classify_focus(facts: &SafetyFacts) -> Result<(), EligibilityRefusa
     classify_geometry(facts, false, false)
 }
 
+/// Neutral three-way membership verdict for one observed window.
+///
+/// Adapters invoke this in process and project `FloatMember` into the
+/// existing `WindowFact.floating` flag; no wire contract change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipVerdict {
+    Tile,
+    FloatMember,
+    LeaveUnmanaged,
+}
+
+/// Three-way membership classification over normalized facts plus ONE
+/// neutral host fact: `transient` (dialog/sheet/modal, not a standalone
+/// document). Any held safety gate (including `owned_dialog`/`dialog`)
+/// leaves unmanaged even when transient; then transient floats as a
+/// member; otherwise tile. Fullscreen/maximized ride separately and never
+/// affect this verdict.
+#[must_use]
+pub const fn classify_membership(facts: &SafetyFacts, transient: bool) -> MembershipVerdict {
+    if !safety_eligible(facts) {
+        MembershipVerdict::LeaveUnmanaged
+    } else if transient {
+        MembershipVerdict::FloatMember
+    } else {
+        MembershipVerdict::Tile
+    }
+}
+
 /// Geometry eligibility for fresh writes: safe AND
 /// not overlaid. This matches Windows `classify`'s boolean geometry
 /// eligibility, NOT generic tile membership: a retained overlaid member keeps
@@ -830,6 +858,82 @@ mod tests {
         assert_eq!(
             classify_focus(&no_activate_only).err(),
             Some(EligibilityRefusal::NoActivate)
+        );
+    }
+
+    #[test]
+    fn membership_verdict_transient_ordinary_safety_precedence() {
+        // Exhaustive: every safety combination crossed with the transient
+        // fact. Any held safety gate leaves unmanaged (even when transient);
+        // all-clear transient floats as a member; all-clear ordinary tiles.
+        for bits in 0..512u32 {
+            let facts = SafetyFacts {
+                visible: bits & 1 != 0,
+                minimized: bits & 2 != 0,
+                cloaked: bits & 4 != 0,
+                privileged: bits & 8 != 0,
+                shell: bits & 16 != 0,
+                tool: bits & 32 != 0,
+                owned_dialog: bits & 64 != 0,
+                dialog: bits & 128 != 0,
+                no_activate: bits & 256 != 0,
+            };
+            let safe = safety_eligible(&facts);
+            for transient in [false, true] {
+                let expected = if !safe {
+                    MembershipVerdict::LeaveUnmanaged
+                } else if transient {
+                    MembershipVerdict::FloatMember
+                } else {
+                    MembershipVerdict::Tile
+                };
+                assert_eq!(
+                    classify_membership(&facts, transient),
+                    expected,
+                    "bits={bits:09b} transient={transient}"
+                );
+            }
+        }
+        // Ordinary all-clear tiles; transient all-clear floats as a member.
+        assert_eq!(
+            classify_membership(&safety_all_clear(), false),
+            MembershipVerdict::Tile
+        );
+        assert_eq!(
+            classify_membership(&safety_all_clear(), true),
+            MembershipVerdict::FloatMember
+        );
+        // Windows divergence pin: an owned dialog stays unmanaged even when
+        // marked transient, and an unowned dialog likewise never floats.
+        let mut owned = safety_all_clear();
+        owned.owned_dialog = true;
+        assert_eq!(
+            classify_membership(&owned, true),
+            MembershipVerdict::LeaveUnmanaged
+        );
+        let mut dialog = safety_all_clear();
+        dialog.dialog = true;
+        assert_eq!(
+            classify_membership(&dialog, true),
+            MembershipVerdict::LeaveUnmanaged
+        );
+        assert_eq!(
+            classify_membership(&dialog, false),
+            MembershipVerdict::LeaveUnmanaged
+        );
+        // Safety precedence conflicts: transient loses to every gate.
+        let invisible = SafetyFacts::default();
+        assert_eq!(
+            classify_membership(&invisible, true),
+            MembershipVerdict::LeaveUnmanaged
+        );
+        let no_activate_only = SafetyFacts {
+            no_activate: true,
+            ..safety_all_clear()
+        };
+        assert_eq!(
+            classify_membership(&no_activate_only, true),
+            MembershipVerdict::LeaveUnmanaged
         );
     }
 
