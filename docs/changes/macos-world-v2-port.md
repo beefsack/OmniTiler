@@ -754,6 +754,17 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 - No positively grounded game classification is available; ordinary native
   fullscreen must not masquerade as the game's `paused` lane. Native fullscreen
   and full-display safety vetoes remain; full game-lane acceptance is unproven.
+- Shared-source update through `fc2a1dbe` adds remembered-workspace focus on
+  actual view changes and restricts pager focus marks to the current workspace.
+  The macOS focus dispatcher still admits explicit focus only for Focus tickets,
+  discarding the new correlated select/switch effects. This is an uncovered
+  integration gap, not a passing focus-restore result. Before merely broadening
+  that filter, test asynchronous native selection: the requested window may
+  still be off-Space when the one-shot effect is published. Options are a
+  correlation-bound native pending effect released after proven arrival, or
+  a neutral core settlement-time effect if the native approach cannot preserve
+  cancellation/freshness. Prefer the native discriminator first; no shared
+  change is selected. Never reapply after a newer switch or user focus change.
 - Pager miniatures have no macOS painter; the existing menu-bar indicator is
   Space-level. Independent highlight overrides/full-strength border/dim same-RGB
   fill remain unfinished. No no-op public flags or unused painter scaffold is
@@ -761,16 +772,19 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   pager carrier; prefer the existing indicator surface, subject to a product
   decision. Underlay trigger/carrier work remains parked; active drag preview
   continues consuming the core gesture result.
-- Final offline draft gates: locked macOS/core/protocol build PASS; macOS full
+- Final offline draft gates after consuming shared source through `fc2a1dbe`:
+  locked macOS/core/protocol build PASS; macOS full
   tests PASS (1,335: 1,187 library + 148 integration); core/protocol full tests
-  PASS (1,308); strict all-target clippy for all three PASS; workspace fmt,
+  PASS (1,314: 1,283 core + 31 protocol); strict all-target clippy for all three PASS; workspace fmt,
   whitespace and ordered acceptance 6/6 PASS. Earlier bounded gate invocations
   timed out between test binaries; sequential reruns with a larger bound passed.
   These gates do not waive the identified raw-evidence defects. No live tests,
   signed-bundle acceptance, cross-target or Windows gates claimed here.
 - Exact next action: repair the native dispatch/creation evidence seam, then
   consume it for trailing sends and finish the executor/core discriminators
-  before accepting the atomic targeting cutover. Keep pager/underlay/game-lane
+  before accepting the atomic targeting cutover. Prove the newly published
+  selection-focus effect survives native arrival without fighting newer input.
+  Keep pager/underlay/game-lane
   and sticky/native hide-reveal acceptance explicitly incomplete.
 
 ## Risks and open evidence
