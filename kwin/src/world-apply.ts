@@ -18,7 +18,7 @@
 // elsewhere settles superseded-external; mere mismatches hold.
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
-import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult } from "./world-report";
+import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter } from "./world-report";
 import { isCanonicalU64 } from "./world-seq";
 import { WorldAdapterState } from "./world-state";
 
@@ -33,9 +33,10 @@ export interface ApplyEnv {
     dispatchWatermark: string;
     // Terminal result for the filed command that this capture drained
     // (requester-only via TakeCommandResult, never the capture lane):
-    // migration member/source provenance when it names this transfer's
-    // target, else the desired rows homed at the target decide. Null when
-    // the snapshot alone is the outcome.
+    // migration source provenance when it names this transfer's
+    // target, else the paired refill child or observed homing decides.
+    // Never member authority: the desired rows homed at the target decide
+    // the member set. Null when the snapshot alone is the outcome.
     takeResult: WorldReplyResult | null;
     log: (message: string) => void;
     // Native setters through public KWin state only.
@@ -469,6 +470,7 @@ function actuateViewForTransfer(
     entryObs: string,
     transfer: WorldReplyTransfer,
 ): boolean {
+    const { state } = env;
     if (!replyFresh(env, reply, entryObs)) {
         return false;
     }
@@ -478,12 +480,25 @@ function actuateViewForTransfer(
     if (wsRef === null || outRef === null) {
         return false;
     }
+    let threw = false;
+    let ok = false;
     try {
-        env.switchView(wsRef, outRef);
+        ok = env.switchView(wsRef, outRef);
     } catch (error) {
         void error;
-        return targetNative !== null && liveViewShowsOn(env, transfer.out, targetNative);
+        threw = true;
     }
+    // One native view write ran: the mechanical disposition rides the next
+    // report under the owning phase identity (the window follow parent or
+    // the migration parent). Native views never ride as logical
+    // pre/post/base evidence (host-owned gap); the exact logical target
+    // correlation plus the real setter is the whole row.
+    state.recordViewAttempt({
+        op: transfer.op, out: transfer.out, ws: transfer.ws,
+        setter: threw ? "threw" : ok ? "accepted" : "refused",
+        pre: null, post: null, base: null,
+        attemptMs: isCanonicalU64(state.lastClock) ? state.lastClock : "0",
+    });
     return targetNative !== null && liveViewShowsOn(env, transfer.out, targetNative);
 }
 
@@ -498,32 +513,49 @@ function actuateViewForTransfer(
 // check plus exact-output read-back proof is the complete safety case:
 // wrong-output visibility never proves, throws stay ambiguous, and any
 // later external view move settles superseded instead of fighting.
+// Same-flight view-switch disposition: whether fresh proof shows the
+// target, plus the mechanical setter disposition (`null` when no setter
+// ran). The entry freshness check above is the freshness proof;
+// read-back decides.
+interface SameFlightView {
+    proven: boolean;
+    setter: FrameSetter | null;
+}
+
 function actuateViewSameFlightNative(
     env: ApplyEnv,
     out: string,
     nativeWs: string,
-): boolean {
+): SameFlightView {
     const wsRef = safeResolve(() => env.desktopById(nativeWs));
     const outRef = safeResolve(() => env.resolveOutput(out));
     if (wsRef === null || outRef === null) {
-        return false;
+        return { proven: false, setter: null };
     }
+    let threw = false;
+    let ok = false;
     try {
-        env.switchView(wsRef, outRef);
+        ok = env.switchView(wsRef, outRef);
     } catch (error) {
         void error;
-        return liveViewShowsOn(env, out, nativeWs);
+        threw = true;
     }
-    return liveViewShowsOn(env, out, nativeWs);
+    return {
+        proven: liveViewShowsOn(env, out, nativeWs),
+        setter: threw ? "threw" : ok ? "accepted" : "refused",
+    };
 }
 
 function actuateViewSameFlight(
     env: ApplyEnv,
     reply: WorldReply,
     transfer: WorldReplyTransfer,
-): boolean {
+): SameFlightView {
     const targetNative = nativeWsOf(reply, transfer.out, transfer.ws);
-    return targetNative !== null && actuateViewSameFlightNative(env, transfer.out, targetNative);
+    if (targetNative === null) {
+        return { proven: false, setter: null };
+    }
+    return actuateViewSameFlightNative(env, transfer.out, targetNative);
 }
 
 // Shared follow-view settlement for one window transfer whose membership
@@ -566,6 +598,11 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // this dispatch fence, never against the dirty flag (self-sent dirty
     // must not stop multi-window geometry/membership).
     const entryObs = env.dispatchWatermark;
+    // Original write stamp for every mechanical attempt this apply
+    // records: the broker dispatch-clock reading, never wall-clock. "0"
+    // means unreported; redelivery after a lost acknowledgement reuses
+    // the stored stamps (the core consumes each idempotently).
+    const stamp = isCanonicalU64(state.lastClock) ? state.lastClock : "0";
     const byWin = new Map<string, ObservedWindow>();
     for (const domain of observation.domains) {
         for (const w of domain.windows) {
@@ -670,6 +707,16 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                             void error;
                             converged = null;
                         }
+                        // Mechanical fact only: the setter disposition plus
+                        // the immediate readback (never a verdict). The core
+                        // owns clamp/transient suppression over this plus
+                        // the fresh facts; the local budget above stays as
+                        // the host retry fence.
+                        state.recordFrameAttempt({
+                            win: row.win, target: [targetFrame[0], targetFrame[1], targetFrame[2], targetFrame[3]],
+                            setter: "accepted", readback: converged === null ? null : [converged.x, converged.y, converged.w, converged.h],
+                            dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
+                        });
                         if (converged !== null && sameRect(converged, targetFrame)) {
                             state.resetClamp(key);
                         } else {
@@ -687,6 +734,15 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                             void error;
                             proof = null;
                         }
+                        // A setter ran, so its disposition plus the immediate
+                        // readback rides the next report (refused or threw,
+                        // never a verdict).
+                        const sweepSetter: FrameSetter = threw ? "threw" : "refused";
+                        state.recordFrameAttempt({
+                            win: row.win, target: [targetFrame[0], targetFrame[1], targetFrame[2], targetFrame[3]],
+                            setter: sweepSetter, readback: proof === null ? null : [proof.x, proof.y, proof.w, proof.h],
+                            dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
+                        });
                         if (proof !== null && sameRect(proof, targetFrame)) {
                             state.resetClamp(key);
                         } else if (!threw && !ok) {
@@ -829,6 +885,11 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             // safe expected echoes: the homing may legitimately show the
             // new output already.
             if (!betweenStepsOk(env, reply, entryObs, observed)) {
+                state.recordMemberAttempt({
+                    op, win: row.win, out: targetOut, ws: targetWs,
+                    setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                    pre: null, post: null, attemptMs: stamp,
+                });
                 result.held += 1;
                 if (midApplyStopped(env, entryObs)) {
                     result.stoppedMidApply = true;
@@ -849,8 +910,18 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             midHome = null;
         }
         if (midHome !== null && midHome.out === targetOut && midHome.ws === targetNative) {
-            if (outAttempted && outOk) {
-                result.membershipWrites += 1;
+            if (outAttempted) {
+                if (outOk) {
+                    result.membershipWrites += 1;
+                }
+                // The output setter ran and homing already shows the
+                // target: record the real disposition (threw stays
+                // ambiguous, refused-but-arrived stays refused).
+                state.recordMemberAttempt({
+                    op, win: row.win, out: targetOut, ws: targetWs,
+                    setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                    pre: null, post: null, attemptMs: stamp,
+                });
             }
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
             continue;
@@ -865,6 +936,13 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         if (midHome === null || (!echoOk && ((midHome.out !== observed.out && midHome.out !== targetOut) || (midHome.ws !== observed.ws && midHome.ws !== targetNative)))) {
             // Third-location proof arrived between the two setters: external
             // input supersedes; never fight it.
+            if (outAttempted) {
+                state.recordMemberAttempt({
+                    op, win: row.win, out: targetOut, ws: targetWs,
+                    setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                    pre: null, post: null, attemptMs: stamp,
+                });
+            }
             state.settleAttempt(op, "superseded-external", "");
             if (outAttempted && outOk) {
                 result.membershipWrites += 1;
@@ -890,6 +968,21 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         } catch (error) {
             void error;
             proof = null;
+        }
+        // The mechanical disposition plus the immediate homing readback
+        // rides the next report when a setter ran. Native homing never
+        // rides as logical pre/post evidence (host-owned gap); the exact
+        // logical target correlation plus the real setter is the whole row.
+        if (outAttempted || wsAttempted) {
+            const memberSetter: FrameSetter = threw
+                ? "threw"
+                : (outAttempted && !outOk) || (wsAttempted && !wsOk)
+                    ? "refused"
+                    : "accepted";
+            state.recordMemberAttempt({
+                op, win: row.win, out: targetOut, ws: targetWs,
+                setter: memberSetter, pre: null, post: null, attemptMs: stamp,
+            });
         }
         if (proof !== null && proof.out === targetOut && proof.ws === targetNative) {
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
@@ -949,8 +1042,15 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         const rect: [number, number, number, number] = row.frame;
         const target = { x: rect[0], y: rect[1], w: rect[2], h: rect[3] };
-        if (observed.minimized || observed.fullscreen || observed.sticky || observed.fitExcluded) {
-            // Overlay/game guard: never an automatic float frame write.
+        if (observed.minimized || observed.fullscreen || observed.sticky || observed.maximized) {
+            // Overlay guard: minimized, fullscreen, sticky, and maximized
+            // lifetimes never take an explicit float frame write. Bare
+            // floating never blocks: the observer couples floating into
+            // fitExcluded, so testing fitExcluded here would refuse every
+            // converged intentional float its core-directed placement and
+            // hold the retained operation forever. Fixed-size windows ride
+            // the setter truthfully (an explicit refusal records refused
+            // evidence and the core settles it) instead of holding blind.
             state.noteFeedback({ op, kind: "property", outcome: "unattempted", hold: "refused-target" });
             result.held += 1;
             continue;
@@ -1021,8 +1121,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // Arm possibly-executed BEFORE the first native setter.
         state.armPossiblyExecuted(op, "property", `${row.out}/${row.ws}`);
         let threw = false;
+        let floatOk = false;
         try {
-            env.setGeometry(observed.ref, target);
+            floatOk = env.setGeometry(observed.ref, target);
         } catch (error) {
             void error;
             threw = true;
@@ -1034,6 +1135,18 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             proof = null;
         }
+        // One explicit placement write ran: the mechanical disposition
+        // plus the immediate pre-write and post-write frames rides the
+        // next report under the stable operation correlation. The setter
+        // alone never proves completion; the core settles from this
+        // evidence plus the fresh facts.
+        state.recordFrameAttempt({
+            win: row.win, target: [target.x, target.y, target.w, target.h],
+            setter: threw ? "threw" : floatOk ? "accepted" : "refused",
+            readback: proof === null ? null : [proof.x, proof.y, proof.w, proof.h],
+            dpiBefore: null, dpiAfter: null, attemptMs: stamp,
+            op, pre: [liveRect.x, liveRect.y, liveRect.w, liveRect.h],
+        });
         if (proof !== null && sameRect(proof, [target.x, target.y, target.w, target.h])) {
             result.geometryWrites += 1;
             state.noteFeedback({ op, kind: "property", outcome: "applied", hold: "" });
@@ -1395,7 +1508,14 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             threw = true;
         }
-        void ok;
+        // One native view write ran: the mechanical disposition rides the
+        // next report under the owning view identity. Native views never
+        // ride as logical pre/post/base evidence (host-owned gap).
+        state.recordViewAttempt({
+            op: t.op, out: t.out, ws: t.ws,
+            setter: threw ? "threw" : ok ? "accepted" : "refused",
+            pre: null, post: null, base: null, attemptMs: stamp,
+        });
         if (targetNative !== null && liveViewShowsOn(env, t.out, targetNative)) {
             result.viewWrites += 1;
             state.settleAttempt(t.op, "applied", "");
@@ -1417,10 +1537,14 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // 3b. Whole-workspace migration: one retained migration transfer moves
     // the full member set plus the follow views (the target output shows the
     // migrated workspace, the source refills to the core-retained refill
-    // view, else its first remaining desired row). Members come from the correlated command result when it names
-    // this transfer's target, else from the desired rows homed at the
-    // target; never invented. The source output comes from the result, else
-    // from the pending members' shared observed homing. Each member
+    // view). Members come from the core-published desired rows homed at the
+    // target under a controlled target scope (never the requester-only
+    // terminal, which external clients cannot expose to the actuator): a
+    // missing, held, or untouched scope authorizes no view and no
+    // settlement, while an empty desired set under a controlled scope is
+    // complete and proceeds to the view gates below. The source output
+    // comes from the advisory correlated result, else the paired refill
+    // child, else the pending members' shared observed homing. Each member
     // actuates membership-only (D8: no geometry writes for fullscreen
     // members; tiled frames converge on later reports), exactly once per
     // stable operation id: confirmed members settle without new calls,
@@ -1436,32 +1560,40 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.stoppedMidApply = true;
             break;
         }
-        const migrationResult = env.takeResult !== null && env.takeResult.op === "migrate-workspace" &&
-            env.takeResult.targetOut === t.out && env.takeResult.targetWs === t.ws
-            ? env.takeResult
-            : null;
-        let members: string[] | null = null;
-        if (migrationResult !== null) {
-            // The correlated result names the exact member set, including
-            // an explicitly empty one: an originally-empty migration still
-            // moves both views (core verifies target follow plus the
-            // explicit source refill for it). Only the command reply
-            // carries this proof; later observes without homed rows hold
-            // rather than guess empty versus delayed.
-            members = [...migrationResult.members];
-        } else {
-            const homed = reply.windows
-                .filter((w) => w.out === t.out && w.ws === t.ws)
-                .map((w) => w.win);
-            members = homed.length > 0 ? homed : null;
-        }
-        if (members === null) {
+        // Core-published actuation scope for the target cell (mirroring the
+        // Windows v2 `scope_actuatable` gate): Controlled actuates, and
+        // Untouched (core-owned floating workspaces) actuates only when its
+        // output row exists unheld and no gesture barrier is up. Missing
+        // scopes, Hold, and Untouched with a held/missing output or an
+        // active gesture authorize no write and no retirement: holds with
+        // no view, never missing-equals-empty. No member/frame authority
+        // bypass: the row gates below keep their own Controlled checks.
+        const scopeAuthority = reply.scopes.find((s) => s.scope === `${t.out}/${t.ws}`)?.auth;
+        const outputUnheld = reply.outputs.some((o) => o.out === t.out && o.hold === "");
+        const scopeActuatable = scopeAuthority === "controlled" ||
+            (scopeAuthority === "untouched" && outputUnheld && !observation.gesture);
+        if (!scopeActuatable) {
             result.held += 1;
             continue;
         }
+        // Desired member rows homed at the target: never the requester-only
+        // terminal, which cannot reach an external client's actuator. An
+        // empty desired set under the controlled scope above is complete and
+        // proceeds to the view gates; any member not yet observable holds
+        // without inventing writes for unknown ids.
+        const members = reply.windows
+            .filter((w) => w.out === t.out && w.ws === t.ws)
+            .map((w) => w.win);
+        // Advisory source provenance for the refill view only (never member
+        // authority): the correlated result when it names this transfer's
+        // target, else the paired child or observed homing below.
+        const advisorySourceOut = env.takeResult !== null && env.takeResult.op === "migrate-workspace" &&
+            env.takeResult.targetOut === t.out && env.takeResult.targetWs === t.ws
+            ? env.takeResult.sourceOut
+            : null;
         if (members.some((id) => !byWin.has(id))) {
             // Not every member is observable yet (actuation lag or a stale
-            // result): hold without inventing writes for unknown ids.
+            // snapshot): hold without inventing writes for unknown ids.
             result.held += 1;
             continue;
         }
@@ -1485,7 +1617,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // it, else the paired refill child, else the pending members'
         // shared observed homing (all members leave the same source
         // scope). Never the target where members already arrived.
-        let sourceOut: string | null = migrationResult !== null ? migrationResult.sourceOut : null;
+        let sourceOut: string | null = advisorySourceOut;
         if (sourceOut === null && pairedRefill !== undefined && pairedRefill.out !== "") {
             sourceOut = pairedRefill.out;
         }
@@ -1650,6 +1782,11 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 }
                 if (!betweenStepsOk(env, reply, entryObs, observed)) {
                     traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=skipped set=skipped proof=${pre} branch=failed-between`);
+                    state.recordMemberAttempt({
+                        op: t.op, win: id, out: t.out, ws: t.ws,
+                        setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                        pre: null, post: null, attemptMs: stamp,
+                    });
                     result.held += 1;
                     failed = true;
                     break;
@@ -1663,7 +1800,14 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
             if (home !== null && home.out === t.out && home.ws === targetNative) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=skipped set=skipped proof=target branch=homed-no-write`);
-                result.membershipWrites += 1;
+                if (needOutMove && outRef !== null) {
+                    result.membershipWrites += 1;
+                    state.recordMemberAttempt({
+                        op: t.op, win: id, out: t.out, ws: t.ws,
+                        setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                        pre: null, post: null, attemptMs: stamp,
+                    });
+                }
                 state.noteAppliedWindowTarget(id, t.op, t.out, targetNative);
                 continue;
             }
@@ -1679,6 +1823,13 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             if (home === null || (!echoOk && ((home.out !== observed.out && home.out !== t.out) ||
                 (home.ws !== observed.ws && home.ws !== targetNative)))) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=skipped proof=${midShape} branch=superseded`);
+                if (needOutMove && outRef !== null) {
+                    state.recordMemberAttempt({
+                        op: t.op, win: id, out: t.out, ws: t.ws,
+                        setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                        pre: null, post: null, attemptMs: stamp,
+                    });
+                }
                 state.settleAttempt(t.op, "superseded-external", "");
                 superseded = true;
                 break;
@@ -1704,6 +1855,19 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 void error;
                 proof = null;
             }
+            // One setter ran: the disposition rides the next report under
+            // the stable migration identity. No setter ran means no row.
+            if ((needOutMove && outRef !== null) || setTag !== "skipped") {
+                const migrateSetter: FrameSetter = threw || setTag === "threw"
+                    ? "threw"
+                    : setTag === "done-false" || (needOutMove && !outOk)
+                        ? "refused"
+                        : "accepted";
+                state.recordMemberAttempt({
+                    op: t.op, win: id, out: t.out, ws: t.ws,
+                    setter: migrateSetter, pre: null, post: null, attemptMs: stamp,
+                });
+            }
             const proofShape = migrationHomeShape(proof, observed, targetLogical);
             if (proof !== null && proof.out === t.out && proof.ws === targetNative) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=${setTag} proof=${proofShape} branch=homed`);
@@ -1725,12 +1889,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         // Follow views under the same stable operation: the target output
-        // shows the migrated workspace; the source refills to the paired
-        // refill child (R-WS-12 G-37 core result), else to its first
-        // remaining desired row (replies predating the refill transfer
-        // only). NO follow/refill view switches until ALL fresh member
-        // arrival proof is in: a partial failure or stale membership
-        // leaves every view untouched so unmoved members stay visible.
+        // shows the migrated workspace; the source refills only to the
+        // paired refill child. Absence of a paired child authorizes no
+        // source view: the adapter never invents a refill. NO follow/refill
+        // view switches until ALL fresh member arrival proof is in: a
+        // partial failure or stale membership leaves every view untouched
+        // so unmoved members stay visible.
         // Each proves independently on its exact output; the transfer
         // settles applied only with all members homed and both views
         // proven. Wrong-output visibility never proves.
@@ -1738,9 +1902,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         const targetShown = liveViewShowsLogical(env, reply, t.out, t.ws);
         let refillChild = pairedRefill;
         // Newer external input supersedes a proven-then-abandoned refill
-        // child (same rule as the general view loop): drop it for this
-        // apply and let the rows-lowest fallback serve pre-transfer
-        // replies; the next core report converges without it.
+        // child: drop it for this apply with no replacement.
         if (refillChild !== undefined && sourceOut !== null) {
             const appliedView = state.appliedViewTarget.get(sourceOut);
             const topoNow = observation.topology.find((entry) => entry.out === sourceOut);
@@ -1755,13 +1917,6 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         if (refillChild !== undefined) {
             refillWs = refillChild.ws;
             refillOp = refillChild.op;
-        } else if (sourceOut !== null) {
-            const candidates = reply.workspaces
-                .filter((w) => w.out === sourceOut && w.exist && w.bind !== "" && w.bind !== t.ws)
-                .sort((a, b) => a.order - b.order);
-            if (candidates.length > 0) {
-                refillWs = (candidates[0] as { bind: string }).bind;
-            }
         }
         const refillNative = refillWs === null || refillChild === undefined
             ? refillWs
@@ -1772,40 +1927,48 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             if (!targetShown) {
                 // Same-flight switch: the entry check above is the
                 // freshness proof; read-back decides.
-                if (actuateViewSameFlight(env, reply, t)) {
+                const targetView = actuateViewSameFlight(env, reply, t);
+                if (targetView.setter !== null) {
+                    // One native target-view write ran under the stable
+                    // migration identity: mechanical fact only (native
+                    // views never ride as logical evidence).
+                    state.recordViewAttempt({
+                        op: t.op, out: t.out, ws: t.ws,
+                        setter: targetView.setter, pre: null, post: null, base: null,
+                        attemptMs: stamp,
+                    });
+                }
+                if (targetView.proven) {
                     result.viewWrites += 1;
                 }
             }
-            if (refillWs !== null && sourceOut !== null && refillNative !== null && !liveViewShowsOn(env, sourceOut, refillNative)) {
-                if (refillChild !== undefined) {
-                    if (state.isHeldAmbiguous(refillOp)) {
-                        // Never retry an ambiguous refill view under a fresh
-                        // revision: hold for proof instead of a second call.
-                        result.held += 1;
-                    } else {
-                        // Stable child op identity arms possibly-executed
-                        // BEFORE the view setter, with proof/refusal
-                        // feedback. Same-flight switch: the entry check
-                        // above already proved freshness, so the target
-                        // switch's own synchronous signal cannot fail this
-                        // attempt closed.
-                        state.armPossiblyExecuted(refillOp, "view", `${sourceOut}/${refillWs}`);
-                        if (actuateViewSameFlight(env, reply, { ...refillChild, follow: false })) {
-                            result.viewWrites += 1;
-                            state.settleAttempt(refillOp, "applied", "");
-                            state.noteAppliedViewTarget(sourceOut, refillOp, refillNative ?? refillWs);
-                        } else {
-                            result.held += 1;
-                        }
-                    }
+            if (refillWs !== null && refillChild !== undefined && sourceOut !== null && refillNative !== null && !liveViewShowsOn(env, sourceOut, refillNative)) {
+                if (state.isHeldAmbiguous(refillOp)) {
+                    // Never retry an ambiguous refill view under a fresh
+                    // revision: hold for proof instead of a second call.
+                    result.held += 1;
                 } else {
-                    // Legacy fallback for replies predating the refill
-                    // transfer: the refill rides the parent operation with
-                    // no separate arming, exactly as before. The fallback
-                    // workspace is already the native binding, never a
-                    // logical id, so it switches without row resolution.
-                    if (actuateViewSameFlightNative(env, sourceOut, refillWs)) {
+                    // Stable child op identity arms possibly-executed
+                    // BEFORE the view setter, with proof/refusal
+                    // feedback. Same-flight switch: the entry check
+                    // above already proved freshness, so the target
+                    // switch's own synchronous signal cannot fail this
+                    // attempt closed.
+                    state.armPossiblyExecuted(refillOp, "view", `${sourceOut}/${refillWs}`);
+                    const refillView = actuateViewSameFlight(env, reply, { ...refillChild, follow: false });
+                    if (refillView.setter !== null) {
+                        state.recordViewAttempt({
+                            op: refillOp, out: refillChild.out, ws: refillChild.ws,
+                            setter: refillView.setter, pre: null, post: null, base: null,
+                            attemptMs: stamp,
+                        });
+                    }
+                    if (refillView.proven) {
                         result.viewWrites += 1;
+                        state.settleAttempt(refillOp, "applied", "");
+                        state.noteAppliedViewTarget(sourceOut, refillOp, refillNative ?? refillWs);
+                    } else {
+                        result.held += 1;
                     }
                 }
             }

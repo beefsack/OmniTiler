@@ -1911,6 +1911,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             anchorFallback: settings.readAnchorFallbackLive(),
             noSpaceResult: settings.readNoSpaceResultLive(),
             creationAttempts: state.creationAttemptsForReport(),
+            frameAttempts: state.framesForReport(),
+            memberAttempts: state.memberAttemptsForReport(),
+            viewAttempts: state.viewAttemptsForReport(),
+            clearAttempts: state.clearAttemptsForReport(),
         });
         const source = mintSource();
         const seq = mintSourceSeq();

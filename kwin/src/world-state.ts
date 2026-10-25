@@ -9,10 +9,15 @@
 import { compareU64, incrementU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import {
     isWorldRejection,
+    type FrameSetter,
+    type WorldClearAttempt,
     type WorldCommand,
     type WorldCreationAttempt,
+    type WorldFrameAttempt,
+    type WorldMemberAttempt,
     type WorldReply,
     type WorldReplyResult,
+    type WorldViewAttempt,
 } from "./world-report";
 
 export type AttemptOutcome =
@@ -67,6 +72,45 @@ export interface CaptureFlight {
     // Terminal results arrive requester-only via TakeCommandResult, never
     // in the capture reply.
     clientCmd: string | null;
+    // Exact facts this flight delivered (snapshots of the pending attempt
+    // maps at dispatch): a bound ready reply consumes exactly-equal
+    // entries, so a lost acknowledgement redelivers the same attempt
+    // stamps while a newer update for the same key survives its
+    // predecessor's ack. Never a verdict: the core owns every outcome.
+    delivered: AttemptFlight;
+}
+
+// Mechanical write/readback facts delivered by one capture flight (see
+// CaptureFlight.delivered). Snapshots only; the live pending maps keep
+// latest-wins until the bound reply consumes them.
+export interface AttemptFlight {
+    frames: WorldFrameAttempt[];
+    members: WorldMemberAttempt[];
+    views: WorldViewAttempt[];
+    clears: WorldClearAttempt[];
+}
+
+// Latest-wins bounds mirror the core report caps (world_report.rs
+// MAX_WORLD_*): eviction drops the oldest entry past the cap so a report
+// can never refuse over-cap. Clears share the member cap scale; the lane
+// stays empty in production (no native clear actuation) but the bound
+// keeps the shape honest.
+const MAX_FRAME_ATTEMPTS = 1024;
+const MAX_MEMBER_ATTEMPTS = 1024;
+const MAX_VIEW_ATTEMPTS = 1024;
+const MAX_CLEAR_ATTEMPTS = 1024;
+
+function isSetter(value: unknown): value is FrameSetter {
+    return value === "accepted" || value === "refused" || value === "threw";
+}
+
+function isRectTuple(value: unknown): value is [number, number, number, number] {
+    return Array.isArray(value) && value.length === 4 &&
+        (value as ReadonlyArray<unknown>).every((n) => typeof n === "number" && Number.isInteger(n));
+}
+
+function isStamp(value: unknown): value is string {
+    return isCanonicalU64(value);
 }
 
 export class WorldAdapterState {
@@ -125,6 +169,18 @@ export class WorldAdapterState {
     // rotates. Unchanged redelivery is idempotent server-side. Core owns
     // binding; this table never maps native ids to logical ids.
     creationAttempts = new Map<string, WorldCreationAttempt>();
+    // Raw mechanical write/readback facts (latest-wins per window,
+    // operation window, owning view phase, and clear operation
+    // respectively) drained into every report until a bound ready reply
+    // consumes the delivered snapshot. Redelivery reuses the original
+    // write stamps; the core consumes each idempotently. Host-owned
+    // member/view rows carry null native-derived evidence (never
+    // translated logical receipts); frames carry full rect evidence with
+    // nullable DPI; clears stay empty (no native clear actuation).
+    frameAttempts = new Map<string, WorldFrameAttempt>();
+    memberAttempts = new Map<string, WorldMemberAttempt>();
+    viewAttempts = new Map<string, WorldViewAttempt>();
+    clearAttempts = new Map<string, WorldClearAttempt>();
     // Executed-but-unproven creation evidence (op spent, post-call
     // readback unavailable): never emitted, completed once against the
     // first successful later full native-order readback. Cleared with
@@ -368,6 +424,215 @@ export class WorldAdapterState {
         return [...this.creationAttempts.values()].map((a) => ({ ...a, before: [...a.before], after: [...a.after] }));
     }
 
+    // Record one raw mechanical frame attempt for the next report lane.
+    // Latest-wins per window; invalid rows (bad window id, setter, stamp,
+    // target/readback/pre shapes, or a prewrite without an operation id)
+    // refuse, never stored. Redelivery reuses the stored stamp: callers
+    // never restamp.
+    recordFrameAttempt(attempt: WorldFrameAttempt): boolean {
+        if (
+            !isOpaqueId(attempt.win) || !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
+            !isRectTuple(attempt.target) ||
+            (attempt.readback !== null && !isRectTuple(attempt.readback)) ||
+            (attempt.dpiBefore !== null && !(Number.isInteger(attempt.dpiBefore) && (attempt.dpiBefore as number) >= 0)) ||
+            (attempt.dpiAfter !== null && !(Number.isInteger(attempt.dpiAfter) && (attempt.dpiAfter as number) >= 0)) ||
+            typeof attempt.op !== "string" ||
+            (attempt.pre !== null && !isRectTuple(attempt.pre)) ||
+            (attempt.op === "" && attempt.pre !== null)
+        ) {
+            return false;
+        }
+        this.frameAttempts.set(attempt.win, { ...attempt, target: [...attempt.target] as [number, number, number, number] });
+        while (this.frameAttempts.size > MAX_FRAME_ATTEMPTS) {
+            const oldest = this.frameAttempts.keys().next();
+            if (oldest.done === true) {
+                break;
+            }
+            this.frameAttempts.delete(oldest.value as string);
+        }
+        this.dirty = true;
+        return true;
+    }
+
+    // Record one raw mechanical membership attempt. Latest-wins per
+    // (operation, window); same refusal rules as frames (opaque
+    // op/win/out/ws, null-or-shaped homings that are never translated
+    // logical receipts).
+    recordMemberAttempt(attempt: WorldMemberAttempt): boolean {
+        const homingOk = (h: { out: string; ws: string } | null): boolean =>
+            h === null || (isOpaqueId(h.out) && isOpaqueId(h.ws));
+        if (
+            !isOpaqueId(attempt.op) || !isOpaqueId(attempt.win) ||
+            !isOpaqueId(attempt.out) || !isOpaqueId(attempt.ws) ||
+            !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
+            !homingOk(attempt.pre) || !homingOk(attempt.post)
+        ) {
+            return false;
+        }
+        this.memberAttempts.set(`${attempt.op}\u0000${attempt.win}`, { ...attempt });
+        while (this.memberAttempts.size > MAX_MEMBER_ATTEMPTS) {
+            const oldest = this.memberAttempts.keys().next();
+            if (oldest.done === true) {
+                break;
+            }
+            this.memberAttempts.delete(oldest.value as string);
+        }
+        this.dirty = true;
+        return true;
+    }
+
+    // Record one raw mechanical view attempt. Latest-wins per owning view
+    // phase; empty pre/post/base normalize to null (unknown, like the
+    // wire decoder), never to forged proof.
+    recordViewAttempt(attempt: WorldViewAttempt): boolean {
+        const viewOk = (v: string | null): boolean =>
+            v === null || v === "" || isOpaqueId(v);
+        if (
+            !isOpaqueId(attempt.op) || !isOpaqueId(attempt.out) || !isOpaqueId(attempt.ws) ||
+            !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
+            !viewOk(attempt.pre) || !viewOk(attempt.post) || !viewOk(attempt.base)
+        ) {
+            return false;
+        }
+        const clean: WorldViewAttempt = {
+            ...attempt,
+            pre: attempt.pre === "" ? null : attempt.pre,
+            post: attempt.post === "" ? null : attempt.post,
+            base: attempt.base === "" ? null : attempt.base,
+        };
+        this.viewAttempts.set(clean.op, clean);
+        while (this.viewAttempts.size > MAX_VIEW_ATTEMPTS) {
+            const oldest = this.viewAttempts.keys().next();
+            if (oldest.done === true) {
+                break;
+            }
+            this.viewAttempts.delete(oldest.value as string);
+        }
+        this.dirty = true;
+        return true;
+    }
+
+    // Record one raw mechanical maximize-clear attempt. Latest-wins per
+    // (operation, window). Production never calls this (no native clear
+    // actuation); the shape stays honest for the parked lane.
+    recordClearAttempt(attempt: WorldClearAttempt): boolean {
+        const flagOk = (v: boolean | null): boolean => v === null || typeof v === "boolean";
+        if (
+            !isOpaqueId(attempt.op) || !isOpaqueId(attempt.win) ||
+            !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
+            !flagOk(attempt.pre) || !flagOk(attempt.post)
+        ) {
+            return false;
+        }
+        this.clearAttempts.set(`${attempt.op}\u0000${attempt.win}`, { ...attempt });
+        while (this.clearAttempts.size > MAX_CLEAR_ATTEMPTS) {
+            const oldest = this.clearAttempts.keys().next();
+            if (oldest.done === true) {
+                break;
+            }
+            this.clearAttempts.delete(oldest.value as string);
+        }
+        this.dirty = true;
+        return true;
+    }
+
+    // Ordered retained facts for the report lane (sorted like the
+    // Windows reference: windows, (operation, window), operations).
+    framesForReport(): WorldFrameAttempt[] {
+        return [...this.frameAttempts.values()]
+            .sort((a, b) => (a.win < b.win ? -1 : a.win > b.win ? 1 : 0))
+            .map((a) => ({ ...a, target: [...a.target] as [number, number, number, number] }));
+    }
+
+    memberAttemptsForReport(): WorldMemberAttempt[] {
+        return [...this.memberAttempts.values()]
+            .sort((a, b) => {
+                const ka = `${a.op}\u0000${a.win}`;
+                const kb = `${b.op}\u0000${b.win}`;
+                return ka < kb ? -1 : ka > kb ? 1 : 0;
+            })
+            .map((a) => ({ ...a }));
+    }
+
+    viewAttemptsForReport(): WorldViewAttempt[] {
+        return [...this.viewAttempts.values()]
+            .sort((a, b) => (a.op < b.op ? -1 : a.op > b.op ? 1 : 0))
+            .map((a) => ({ ...a }));
+    }
+
+    clearAttemptsForReport(): WorldClearAttempt[] {
+        return [...this.clearAttempts.values()]
+            .sort((a, b) => {
+                const ka = `${a.op}\u0000${a.win}`;
+                const kb = `${b.op}\u0000${b.win}`;
+                return ka < kb ? -1 : ka > kb ? 1 : 0;
+            })
+            .map((a) => ({ ...a }));
+    }
+
+    // Consume the delivered snapshot of one bound flight: a bound ready
+    // reply proves the core incorporated the delivered facts, so
+    // exactly-equal entries retire while a newer update for the same key
+    // survives. Unbound, not-ready, or unknown-source replies consume
+    // nothing; a lost acknowledgement keeps the stamps for redelivery.
+    // Returns the retired entry count.
+    ackDelivered(source: string, ready: boolean): number {
+        if (!ready || this.inFlight === null || this.inFlight.source !== source) {
+            return 0;
+        }
+        let retired = 0;
+        const sameFrame = (a: WorldFrameAttempt, b: WorldFrameAttempt): boolean =>
+            a.win === b.win && a.target.join(",") === b.target.join(",") &&
+            a.setter === b.setter &&
+            (a.readback?.join(",") ?? "") === (b.readback?.join(",") ?? "") &&
+            a.dpiBefore === b.dpiBefore && a.dpiAfter === b.dpiAfter &&
+            a.attemptMs === b.attemptMs && a.op === b.op &&
+            (a.pre?.join(",") ?? "") === (b.pre?.join(",") ?? "");
+        for (const sent of this.inFlight.delivered.frames) {
+            const live = this.frameAttempts.get(sent.win);
+            if (live !== undefined && sameFrame(live, sent)) {
+                this.frameAttempts.delete(sent.win);
+                retired += 1;
+            }
+        }
+        const sameMember = (a: WorldMemberAttempt, b: WorldMemberAttempt): boolean =>
+            a.op === b.op && a.win === b.win && a.out === b.out && a.ws === b.ws &&
+            a.setter === b.setter &&
+            JSON.stringify(a.pre) === JSON.stringify(b.pre) &&
+            JSON.stringify(a.post) === JSON.stringify(b.post) &&
+            a.attemptMs === b.attemptMs;
+        for (const sent of this.inFlight.delivered.members) {
+            const live = this.memberAttempts.get(`${sent.op}\u0000${sent.win}`);
+            if (live !== undefined && sameMember(live, sent)) {
+                this.memberAttempts.delete(`${sent.op}\u0000${sent.win}`);
+                retired += 1;
+            }
+        }
+        const sameView = (a: WorldViewAttempt, b: WorldViewAttempt): boolean =>
+            a.op === b.op && a.out === b.out && a.ws === b.ws &&
+            a.setter === b.setter && (a.pre ?? "") === (b.pre ?? "") &&
+            (a.post ?? "") === (b.post ?? "") && (a.base ?? "") === (b.base ?? "") &&
+            a.attemptMs === b.attemptMs;
+        for (const sent of this.inFlight.delivered.views) {
+            const live = this.viewAttempts.get(sent.op);
+            if (live !== undefined && sameView(live, sent)) {
+                this.viewAttempts.delete(sent.op);
+                retired += 1;
+            }
+        }
+        const sameClear = (a: WorldClearAttempt, b: WorldClearAttempt): boolean =>
+            a.op === b.op && a.win === b.win && a.setter === b.setter &&
+            a.pre === b.pre && a.post === b.post && a.attemptMs === b.attemptMs;
+        for (const sent of this.inFlight.delivered.clears) {
+            const live = this.clearAttempts.get(`${sent.op}\u0000${sent.win}`);
+            if (live !== undefined && sameClear(live, sent)) {
+                this.clearAttempts.delete(`${sent.op}\u0000${sent.win}`);
+                retired += 1;
+            }
+        }
+        return retired;
+    }
+
     clampKey(win: string, target: string, constraints: string): string {
         return `${win}|${target}|${constraints}`;
     }
@@ -439,6 +704,10 @@ export class WorldAdapterState {
         if (this.hasAccepted && compareU64(reply.rev, this.lastAcceptedRev) <= 0) {
             return { applied: false, reason: "stale-rev" };
         }
+        // A bound validated ready reply proves the core incorporated the
+        // delivered facts (attempts included): retire exactly-equal
+        // delivered entries. Newer updates for the same keys survive.
+        this.ackDelivered(dispatchSource, true);
         void dispatchWatermark;
         this.lastAcceptedRev = reply.rev;
         this.hasAccepted = true;
@@ -483,7 +752,18 @@ export class WorldAdapterState {
         if (this.inFlight !== null) {
             return null;
         }
-        const flight: CaptureFlight = { source, watermark: this.currentInvalid, clientCmd };
+        // Snapshot the exact facts this flight delivers: the bound reply
+        // consumes exactly-equal entries, so redelivery after a lost
+        // acknowledgement reuses the original write stamps.
+        const flight: CaptureFlight = {
+            source, watermark: this.currentInvalid, clientCmd,
+            delivered: {
+                frames: this.framesForReport(),
+                members: this.memberAttemptsForReport(),
+                views: this.viewAttemptsForReport(),
+                clears: this.clearAttemptsForReport(),
+            },
+        };
         this.inFlight = flight;
         this.dirty = false;
         this.observationOnlyCatchup = false;
@@ -524,6 +804,10 @@ export class WorldAdapterState {
             this.creationSpent.clear();
             this.creationAttempts.clear();
             this.creationPending.clear();
+            this.frameAttempts.clear();
+            this.memberAttempts.clear();
+            this.viewAttempts.clear();
+            this.clearAttempts.clear();
             this.clampAttempts.clear();
             return true;
         }

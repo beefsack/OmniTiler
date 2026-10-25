@@ -241,7 +241,7 @@ function migrationReply(): WorldReply {
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
-        scopes: [],
+        scopes: [{ scope: `${HDMI}/${D6}`, auth: "controlled", reason: "" }],
         workspaces: fusedRows(),
         outputs: [],
         windows: [windowRow("win-a", HDMI, D6), windowRow("win-b", HDMI, D6)],

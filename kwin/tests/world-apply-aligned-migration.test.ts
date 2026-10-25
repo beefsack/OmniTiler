@@ -62,6 +62,11 @@ function loadAlignedReply(): WorldReply {
         winRow("win-c", "out-b", "al-1"),
         winRow("win-b", "out-b", "ws-2"),
     ];
+    // Core-published actuation scope for the migration target cell: the
+    // adapter actuates members and views only under a controlled scope.
+    reply.scopes = [
+        { scope: "out-b/al-1", auth: "controlled", reason: "" },
+    ];
     reply.transfers = [
         { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false },
         { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false },

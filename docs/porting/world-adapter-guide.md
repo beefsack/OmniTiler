@@ -7,8 +7,9 @@ refuse and are never shimmed.
 
 KDE's paired cutover remains parked, not an accepted implementation of this
 guide. Its [port record](../changes/kde-world-v2-port.md#stage-2-implementation-boundary)
-tracks partial offline evidence, command wake transport and native backing
-correlation; native settlement must not be inferred from wire acceptance.
+tracks partial offline evidence, parked command wake transport and host-owned
+source-view supersession. Fresh backing correlation and the former five KDE
+oracles pass offline; native settlement must not be inferred from wire acceptance.
 
 Source roots below are relative to the repository root. Core symbols
 live in `crates/tiler-core/src/`; the JSON codec lives in
@@ -336,6 +337,14 @@ facts only, at most one latest-wins entry per window/operation/phase:
   write/re-read/report split for membership homing, exact-output view
   and maximized-state proof. Setter success never proves arrival by
   itself; readable post states plus staged observations settle.
+- Member/view attempt pre/post/baseline currently name logical workspaces.
+  Host-owned adapters leave those fields unknown, report real setter disposition
+  with the exact desired-target correlation, then capture fresh native facts.
+  Never encode native ids as logical ids or rebuild an adapter binding owner.
+  This preserves truthful dispatch evidence but does not establish native
+  proven-then-abandoned source-view supersession; KDE's
+  [B2 discriminator](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
+  remains red pending a neutral core-owned resolution.
 - Acknowledgement never copies desires into observations. Incorporation
   receipts bind to the incorporating generation; foreign-generation,
   foreign-adapter and wrong-request replies apply nothing.
@@ -397,6 +406,12 @@ rather than choosing a new merge policy. General native-order merging and
 eligible existing-native reuse remain
 [parked neutrality concerns](../changes/kde-world-v2-port.md#decisions-and-core-neutrality-concerns),
 not extra fields or platform-side policy to invent during a port.
+Migration keeps the stable logical id. Existing backing for another logical
+workspace is not eligible reuse; fresh creation desires/correlation supply
+missing backing. Returning to an output can revalidate that same logical id's
+dormant native binding. Core-published actuatable scopes and desired window rows,
+including a complete empty set, drive actuation without requester-only results;
+the adapter never selects a replacement source refill by ordinal.
 
 ### Coordinates and safety
 

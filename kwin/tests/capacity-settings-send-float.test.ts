@@ -110,6 +110,10 @@ describe("capacity settings report carriage", () => {
             anchorFallback: "closest-splittable-relative",
             noSpaceResult: "allow-overlap",
             creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: [],
+            viewAttempts: [],
+            clearAttempts: [],
         });
         assert.ok(json !== null);
         const body = JSON.parse(json as string) as Record<string, unknown>;
@@ -131,6 +135,10 @@ describe("capacity settings report carriage", () => {
             anchorFallback: "largest-splittable-window",
             noSpaceResult: "float",
             creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: [],
+            viewAttempts: [],
+            clearAttempts: [],
         });
         assert.ok(json !== null);
         const text = json as string;

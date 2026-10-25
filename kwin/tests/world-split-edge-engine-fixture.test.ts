@@ -717,19 +717,15 @@ describe("world split-edge selection through the production entry (real Engine)"
         // Mover centre x=150 falls in out-bottom's shared edge [0,640): a
         // windowed rank would pick the left candidate, but migration ranks
         // by largest shared edge (1280 vs 640) and must still pick right.
+        // The migrated logical rides with fresh backing on both the target
+        // (correlated creation; the existing ws-a desktop keeps backing
+        // its own cell, never cannibalized) and the source refill.
         const h = await makeHarness(100);
         try {
             await discover(h);
+            const nativeOrderBefore = ([...(h.workspace["desktops"] as Array<{ id: string }>)].map((d) => d.id));
             h.handle.requestWorkspaceMigrate("down");
-            // Bounded rounds, not settle-to-quiet: the retained migration
-            // transfer is never dropped through this observer (the global
-            // native order can never confirm the move), so observation-only
-            // feedback rounds keep flowing; that steady-state ping-pong is a
-            // reported core/adapter contract gap, not fixture flakiness. The
-            // migration facts below are stable across those rounds: exactly
-            // one command, exact target, exact native relocation, exact
-            // refill views.
-            await h.settleRounds(6);
+            await h.settle();
             const migrates = h.commandPayloads("migrate-directional");
             assert.equal(migrates.length, 1, "exactly one direction-only migrate dispatch, never replayed");
             const cmd = migrates[0]?.body["command"] as Record<string, unknown>;
@@ -743,25 +739,65 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(result["op"], "migrate-workspace", "real Engine resolves the migration");
             assert.equal(result["targetOut"], "out-bottom-right", "largest edge wins independent of the mover");
             assert.equal(result["sourceOut"], "out-top", "source names the active output");
+            // The stable core logical id rides (never a destination rename).
+            const migratedLogical = result["targetWs"] as string;
+            assert.equal(migratedLogical, result["sourceWs"], "migrated logical id rides the move");
             assert.deepEqual(
                 (result["members"] as string[]).sort(),
                 ["w-move", "w-stay"],
                 "the whole workspace migrates together",
             );
+            // Fresh backing for both ends, resolved from the settled
+            // core-owned rows (never by ordinal or native reuse): the
+            // migrated logical binds a created desktop on the target, the
+            // core-chosen refill logical binds a created desktop on the
+            // source. Both created ids are genuinely fresh (absent from
+            // the live pre-migration native inventory snapshotted above).
+            const settledRows = (): Array<Record<string, unknown>> => {
+                const indices = [...h.replies.keys()].filter((at) => (h.calls[at] as CapturedCall).method === "DescribeWorld");
+                const raw = h.replies.get(Math.max(...indices) as number) as string;
+                return (JSON.parse(raw) as Record<string, unknown>)["workspaces"] as Array<Record<string, unknown>>;
+            };
+            const rows = settledRows();
+            const targetBacking = rows.find((b) => b["out"] === "out-bottom-right" && b["id"] === migratedLogical)?.["bind"] as string ?? "";
+            assert.ok(targetBacking !== "" && !nativeOrderBefore.includes(targetBacking), `target binds fresh backing (got ${targetBacking})`);
             const target = h.screens.bottomRight;
             assert.equal(h.mover.output.name, target.name, "migrating workspace lands on the largest-edge output");
             const companion = winById(h, "w-stay");
             assert.equal(companion.output.name, target.name, "the whole workspace migrates together");
-            assert.equal(h.currentByOutput.get(target.name)?.id, "ws-a", "target view shows the migrated workspace");
+            assert.deepEqual(h.mover.desktops.map((desk) => desk.id), [targetBacking], "mover homed on the fresh backing");
+            assert.deepEqual(companion.desktops.map((desk) => desk.id), [targetBacking], "companion homed on the fresh backing");
+            assert.equal(h.currentByOutput.get(target.name)?.id, targetBacking, "target view shows the fresh backing");
+            // The refill logical rides the paired refill transfer (never a
+            // guessed ordinal); its backing is fresh as well.
+            const refillTransfer = ((): Record<string, unknown> | undefined => {
+                for (const raw of h.replies.values()) {
+                    const reply = JSON.parse(raw) as Record<string, unknown>;
+                    const found = (reply["transfers"] as Array<Record<string, unknown>>).find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
+                    if (found !== undefined) {
+                        return found;
+                    }
+                }
+                return undefined;
+            })();
+            assert.ok(refillTransfer !== undefined, "explicit core refill retained");
+            const refillLogical = refillTransfer["ws"] as string;
+            assert.ok(refillLogical !== "" && refillLogical !== migratedLogical, "refill excludes the migrated logical");
+            const refillBacking = rows.find((b) => b["out"] === "out-top" && b["id"] === refillLogical)?.["bind"] as string ?? "";
+            assert.ok(refillBacking !== "" && !nativeOrderBefore.includes(refillBacking), `refill binds fresh backing (got ${refillBacking})`);
             const topView = h.currentByOutput.get(h.screens.top.name);
-            assert.ok(topView !== undefined && topView.id.startsWith("native-"), "source refills to a created trailing spare");
+            assert.equal(topView?.id, refillBacking, "source refills to the created backing");
             assert.equal(topView?.name, "Desktop 4", "the proven spare carries its friendly position name, not the token");
+            // The existing ws-a desktop still backs its own cells (never
+            // cannibalized for the migration).
+            const wsARows = rows.filter((b) => b["bind"] === "ws-a");
+            assert.ok(wsARows.length > 0 && wsARows.every((b) => b["id"] !== migratedLogical), "existing desktop keeps its own logical");
             assert.deepEqual(
                 h.viewSwitches.slice(0, 2),
-                [`out-bottom-right->ws-a`, `out-top->${topView?.id as string}`],
+                [`out-bottom-right->${targetBacking}`, `out-top->${refillBacking}`],
                 "exactly the target and refill view switches, no self-refill of the target",
             );
-            assert.equal(h.viewSwitches.length, 2, "steady rounds switch no further views");
+            assert.equal(h.viewSwitches.length, 2, "settled rounds switch no further views");
             assert.equal(h.commandPayloads("migrate-directional").length, 1, "no migrate replay after settlement");
         } finally {
             await h.stop();

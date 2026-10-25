@@ -14,13 +14,16 @@
 //
 // Baseline: out-left/ws-1 holds win-left, out-right/ws-2 holds win-b,
 // and win-a plus fixed-size win-c plus win-m sit on out-right/ws-1. The
-// run selects out-right/ws-1, migrates left into the trailing (closing
-// member win-m mid-flight), verifies refill plus logical ride/mode carry,
-// migrates back right (closing member win-c mid-flight, exercising the
-// expected echo), then migrates an empty workspace (both views must still
-// move and settle), with unreadable arrival plus stale view rounds. Every
-// reply on the asserted paths is a fresh Engine report. Included in
-// `npm test`.
+// run selects the out-right/ws-1 cell through the production numbered
+// selection route (a core view command moves the retained view; poking
+// the native current directly would only stage an echo, which never
+// retargets the command-authoritative migration source), migrates left
+// into fresh backing (closing member win-m mid-flight), verifies refill
+// plus logical ride/mode carry, migrates back right (closing member
+// win-c mid-flight, exercising the expected echo), then migrates an
+// empty workspace (both views must still move and settle), with
+// unreadable arrival plus stale view rounds. Every reply on the asserted
+// paths is a fresh Engine report. Included in `npm test`.
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -628,12 +631,37 @@ describe("world aligned migration producer", () => {
             await h.settle();
             assert.deepEqual(transfersOf(lastReply(h)), [], "no transfers before commands");
 
-            // Select the out-right/ws-1 cell before migrating it.
+            // Select the out-right/ws-1 cell through the production route:
+            // numbered selection names the active output explicitly and the
+            // core moves the retained view by command. The ring position 1
+            // on the right output is the ws-1-native cell (ring order follows
+            // native order). A bare native current poke would leave the
+            // retained migration source behind, so it is never used here.
             h.activeScreen = { name: RIGHT };
             h.activeRef = h.wins.find((w) => w.internalId === "win-a") as FakeWindow;
-            h.currents.set(RIGHT, "ws-1");
-            h.fire("currentDesktopChanged");
+            h.handle.requestWorkspaceSelect(1);
+            h.runTimers();
             await h.settle();
+            {
+                const rows = (lastReply(h)["workspaces"] as Array<Record<string, string>>);
+                const shown = rows.find((b) => b["out"] === RIGHT && b["bind"] === "ws-1")?.["id"] ?? "";
+                assert.ok(shown !== "", "selection resolves the ws-1 cell to a logical");
+                assert.equal(h.currents.get(RIGHT), "ws-1", "native view already on the selected cell");
+                const selects = h.calls
+                    .map((call, index) => ({ call, index }))
+                    .filter(({ call }) => {
+                        if (call.method !== "QueueWorldCommand") {
+                            return false;
+                        }
+                        try {
+                            const body = JSON.parse(call.payload) as Record<string, unknown>;
+                            return (body["command"] as Record<string, unknown> | null)?.["op"] === "select-numbered";
+                        } catch {
+                            return false;
+                        }
+                    });
+                assert.equal(selects.length, 1, "selection travels the production command route exactly once");
+            }
 
             // The float intent lands after the seed: fixed min/max pins
             // win-c floating (automatic fixed admission), converting the
@@ -651,6 +679,7 @@ describe("world aligned migration producer", () => {
 
             // Leg 1: migrate out-right/ws-1 (win-a plus floating win-c plus
             // win-m) left.
+            const nativeOrderBeforeLeg1 = h.desktops.map((d) => d.id);
             const winCBefore = JSON.stringify((h.wins.find((w) => w.internalId === "win-c") as FakeWindow).frameGeometry);
             h.handle.requestWorkspaceMigrate("left");
             h.runTimers();
@@ -682,17 +711,27 @@ describe("world aligned migration producer", () => {
             assert.equal(leg1result["op"], "migrate-workspace");
             assert.equal(leg1result["sourceOut"], RIGHT);
             assert.equal(leg1result["targetOut"], LEFT);
+            // The stable core logical id rides (selected cell's logical,
+            // never a destination-trailing rename).
             const leg1targetWs = leg1result["targetWs"] as string;
+            assert.equal(leg1targetWs, sourceLogical, "migrated logical id rides the move");
             assert.deepEqual((leg1result["members"] as string[]).sort(), ["win-a", "win-c", "win-m"]);
             assert.equal(leg1result["floats"], 1, "float member accounted in the carry");
             const leg1transfers = transfersOf(leg1reply);
             const leg1migration = leg1transfers.find((t) => t["kind"] === "migration");
             assert.ok(leg1migration !== undefined, "migration transfer retained");
+            assert.equal(leg1migration?.["ws"], sourceLogical, "migration transfer names the riding logical");
             const leg1refill = leg1transfers.find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
             assert.ok(leg1refill !== undefined, "explicit core refill retained");
             assert.equal(leg1refill?.["out"], RIGHT);
             const leg1refillWs = leg1refill?.["ws"] as string;
-            assert.ok(leg1refillWs !== "ws-1", "refill excludes the migrated native");
+            assert.ok(leg1refillWs !== "" && leg1refillWs !== sourceLogical, "refill excludes the migrated logical");
+            // The migrated logical publishes fresh backing on the target
+            // (correlated creation; never a cannibalized trailing cell).
+            const settled1early = lastReply(h);
+            const leg1backing = ((settled1early["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === LEFT && b["id"] === sourceLogical)?.["bind"] ?? "");
+            assert.ok(leg1backing !== "", "migrated logical publishes backing once created");
+            assert.ok(!nativeOrderBeforeLeg1.includes(leg1backing), `backing is a fresh desktop, never a reused pre-existing id (got ${leg1backing})`);
 
             // Native actuation: both members left the source, both views
             // followed, the close converged without wedging the flight.
@@ -700,27 +739,37 @@ describe("world aligned migration producer", () => {
             const winC = h.wins.find((w) => w.internalId === "win-c") as FakeWindow;
             assert.equal(winA.output.name, LEFT, "member output moved");
             assert.equal(winC.output.name, LEFT, "float member output moved");
-            assert.deepEqual(winA.desktops.map((d) => d.id), [leg1targetWs]);
-            assert.deepEqual(winC.desktops.map((d) => d.id), [leg1targetWs]);
-            assert.equal(h.currents.get(LEFT), leg1targetWs, "target view follows");
-            assert.equal(h.currents.get(RIGHT), leg1refillWs, "source refills to the core choice");
+            assert.deepEqual(winA.desktops.map((d) => d.id), [leg1backing]);
+            assert.deepEqual(winC.desktops.map((d) => d.id), [leg1backing]);
+            assert.equal(h.currents.get(LEFT), leg1backing, "target view follows the created backing");
+            const leg1refillNative = ((settled1early["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === RIGHT && b["id"] === leg1refillWs)?.["bind"] ?? "");
+            assert.ok(leg1refillNative !== "", "refill logical stays bound");
+            assert.equal(h.currents.get(RIGHT), leg1refillNative, "source refills to the core choice");
             assert.equal(JSON.stringify(winC.frameGeometry), winCBefore, "float member carried membership-only, no frame write");
             assert.ok(!h.wins.some((w) => w.internalId === "win-m"), "closed member stays closed");
-            const settledDomains1 = ((payloadOf(h, h.calls.length - 1)["domains"] as Array<Record<string, unknown>>)
-                .flatMap((d) => d["windows"] as Array<Record<string, unknown>>)
-                .map((w) => w["win"]));
-            assert.ok(!settledDomains1.includes("win-m"), "closed member acknowledged out of the converged roster");
+            const settledDescribe1 = h.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.method === "DescribeWorld").pop();
+            assert.ok(settledDescribe1 !== undefined, "settled capture exists");
+            const settledReport1 = (payloadOf(h, settledDescribe1.index)["report"] as Record<string, unknown>);
+            const settledWins1 = ((settledReport1["windows"] as Array<Record<string, unknown>>).map((w) => w["win"]));
+            assert.ok(!settledWins1.includes("win-m"), "closed member acknowledged out of the converged roster");
             assert.deepEqual(h.echoWrites, [], "leg 1 needs no echo: the window already sits on the destination current");
             const settled1 = lastReply(h);
             assert.deepEqual(transfersOf(settled1), [], "leg 1 settles with no retained transfers");
-            const payload1 = payloadOf(h, h.calls.length - 1);
-            const bindings1 = payload1["bindings"] as Array<Record<string, string>>;
-            const moved1 = bindings1.find((b) => b["out"] === LEFT && b["native"] === leg1targetWs);
-            assert.equal(moved1?.["logical"], sourceLogical, "logical identity rides the move");
-            const fresh1 = bindings1.find((b) => b["out"] === RIGHT && b["native"] === "ws-1");
-            assert.ok(fresh1 !== undefined && fresh1["logical"] !== sourceLogical, "emptied source cell mints fresh");
             const workspaces1 = settled1["workspaces"] as Array<Record<string, string>>;
-            for (const row of workspaces1.filter((w) => w["out"] === LEFT && w["bind"] === leg1targetWs)) {
+            // The core-published binding is the adapter's live snapshot
+            // source: the riding logical binds the created backing on the
+            // target output (never a guessed ordinal).
+            const moved1 = workspaces1.find((b) => b["out"] === LEFT && b["id"] === sourceLogical);
+            assert.equal(moved1?.["bind"], leg1backing, "logical identity rides the move on fresh backing");
+            // The emptied source native cell carries no fresh logical (the
+            // mapping stays dormant; no rename, no invented binding): the
+            // migrated logical lives exactly once, on the target.
+            assert.deepEqual(
+                workspaces1.filter((w) => w["id"] === sourceLogical).map((w) => w["out"]),
+                [LEFT],
+                "migrated logical lives exactly once, on the target",
+            );
+            for (const row of workspaces1.filter((w) => w["out"] === LEFT && w["bind"] === leg1backing)) {
                 assert.equal(row["mode"], "tiled", "moved unit keeps its tiling mode");
             }
 
@@ -767,28 +816,40 @@ describe("world aligned migration producer", () => {
             assert.equal(leg2result["op"], "migrate-workspace");
             assert.equal(leg2result["sourceOut"], LEFT);
             assert.equal(leg2result["targetOut"], RIGHT);
+            // The same stable logical rides back (never renamed across legs).
             const leg2targetWs = leg2result["targetWs"] as string;
+            assert.equal(leg2targetWs, sourceLogical, "migrated logical id rides back");
             const leg2refill = transfersOf(leg2reply).find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
             assert.ok(leg2refill !== undefined, "return refill retained");
             const leg2refillWs = leg2refill?.["ws"] as string;
+            assert.ok(leg2refillWs !== "" && leg2refillWs !== sourceLogical, "return refill excludes the riding logical");
+            const settled2early = lastReply(h);
+            // The returned logical rebinds its dormant native cell (the
+            // initial (RIGHT, ws-1) mapping revalidates once the logical
+            // returns; only the refill needs fresh creation this leg).
+            const leg2backing = ((settled2early["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === RIGHT && b["id"] === sourceLogical)?.["bind"] ?? "");
+            assert.equal(leg2backing, "ws-1", "returned logical rebinds its dormant native cell (no second creation for the target)");
+            const leg2refillNative = ((settled2early["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === LEFT && b["id"] === leg2refillWs)?.["bind"] ?? "");
+            assert.ok(leg2refillNative !== "", "return refill logical stays bound");
             assert.equal(winA.output.name, RIGHT, "returned member output moved");
-            assert.deepEqual(winA.desktops.map((d) => d.id), [leg2targetWs]);
+            assert.deepEqual(winA.desktops.map((d) => d.id), [leg2backing]);
             assert.ok(
                 h.echoWrites.some((e: string) => e.startsWith("win-a->") || e.startsWith("win-c->")),
                 `pinned output-send echo fired mid-flight and was tolerated: ${JSON.stringify(h.echoWrites)}`,
             );
-            assert.equal(h.currents.get(RIGHT), leg2targetWs, "return target view follows");
-            assert.equal(h.currents.get(LEFT), leg2refillWs, "return source refills");
+            assert.equal(h.currents.get(RIGHT), leg2backing, "return target view follows the created backing");
+            assert.equal(h.currents.get(LEFT), leg2refillNative, "return source refills to the core choice");
             assert.ok(!h.wins.some((w) => w.internalId === "win-c"), "closed member stays closed");
-            const settledDomains2 = ((payloadOf(h, h.calls.length - 1)["domains"] as Array<Record<string, unknown>>)
-                .flatMap((d) => d["windows"] as Array<Record<string, unknown>>)
-                .map((w) => w["win"]));
-            assert.ok(!settledDomains2.includes("win-c"), "closed member acknowledged out of the converged roster");
+            const settledDescribe2 = h.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.method === "DescribeWorld").pop();
+            assert.ok(settledDescribe2 !== undefined, "settled capture exists");
+            const settledReport2 = (payloadOf(h, settledDescribe2.index)["report"] as Record<string, unknown>);
+            const settledWins2 = ((settledReport2["windows"] as Array<Record<string, unknown>>).map((w) => w["win"]));
+            assert.ok(!settledWins2.includes("win-c"), "closed member acknowledged out of the converged roster");
             const settled2 = lastReply(h);
             assert.deepEqual(transfersOf(settled2), [], "leg 2 settles with no retained transfers");
-            const bindings2 = (payloadOf(h, h.calls.length - 1)["bindings"] as Array<Record<string, string>>);
-            const moved2 = bindings2.find((b) => b["out"] === RIGHT && b["native"] === leg2targetWs);
-            assert.equal(moved2?.["logical"], sourceLogical, "logical identity rides back");
+            const workspaces2 = settled2["workspaces"] as Array<Record<string, string>>;
+            const moved2 = workspaces2.find((b) => b["out"] === RIGHT && b["id"] === sourceLogical);
+            assert.equal(moved2?.["bind"], leg2backing, "logical identity rides back on fresh backing");
 
             // Leg 3: migrate an empty workspace. No members move, but both
             // views must still follow the core refill and settle. The
@@ -808,6 +869,11 @@ describe("world aligned migration producer", () => {
                 }
             });
             assert.deepEqual(occupants.map((w) => w.internalId), [], `left current ${emptySrc} is empty before the empty migration`);
+            // The empty source cell's logical rides too (resolved from the
+            // pre-migration settled rows, never a trailing constant).
+            const emptyLogicalBefore = ((lastReply(h)["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === LEFT && b["bind"] === emptySrc)?.["id"] ?? "");
+            assert.ok(emptyLogicalBefore !== "", "empty source cell has a logical identity");
+            const nativeOrderBeforeLeg3 = h.desktops.map((d) => d.id);
             h.handle.requestWorkspaceMigrate("right");
             try {
                 await h.settle();
@@ -829,12 +895,20 @@ describe("world aligned migration producer", () => {
             assert.equal(leg3result["sourceOut"], LEFT);
             assert.equal(leg3result["targetOut"], RIGHT);
             const leg3targetWs = leg3result["targetWs"] as string;
+            assert.equal(leg3targetWs, emptyLogicalBefore, "empty source logical rides the move");
             const leg3refill = transfersOf(leg3reply).find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
             assert.ok(leg3refill !== undefined, "empty migration retains the explicit refill");
             const leg3refillWs = leg3refill?.["ws"] as string;
-            assert.equal(h.currents.get(RIGHT), leg3targetWs, "empty target view follows");
-            assert.equal(h.currents.get(LEFT), leg3refillWs, "empty source refills");
-            assert.deepEqual(transfersOf(lastReply(h)), [], "empty migration settles both views with no retained transfers");
+            assert.ok(leg3refillWs !== "" && leg3refillWs !== leg3targetWs, "empty refill excludes the riding logical");
+            const settled3 = lastReply(h);
+            const leg3backing = ((settled3["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === RIGHT && b["id"] === leg3targetWs)?.["bind"] ?? "");
+            assert.ok(leg3backing !== "", "empty migrated logical publishes backing once created");
+            assert.ok(!nativeOrderBeforeLeg3.includes(leg3backing), `empty backing is a fresh desktop (got ${leg3backing})`);
+            const leg3refillNative = ((settled3["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === LEFT && b["id"] === leg3refillWs)?.["bind"] ?? "");
+            assert.ok(leg3refillNative !== "", "empty refill logical stays bound");
+            assert.equal(h.currents.get(RIGHT), leg3backing, "empty target view follows the created backing");
+            assert.equal(h.currents.get(LEFT), leg3refillNative, "empty source refills to the core choice");
+            assert.deepEqual(transfersOf(settled3), [], "empty migration settles both views with no retained transfers");
 
             assert.equal(migrateCommands(h).length, 3, "three migration commands total, none replayed");
             assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no busy refills");

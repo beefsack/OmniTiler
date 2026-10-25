@@ -8,9 +8,10 @@ The staged implementation and parked boundaries are tracked in
 [KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1 are delivered
 at the core-only boundary; KDE runtime adoption and native acceptance remain
 outstanding. Stage 1b core creation correlation and its KDE consumer are delivered
-offline. Stage 2 remains partial: five offline integration cases, event-driven
-external-command delivery and migration/reuse/lifecycle expectations remain
-unresolved. The draft pulls in only the v2 observation,
+offline. Stage 2 remains partial: the five former integration oracles now pass
+with core-owned migration/lifecycle expectations and raw dispatch attempts;
+event-driven external-command delivery (B1) and the restored source-view-rewind
+settlement discriminator (B2) remain parked. The draft pulls in only the v2 observation,
 token and target-resolution pieces needed by the wire cutover; no stage 3
 or native acceptance is claimed.
 
@@ -46,12 +47,10 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
 - Separate presentation/query/command authorization from the exclusive
   report/actuator authority. A reconnect gets the current accepted
   presentation.
-- Current planner endpoint (`crates/omnitiler/src/planner_service.rs`,
-  `crates/omnitiler/src/world_service.rs`): only the KWin unique owner
-  plus bootstrap/full-report routes. `world_service` still carries
-  stale `aligned_per_output_workspaces` and v1 discovery; the port
-  removes them and moves JS and Rust together to the v2 wire, with no
-  shims and no compatibility route.
+- Planner endpoints (`crates/omnitiler/src/planner_service.rs`,
+  `crates/omnitiler/src/world_service.rs`) now implement the paired strict v2
+  broker below. The stale alignment option and v1 discovery route are removed;
+  there is no compatibility shim.
 
 ### Stage 2 draft boundary (not accepted)
 
@@ -76,21 +75,34 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   `creationAttempts` returns same-turn causal ids or uncorrelated evidence, and
   only core binds. If immediate post-read fails, preserve incomplete execution
   evidence until a successful full read, then report `created:null` and the
-  original write stamp. Never fabricate an empty after-order. Raw frame/member/
-  view/clear production remains pending. [N3/N4](../changes/kde-world-v2-port.md#n3-empty-native-creation-versus-an-unbound-logical-spare-parked)
-  migration/reuse expectations remain open; five red oracles are preserved.
+  original write stamp. Never fabricate an empty after-order.
+- Raw frame/member/view attempts now report dispatched setters with original
+  broker-clock stamps, truthful immediate frame/prewrite reads and null DPI in
+  KWin-logical coordinates. Host-owned member/view pre/post/base stay null: the
+  shared fields are logical, not native evidence. Bound valid acknowledgements
+  retire only delivered matching rows; transport loss retains them, generation
+  reset clears them. Clear actuation remains a stage 3 hold, so that attempt lane
+  is empty rather than invented.
+- Migration preserves core's stable logical id, binds fresh backing only through
+  core's correlation, and never steals an already-bound empty desktop. Native-bound
+  empties stay; ordinary trailing spares stay unbound until explicitly needed.
+  Core desires under actuatable scope supply members (including zero), never
+  requester-only terminal results. Untouched floating scope is actuatable only
+  with an unheld output and no gesture, as in the Windows v2 reference.
+- The five old red oracles now pass. A restored both-view-rewind discriminator
+  remains red: the source-view safety veto holds a proven-then-abandoned refill,
+  but current raw logical attempt fields cannot settle that host-owned
+  supersession. Only paired core refill desires may actuate; the legacy
+  first-remaining-row fallback is deleted. See [B2](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked).
   Omission is not settlement proof. Do not run this draft live as accepted behavior.
 
 ## Delivered-baseline inventory (port or delete)
 
 JS adapter (`kwin/src/`):
 
-- `world-seq.ts` still pins `WORLD_CONTRACT_VERSION = 1`: must move to
-  2 together with the Rust service. `world-report.ts` still carries v1
-  shapes (topology/bindings/domains, `out`/`ws` command fields):
-  replace with the v2 report/command vocabulary (screens, facts,
-  closes, views, `Select*` with `output: None` for core-resolved
-  targeting, direction-only commands, `SendSource` intents).
+- Strict v2 wire and broker cutover are delivered offline. Former v1
+  report/command shapes and fixtures have been replaced, not shimmed.
+  Internal observation carriers still need the later policy-deletion audit.
 - `world-observe.ts`: keep the capture skeleton (frame reads,
   inventory, closes, completeness) and re-target it to v2 facts,
   observed logical receipts and presentation ingress. Geometry stays
@@ -138,10 +150,9 @@ work is future and separate.
   miniatures are unchanged. The pager active workspace cell keeps the
   system accent with no theme switch.
 
-Tests: `kwin/tests/world-*.test.ts` and the `test-fixtures/world-wire/`
-v1 vectors (`report-observe.json` is `v:1` with topology/bindings/
-domains) must move to the v2 wire or be deleted; do not keep v1
-fixtures passing through shims.
+Tests: `kwin/tests/world-*.test.ts` and `test-fixtures/world-wire/` now
+exercise strict v2. Canonical reply fixtures come from the Rust service;
+request fixtures pin the JS producer, including populated raw attempts.
 
 ## KWin API facts the port relies on
 
@@ -291,14 +302,9 @@ fixtures passing through shims.
   never replace missing transport with TypeScript policy copies. A shared
   classification-ingress redesign is not implemented here.
 
-- `kwin/src/world-seq.ts` still pins contract version 1 while core
-  and protocol are strict v2; `kwin/src/world-report.ts` command and
-  reply shapes predate v2 (`out`/`ws` fields, topology/bindings/
-  domains, missing `SendSource`, direction-only and operation-token
-  vocabulary). Port JS and Rust together; no shims.
-- `test-fixtures/world-wire/*` and several `kwin/tests/world-*`
-  vectors still speak v1 (topology/bindings/domains, native-derived
-  mapping). They cannot gate v2 acceptance without a rewrite.
+- Strict v2 wire gates do not resolve B1 command wake or B2 host-owned
+  source-view supersession. No passing transport or logical receipt is native
+  settlement evidence; both blockers remain explicit in the port record.
 - Fractional KWin rounding and the style-unit conversion path have no
   documented port proof yet; keep both inside the adapter and record
   the evidence with the port.

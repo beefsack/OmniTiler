@@ -175,6 +175,82 @@ export interface WorldCreationAttempt {
     created: string | null;
     attemptMs: string;
 }
+// Mechanical outcome of one native setter call. Pure actuator disposition,
+// never a policy conclusion: `accepted` means the setter reported success
+// (the caller still re-reads; success alone never proves completion),
+// `refused` is an explicit native refusal, `threw` is a throwing/ambiguous
+// call that may have executed.
+export type FrameSetter = "accepted" | "refused" | "threw";
+// One normalized raw frame attempt: the mechanical facts behind a single
+// native frame write. `target` echoes the desired frame as correlation;
+// `readback` is the immediate post-write frame (`null` unreadable);
+// `dpiBefore`/`dpiAfter` are the live window DPI around the write (`null`
+// unreadable, or the adapter coordinate space has no per-window basis;
+// never guessed); `attemptMs` is the adapter monotonic clock at the write;
+// `op` correlates an explicit float-placement write to its retained core
+// operation (`""` for ordinary writes, never inferred); `pre` is the live
+// frame immediately before the write (`null` unreadable; `Some` without an
+// operation id refuses server-side). At most one latest-wins entry per
+// window.
+export interface WorldFrameAttempt {
+    win: string;
+    target: [number, number, number, number];
+    setter: FrameSetter;
+    readback: [number, number, number, number] | null;
+    dpiBefore: number | null;
+    dpiAfter: number | null;
+    attemptMs: string;
+    op: string;
+    pre: [number, number, number, number] | null;
+}
+// One normalized raw membership attempt: the mechanical facts behind a
+// single native membership write for one window under one retained
+// operation. `pre`/`post` are the live homings immediately before/after
+// the write. Under host-owned workspace domains the adapter cannot express
+// native homing in the logical attempt fields (translation through the
+// adapter binding table would forge logical evidence and poison core
+// third-location proof), so both ride `null` there: the setter plus exact
+// logical target correlation is the whole row, and the core holds the
+// flight ambiguous without re-actuation. At most one latest-wins entry per
+// operation window.
+export interface WorldMemberAttempt {
+    op: string;
+    win: string;
+    out: string;
+    ws: string;
+    setter: FrameSetter;
+    pre: { out: string; ws: string } | null;
+    post: { out: string; ws: string } | null;
+    attemptMs: string;
+}
+// One normalized raw view attempt: the mechanical facts behind a single
+// native view write for one owning phase (standalone view id, window
+// follow parent, migration-target parent, or refill child id). Same
+// host-owned null-evidence rule as membership: `pre`/`post`/`base` ride
+// `null`, never translated native ids. At most one latest-wins entry per
+// owning view phase.
+export interface WorldViewAttempt {
+    op: string;
+    out: string;
+    ws: string;
+    setter: FrameSetter;
+    pre: string | null;
+    post: string | null;
+    base: string | null;
+    attemptMs: string;
+}
+// One normalized raw maximize-clear attempt: the mechanical facts behind a
+// single native nonactivating clear. Parked: Stage 3 parks native clear
+// actuation (the apply lane is proof-only), so no setter ever runs and
+// this lane stays empty rather than report invented evidence.
+export interface WorldClearAttempt {
+    op: string;
+    win: string;
+    setter: FrameSetter;
+    pre: boolean | null;
+    post: boolean | null;
+    attemptMs: string;
+}
 // Uniform per-reply presentation (mirrors
 // tiler-core world_sizing::encode_presentation exactly): the tick-time
 // foreground token the shapes were computed for (the renderer revalidates
@@ -1341,13 +1417,38 @@ export interface WorldInnerReportInput {
     // entry per outstanding creation op; empty when nothing was executed).
     // Core owns binding and settlement over the fresh native[] readback.
     readonly creationAttempts: ReadonlyArray<WorldCreationAttempt>;
+    // Raw mechanical write/readback evidence retained by the apply loop
+    // (latest-wins per window, operation window, owning view phase, and
+    // clear operation respectively; empty when nothing was dispatched).
+    // Core owns every verdict over the fresh facts. The clear lane stays
+    // empty: Stage 3 parks native clear actuation, so no setter ever runs.
+    readonly frameAttempts: ReadonlyArray<WorldFrameAttempt>;
+    readonly memberAttempts: ReadonlyArray<WorldMemberAttempt>;
+    readonly viewAttempts: ReadonlyArray<WorldViewAttempt>;
+    readonly clearAttempts: ReadonlyArray<WorldClearAttempt>;
 }
 
 export function buildWorldInnerReportJson(input: WorldInnerReportInput): string {
     const { observation } = input;
     const esc = (s: string): string => JSON.stringify(s);
-    const rectOrNull = (r: { x: number; y: number; w: number; h: number } | null): string =>
-        r === null ? "null" : `[${r.x},${r.y},${r.w},${r.h}]`;
+    const rectOrNull = (r: { x: number; y: number; w: number; h: number } | readonly [number, number, number, number] | null): string => {
+        if (r === null) {
+            return "null";
+        }
+        // Tuples ride from retained attempt rows; objects ride from live
+        // observations. Array.isArray does not narrow readonly tuples, so
+        // both shapes normalize through explicit casts.
+        const p: [number, number, number, number] = Array.isArray(r)
+            ? (() => {
+                const t = r as readonly [number, number, number, number];
+                return [t[0], t[1], t[2], t[3]] as [number, number, number, number];
+            })()
+            : (() => {
+                const o = r as { x: number; y: number; w: number; h: number };
+                return [o.x, o.y, o.w, o.h] as [number, number, number, number];
+            })();
+        return `[${p[0]},${p[1]},${p[2]},${p[3]}]`;
+    };
     const screens = observation.screens.map((s) =>
         `{"out":${esc(s.out)},"full":${rectOrNull(s.full)},"work":${rectOrNull(s.work)},` +
         `"gap":${s.gap},"outer":${s.outer},"complete":${s.complete ? "true" : "false"},"primary":${s.primary ? "true" : "false"}}`,
@@ -1393,6 +1494,33 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"after":[${a.after.map(esc).join(",")}],` +
         `"created":${a.created === null ? "null" : esc(a.created)},"attemptMs":${JSON.stringify(a.attemptMs)}}`,
     ).join(",");
+    const frameAttempts = input.frameAttempts.map((a) =>
+        `{"win":${esc(a.win)},"target":${rectOrNull(a.target)},` +
+        `"setter":${esc(a.setter)},"readback":${rectOrNull(a.readback)},` +
+        `"dpiBefore":${a.dpiBefore === null ? "null" : a.dpiBefore},` +
+        `"dpiAfter":${a.dpiAfter === null ? "null" : a.dpiAfter},` +
+        `"attemptMs":${JSON.stringify(a.attemptMs)},` +
+        `"op":${esc(a.op)},"pre":${rectOrNull(a.pre)}}`,
+    ).join(",");
+    const memberAttempts = input.memberAttempts.map((a) => {
+        const homing = (h: { out: string; ws: string } | null): string =>
+            h === null ? "null" : `{"out":${esc(h.out)},"ws":${esc(h.ws)}}`;
+        return `{"op":${esc(a.op)},"win":${esc(a.win)},"out":${esc(a.out)},"ws":${esc(a.ws)},` +
+            `"setter":${esc(a.setter)},"pre":${homing(a.pre)},"post":${homing(a.post)},` +
+            `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
+    }).join(",");
+    const viewAttempts = input.viewAttempts.map((a) => {
+        const view = (v: string | null): string => (v === null ? "null" : esc(v));
+        return `{"op":${esc(a.op)},"out":${esc(a.out)},"ws":${esc(a.ws)},` +
+            `"setter":${esc(a.setter)},"pre":${view(a.pre)},"post":${view(a.post)},"base":${view(a.base)},` +
+            `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
+    }).join(",");
+    const clearAttempts = input.clearAttempts.map((a) => {
+        const flag = (v: boolean | null): string => (v === null ? "null" : (v ? "true" : "false"));
+        return `{"op":${esc(a.op)},"win":${esc(a.win)},` +
+            `"setter":${esc(a.setter)},"pre":${flag(a.pre)},"post":${flag(a.post)},` +
+            `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
+    }).join(",");
     return `{"v":${WORLD_CONTRACT_VERSION},"mode":${esc(observation.mode)},` +
         `"screens":[${screens}],"windows":[${windows}],"views":[${views}],"closed":[${closed}],` +
         `"hostOwned":${observation.hostOwned ? "true" : "false"},"equalCount":${observation.equalCount ? "true" : "false"},` +
@@ -1408,5 +1536,7 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"focusFollowsCursor":${observation.focusFollowsCursor ? "true" : "false"},` +
         `"cursorWarp":${observation.cursorWarp ? "true" : "false"},` +
         `"presentation":${presentationJson},"creationAttempts":[${creationAttempts}],` +
+        `"frameAttempts":[${frameAttempts}],"memberAttempts":[${memberAttempts}],` +
+        `"viewAttempts":[${viewAttempts}],"clearAttempts":[${clearAttempts}],` +
         `"anchorFallback":${esc(input.anchorFallback)},"noSpaceResult":${esc(input.noSpaceResult)}}`;
 }

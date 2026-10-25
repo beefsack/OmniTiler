@@ -1,14 +1,16 @@
-// Occupancy-only spare creation for aligned per-output workspaces.
+// Occupancy-only spare lifecycle for aligned per-output workspaces.
 // Producer-shaped regression through the real `WorldEngine` (via the
 // test-only `world_eval` example with `WORLD_EVAL_ALIGNED=1`) plus the
 // production entry/apply path with fresh serial replies: showing an empty
 // end (including via a production-shaped empty-list sticky anchor, homed
 // by the observer at its output's current) creates no spare, relative-next
 // wraps from the live end on both outputs with the opposite view unchanged,
-// and a real occupancy arrival on each output's end mints exactly one spare
-// each. The departed end retires normally once the anchor rehomes (global
-// empty unshown non-trailing retirement); no-creation is asserted directly
-// via bound rows, never via constant counts across departures. Included in
+// the departed end stays as a native-bound empty (core retains
+// native-bound empties; only unbound trailing spares retire), and a real
+// occupancy arrival on each output's end appends exactly one unbound
+// trailing logical (the ordinary spare never requests native backing).
+// No-creation is asserted directly via bound rows and unchanged native
+// inventories, never via constant counts across departures. Included in
 // `npm test`.
 
 import assert from "node:assert/strict";
@@ -494,8 +496,9 @@ describe("world aligned spare occupancy-only", () => {
 
             // empty-list sticky anchor, homed by the observer at the shown
             // current. The anchor follows the view: after this departure it
-            // rehomes onto ws-1 and the old end retires normally (global
-            // empty unshown non-trailing retirement), which is expected.
+            // rehomes onto ws-1 and the old end stays as a native-bound
+            // empty (core retains native-bound empties against trailing
+            // lifecycle removal; only unbound trailing spares retire).
             // No-creation is asserted directly via bound rows.
             h.activeScreen = { name: LEFT };
             h.activeRef = h.wins[0] as FakeWindow;
@@ -509,9 +512,10 @@ describe("world aligned spare occupancy-only", () => {
                 workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
                 "wrap mints no spare (bound rows only)",
             );
+            const departedRow = workspacesOf(reply).find((row) => row["out"] === LEFT && (row["bind"] as string) === "ws-4");
             assert.ok(
-                !h.desktops.some((d) => d.id === "ws-4"),
-                `departed end retires once the anchor rehomes (desktops=${h.desktops.map((d) => d.id).join(",")})`,
+                departedRow !== undefined,
+                `departed end stays as a native-bound empty (desktops=${h.desktops.map((d) => d.id).join(",")})`,
             );
 
             // Reshow the live end (ws-3) on the left: genuinely empty with
@@ -536,8 +540,10 @@ describe("world aligned spare occupancy-only", () => {
                 "numbered departure mints no spare",
             );
 
-            // Same on the right output: its shown empty end (ws-3, genuinely
-            // empty there) forward-wraps onto ws-1 with the left view
+            // Same on the right output: its shown end (ws-3, genuinely
+            // empty there) steps forward onto the retained ws-4 cell (the
+            // departed ws-4 was retained, not retired, so the ring still
+            // holds four cells and only the true end wraps). Left view
             // unchanged and no spare minted.
             h.activeScreen = { name: RIGHT };
             h.activeRef = h.wins[1] as FakeWindow;
@@ -552,15 +558,21 @@ describe("world aligned spare occupancy-only", () => {
             h.runTimers();
             await h.settle();
             reply = lastReply(h);
-            assert.equal(h.currents.get(RIGHT), "ws-1", "relative next wraps on the right too");
-            assert.equal(h.currents.get(LEFT), "ws-1", "left view unchanged by right wrap");
+            assert.equal(h.currents.get(RIGHT), "ws-4", "relative next steps onto the retained end on the right");
+            assert.equal(h.currents.get(LEFT), "ws-1", "left view unchanged by right step");
             assert.ok(
                 workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
                 "right wrap mints no spare",
             );
 
             // Occupancy arrival still extends the spare on each output: a
-            // real window on an output's end mints exactly one spare.
+            // real window on an output's end appends exactly one trailing
+            // logical. The ordinary spare never requests native backing
+            // (core-owned lifecycle), so no native desktop is created; the
+            // filled end keeps its binding and the spare stays unbound. The
+            // retained ws-4 cell is the live end of the left ring (the
+            // departed end was retained, not retired), so the arrival
+            // targets it directly.
             const fillEnd = (tag: string, out: string, ws: string): void => {
                 const desk = h.desktops.find((d) => d.id === ws) as FakeDesktop;
                 const newcomer: FakeWindow = {
@@ -580,16 +592,25 @@ describe("world aligned spare occupancy-only", () => {
                 };
                 h.wins.push(newcomer);
             };
+            const spareOf = (rows: Array<Record<string, unknown>>, out: string): Array<Record<string, unknown>> =>
+                rows.filter((row) => row["out"] === out && (row["bind"] as string) === "");
             const countBeforeLeft = h.desktops.length;
-            fillEnd("win-c", LEFT, "ws-3");
+            fillEnd("win-c", LEFT, "ws-4");
             h.fire("windowAdded");
             await h.settle();
-            assert.equal(h.desktops.length, countBeforeLeft + 1, "left fill mints exactly one spare");
+            assert.equal(h.desktops.length, countBeforeLeft, "left fill creates no native (ordinary spare needs no backing)");
             reply = lastReply(h);
-            assert.ok(
-                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
-                "left spare binds after the fresh report, no dangling token",
-            );
+            {
+                const rows = workspacesOf(reply).filter((row) => row["out"] === LEFT);
+                const spares = spareOf(workspacesOf(reply), LEFT);
+                assert.equal(spares.length, 1, "left fill appends exactly one trailing spare");
+                assert.equal(spares[0]?.["id"], rows[rows.length - 1]?.["id"], "spare is the trailing row, never a mid-ring rename");
+                const filledLogical = rows.find((row) => (row["bind"] as string) === "ws-4")?.["id"] as string;
+                assert.ok(filledLogical !== undefined && filledLogical !== "", "filled end keeps its logical");
+                const winRows = (reply["windows"] as Array<Record<string, unknown>>);
+                assert.ok(winRows.some((w) => w["win"] === "win-c" && w["out"] === LEFT && w["ws"] === filledLogical), "newcomer homed on the filled end");
+                assert.deepEqual(reply["nativeCreations"], [], "ordinary spare desires no backing");
+            }
             assert.ok(
                 transfersOf(reply).length === 0,
                 `settled with no retained transfers, got ${JSON.stringify(transfersOf(reply))}`,
@@ -599,12 +620,19 @@ describe("world aligned spare occupancy-only", () => {
             fillEnd("win-d", RIGHT, rightEnd.id);
             h.fire("windowAdded");
             await h.settle();
-            assert.equal(h.desktops.length, countBeforeRight + 1, "right fill mints exactly one spare");
+            assert.equal(h.desktops.length, countBeforeRight, "right fill creates no native (ordinary spare needs no backing)");
             reply = lastReply(h);
-            assert.ok(
-                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
-                "right spare binds after the fresh report, no dangling token",
-            );
+            {
+                const rows = workspacesOf(reply).filter((row) => row["out"] === RIGHT);
+                const spares = spareOf(workspacesOf(reply), RIGHT);
+                assert.equal(spares.length, 1, "right fill appends exactly one trailing spare");
+                assert.equal(spares[0]?.["id"], rows[rows.length - 1]?.["id"], "spare is the trailing row, never a mid-ring rename");
+                const filledLogical = rows.find((row) => (row["bind"] as string) === rightEnd.id)?.["id"] as string;
+                assert.ok(filledLogical !== undefined && filledLogical !== "", "filled end keeps its logical");
+                const winRows = (reply["windows"] as Array<Record<string, unknown>>);
+                assert.ok(winRows.some((w) => w["win"] === "win-d" && w["out"] === RIGHT && w["ws"] === filledLogical), "newcomer homed on the filled end");
+                assert.deepEqual(reply["nativeCreations"], [], "ordinary spare desires no backing");
+            }
             assert.ok(
                 transfersOf(reply).length === 0,
                 `settled with no retained transfers, got ${JSON.stringify(transfersOf(reply))}`,

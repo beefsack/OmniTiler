@@ -44,6 +44,9 @@ Tentative index (user review pending; not approved product rules):
   after both KDE and macOS changes land
 - KDE broker capture-lifetime reset and sender/generation-bound command transport
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
+- KDE v2 migration/backing and native-bound empty lifecycle oracle reconciliation
+  ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions));
+  preserves existing core behavior, not a new reuse/removal policy
 
 ## KDE rapid directional input
 
@@ -4653,6 +4656,15 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
 - Sticky semantics are unchanged: all managed workspaces of the owning output,
   float-only, positive all-desktop proof; sticky members stay on the source output
   during workspace migration. This does not claim native cross-display behavior.
+- **Tentative oracle reconciliation, 2026-10-25:** migration retains the core
+  logical id. Missing destination backing uses explicit fresh creation; an empty
+  native desktop already bound to another logical workspace is not reused.
+  Returning can revalidate that same logical id's dormant native binding.
+  Native-bound empties retain identity and ordinary occupancy-driven trailing
+  spares remain unbound until needed. These are existing core outcomes, not a
+  new native reuse/deletion policy. Eligible-unbound reuse remains parked;
+  [source-view supersession B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
+  is separately unresolved, with no shared behavior change selected.
 - **Parked retained-unmanaged representation, 2026-10-25:** `minimized=true`
   suppresses geometry and ordinary send/focus, but workspace migration, output
   removal and an already-pending transfer can relocate it. It therefore does not
