@@ -45,7 +45,7 @@ Tentative index (user review pending; not approved product rules):
 - Host-owned native attempt preimages/settlement (B2 option 1)
   ([below](#native-adoption-2026-10-24)); review after KDE/macOS land
 - Released source backing/fresh native adoption, no dormant return binding
-  ([below](#native-adoption-2026-10-24)); implementation and oracle alignment pending
+  ([below](#native-adoption-2026-10-24)); delivered in core, later abstraction review pending
 - KDE broker capture-lifetime reset and sender/generation-bound command transport
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 - KDE v2 migration/backing and native-bound empty lifecycle oracle reconciliation
@@ -4678,12 +4678,12 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   logical id. Missing destination backing uses explicit fresh creation; an empty
   native desktop already bound to another logical workspace is not reused.
   Dormant return binding was the earlier behavior; the released-source decision
-  below supersedes it as the intended contract, not yet accepted implementation.
+  below supersedes it in core.
   Native-bound empties retain identity and ordinary occupancy-driven trailing
   spares remain unbound until needed. These are existing core outcomes, not a
   new native reuse/deletion policy. Eligible-unbound reuse remains parked;
-  [source-view supersession B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
-  still needs implementation and oracle alignment.
+  [source-view supersession B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration)
+  is implemented in core; KDE paired delivery is tracked separately.
 - **Tentative native attempt settlement (option 1), user-selected 2026-10-25;
   review after KDE and macOS land:** optional capability-gated native
   before/after/baseline ids extend `MemberAttempt`/`ViewAttempt`. Non-null
@@ -4693,8 +4693,8 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   The user's switch back wins, migration stays and the paired source refill
   retires permanently. Windows logical preimages remain unchanged. Also pin a
   late tiler send observed with intermediate readings settling as the tiler's
-  transfer, not an outside move. Implementation is draft, not delivered; see the
-  [B2 blocker](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked).
+  transfer, not an outside move. Core implementation and 19 settlement pins are
+  delivered; see [B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration).
 - **Tentative released-source backing (option 1), user-selected 2026-10-25;
   comprehensive cross-platform review pending:** migration releases its source
   output's native binding, retaining no dormant return binding. The released
@@ -4705,9 +4705,14 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   wins and the paired refill child retires permanently. Ordinary trailing and
   equal-count lifecycle remain unchanged. No reverse-migration provenance or
   eligible-spare reuse is introduced; the latter stays parked. This contract
-  also applies to macOS Spaces, not only KDE. Implementation remains unaccepted:
-  existing KDE assertions explicitly require dormant backing and retaining both
-  transfers on the proven rewind, contradicting this decision.
+  also applies to macOS Spaces, not only KDE. Release follows positive member
+  arrival, explicit closes or newer off-output evidence, never negative vacancy
+  inference. Partial native lists or pending creations defer cleanup, retained
+  independently of the transfer until safely retried. Refusal rollback keeps
+  source backing. The first proven-rewind reply retains the migration transfer
+  while fresh source adoption becomes a staged echo; the refill retires without
+  re-application and subsequent observation settles the parent. Assertions
+  encoding dormant retention are superseded; migration-transfer retention stays.
 - **Tentative host-hidden representation, user-selected 2026-10-25; native
   Activities testing pending:** KDE inactive-Activity and macOS Cmd+H windows
   use existing `WindowFact.minimized=true`, no new core state. Qualified

@@ -333,7 +333,15 @@
 
 <a id="b1-external-command-wake-delivery-parked"></a>
 
-### B2. Source-view rewind during migration (parked)
+### B2. Source-view rewind during migration
+
+- Core/protocol complete offline with 19 native-attempt settlement pins. Source
+  release is arrival-gated, also covers explicit closes/newer off-output proof,
+  and adopts listed backing even if never selected. The first proven-rewind
+  reply retains the migration parent; fresh adoption supplies its echo on the
+  next report, then the refill retires and both switches win. KDE paired delivery
+  and Stage 2 closure follow separately. Earlier investigation below is historical
+  and superseded by the core outcome at the end of this record.
 
 - Minimal discriminator: migrate a workspace; let members and both native views
   land; before the proof capture, restore both old native currents; observe
@@ -718,3 +726,71 @@
   destination, no-refill-reapply and zero-unchosen-write checks. Then implement
   unconditional source release plus ordinary ordered adoption and rerun all
   core/KDE gates. Do not begin Stage 3 while Stage 2 remains blocked.
+
+## B2 completion constraints (2026-10-25)
+
+- Released-source/fresh adoption supersedes assertions encoding dormant backing
+  or forbidding a fresh source logical row. Preserve the migration scenarios and
+  all compatible assertions, including retention of the migration transfer in
+  the first proven-rewind reply. Do not equate moving the logical workspace with
+  retiring its transfer: the destination logical identity and membership stay.
+- Strengthen the rewind journey with fresh source adoption at native-order
+  position, destination identity/membership, both observed user-selected views,
+  paired refill retirement with no re-application, and no unchosen source write.
+  List every changed assertion and its contract reason in the delivery evidence.
+- Replace the unsuccessful reactive-only source release with release plus
+  ordinary complete-order adoption, including non-current source backing, while
+  preserving later backing correlation. Add negative-vacancy and delayed-attempt
+  rebinding discriminators before accepting settlement changes.
+- Deliver core/protocol with scoped core/protocol/Windows gates first, then KDE,
+  then Stage 2 closure. The existing macOS dead-code strict-clippy failure is
+  outside this work; report it without changing macOS policy. Stage 3+ stays out
+  of scope. Genuine additional product choices remain parked, not guessed.
+
+## B2 core/protocol outcome (2026-10-25)
+
+- Delivered `MemberAttempt.native_pre/native_post: Option<String>` (wire
+  `nativePre/nativePost`) and
+  `ViewAttempt.native_pre/native_post/native_baseline: Option<String>` (wire
+  `nativePre/nativePost/nativeBase`). Missing/null/empty is unknown. Non-null
+  without host-owned capability refuses; host-owned consumes native evidence
+  only, tiler-owned keeps logical evidence. Validation, digest and conservative
+  wire accounting include the fields. Windows logical behavior is unchanged;
+  macOS carries raw Space ids without an adapter binding owner.
+- Positive arrival releases source backing; no dormant return binding or reverse
+  provenance. Listed released backing adopts fresh at authoritative native-order
+  position, current or never selected. Explicit-close and newer off-output exits
+  also release; refusal rollback retains backing. Partial native lists or source
+  creations defer cleanup in deduplicated retained work, retried during native
+  intake even after the migration retires. A source-returned logical cancels
+  stale cleanup. Unlisted released ids adopt ordinarily if observed later.
+- Retained transfer targets now survive trailing lifecycle while awaiting
+  correlated backing. This fixes the earlier producer's empty-leg-3 binding:
+  lifecycle had removed its unbound/invisible target and creation authorization.
+  Ordinary trailing/equal-count policy remains unchanged. No spare reuse.
+- Stage-order freshness preserves the migration transfer in the first proven-
+  rewind reply: newly adopted source backing is not yet a staged echo. The next
+  observation resolves it, retires the paired refill and settles without fighting
+  either user switch. No artificial timeout or reverse-migration metadata.
+- Required pins remain green:
+  `ask5_late_send_with_intermediate_readings_settles_transfer`,
+  `host_owned_unknown_native_holds_despite_conflicting_logical`,
+  `cross_output_refused_native_proves_only_with_source_homing`. New pins cover
+  never-selected adoption/order, stale occupant facts, incomplete inventories,
+  delayed attempts across actual binding replacement while flights remain
+  pending, retired replay, empty target lifecycle, all-closed/off-output exits
+  and deferred release after another source creation resolves. The old
+  negative-vacancy helper is removed, not accepted as a safe abstraction.
+- Independent contract review and focused cleanup review accepted the corrected
+  design. Fresh isolated-artifact gates after integrating current core/macOS
+  changes: locked core/protocol/Windows all-target build/tests and strict clippy
+  pass, 2,057 tests across 53 suites (1,277 core, 55 protocol, 725 Windows);
+  native-attempt 19/19. Workspace fmt/whitespace and world acceptance 6/6 pass.
+  macOS all targets compile, world-filtered 57/57, trailing 52/52 and trailing-join
+  9/9 pass; full library 1,149 pass plus the four unchanged non-macOS version-read
+  failures. Existing macOS strict-clippy dead code is outside this work.
+- KDE changes are prepared separately: only dormant-source/fresh-adoption and
+  refill-retention expectations are superseded. Migration-transfer retention,
+  scenario faults and final convergence stay. The paired delivery records the
+  exact assertion changes and final KDE gates; Stage 2 is not closed by this
+  core-only outcome. Native acceptance and Stage 3+ remain outstanding.

@@ -473,6 +473,18 @@ pub struct FrameAttempt {
 /// - `pre`/`post` are the live homings immediately before/after the write
 ///   (`None` = unreadable). Only an explicit refusal with an unchanged
 ///   readable preimage proves refusal; anything else latches ambiguity.
+/// - `native_pre`/`native_post` are the host-owned native desktop ids
+///   observed immediately before/after the write (`None` =
+///   unreadable/unknown). Only meaningful when
+///   `host_owned_workspace_domains` is set (non-null without the
+///   capability refuses, like
+///   [`WindowFact::native_workspace`]); the core translates them through
+///   its own per-output bindings (pre on the retained source output; post
+///   on the retained target output for arrival, on the retained source
+///   output for refusal) under a single evidence lane: host-owned reports
+///   ignore the logical `pre`/`post` and use only the translated natives.
+///   Tiler-owned reports use only the logical `pre`/`post` and carry no
+///   natives. Windows keeps the logical route with both fields `None`.
 /// - `attempt_ms` is the adapter monotonic clock at the write, matching
 ///   [`FrameAttempt::attempt_ms`] idempotency.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -484,6 +496,8 @@ pub struct MemberAttempt {
     pub setter: FrameSetter,
     pub pre: Option<(OutputId, String)>,
     pub post: Option<(OutputId, String)>,
+    pub native_pre: Option<String>,
+    pub native_post: Option<String>,
     pub attempt_ms: u64,
 }
 
@@ -503,6 +517,16 @@ pub struct MemberAttempt {
 ///   with an unchanged readable preimage proves refusal; a readable post
 ///   that is neither the baseline nor the target proves newer external
 ///   input.
+/// - `native_pre`/`native_post`/`native_baseline` are the host-owned native
+///   current ids read at the same three moments (`None` =
+///   unreadable/unknown). Same capability rule as
+///   [`MemberAttempt::native_pre`]: the core translates them through its
+///   own bindings for the attempt's target output under a single evidence
+///   lane (host-owned ignores logical `pre`/`post`/`baseline`; tiler-owned
+///   uses only the logical fields). A translated post proving the target
+///   was reached followed by a different known current proves the proven
+///   view was abandoned (newer external input wins). Windows keeps the
+///   logical route with all three `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewAttempt {
     pub operation_id: String,
@@ -512,6 +536,9 @@ pub struct ViewAttempt {
     pub pre: Option<String>,
     pub post: Option<String>,
     pub baseline: Option<String>,
+    pub native_pre: Option<String>,
+    pub native_post: Option<String>,
+    pub native_baseline: Option<String>,
     pub attempt_ms: u64,
 }
 
@@ -1396,9 +1423,9 @@ pub fn classify_request(
 /// cursor-warp settings, the cursor position and cursor hit, the gesture
 /// ingress, the global focus, the gesture barrier, the monotonic clock, frame attempts (window, target, setter, readback, DPI
 /// pair, attempt stamp, placement operation id, pre-write frame), member
-/// attempts (operation, window, target, setter, pre/post homing, stamp),
-/// view attempts (owning operation, target, setter, pre/post/baseline
-/// views, stamp), and clear attempts (operation, window, setter,
+/// attempts (operation, window, target, setter, pre/post homing, native
+/// pre/post ids, stamp), view attempts (owning operation, target, setter,
+/// pre/post/baseline views, native pre/post/baseline ids, stamp), and clear attempts (operation, window, setter,
 /// pre/post maximized states, stamp).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
@@ -1708,6 +1735,13 @@ pub fn report_digest(report: &WorldReport) -> u64 {
                 .unwrap_or_default(),
         );
         sep(&mut hash);
+        feed(&mut hash, attempt.native_pre.as_deref().unwrap_or_default());
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            attempt.native_post.as_deref().unwrap_or_default(),
+        );
+        sep(&mut hash);
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
     }
@@ -1725,6 +1759,18 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, attempt.post.as_deref().unwrap_or_default());
         sep(&mut hash);
         feed(&mut hash, attempt.baseline.as_deref().unwrap_or_default());
+        sep(&mut hash);
+        feed(&mut hash, attempt.native_pre.as_deref().unwrap_or_default());
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            attempt.native_post.as_deref().unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            attempt.native_baseline.as_deref().unwrap_or_default(),
+        );
         sep(&mut hash);
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
@@ -2169,6 +2215,25 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
                     return Some("member-homing-invalid");
                 }
             }
+            // Same capability rule as `WindowFact::native_workspace`:
+            // host-owned native pre/post ids ride only with the
+            // capability; without it any carried id refuses.
+            if !report.host_owned_workspace_domains
+                && [&attempt.native_pre, &attempt.native_post]
+                    .iter()
+                    .any(|native| native.is_some())
+            {
+                return Some("native-without-capability");
+            }
+            for native in [&attempt.native_pre, &attempt.native_post]
+                .iter()
+                .copied()
+                .flatten()
+            {
+                if !is_opaque_id(native) {
+                    return Some("member-homing-invalid");
+                }
+            }
             if !seen_members.insert((attempt.operation_id.clone(), attempt.window.0.clone())) {
                 return Some("duplicate-member");
             }
@@ -2187,6 +2252,33 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
                 if let Some(view) = view
                     && !is_opaque_id(view)
                 {
+                    return Some("view-proof-invalid");
+                }
+            }
+            // Same capability rule as `WindowFact::native_workspace`:
+            // host-owned native pre/post/baseline ids ride only with the
+            // capability; without it any carried id refuses.
+            if !report.host_owned_workspace_domains
+                && [
+                    &attempt.native_pre,
+                    &attempt.native_post,
+                    &attempt.native_baseline,
+                ]
+                .iter()
+                .any(|native| native.is_some())
+            {
+                return Some("native-without-capability");
+            }
+            for native in [
+                &attempt.native_pre,
+                &attempt.native_post,
+                &attempt.native_baseline,
+            ]
+            .iter()
+            .copied()
+            .flatten()
+            {
+                if !is_opaque_id(native) {
                     return Some("view-proof-invalid");
                 }
             }

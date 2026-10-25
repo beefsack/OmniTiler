@@ -1452,6 +1452,8 @@ mod tests {
             setter: FrameSetter::Accepted,
             pre: None,
             post: None,
+            native_pre: None,
+            native_post: None,
             attempt_ms: 0,
         }];
         let view_attempts = [ViewAttempt {
@@ -1462,6 +1464,9 @@ mod tests {
             pre: None,
             post: None,
             baseline: None,
+            native_pre: None,
+            native_post: None,
+            native_baseline: None,
             attempt_ms: 0,
         }];
         input.frames = &frames;

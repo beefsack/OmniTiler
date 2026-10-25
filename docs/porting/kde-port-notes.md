@@ -98,7 +98,7 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   remains red: the source-view safety veto holds a proven-then-abandoned refill,
   but current raw logical attempt fields cannot settle that host-owned
   supersession. Only paired core refill desires may actuate; the legacy
-  first-remaining-row fallback is deleted. See [B2](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked).
+  first-remaining-row fallback is deleted. See [B2](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration).
   Omission is not settlement proof. Do not run this draft live as accepted behavior.
 
 ## Delivered-baseline inventory (port or delete)

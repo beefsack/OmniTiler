@@ -620,6 +620,8 @@ fn possibly_executed_persists_held_across_disappearance() {
                 setter: FrameSetter::Threw,
                 pre: Some((OutputId("out-a".to_owned()), source.clone())),
                 post: Some((OutputId("out-a".to_owned()), source)),
+                native_pre: None,
+                native_post: None,
                 attempt_ms: 3,
             }],
             false,

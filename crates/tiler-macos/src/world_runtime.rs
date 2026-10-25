@@ -155,18 +155,20 @@ impl WorldSession {
     /// Stage one raw view-attempt row for the next dispatched report.
     /// Resolves the retained transfer target by operation identity (logical
     /// target correlation only, never adapter mapping). Native Space reads
-    /// ride as absence (`pre`/`post` are `None`): host-owned facts never
-    /// translate native ids to logical receipts. A native pre/post schema
-    /// is not represented by the current logical attempt fields; the adapter
-    /// reports no observed pre/post rather than forging logical values.
-    /// Unknown operations drop without evidence (never forged, never
-    /// guessed). Latest-wins per owning operation.
+    /// ride the dedicated native keys (`native_pre`/`native_post` via
+    /// [`crate::topology::workspace_key`]); logical `pre`/`post` stay
+    /// `None` because host-owned facts never translate native ids to
+    /// logical receipts adapter-side. The core translates the native ids
+    /// through its own bindings at settle time. There is no separate
+    /// observation-time read in the drain, so `native_baseline` stays
+    /// unknown. Unknown operations drop without evidence (never forged,
+    /// never guessed). Latest-wins per owning operation.
     pub(crate) fn stage_view_attempt(
         &mut self,
         operation_id: &str,
         setter: FrameSetter,
-        _pre_sid: Option<u64>,
-        _post_sid: Option<u64>,
+        pre_sid: Option<u64>,
+        post_sid: Option<u64>,
     ) {
         let transfer = self
             .engine
@@ -186,6 +188,9 @@ impl WorldSession {
             pre: None,
             post: None,
             baseline: None,
+            native_pre: pre_sid.map(crate::topology::workspace_key),
+            native_post: post_sid.map(crate::topology::workspace_key),
+            native_baseline: None,
             attempt_ms: 0,
         };
         self.pending_views.insert(operation_id.to_owned(), attempt);
@@ -196,14 +201,14 @@ impl WorldSession {
     /// [`WorldSession::stage_view_attempt`]; the retained transfer must be
     /// a window transfer (its subject window and target ride the staged
     /// row — the operation identity already names them core-side, so the
-    /// drain never re-states them). Native Space reads ride as absence
-    /// (`post` is `None`, same logical-field limitation as above).
-    /// Latest-wins per (operation, window).
+    /// drain never re-states them). The drain-verified arrival Space rides
+    /// `native_post`; the drain captures no pre-write homing read, so
+    /// `native_pre` stays unknown. Latest-wins per (operation, window).
     pub(crate) fn stage_member_attempt(
         &mut self,
         operation_id: &str,
         setter: FrameSetter,
-        _post_sid: Option<u64>,
+        post_sid: Option<u64>,
     ) {
         let transfer = self
             .engine
@@ -226,6 +231,8 @@ impl WorldSession {
             setter,
             pre: None,
             post: None,
+            native_pre: None,
+            native_post: post_sid.map(crate::topology::workspace_key),
             attempt_ms: 0,
         };
         self.pending_members

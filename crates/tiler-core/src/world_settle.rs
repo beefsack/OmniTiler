@@ -55,62 +55,387 @@ fn view_attempt_for<'a>(
     })
 }
 
-/// Proven refusal from one membership attempt: an explicit native refusal
-/// with an unchanged readable preimage that is not the target. Anything
-/// else (accepted mismatch, throw, unreadable proof, moved preimage)
-/// latches ambiguity, never refusal.
-fn member_refused(
-    attempt: &MemberAttempt,
-    target_output: &OutputId,
-    target_workspace: &str,
-) -> bool {
-    matches!(attempt.setter, FrameSetter::Refused)
-        && attempt.pre.is_some()
-        && attempt.pre == attempt.post
-        && attempt.pre.as_ref().is_some_and(|(output, workspace)| {
-            output != target_output || workspace != target_workspace
-        })
-}
+impl WorldEngine {
+    /// Effective logical pre homing for one member attempt, capability-gated
+    /// to a single evidence lane (never a logical-or-native precedence):
+    /// host-owned reports ignore the logical fields and translate only the
+    /// native readback through this engine's own bindings on the retained
+    /// source output (where the window sat before the write); tiler-owned
+    /// reports use only the logical pre and ignore natives (rejected
+    /// without the capability, so accepted tiler-owned rows never carry
+    /// them). Unmapped or unreadable natives stay unknown: never a guess,
+    /// never an adapter table.
+    fn effective_member_pre(
+        &self,
+        attempt: &MemberAttempt,
+        source_output: &OutputId,
+        host_owned: bool,
+    ) -> Option<(OutputId, String)> {
+        if host_owned {
+            attempt.native_pre.as_deref().and_then(|native| {
+                self.native_logical(source_output, native)
+                    .map(|logical| (source_output.clone(), logical))
+            })
+        } else {
+            attempt.pre.clone()
+        }
+    }
 
-/// Proven refusal from one view attempt: same unchanged-readable-preimage
-/// rule as [`member_refused`]. A follow miss is never a refused window:
-/// callers hold the parent ambiguous instead of settling refusal.
-fn view_refused(attempt: &ViewAttempt, target_workspace: &str) -> bool {
-    matches!(attempt.setter, FrameSetter::Refused)
-        && attempt.pre.is_some()
-        && attempt.pre == attempt.post
-        && attempt.pre.as_deref() != Some(target_workspace)
-}
+    /// Effective logical post homing for one member attempt on an explicit
+    /// output, capability-gated like [`WorldEngine::effective_member_pre`]:
+    /// host-owned translates only the native post readback through this
+    /// engine's own bindings on the given output; tiler-owned uses only
+    /// the logical post. Unmapped or unreadable natives stay unknown.
+    fn effective_member_post_on(
+        &self,
+        attempt: &MemberAttempt,
+        output: &OutputId,
+        host_owned: bool,
+    ) -> Option<(OutputId, String)> {
+        if host_owned {
+            attempt.native_post.as_deref().and_then(|native| {
+                self.native_logical(output, native)
+                    .map(|logical| (output.clone(), logical))
+            })
+        } else {
+            attempt.post.clone()
+        }
+    }
 
-/// Third-location proof from one view attempt: a readable post that is
-/// neither the target nor the KNOWN observation-time baseline proves newer
-/// external input. Unknown or empty baselines never prove third locations:
-/// a post matching an unknown baseline reads as ambiguity, never
-/// supersession. An unchanged preimage (`pre == post`) is never external
-/// proof even when the baseline differs: the write left the view where it
-/// was, so the attempt latches ambiguity without re-actuation. Target
-/// observation wins elsewhere (callers check exact echo before consulting
-/// this): this predicate never overrides an exact target proof.
-fn view_third_location(attempt: &ViewAttempt, target_workspace: &str) -> bool {
-    let Some(post) = attempt.post.as_deref() else {
-        return false;
-    };
-    let Some(baseline) = attempt.baseline.as_deref() else {
-        return false;
-    };
-    if post.is_empty() || baseline.is_empty() {
-        return false;
+    /// Effective logical post homing for arrival proof: the post translated
+    /// on the retained target output (where arrival lands). Same
+    /// capability gate as [`WorldEngine::effective_member_pre`].
+    fn effective_member_post(
+        &self,
+        attempt: &MemberAttempt,
+        target_output: &OutputId,
+        host_owned: bool,
+    ) -> Option<(OutputId, String)> {
+        self.effective_member_post_on(attempt, target_output, host_owned)
     }
-    if post == target_workspace {
-        return false;
+
+    /// Effective logical pre view for one view attempt, capability-gated
+    /// like [`WorldEngine::effective_member_pre`]: host-owned translates
+    /// only the native current readback through this engine's own bindings
+    /// for the attempt's target output; tiler-owned uses only the logical
+    /// pre. Unmapped or unreadable natives stay unknown.
+    fn effective_view_pre(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
+        if host_owned {
+            attempt
+                .native_pre
+                .as_deref()
+                .and_then(|native| self.native_logical(&attempt.target_output, native))
+        } else {
+            attempt.pre.clone()
+        }
     }
-    if post == baseline {
-        return false;
+
+    /// Effective logical post view for one view attempt: same capability
+    /// gate and translation rule as [`WorldEngine::effective_view_pre`].
+    fn effective_view_post(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
+        if host_owned {
+            attempt
+                .native_post
+                .as_deref()
+                .and_then(|native| self.native_logical(&attempt.target_output, native))
+        } else {
+            attempt.post.clone()
+        }
     }
-    if attempt.pre.as_deref() == Some(post) {
-        return false;
+
+    /// Effective logical baseline view for one view attempt: same capability
+    /// gate and translation rule as [`WorldEngine::effective_view_pre`].
+    fn effective_view_baseline(&self, attempt: &ViewAttempt, host_owned: bool) -> Option<String> {
+        if host_owned {
+            attempt
+                .native_baseline
+                .as_deref()
+                .and_then(|native| self.native_logical(&attempt.target_output, native))
+        } else {
+            attempt.baseline.clone()
+        }
     }
-    true
+
+    /// Proven refusal from one membership attempt over effective homing: an
+    /// explicit refusal with an unchanged readable preimage that is not
+    /// the target. Anything else (accepted mismatch, throw, unreadable proof,
+    /// moved preimage) latches ambiguity, never refusal. The tiler-owned
+    /// logical route is unchanged (natives ignored there; host-owned ignores
+    /// logical fields).
+    ///
+    /// The refusal post translates on the retained SOURCE output (where the
+    /// window sat before the write), never the target: a refused
+    /// cross-output write leaves the window on the source, so its unchanged
+    /// native post still names the source desktop. Translating that post on
+    /// the target would unmap (or mismap a repeated global id) and could
+    /// never prove refusal. Arrival proof
+    /// ([`WorldEngine::member_post_proves_target`]) still translates on the
+    /// target; no new output field is added. Output movement itself is not
+    /// proven by native ids alone (the same native string repeated across
+    /// outputs maps per output and cannot discriminate a move): the latch
+    /// below only proves the preimage is unchanged, and the callers
+    /// reconcile it against staged homing before settling. A coincidental
+    /// same-string mapping that survives the latch still holds without
+    /// staged source homing rather than settling refusal.
+    fn member_refused(
+        &self,
+        attempt: &MemberAttempt,
+        source_output: &OutputId,
+        target_output: &OutputId,
+        target_workspace: &str,
+        host_owned: bool,
+    ) -> bool {
+        matches!(attempt.setter, FrameSetter::Refused) && {
+            let pre = self.effective_member_pre(attempt, source_output, host_owned);
+            // Refusal-only source-side post: the unchanged readback still
+            // names the source desktop.
+            let post = self.effective_member_post_on(attempt, source_output, host_owned);
+            pre.is_some()
+                && pre == post
+                && pre.as_ref().is_some_and(|(output, workspace)| {
+                    output != target_output || workspace != target_workspace
+                })
+        }
+    }
+
+    /// Proven refusal from one view attempt over effective views: same
+    /// unchanged-readable-preimage rule as [`WorldEngine::member_refused`]. A
+    /// follow miss is never a refused window: callers hold the parent
+    /// ambiguous instead of settling refusal.
+    fn view_refused(
+        &self,
+        attempt: &ViewAttempt,
+        target_workspace: &str,
+        host_owned: bool,
+    ) -> bool {
+        matches!(attempt.setter, FrameSetter::Refused) && {
+            let pre = self.effective_view_pre(attempt, host_owned);
+            let post = self.effective_view_post(attempt, host_owned);
+            pre.is_some() && pre == post && pre.as_deref() != Some(target_workspace)
+        }
+    }
+
+    /// Whether one accepted view attempt proves its target was reached: the
+    /// effective post (native-only under the capability, logical-only
+    /// without it) names the target. The immediate post-write readback proves
+    /// the write landed even when the current observation already moved on;
+    /// that departure is newer external input, never a reason to re-actuate.
+    fn view_post_proves_target(&self, attempt: &ViewAttempt, host_owned: bool) -> bool {
+        matches!(attempt.setter, FrameSetter::Accepted)
+            && self.effective_view_post(attempt, host_owned).as_deref()
+                == Some(attempt.target_workspace.as_str())
+    }
+
+    /// Remember one option-1 source release for retry by native intake:
+    /// when arrival-gated release defers (partial list or pending
+    /// creation), the pair is retried until it releases exactly once, so
+    /// settling the flight never orphans a dormant binding. Deduplicated.
+    pub(crate) fn defer_source_release(
+        &mut self,
+        source_output: &OutputId,
+        workspace: &str,
+    ) -> Vec<String> {
+        let entry = (source_output.0.clone(), workspace.to_owned());
+        if !self.pending_source_releases.contains(&entry) {
+            self.pending_source_releases.push(entry);
+        }
+        Vec::new()
+    }
+
+    /// Arrival-gated source release for one migration (option 1): the
+    /// migrated workspace left `source_output`, so every native pair on
+    /// that output still naming it is released, and every released
+    /// desktop present in the complete native order adopts at once as a
+    /// fresh empty logical row at its native-order position through the
+    /// ordinary outside rule — whether selected or not. No
+    /// reverse-migration provenance is retained and no eligible spare is
+    /// reused: newcomers always mint fresh logical ids.
+    ///
+    /// Callers reach this only after every surviving member's staged
+    /// homing names the target: positive per-member native arrival proof
+    /// is required, never a roster-absence predicate — a missing,
+    /// unreadable, or contradictory receipt for any member holds the
+    /// flight instead. Refusal rollback is unreachable: a refused
+    /// migration still has members homed at the source (outstanding),
+    /// and a latched refusal returns before this point. No vacancy
+    /// inference from window facts (a stale or gapped occupant fact never
+    /// gates release) and no attempt-proof gate (settlement keeps its own
+    /// proof gates; an unproven refill still holds below). Host-owned
+    /// only. A complete native list gates any binding mutation: with a
+    /// partial enumeration the core cannot tell a vacated desktop from
+    /// an unreported one, so partial reports never release or adopt.
+    /// Any pending creation on the output defers (late desktops belong to
+    /// it, the ordinary adoption rule). A logical still on the source
+    /// ring is never released. The retained core view follows only a
+    /// selected adoption (the report's current names the fresh desktop);
+    /// a non-current adoption leaves views to echo observation.
+    /// Returns the adopted fresh ids in native-order sequence.
+    pub(crate) fn release_migrated_source_backing(
+        &mut self,
+        report: &WorldReport,
+        source_output: &OutputId,
+        workspace: &str,
+    ) -> Vec<String> {
+        if !report.host_owned_workspace_domains {
+            return Vec::new();
+        }
+        // Operation-scoped: only pairs naming the migrated workspace that
+        // no longer lives on this ring. A logical still on the ring is
+        // never released, and with no pairs left there is no work to
+        // retain.
+        if self
+            .mapping
+            .get(&source_output.0)
+            .is_some_and(|ring| ring.iter().any(|id| id == workspace))
+        {
+            return Vec::new();
+        }
+        let has_pairs = self
+            .native_map
+            .iter()
+            .any(|((out, _), logical)| out == &source_output.0 && logical == workspace);
+        if !has_pairs {
+            return Vec::new();
+        }
+        // Deferral retains work: when the gates below cannot proceed, the
+        // pair is remembered and retried by native intake until it
+        // releases exactly once — settling the flight must never orphan
+        // a dormant binding.
+        if !self.native_list_complete(report, &source_output.0) {
+            return self.defer_source_release(source_output, workspace);
+        }
+        // Ordinary adoption rule: while a creation is outstanding on this
+        // output, unmapped desktops belong to it, never to fresh adoption.
+        if self
+            .retained_creations
+            .iter()
+            .any(|pending| pending.target_output == *source_output)
+        {
+            return self.defer_source_release(source_output, workspace);
+        }
+        let order: Vec<String> = report
+            .native
+            .iter()
+            .find(|entry| entry.output == *source_output)
+            .map(|entry| entry.native_order.clone())
+            .unwrap_or_default();
+        let mut vacated: Vec<String> = Vec::new();
+        self.native_map.retain(|(out, native), logical| {
+            if out == &source_output.0 && logical == workspace {
+                vacated.push(native.clone());
+                false
+            } else {
+                true
+            }
+        });
+        if vacated.is_empty() {
+            return Vec::new();
+        }
+        // The selected desktop must be present in the complete order: a
+        // current outside a complete enumeration is contradictory adapter
+        // evidence (hold, never mint rows for it). Listed-but-unmapped
+        // desktops adopt at order position through the ordinary rule,
+        // selected or not.
+        let mut adopted: Vec<(String, String)> = Vec::new();
+        for native in vacated {
+            if !order.iter().any(|id| id == &native) {
+                continue;
+            }
+            if let Some(fresh) = self.adopt_single_native(report, &source_output.0, &native) {
+                adopted.push((native, fresh));
+            }
+        }
+        let current = report
+            .native
+            .iter()
+            .find(|entry| entry.output == *source_output)
+            .and_then(|entry| entry.current_native.clone())
+            .unwrap_or_default();
+        for (native, fresh) in &adopted {
+            if *native == current {
+                self.views.insert(source_output.0.clone(), fresh.clone());
+            }
+        }
+        adopted.into_iter().map(|(_, fresh)| fresh).collect()
+    }
+
+    /// Whether one accepted member attempt proves arrival at its retained
+    /// target: the effective post (native-only under the capability,
+    /// translated on the target output; logical-only without it) names the
+    /// target homing. A stale staged reading (delayed capture) never vetoes
+    /// this proof; a different known staged homing stays newer external
+    /// input and wins elsewhere.
+    fn member_post_proves_target(&self, attempt: &MemberAttempt, host_owned: bool) -> bool {
+        matches!(attempt.setter, FrameSetter::Accepted)
+            && self
+                .effective_member_post(attempt, &attempt.target_output, host_owned)
+                .as_ref()
+                .is_some_and(|(output, workspace)| {
+                    output == &attempt.target_output && workspace == &attempt.target_workspace
+                })
+    }
+
+    /// Proven abandonment of one retained view flight: the correlated attempt
+    /// proves the target was reached (see
+    /// [`WorldEngine::view_post_proves_target`]) but the current echo names a
+    /// different known workspace. The user moved after our proven write, even
+    /// back to the previously seen view: adopt the echo instead of holding
+    /// forever or re-actuating a settled write.
+    fn view_proven_then_abandoned(
+        &self,
+        attempt: &ViewAttempt,
+        target_workspace: &str,
+        echo: Option<&str>,
+        host_owned: bool,
+    ) -> bool {
+        self.view_post_proves_target(attempt, host_owned)
+            && echo.is_some_and(|current| {
+                current != target_workspace
+                    && self
+                        .mapping
+                        .get(&attempt.target_output.0)
+                        .is_some_and(|ring| ring.iter().any(|id| id == current))
+            })
+    }
+
+    /// Third-location proof from one view attempt over effective views: a
+    /// readable post that is neither the target nor the KNOWN
+    /// observation-time baseline proves newer external input. Unknown or empty
+    /// baselines never prove third locations: a post matching an unknown
+    /// baseline reads as ambiguity, never supersession. An unchanged preimage
+    /// (`pre == post`) is never external proof even when the baseline
+    /// differs: the write left the view where it was, so the attempt latches
+    /// ambiguity without re-actuation. Target observation wins elsewhere
+    /// (callers check exact echo before consulting this): this predicate never
+    /// overrides an exact target proof.
+    fn view_third_location(
+        &self,
+        attempt: &ViewAttempt,
+        target_workspace: &str,
+        host_owned: bool,
+    ) -> bool {
+        let post = self.effective_view_post(attempt, host_owned);
+        let baseline = self.effective_view_baseline(attempt, host_owned);
+        let Some(post) = post.as_deref() else {
+            return false;
+        };
+        let Some(baseline) = baseline.as_deref() else {
+            return false;
+        };
+        if post.is_empty() || baseline.is_empty() {
+            return false;
+        }
+        if post == target_workspace {
+            return false;
+        }
+        if post == baseline {
+            return false;
+        }
+        if self.effective_view_pre(attempt, host_owned).as_deref() == Some(post) {
+            return false;
+        }
+        true
+    }
 }
 
 impl WorldEngine {
@@ -181,10 +506,13 @@ impl WorldEngine {
                     &retained.target.target_workspace,
                     &ring,
                 );
-            } else if raw
-                .as_ref()
-                .is_some_and(|attempt| view_refused(attempt, &retained.target.target_workspace))
-            {
+            } else if raw.as_ref().is_some_and(|attempt| {
+                self.view_refused(
+                    attempt,
+                    &retained.target.target_workspace,
+                    report.host_owned_workspace_domains,
+                )
+            }) {
                 // Proven refusal reconciled against readable evidence, never
                 // from raw alone across missing facts: target exact proof
                 // already won above; missing/gapped echoes hold with the raw
@@ -207,15 +535,49 @@ impl WorldEngine {
                     keep.push(retained);
                     continue;
                 }
-                let pre_matches = raw.as_ref().and_then(|attempt| attempt.pre.clone());
+                let pre_matches = raw.as_ref().and_then(|attempt| {
+                    self.effective_view_pre(attempt, report.host_owned_workspace_domains)
+                });
                 if echo.is_some() && echo == pre_matches.as_deref() {
                     // Settle to observed: the refused preimage survived.
                 } else {
                     keep.push(retained);
                 }
             } else if raw.as_ref().is_some_and(|attempt| {
-                view_third_location(attempt, &retained.target.target_workspace)
-                    && attempt.post.as_deref().is_some_and(|post| {
+                self.view_proven_then_abandoned(
+                    attempt,
+                    &retained.target.target_workspace,
+                    echo,
+                    report.host_owned_workspace_domains,
+                )
+            }) {
+                // Proven write then newer external input: the translated
+                // post proves the target was reached, but the current echo
+                // names a different known workspace. The user moved after
+                // our proven write (even back to the previously seen
+                // view): adopt the echo and retire the flight forever
+                // instead of holding or re-actuating a settled write.
+                let current = echo.map(str::to_owned);
+                if let Some(current) = current {
+                    self.views
+                        .insert(retained.target.target_output.0.clone(), current.clone());
+                    let ring = self
+                        .mapping
+                        .get(&retained.target.target_output.0)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.history
+                        .observe(&retained.target.target_output.0, &current, &ring);
+                }
+            } else if raw.as_ref().is_some_and(|attempt| {
+                self.view_third_location(
+                    attempt,
+                    &retained.target.target_workspace,
+                    report.host_owned_workspace_domains,
+                ) && self
+                    .effective_view_post(attempt, report.host_owned_workspace_domains)
+                    .as_deref()
+                    .is_some_and(|post| {
                         self.mapping
                             .get(&retained.target.target_output.0)
                             .is_some_and(|ring| ring.iter().any(|id| id == post))
@@ -311,11 +673,24 @@ impl WorldEngine {
             let raw = retained.pending_member.clone();
             let raw_refused = match &retained.target.kind {
                 TransferKind::Window(_) => raw.as_ref().is_some_and(|attempt| {
-                    member_refused(
+                    self.member_refused(
                         attempt,
+                        &retained.source_output,
                         &retained.target.target_output,
                         &retained.target.target_workspace,
+                        report.host_owned_workspace_domains,
                     )
+                }),
+                _ => false,
+            };
+            // Proven arrival from raw attempt evidence: an accepted write
+            // whose effective post names the target homing (logical post,
+            // else the host-owned native post readback translated through
+            // this engine's own bindings). The immediate readback proves
+            // the write landed even when the staged capture is intermediate.
+            let raw_arrival_proves = match &retained.target.kind {
+                TransferKind::Window(_) => raw.as_ref().is_some_and(|attempt| {
+                    self.member_post_proves_target(attempt, report.host_owned_workspace_domains)
                 }),
                 _ => false,
             };
@@ -375,7 +750,12 @@ impl WorldEngine {
                                 })
                                 .as_deref()
                                 == Some(retained.target.target_workspace.as_str());
-                            if same_output && !observed_proves {
+                            // A translated native post readback proves
+                            // arrival like an observed receipt: the
+                            // immediate post-write homing is independent
+                            // evidence, never retained-state
+                            // self-confirmation.
+                            if same_output && !observed_proves && !raw_arrival_proves {
                                 let mut held = retained;
                                 if ambiguous {
                                     held.target.held = true;
@@ -399,8 +779,17 @@ impl WorldEngine {
                                     // view: no new write is required when the
                                     // view already shows the target.
                                 } else if retained.pending_view.as_ref().is_some_and(|attempt| {
-                                    view_third_location(attempt, &retained.target.target_workspace)
-                                        && attempt.post.as_deref().is_some_and(|post| {
+                                    self.view_third_location(
+                                        attempt,
+                                        &retained.target.target_workspace,
+                                        report.host_owned_workspace_domains,
+                                    ) && self
+                                        .effective_view_post(
+                                            attempt,
+                                            report.host_owned_workspace_domains,
+                                        )
+                                        .as_deref()
+                                        .is_some_and(|post| {
                                             self.mapping
                                                 .get(&retained.target.target_output.0)
                                                 .is_some_and(|ring| {
@@ -452,7 +841,12 @@ impl WorldEngine {
                                     && !self.staged.closes.contains(window)
                             });
                             let pre_key = raw.as_ref().and_then(|attempt| {
-                                attempt.pre.as_ref().map(|(out, ws)| DomainKey {
+                                self.effective_member_pre(
+                                    attempt,
+                                    &retained.source_output,
+                                    report.host_owned_workspace_domains,
+                                )
+                                .map(|(out, ws)| DomainKey {
                                     output: out.clone(),
                                     workspace: crate::directional::WorkspaceId(ws.clone()),
                                 })
@@ -482,7 +876,17 @@ impl WorldEngine {
                             }
                         }
                     } else if let Some(key) = homing {
-                        if key != source_key {
+                        // A translated native post readback proves the
+                        // window reached the target even when the staged
+                        // capture is intermediate (delayed capture at the
+                        // source): the transfer settles on the proven write
+                        // instead of holding or adopting the stale reading
+                        // as outside input. A different known staged homing
+                        // stays newer external input and wins below.
+                        if key == source_key && raw_arrival_proves {
+                            // Confirmed: the flight drops without
+                            // re-actuation.
+                        } else if key != source_key {
                             // Newer external input off both transfer screens
                             // wins; a contradictory receipt on either screen
                             // holds (never proves arrival, never fought).
@@ -555,8 +959,11 @@ impl WorldEngine {
     /// settles to observed without fighting either view. A target view
     /// that moved externally (echo differs from both the expectation and
     /// the last echo) settles the parent instead of fighting newer input,
-    /// and a settled parent never reactivates. Proven refusal (every member
-    /// refused with an unchanged readable preimage) or external
+    /// and a settled parent never reactivates. A proven view write
+    /// followed by a different known current proves the proven view was
+    /// abandoned: the flight retires forever and the echo is adopted,
+    /// even when the echo still names the last seen view. Proven refusal
+    /// (every member refused with an unchanged readable preimage) or external
     /// supersession (third-location view proof) derived from raw attempt
     /// facts latches the terminal outcome under the operation identity;
     /// the retained logical mapping persists (core authority), while
@@ -603,10 +1010,9 @@ impl WorldEngine {
             let echo = self.staged.echoes.get(&child_out.0).map(String::as_str);
             if echo == Some(child_ws.as_str()) {
                 keep.remove(pos);
-            } else if child_raw
-                .as_ref()
-                .is_some_and(|attempt| view_refused(attempt, &child_ws))
-            {
+            } else if child_raw.as_ref().is_some_and(|attempt| {
+                self.view_refused(attempt, &child_ws, report.host_owned_workspace_domains)
+            }) {
                 // A refused refill never retries: the spent view-phase fence
                 // blocks repeats, so mere child absence can never itself
                 // prove external. The parent holds below while the child is
@@ -616,7 +1022,9 @@ impl WorldEngine {
                 // refused preimage) settles the parent instead of holding
                 // forever: drop the child so the source-echo check below
                 // reconciles as external. Unknown/gap echoes hold.
-                let pre = child_raw.as_ref().and_then(|attempt| attempt.pre.clone());
+                let pre = child_raw.as_ref().and_then(|attempt| {
+                    self.effective_view_pre(attempt, report.host_owned_workspace_domains)
+                });
                 let known_third = echo.is_some_and(|current| {
                     current != child_ws.as_str()
                         && Some(current) != pre.as_deref()
@@ -631,12 +1039,34 @@ impl WorldEngine {
                     keep[pos].target.held = true;
                 }
             } else if child_raw.as_ref().is_some_and(|attempt| {
-                view_third_location(attempt, &child_ws)
-                    && attempt.post.as_deref().is_some_and(|post| {
-                        self.mapping
-                            .get(&child_out.0)
-                            .is_some_and(|ring| ring.iter().any(|id| id == post))
-                    })
+                self.view_proven_then_abandoned(
+                    attempt,
+                    &child_ws,
+                    echo,
+                    report.host_owned_workspace_domains,
+                )
+            }) {
+                // Proven refill then abandoned: the translated post
+                // proves our refill view landed, but the current echo
+                // names a different known workspace. The user moved after
+                // our proven write: adopt the echo and retire the child
+                // forever (never re-actuated); the parent reconciles
+                // against the source echo below.
+                let current = echo.map(str::to_owned);
+                if let Some(current) = current {
+                    self.views.insert(child_out.0.clone(), current);
+                }
+                keep.remove(pos);
+            } else if child_raw.as_ref().is_some_and(|attempt| {
+                self.view_third_location(attempt, &child_ws, report.host_owned_workspace_domains)
+                    && self
+                        .effective_view_post(attempt, report.host_owned_workspace_domains)
+                        .as_deref()
+                        .is_some_and(|post| {
+                            self.mapping
+                                .get(&child_out.0)
+                                .is_some_and(|ring| ring.iter().any(|id| id == post))
+                        })
             }) {
                 // Externally moved refill: drop the child; the parent
                 // reconciles against the source echo below.
@@ -664,16 +1094,15 @@ impl WorldEngine {
             .collect();
         if !live_members.is_empty()
             && live_members.iter().all(|member| {
-                retained
-                    .pending_members
-                    .get(member)
-                    .is_some_and(|attempt| member_refused(attempt, &target_out, &target_ws))
+                retained.pending_members.get(member).is_some_and(|attempt| {
+                    self.member_refused(attempt, &retained.source_output, &target_out, &target_ws, report.host_owned_workspace_domains)
+                })
             })
         {
             retained.migration_terminal = Some(AttemptOutcome::RefusedProven);
         } else if retained.pending_view.as_ref().is_some_and(|attempt| {
-            view_third_location(attempt, &target_ws)
-                && attempt.post.as_deref().is_some_and(|post| {
+            self.view_third_location(attempt, &target_ws, report.host_owned_workspace_domains)
+                && self.effective_view_post(attempt, report.host_owned_workspace_domains).as_deref().is_some_and(|post| {
                     self.mapping
                         .get(&target_out.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == post))
@@ -937,6 +1366,16 @@ impl WorldEngine {
                     .unwrap_or_default();
                 self.history
                     .observe(&retained.source_output.0, &source_view, &source_ring);
+            } else {
+                // No rollback: members arrived, closed, or the move was
+                // empty — settling to observed with no return onto the
+                // source backing. Release it here (option 1) rather than
+                // orphaning a dormant pair with the retired flight.
+                self.release_migrated_source_backing(
+                    report,
+                    &retained.source_output,
+                    &retained.target.target_workspace,
+                );
             }
             // Settle to observed; the retained logical mapping persists
             // (rolled back above for the wholly-unarrived case).
@@ -958,6 +1397,15 @@ impl WorldEngine {
             .cloned()
             .collect();
         if pruned.is_empty() && !retained.migration_initial_empty && !retained.members.is_empty() {
+            // All members explicitly closed: settle without waiting for
+            // views that will never arrive, and release the source
+            // backing — closed lifetimes never roll back, so no dormant
+            // pair may remain with the retired flight.
+            self.release_migrated_source_backing(
+                report,
+                &retained.source_output,
+                &retained.target.target_workspace,
+            );
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
                     && r.target.operation_id == refill_child_op)
@@ -1046,14 +1494,35 @@ impl WorldEngine {
         // No outstanding members: all surviving arrived, all settled
         // externally/closed, or originally empty. A non-empty migration with
         // no survivors settled every member through newer input or close:
-        // settle to observed without fighting either view.
+        // settle to observed without fighting either view, and release the
+        // source backing — with no survivors nothing rolls back, so no
+        // dormant pair may remain with the retired flight.
         if surviving.is_empty() && !retained.migration_initial_empty {
+            self.release_migrated_source_backing(
+                report,
+                &retained.source_output,
+                &retained.target.target_workspace,
+            );
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
                     && r.target.operation_id == refill_child_op)
             });
             return;
         }
+        // Arrival-gated source release (option 1): every surviving
+        // member's staged homing names the target (positive per-member
+        // native arrival proof above — never roster absence), so the
+        // migrated workspace never rolls back onto its source backing.
+        // Release its source-output native pairs and adopt listed
+        // desktops fresh at native order — selected or not. Settlement
+        // below still reconciles against the staged echoes: a
+        // staged-unknown echo holds (never settled from a gap), and the
+        // fresh echo resolves next round with the switch winning.
+        self.release_migrated_source_backing(
+            report,
+            &retained.source_output,
+            &retained.target.target_workspace,
+        );
         // Both views: the adapter actuates the destination follow and the
         // stored source refill; settlement waits for each echo proof. Empty
         // migrations verify both views exactly like arrived ones. The
@@ -1067,32 +1536,57 @@ impl WorldEngine {
         // A target echo that moved externally (differs from both the
         // expectation and the last echo) settles instead of fighting.
         if let Some(refill) = retained.migration_refill.as_deref() {
-            let source_echo = self
-                .staged
-                .echoes
-                .get(&retained.source_output.0)
-                .map(String::as_str);
+            let source_echo = self.staged.echoes.get(&retained.source_output.0).cloned();
             if source_echo.is_none() {
-                // Missing echo is a gap: hold, never settle as external.
+                // Unknown source echo with all members arrived: usually a
+                // gap (hold, never settle as external). The release above
+                // already adopted any listed vacated desktop fresh; its
+                // echo resolves next round and the flight settles with the
+                // switch winning and the refill retired forever. Window
+                // facts never gate this; settlement keeps its own proof
+                // gates below.
                 let mut held = retained;
                 held.members = surviving;
                 hold(held);
                 return;
             }
-            if !refill_child_held && source_echo != Some(refill) {
+            if !refill_child_held && source_echo.as_deref() != Some(refill) {
                 // Unknown source echoes hold (gap); only a known different
                 // logical id proves external movement.
                 let known = self
                     .mapping
                     .get(&retained.source_output.0)
                     .is_some_and(|ring| {
-                        source_echo.is_some_and(|echo| ring.iter().any(|id| id == echo))
+                        source_echo
+                            .as_deref()
+                            .is_some_and(|echo| ring.iter().any(|id| id == echo))
                     });
                 if !known {
                     let mut held = retained;
                     held.members = surviving;
                     hold(held);
                     return;
+                }
+                // Externally moved source view: settle to observed. The
+                // user's switch wins (adopt the echo); the migrated
+                // members stay migrated. Drop the refill child.
+                if let Some(current) = source_echo {
+                    self.views.insert(retained.source_output.0.clone(), current);
+                }
+                let target_echo = self
+                    .staged
+                    .echoes
+                    .get(&retained.target.target_output.0)
+                    .cloned();
+                if let Some(current) = target_echo {
+                    let known_target = self
+                        .mapping
+                        .get(&retained.target.target_output.0)
+                        .is_some_and(|ring| ring.iter().any(|id| id == &current));
+                    if known_target {
+                        self.views
+                            .insert(retained.target.target_output.0.clone(), current);
+                    }
                 }
                 keep.retain(|r| {
                     !(matches!(&r.target.kind, TransferKind::View)
@@ -1105,8 +1599,8 @@ impl WorldEngine {
             .staged
             .echoes
             .get(&retained.target.target_output.0)
-            .map(String::as_str);
-        if target_echo != Some(retained.target.target_workspace.as_str()) {
+            .cloned();
+        if target_echo.as_deref() != Some(retained.target.target_workspace.as_str()) {
             // Missing echo is a gap: hold, never external supersession and
             // never a ring-head revert.
             if target_echo.is_none() {
@@ -1119,14 +1613,22 @@ impl WorldEngine {
                 .last_views
                 .get(&retained.target.target_output)
                 .map(String::as_str);
-            if target_echo != last {
+            // A proven-then-abandoned target alone never settles here:
+            // with the refill still shown that shape is lag (the target
+            // switch simply has not landed yet), so the parent holds and
+            // the spent view phase re-actuates it. Only the source side
+            // disambiguates abandonment (a proven refill that is no longer
+            // shown settles through the source check above).
+            if target_echo.as_deref() != last {
                 // Externally moved target view settles, but unknown ids
                 // hold (gap, never external proof).
                 let known = self
                     .mapping
                     .get(&retained.target.target_output.0)
                     .is_some_and(|ring| {
-                        target_echo.is_some_and(|echo| ring.iter().any(|id| id == echo))
+                        target_echo
+                            .as_deref()
+                            .is_some_and(|echo| ring.iter().any(|id| id == echo))
                     });
                 if !known {
                     let mut held = retained;
@@ -1134,7 +1636,24 @@ impl WorldEngine {
                     hold(held);
                     return;
                 }
-                // Externally moved target view: settle, drop the refill child.
+                // Externally moved target view: settle to observed and
+                // drop the refill child. The user's switch wins on both
+                // outputs (adopt each known echo); the migrated members
+                // stay migrated.
+                if let Some(current) = target_echo {
+                    self.views
+                        .insert(retained.target.target_output.0.clone(), current);
+                }
+                let source_echo = self.staged.echoes.get(&retained.source_output.0).cloned();
+                if let Some(current) = source_echo {
+                    let known_source = self
+                        .mapping
+                        .get(&retained.source_output.0)
+                        .is_some_and(|ring| ring.iter().any(|id| id == &current));
+                    if known_source {
+                        self.views.insert(retained.source_output.0.clone(), current);
+                    }
+                }
                 keep.retain(|r| {
                     !(matches!(&r.target.kind, TransferKind::View)
                         && r.target.operation_id == refill_child_op)

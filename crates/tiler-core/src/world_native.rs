@@ -185,7 +185,7 @@ impl WorldEngine {
     /// Whether a complete native list is available for one output: the
     /// capability is on, the report inventory is complete, and the screen
     /// is complete. Partial reports never create mappings.
-    fn native_list_complete(&self, report: &WorldReport, output: &str) -> bool {
+    pub(crate) fn native_list_complete(&self, report: &WorldReport, output: &str) -> bool {
         let _ = self;
         report.host_owned_workspace_domains
             && report.inventory_complete
@@ -231,6 +231,7 @@ impl WorldEngine {
                 self.adopt_native_output(report, output);
             }
         }
+        self.retry_pending_source_releases(report);
         let outputs: Vec<OutputId> = report
             .screens
             .iter()
@@ -648,10 +649,61 @@ impl WorldEngine {
         true
     }
 
-    /// Insert a binding at native-order position: count of already-bound
-    /// predecessors. Logical order follows observed native order; no
-    /// insertion-ordinal assumption. Keeps the ordinary trailing spare
-    /// last.
+    /// Adopt one unmapped native desktop as a fresh empty logical row at
+    /// its native-order position (the outside-created rule per desktop,
+    /// selected or not): mints a
+    /// fresh logical id (never reusing a retired or unbound row, which
+    /// would rename a vanished id), binds the pair, and inserts at the
+    /// bound-predecessor position keeping the ordinary trailing spare
+    /// last. A desktop missing from the reported order lands at the end
+    /// by the same count. Returns the fresh logical id, or `None` when
+    /// already bound or minting fails. Callers gate on the complete list
+    /// and pending creations.
+    pub(crate) fn adopt_single_native(
+        &mut self,
+        report: &WorldReport,
+        output: &str,
+        native: &str,
+    ) -> Option<String> {
+        let out = OutputId(output.to_owned());
+        if self.native_logical(&out, native).is_some() {
+            return None;
+        }
+        let order: Vec<String> = report
+            .native
+            .iter()
+            .find(|entry| entry.output.0 == output)
+            .map(|entry| entry.native_order.clone())
+            .unwrap_or_default();
+        let predecessors = order
+            .iter()
+            .take_while(|id| id.as_str() != native)
+            .filter(|id| self.native_logical(&out, id).is_some())
+            .count();
+        let id = self.create_trailing_workspace(&out, report.default_tiled)?;
+        self.native_map
+            .insert((output.to_owned(), native.to_owned()), id.clone());
+        if let Some(ring) = self.mapping.get_mut(output)
+            && ring.last().is_some_and(|tail| tail == &id)
+        {
+            ring.pop();
+        }
+        let tail_unbound = self
+            .mapping
+            .get(output)
+            .and_then(|ring| ring.last())
+            .is_some_and(|tail| !self.is_native_bound(tail));
+        let ring = self.mapping.entry(output.to_owned()).or_default();
+        let at = predecessors.min(ring.len());
+        let at = if tail_unbound && at >= ring.len() && !ring.is_empty() {
+            ring.len() - 1
+        } else {
+            at
+        };
+        ring.insert(at, id.clone());
+        Some(id)
+    }
+
     fn bind_native_at_order(
         &mut self,
         output: &str,
@@ -776,6 +828,20 @@ impl WorldEngine {
                     pending: None,
                     ambiguous: false,
                 });
+        }
+    }
+
+    /// Retry deferred option-1 source releases: arrival-gated release
+    /// that deferred (partial list or pending creation) must still
+    /// complete even after its flight settled — settling the flight must
+    /// never orphan a dormant binding. Entries whose workspace rejoined
+    /// the ring go stale and drop; still-gated entries re-queue through
+    /// the release routine itself. Runs in native intake so fresh
+    /// bindings stage into echoes on the same report.
+    fn retry_pending_source_releases(&mut self, report: &WorldReport) {
+        for (output, workspace) in std::mem::take(&mut self.pending_source_releases) {
+            let out = OutputId(output.clone());
+            self.release_migrated_source_backing(report, &out, &workspace);
         }
     }
 

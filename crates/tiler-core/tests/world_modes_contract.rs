@@ -810,6 +810,8 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
                 setter: FrameSetter::Refused,
                 pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
                 post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+                native_pre: None,
+                native_post: None,
                 attempt_ms: 3,
             }],
         ),

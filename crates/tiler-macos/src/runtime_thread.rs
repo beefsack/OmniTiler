@@ -143,11 +143,13 @@ pub(crate) enum EngineJob {
     /// Raw mechanical view-attempt evidence from one proven select-drain
     /// outcome (never a verdict): the setter disposition plus the drain's
     /// native Space reads around the actuation. The engine resolves the
-    /// retained transfer target by operation identity and translates the
-    /// native SIDs to logical views through its own adoption mapping (a
-    /// live core lookup, never adapter mapping); unknown operations or
-    /// unmapped SIDs drop without evidence. Staged into the next world
-    /// report so the core settles its retained planner-owned view target.
+    /// retained transfer target by operation identity and stages the raw
+    /// native SIDs on the report's dedicated native attempt keys (logical
+    /// pre/post/baseline stay absent); the core translates them through
+    /// its own adoption mapping at settle time (a live core lookup, never
+    /// adapter mapping). Unknown operations drop without evidence.
+    /// Staged into the next world report so the core settles its retained
+    /// planner-owned view target.
     /// Data lane (drops counted when full, never blocks); a dropped row
     /// merely delays settlement — retained core targets never re-actuate
     /// without fresh proof.
@@ -163,10 +165,13 @@ pub(crate) enum EngineJob {
     /// send-drain outcome (never a verdict): the setter disposition plus
     /// the drain-verified arrival Space. The engine resolves the retained
     /// transfer target (window plus target) by operation identity and
-    /// translates the native SID through its own adoption mapping (a live
-    /// core lookup, never adapter mapping); unknown operations or
-    /// untranslatable rows drop without evidence. Staged into the next
-    /// world report so the core settles its retained window transfer.
+    /// stages the raw arrival SID on the report's dedicated native post
+    /// key; the core translates it through its own adoption mapping at
+    /// settle time (a live core lookup, never adapter mapping). Only
+    /// unknown operations drop without evidence (raw native ids are
+    /// core-owned: the adapter never drops an unmapped id). Staged
+    /// into the next world report so the core settles its retained window
+    /// transfer.
     MemberAttempt {
         operation_id: String,
         setter: tiler_core::world_report::FrameSetter,
@@ -2538,6 +2543,9 @@ mod trailing_join_tests {
                 pre: Some("ws-1".to_owned()),
                 post: None,
                 baseline: None,
+                native_pre: None,
+                native_post: None,
+                native_baseline: None,
                 attempt_ms: 0,
             },
         );
@@ -2551,6 +2559,8 @@ mod trailing_join_tests {
                 setter: FrameSetter::Threw,
                 pre: None,
                 post: None,
+                native_pre: None,
+                native_post: None,
                 attempt_ms: 0,
             },
         );
@@ -3327,11 +3337,12 @@ mod trailing_join_tests {
             );
             let created = settled_ctx();
 
-            // One dispatched observation carries the staged row with
-            // native reads as absence: host-owned facts never translate
-            // native ids to logical pre/post (pending shared native attempt
-            // schema, stage 1b). Both the known source and the not-yet-
-            // adopted append ride `None`, never guessed logical values.
+            // One dispatched observation carries the staged row with the
+            // drain-verified native reads on the dedicated native keys:
+            // the known source read and the not-yet-adopted append ride
+            // `native_pre`/`native_post` (logical pre/post stay absent,
+            // never translated or guessed adapter-side). The core
+            // translates them through its own bindings at settle time.
             let mut report = build_dispatch_report(
                 &mut session,
                 &retained,
@@ -3371,11 +3382,21 @@ mod trailing_join_tests {
             assert_eq!(report.view_attempts[0].operation_id, op);
             assert_eq!(
                 report.view_attempts[0].pre, None,
-                "known source Space rides as absence, never translated"
+                "logical pre stays absent, never translated adapter-side"
             );
             assert_eq!(
                 report.view_attempts[0].post, None,
-                "unadopted append stays unknown, never guessed"
+                "logical post stays absent, never guessed adapter-side"
+            );
+            assert_eq!(
+                report.view_attempts[0].native_pre.as_deref(),
+                Some(workspace_key(effect.from).as_str()),
+                "drain-verified before read rides the native pre key"
+            );
+            assert_eq!(
+                report.view_attempts[0].native_post.as_deref(),
+                Some(workspace_key(effect.target).as_str()),
+                "drain-verified after read rides the native post key"
             );
             let reply = match session.engine_mut().handle_report(&report) {
                 WorldOutcome::Accepted(reply) => reply,
@@ -3424,7 +3445,7 @@ mod trailing_join_tests {
             );
         }
 
-        // -- Send lane: member attempt with an untranslatable post holds. --
+        // -- Send lane: member attempt with the drain-verified native post. --
         // The bootstrap observation precedes the send (production order):
         // a same-report lifecycle spare has no staged domain yet (reported
         // core gap), so the dispatch runs only once the spare is staged.
@@ -3513,9 +3534,11 @@ mod trailing_join_tests {
             );
             let created = settled_ctx();
 
-            // One dispatched observation carries the staged row. The
-            // appended Space has no core mapping yet, so the verified
-            // post reads unknown — the row stages honestly without it.
+            // One dispatched observation carries the staged row with the
+            // drain-verified arrival Space on the dedicated native post
+            // key (the appended Space has no core mapping yet at stage
+            // time; the core translates it at settle time once the
+            // creation receipt below binds it).
             let mut report = build_dispatch_report(
                 &mut session,
                 &retained,
@@ -3560,7 +3583,12 @@ mod trailing_join_tests {
             assert_eq!(report.member_attempts[0].operation_id, op);
             assert_eq!(
                 report.member_attempts[0].post, None,
-                "unadopted arrival stays unknown, never guessed"
+                "logical post stays absent, never guessed adapter-side"
+            );
+            assert_eq!(
+                report.member_attempts[0].native_post.as_deref(),
+                Some(workspace_key(prep.target_sid).as_str()),
+                "drain-verified arrival rides the native post key"
             );
             let reply = match session.engine_mut().handle_report(&report) {
                 WorldOutcome::Accepted(reply) => reply,

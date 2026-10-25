@@ -455,6 +455,13 @@ pub struct WorldEngine {
     /// the fresh native readback binds it or ambiguity latches. Reset on
     /// generation/incarnation. Capability-named note: explicit desire only.
     pub(crate) retained_creations: Vec<RetainedNativeCreation>,
+    /// Deferred option-1 source releases: `(output, workspace)` pairs whose
+    /// native backing must still release once a complete list allows it
+    /// and no creation pends on the output. Pushed when arrival-gated
+    /// release defers; drained in native intake (converge) so cleanup is
+    /// never silently settled away with a retired flight. Cleared on
+    /// generation/incarnation reset like the other native state.
+    pub(crate) pending_source_releases: Vec<(String, String)>,
     pub(crate) last_views: BTreeMap<OutputId, String>,
     /// Core-owned logical workspace rings (D2): per-screen ordered lists of
     /// stable logical workspace ids, retained across reports. Rings converge
@@ -707,6 +714,7 @@ impl WorldEngine {
             creation_counter: 0,
             native_creation_seq: 0,
             retained_creations: Vec::new(),
+            pending_source_releases: Vec::new(),
             gesture: None,
             consumed_gesture_seq: 0,
             gesture_terminal: None,
@@ -791,6 +799,7 @@ impl WorldEngine {
         self.retained_floats.clear();
         self.retained_clears.clear();
         self.retained_creations.clear();
+        self.pending_source_releases.clear();
         self.frames.clear();
         self.consumed_frames.clear();
         self.learned_mins.clear();

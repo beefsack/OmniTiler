@@ -351,15 +351,14 @@ facts only, at most one latest-wins entry per window/operation/phase:
   write/re-read/report split for membership homing, exact-output view
   and maximized-state proof. Setter success never proves arrival by
   itself; readable post states plus staged observations settle.
-- Member/view attempt pre/post/baseline currently name logical workspaces.
+- Member/view attempt logical pre/post/baseline name logical workspaces.
   Host-owned adapters leave those fields unknown, report real setter disposition
   with the exact desired-target correlation, then capture fresh native facts.
   Never encode native ids as logical ids or rebuild an adapter binding owner.
-  This preserves truthful dispatch evidence but does not establish native
-  proven-then-abandoned source-view supersession; KDE's
-  [B2 discriminator](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration-parked)
-  remains red pending a neutral core-owned resolution.
-- Approved tentative B2 extension (draft, not yet delivered):
+  The separate native fields below establish host-owned attempt evidence without
+  translating through an adapter table; see the
+  [B2 discriminator](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration).
+- Delivered core B2 extension (tentative product contract, later review pending):
   `MemberAttempt.native_pre/native_post: Option<String>` and
   `ViewAttempt.native_pre/native_post/native_baseline: Option<String>`, wire
   `nativePre/nativePost/nativeBase`. Non-null without host-owned capability
@@ -368,8 +367,7 @@ facts only, at most one latest-wins entry per window/operation/phase:
   bindings; tiler-owned domains keep logical preimages. Capture real native
   reads around writes and the observation-time view baseline, never desires or
   an adapter binding table. A matching outstanding change settles; other input
-  is adopted. The released-source decision below supplies the intended identity
-  rule; implementation and conflicting offline oracles still block acceptance.
+  is adopted. The released-source rule below supplies the identity boundary.
 - Acknowledgement never copies desires into observations. Incorporation
   receipts bind to the incorporating generation; foreign-generation,
   foreign-adapter and wrong-request replies apply nothing.
@@ -440,7 +438,14 @@ without a logical workspace, at authoritative native-order position. The
 migrated logical stays at its destination; the user's switch wins and the paired
 source refill retires permanently. No reverse provenance or eligible-spare reuse;
 ordinary trailing/equal-count lifecycle is unchanged. This is platform-neutral,
-including macOS Spaces; implementation remains draft, not accepted.
+including macOS Spaces. Core releases after positive arrival or explicit
+close/newer off-output proof, never an absent-occupant guess; refusal rollback
+retains backing. Incomplete native lists or pending creations defer cleanup,
+retried independently after transfer retirement. Fresh source adoption stages
+its echo on the next report, so the first proven-rewind reply retains the
+migration parent; the paired refill retires without re-application and the
+parent then settles against observed views. Retained transfer targets survive
+trailing lifecycle while their correlated backing is still pending.
 Core-published actuatable scopes and desired window rows, including a complete
 empty set, drive actuation without requester-only results;
 the adapter never selects a replacement source refill by ordinal.

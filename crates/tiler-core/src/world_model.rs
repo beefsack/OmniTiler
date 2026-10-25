@@ -101,7 +101,12 @@ impl WorldEngine {
                         empty: !occupied_ids.contains(id),
                         visible: visible == *id,
                         occupied: occupied_ids.contains(id),
-                        retained: retained_ids.contains(id) || self.is_native_bound(id),
+                        retained: retained_ids.contains(id)
+                            || self.is_native_bound(id)
+                            || self
+                                .retained
+                                .iter()
+                                .any(|r| r.target.target_workspace == *id),
                     })
                     .collect();
                 let plan = plan_trailing(&facts);
@@ -176,7 +181,11 @@ impl WorldEngine {
                             occupied: occupied.contains(&scoped),
                             retained: sticky_homed.contains(&scoped)
                                 || hosted.contains(&scoped)
-                                || self.is_native_bound(id),
+                                || self.is_native_bound(id)
+                                || self.retained.iter().any(|r| {
+                                    r.target.target_output.0 == *output
+                                        && r.target.target_workspace == *id
+                                }),
                         }
                     })
                     .collect();

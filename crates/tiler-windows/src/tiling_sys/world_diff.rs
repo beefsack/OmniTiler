@@ -1257,6 +1257,9 @@ fn actuate_follow_view(
         pre,
         post: proof.clone(),
         baseline,
+        native_pre: None,
+        native_post: None,
+        native_baseline: None,
         attempt_ms,
     });
     if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -1643,6 +1646,8 @@ pub(super) fn apply_world_reply(
             setter: frame_setter(moved.as_ref().ok().copied()),
             pre: homing_pair(before),
             post: homing_pair(post),
+            native_pre: None,
+            native_post: None,
             attempt_ms,
         });
         if gate.current_obs != entry_obs {
@@ -2113,6 +2118,9 @@ pub(super) fn apply_world_reply(
             pre,
             post: proof.clone(),
             baseline,
+            native_pre: None,
+            native_post: None,
+            native_baseline: None,
             attempt_ms,
         });
         if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -2266,6 +2274,8 @@ pub(super) fn apply_world_reply(
                 setter: frame_setter(moved.as_ref().ok().copied()),
                 pre: homing_pair(before),
                 post: homing_pair(post),
+                native_pre: None,
+                native_post: None,
                 attempt_ms,
             });
             if gate.current_obs != entry_obs {
@@ -2330,6 +2340,9 @@ pub(super) fn apply_world_reply(
                 pre,
                 post: proof.clone(),
                 baseline,
+                native_pre: None,
+                native_post: None,
+                native_baseline: None,
                 attempt_ms,
             });
             if proof.as_deref() == Some(ws.as_str()) {
@@ -2391,6 +2404,9 @@ pub(super) fn apply_world_reply(
                     pre,
                     post: proof.clone(),
                     baseline: baseline_refill,
+                    native_pre: None,
+                    native_post: None,
+                    native_baseline: None,
                     attempt_ms,
                 });
                 if proof.as_deref() == Some(refill_ws.as_str()) {

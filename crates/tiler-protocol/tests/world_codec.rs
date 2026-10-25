@@ -924,6 +924,128 @@ fn member_and_view_attempts_decode_tolerantly_and_stay_bounded() {
 }
 
 #[test]
+fn native_attempt_keys_decode_tolerantly_gate_capability_and_bound() {
+    // Missing native keys backfill unknown: tiler-owned adapters predate
+    // the schema without changing their wire. Null and empty normalize
+    // the same way, never to proof.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["d1", "d2"], "current": "d1"}]);
+    value["memberAttempts"] = serde_json::json!([{
+        "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
+        "setter": "accepted", "pre": null, "post": null,
+        "nativePre": null, "nativePost": "", "attemptMs": "2000",
+    }]);
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out", "ws": "ws-2", "setter": "accepted",
+        "pre": null, "post": null, "base": null,
+        "nativePre": "d1", "nativePost": "d2", "nativeBase": null,
+        "attemptMs": "2001",
+    }]);
+    let report = decode_request(&value.to_string()).expect("native attempts decode");
+    assert_eq!(report.member_attempts.len(), 1);
+    assert_eq!(report.member_attempts[0].native_pre, None);
+    assert_eq!(report.member_attempts[0].native_post, None);
+    assert_eq!(report.view_attempts.len(), 1);
+    assert_eq!(report.view_attempts[0].native_pre.as_deref(), Some("d1"));
+    assert_eq!(report.view_attempts[0].native_post.as_deref(), Some("d2"));
+    assert_eq!(report.view_attempts[0].native_baseline, None);
+    // Present native keys decode with the capability on.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] =
+        serde_json::json!([{"out": "out", "order": ["space-277"], "current": "space-277"}]);
+    value["memberAttempts"] = serde_json::json!([{
+        "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
+        "setter": "accepted", "pre": null, "post": null,
+        "nativePre": "space-11", "nativePost": "space-277", "attemptMs": "2000",
+    }]);
+    let report = decode_request(&value.to_string()).expect("member natives decode");
+    assert_eq!(
+        report.member_attempts[0].native_pre.as_deref(),
+        Some("space-11")
+    );
+    assert_eq!(
+        report.member_attempts[0].native_post.as_deref(),
+        Some("space-277")
+    );
+    // Without the capability any carried native attempt id refuses, like
+    // nativeWs: the tiler-owned logical route carries no native evidence.
+    for attempts in [
+        serde_json::json!({"memberAttempts": [{
+            "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
+            "setter": "accepted", "pre": null, "post": null,
+            "nativePost": "d1", "attemptMs": "2000"}]}),
+        serde_json::json!({"viewAttempts": [{
+            "op": "op-9", "out": "out", "ws": "ws-2", "setter": "accepted",
+            "pre": null, "post": null, "base": null,
+            "nativePost": "d1", "attemptMs": "2001"}]}),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        for (key, rows) in attempts.as_object().expect("rows") {
+            value[key] = rows.clone();
+        }
+        let error = decode_request(&value.to_string()).expect_err("cap off refuses");
+        assert_eq!(error.kind, "snapshot-invalid");
+        assert_eq!(error.message, "native-without-capability");
+    }
+    // Non-id native attempt evidence refuses as unknown-value; non-string
+    // native evidence is malformed; unknown native keys refuse.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out", "ws": "ws-2", "setter": "accepted",
+        "pre": null, "post": null, "base": null,
+        "nativePost": "not an id!", "attemptMs": "2001",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("bad id refuses");
+    assert_eq!(error.kind, "unknown-value");
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["memberAttempts"] = serde_json::json!([{
+        "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
+        "setter": "accepted", "pre": null, "post": null,
+        "nativePost": 7, "attemptMs": "2000",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("number refuses");
+    assert_eq!(error.kind, "malformed");
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out", "ws": "ws-2", "setter": "accepted",
+        "pre": null, "post": null, "base": null, "nativePost": null,
+        "nativePosture": "d1", "attemptMs": "2001",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("unknown key refuses");
+    assert_eq!(error.kind, "unknown-field");
+    // The structural estimate bounds the wider wire shape with realistic
+    // Space-style native ids on both attempt lanes.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["hostOwned"] = serde_json::Value::Bool(true);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["space-11", "space-277"], "current": "space-11"}]);
+    value["memberAttempts"] = serde_json::json!([{
+        "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
+        "setter": "accepted", "pre": null, "post": null,
+        "nativePre": "space-11", "nativePost": "space-277", "attemptMs": "2000",
+    }]);
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out", "ws": "ws-2", "setter": "accepted",
+        "pre": null, "post": null, "base": null,
+        "nativePre": "space-11", "nativePost": "space-277", "nativeBase": "space-11",
+        "attemptMs": "2001",
+    }]);
+    let wire = value.to_string();
+    assert!(wire.contains("\"nativePost\":\"space-277\""));
+    assert!(wire.contains("\"nativeBase\":\"space-11\""));
+    let report = decode_request(&wire).expect("native wire decodes");
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+}
+
+#[test]
 fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     use tiler_core::world_report::FrameSetter;
     // Absent key backfills: predates-the-field adapters stay valid with no

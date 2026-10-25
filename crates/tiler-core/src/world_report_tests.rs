@@ -194,6 +194,23 @@ fn digest_covers_every_section() {
         setter: FrameSetter::Accepted,
         pre: None,
         post: None,
+        native_pre: None,
+        native_post: None,
+        attempt_ms: 9,
+    });
+    assert_ne!(report_digest(&changed), digest);
+    // Native attempt evidence separates the digest like any other proof.
+    let mut changed = base.clone();
+    changed.member_attempts.push(MemberAttempt {
+        operation_id: "op-9".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        native_pre: Some("native-1".to_owned()),
+        native_post: Some("native-2".to_owned()),
         attempt_ms: 9,
     });
     assert_ne!(report_digest(&changed), digest);
@@ -206,6 +223,24 @@ fn digest_covers_every_section() {
         pre: None,
         post: None,
         baseline: None,
+        native_pre: None,
+        native_post: None,
+        native_baseline: None,
+        attempt_ms: 9,
+    });
+    assert_ne!(report_digest(&changed), digest);
+    let mut changed = base.clone();
+    changed.view_attempts.push(ViewAttempt {
+        operation_id: "op-9".to_owned(),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        baseline: None,
+        native_pre: Some("native-1".to_owned()),
+        native_post: Some("native-2".to_owned()),
+        native_baseline: Some("native-1".to_owned()),
         attempt_ms: 9,
     });
     assert_ne!(report_digest(&changed), digest);
@@ -418,6 +453,8 @@ fn validation_gates_shapes() {
         setter: FrameSetter::Accepted,
         pre: None,
         post: None,
+        native_pre: None,
+        native_post: None,
         attempt_ms: 1,
     });
     assert_eq!(validate_report_reason(&bad), Some("member-window-invalid"));
@@ -430,9 +467,47 @@ fn validation_gates_shapes() {
         setter: FrameSetter::Accepted,
         pre: Some((OutputId(String::new()), "ws-0".to_owned())),
         post: None,
+        native_pre: None,
+        native_post: None,
         attempt_ms: 1,
     });
     assert_eq!(validate_report_reason(&bad), Some("member-homing-invalid"));
+    // Native attempt ids ride only with the capability, like nativeWs.
+    let mut bad = base.clone();
+    bad.member_attempts.push(MemberAttempt {
+        operation_id: "op-9".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        native_pre: Some("native-1".to_owned()),
+        native_post: None,
+        attempt_ms: 1,
+    });
+    assert_eq!(
+        validate_report_reason(&bad),
+        Some("native-without-capability")
+    );
+    let mut capable = base.clone();
+    capable.host_owned_workspace_domains = true;
+    capable.member_attempts.push(MemberAttempt {
+        operation_id: "op-9".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        native_pre: Some("native-1".to_owned()),
+        native_post: Some(String::new()),
+        attempt_ms: 1,
+    });
+    assert_eq!(
+        validate_report_reason(&capable),
+        Some("member-homing-invalid")
+    );
     let mut bad = base.clone();
     for _ in 0..2 {
         bad.member_attempts.push(MemberAttempt {
@@ -443,6 +518,8 @@ fn validation_gates_shapes() {
             setter: FrameSetter::Accepted,
             pre: None,
             post: None,
+            native_pre: None,
+            native_post: None,
             attempt_ms: 1,
         });
     }
@@ -457,9 +534,46 @@ fn validation_gates_shapes() {
         pre: None,
         post: None,
         baseline: None,
+        native_pre: None,
+        native_post: None,
+        native_baseline: None,
         attempt_ms: 1,
     });
     assert_eq!(validate_report_reason(&bad), Some("view-operation-invalid"));
+    let mut bad = base.clone();
+    bad.view_attempts.push(ViewAttempt {
+        operation_id: "op-9".to_owned(),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        baseline: None,
+        native_pre: None,
+        native_post: Some("native-2".to_owned()),
+        native_baseline: None,
+        attempt_ms: 1,
+    });
+    assert_eq!(
+        validate_report_reason(&bad),
+        Some("native-without-capability")
+    );
+    let mut capable = base.clone();
+    capable.host_owned_workspace_domains = true;
+    capable.view_attempts.push(ViewAttempt {
+        operation_id: "op-9".to_owned(),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        baseline: None,
+        native_pre: None,
+        native_post: None,
+        native_baseline: Some(String::new()),
+        attempt_ms: 1,
+    });
+    assert_eq!(validate_report_reason(&capable), Some("view-proof-invalid"));
     let mut bad = base.clone();
     for _ in 0..2 {
         bad.view_attempts.push(ViewAttempt {
@@ -470,6 +584,9 @@ fn validation_gates_shapes() {
             pre: None,
             post: None,
             baseline: None,
+            native_pre: None,
+            native_post: None,
+            native_baseline: None,
             attempt_ms: 1,
         });
     }

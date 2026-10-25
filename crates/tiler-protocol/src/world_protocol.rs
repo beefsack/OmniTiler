@@ -86,14 +86,26 @@
 //!   the live frame immediately before the write and requires `op`.
 //! memberAttempts[] (optional, tolerant: missing backfills []):
 //!   {op, win, out, ws, setter:accepted|refused|threw,
-//!    pre:{out,ws}|null, post:{out,ws}|null, attemptMs:"u64"} -
+//!    pre:{out,ws}|null, post:{out,ws}|null,
+//!    nativePre:id|null (optional, tolerant: missing/null/empty backfills
+//!    null for tiler-owned adapters), nativePost:id|null (same tolerance),
+//!    attemptMs:"u64"} -
 //!   mechanical membership write/homing facts only; at most one entry per
-//!   operation window. The core owns window/migration completion.
+//!   operation window. The core owns window/migration completion. The
+//!   host-owned native pre/post ids name the native desktops read
+//!   immediately before/after the write (translated core-side through its
+//!   own bindings; never an adapter table); without hostOwned any carried
+//!   native id refuses.
 //! viewAttempts[] (optional, tolerant: missing backfills []):
 //!   {op, out, ws, setter:accepted|refused|threw,
 //!    pre:""|id|null, post:""|id|null, base:""|id|null,
+//!    nativePre:id|null, nativePost:id|null, nativeBase:id|null
+//!    (each optional, tolerant: missing/null/empty backfills null),
 //!    attemptMs:"u64"} - mechanical view write/proof facts only; at most
 //!   one entry per owning view phase. The core owns every view verdict.
+//!   Host-owned native current ids ride the native keys (translated
+//!   core-side); logical keys stay null there. Without hostOwned any
+//!   carried native id refuses.
 //! clearAttempts[] (optional, tolerant: missing backfills []):
 //!   {op, win, setter:accepted|refused|threw,
 //!    pre:bool|null, post:bool|null, attemptMs:"u64"} - mechanical
@@ -721,12 +733,34 @@ fn opt_view_or_null(
     }
 }
 
+/// Optional host-owned native desktop id: tolerant like `nativeWs`
+/// (missing, null, or empty backfills unknown) so tiler-owned adapters
+/// predate the keys without changing their wire. A present id must be
+/// opaque; the capability gate lives in core validation, never here.
+fn opt_native_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>> {
+    match map.get(key) {
+        None => Ok(None),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) if text.is_empty() => Ok(None),
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Ok(Some(text.clone()))
+        }
+        Some(_) => Err(malformed()),
+    }
+}
+
 fn decode_member_attempt(
     value: &serde_json::Value,
 ) -> Result<tiler_core::world_report::MemberAttempt> {
     use tiler_core::world_report::MemberAttempt;
     let map = as_object(value)?;
-    check_keys(
+    check_keys_with_optional(
         map,
         &[
             "op",
@@ -738,6 +772,7 @@ fn decode_member_attempt(
             "post",
             "attemptMs",
         ],
+        &["nativePre", "nativePost"],
     )?;
     Ok(MemberAttempt {
         operation_id: req_id(map, "op")?,
@@ -747,6 +782,8 @@ fn decode_member_attempt(
         setter: parse_frame_setter(req_str(map, "setter")?)?,
         pre: opt_homing_or_null(map, "pre")?,
         post: opt_homing_or_null(map, "post")?,
+        native_pre: opt_native_or_null(map, "nativePre")?,
+        native_post: opt_native_or_null(map, "nativePost")?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
     })
 }
@@ -754,7 +791,7 @@ fn decode_member_attempt(
 fn decode_view_attempt(value: &serde_json::Value) -> Result<tiler_core::world_report::ViewAttempt> {
     use tiler_core::world_report::ViewAttempt;
     let map = as_object(value)?;
-    check_keys(
+    check_keys_with_optional(
         map,
         &[
             "op",
@@ -766,6 +803,7 @@ fn decode_view_attempt(value: &serde_json::Value) -> Result<tiler_core::world_re
             "base",
             "attemptMs",
         ],
+        &["nativePre", "nativePost", "nativeBase"],
     )?;
     Ok(ViewAttempt {
         operation_id: req_id(map, "op")?,
@@ -775,6 +813,9 @@ fn decode_view_attempt(value: &serde_json::Value) -> Result<tiler_core::world_re
         pre: opt_view_or_null(map, "pre")?,
         post: opt_view_or_null(map, "post")?,
         baseline: opt_view_or_null(map, "base")?,
+        native_pre: opt_native_or_null(map, "nativePre")?,
+        native_post: opt_native_or_null(map, "nativePost")?,
+        native_baseline: opt_native_or_null(map, "nativeBase")?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
     })
 }

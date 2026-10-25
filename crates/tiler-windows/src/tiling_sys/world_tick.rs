@@ -2329,6 +2329,8 @@ mod apply_diag_tests {
                 setter: setters[n % setters.len()],
                 pre: (n % 2 == 0).then(|| (OutputId("o1".to_owned()), format!("w{}", n % 3))),
                 post: (n % 3 == 0).then(|| (OutputId("o1".to_owned()), "w2".to_owned())),
+                native_pre: None,
+                native_post: None,
                 attempt_ms: n as u64,
             })
             .collect();
@@ -2511,6 +2513,8 @@ mod apply_diag_tests {
                 setter: FrameSetter::Threw,
                 pre: None,
                 post: None,
+                native_pre: None,
+                native_post: None,
                 attempt_ms: 3,
             }],
             &empty_views,
@@ -3235,6 +3239,8 @@ mod apply_diag_tests {
             setter: FrameSetter::Accepted,
             pre: Some((OutputId("o1".to_owned()), "ws-a".to_owned())),
             post: Some((OutputId("o1".to_owned()), "ws-a".to_owned())),
+            native_pre: None,
+            native_post: None,
             attempt_ms: 42,
         }];
         let view_attempts = vec![ViewAttempt {
@@ -3245,6 +3251,9 @@ mod apply_diag_tests {
             pre: Some("ws-old".to_owned()),
             post: Some("ws-b".to_owned()),
             baseline: Some("ws-old".to_owned()),
+            native_pre: None,
+            native_post: None,
+            native_baseline: None,
             attempt_ms: 42,
         }];
         let value = apply_diag_value(

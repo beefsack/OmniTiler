@@ -1545,6 +1545,8 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             setter: FrameSetter::Refused,
             pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
             post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+            native_pre: None,
+            native_post: None,
             attempt_ms: 4,
         },
         MemberAttempt {
@@ -1555,6 +1557,8 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             setter: FrameSetter::Refused,
             pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
             post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+            native_pre: None,
+            native_post: None,
             attempt_ms: 4,
         },
     ];

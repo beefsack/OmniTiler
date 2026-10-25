@@ -681,11 +681,12 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     }
     for attempt in &report.member_attempts {
         // {"op":S,"win":S,"out":S,"ws":S,"setter":S,"pre":H|null,
-        // "post":H|null,"attemptMs":"u64"} = 67 fixed plus ids, setter
-        // token, homing pairs, and the stamp. A homing pair
-        // `{"out":S,"ws":S}` counts 14 plus its ids; absent homings count
-        // null (4).
-        bytes += 67
+        // "post":H|null,"nativePre":S|null,"nativePost":S|null,
+        // "attemptMs":"u64"} = 94 fixed plus ids, setter token, homing
+        // pairs, native ids, and the stamp. A homing pair
+        // `{"out":S,"ws":S}` counts 14 plus its ids; absent homings and
+        // absent native ids count null (4).
+        bytes += 94
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.window.0)
             + json_string_len(&attempt.target_output.0)
@@ -697,13 +698,17 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + attempt.post.as_ref().map_or(4, |(out, ws)| {
                 14 + json_string_len(&out.0) + json_string_len(ws)
             })
+            + attempt.native_pre.as_deref().map_or(4, json_string_len)
+            + attempt.native_post.as_deref().map_or(4, json_string_len)
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.view_attempts {
         // {"op":S,"out":S,"ws":S,"setter":S,"pre":S|null,"post":S|null,
-        // "base":S|null,"attemptMs":"u64"} = 68 fixed plus ids, setter
-        // token, views, and the stamp. Absent views count null (4).
-        bytes += 68
+        // "base":S|null,"nativePre":S|null,"nativePost":S|null,
+        // "nativeBase":S|null,"attemptMs":"u64"} = 109 fixed plus ids,
+        // setter token, views, native ids, and the stamp. Absent views and
+        // absent native ids count null (4).
+        bytes += 109
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.target_output.0)
             + json_string_len(&attempt.target_workspace)
@@ -711,6 +716,12 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + attempt.pre.as_deref().map_or(4, json_string_len)
             + attempt.post.as_deref().map_or(4, json_string_len)
             + attempt.baseline.as_deref().map_or(4, json_string_len)
+            + attempt.native_pre.as_deref().map_or(4, json_string_len)
+            + attempt.native_post.as_deref().map_or(4, json_string_len)
+            + attempt
+                .native_baseline
+                .as_deref()
+                .map_or(4, json_string_len)
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.clear_attempts {
