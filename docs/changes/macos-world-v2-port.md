@@ -3,7 +3,8 @@
 ## Goal and status
 
 - Stage 0 reviewed; stage 1 complete offline; stage 2 and independent offline
-  stage-3 work continue with app-hidden option B selected. Stage 0 evidence is from `a0f54105`
+  stage-3 work are partial, with app-hidden option B selected. Policy removal
+  needs resolution of the D2 core mismatch below. Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
 - Replace the retired macOS contract, not wrap it. One `WorldEngine` owns policy;
@@ -149,6 +150,10 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   shapes. Only independent native select/send/remove/readback work proceeds;
   creation integration waits for the delivered contract and seven macOS
   discriminator tests. Existing async A/B/C evidence gates remain unchanged.
+- Update: stage 1b subsequently landed in `4bd4aca9`, with native-only view
+  settlement in `28c3cff2`. macOS consumes the delivered compatibility updates,
+  including optional native current and creation row fields. This does not by
+  itself wire native creation/select/send/remove execution or prove acceptance.
 - Shared sticky semantics are unchanged; a coordinate-basis token would follow
   stage 1b only on reproduced evidence. The verified fixture reader hold-open
   fix is already on main; no macOS fixture change is required.
@@ -275,6 +280,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 | Use the current reply as a live binding/lifetime lookup; temporarily echo only previously asserted automatic-float facts | Read private core sessions or infer automatic provenance from indistinguishable float replies | Preserve the compile-cutover behavior without private API access; stage 2 must remove classification policy/cache ownership, not promote this assertion set to a new policy model |
 | Gesture terminals do not use observation-only dispatch retries; a stale reply hides the preview until a fresh sample | Retry terminal ingress or show stale output | Stable core gesture IDs own terminal consumption; never replay a commit or paint stale shapes |
 | Remove obsolete per-predicate Windows conformance pairs; keep real public classifier comparisons and fixture expectations | Restore removed Windows wrappers or compare core predicates with themselves | Shared predicate tests belong in core; self-comparison cannot establish platform conformance |
+| Preserve the existing automatic-float echo until D2 is resolved in core | Remove the echo and accept retile on hint loss, or expand host policy | Keeps the selected product expectation and current regressions intact; does not claim completed policy ownership or add a workaround |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -319,6 +325,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 
 ## Stage-2 option B implementation (2026-10-25)
 
+- Landed as `24ff4eec`.
 - `HiddenApp` now follows the retained minimized-fact path. Diagnostics retain
   distinct `classifier-omitted-hidden-app` and `classifier-omitted-minimized`
   tokens. The adapter mapping is reversible; no shared type/comment was changed.
@@ -346,6 +353,63 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   by the old exact-Space partition, not explicitly reported with unknown native
   membership. This is not accepted as the tentative `None` edge implementation;
   the fact-ownership unit must keep those lifetimes truthful and fenced.
+
+## Stage-2 mechanical evidence and policy blocker (2026-10-25)
+
+- Added fake-native tests through production `apply_scoped_frame` for a first
+  size leg clamped to the old display, position move, then final size recovery.
+  The size-position-size transaction reaches the whole-point target; no new
+  coordinate-basis representation is indicated by this model.
+- Fractional immediate AX readbacks remain raw actuator evidence; planning
+  uses `PointsRect::to_rect` nearest whole points, ties away from zero. Tests
+  cover positive/negative ties, valid fractional minima rounding upward via
+  `NativeWindowFacts::size_hints`, and invalid/unknown hints remaining absent.
+  No AX maximum is invented. Physical-fixture maxima conversion is not a new
+  production hint source; no general maximum-conversion implementation is claimed.
+- Added production gesture handoff cases for orphan cancellation, new-ID
+  supersession after a missing terminal, and a late old release. Old IDs do not
+  commit or corrupt the new preview; the newer ID commits once. Main-side
+  cancellation releases capture; invalid/absent carrier proof stays hidden.
+  These are fake-native lifecycle cases, not physical input or timeout timing
+  acceptance.
+- Policy blocker: removing the existing automatic-float echo makes
+  `cold_fixed_only_floats_automatic` fail after fixed hints disappear: a previously
+  automatic float is tiled again. `session/world.rs:1263-1265` states D2 is
+  admission-only, but `:1354-1386` retiles a non-floating observation when
+  `was_automatic && !fixed_now`. The selected D2 test and existing echo remain
+  unchanged; the unaccepted removal was withdrawn, not blessed by repinning it.
+- Proposed core correction, not implemented: retain known automatic floats
+  across hint loss while preserving explicit tile/suppression wins. This would
+  allow removal of the adapter assertion cache without changing D2. Re-scoping
+  D2 instead is a product change. Any shared-core edit needs separate review.
+- The attempted explicit unknown-native roster path was also withdrawn after
+  review exposed repeat-hidden loss, unrelated-app clearing of a global
+  inventory hold, and missing explicit closes for unhomed lifetimes at
+  termination. No such implementation is committed. Before another cutover,
+  lifetime/incompleteness must survive per-app repeated reads and unrelated
+  updates, and closes must ride independently of native homing. Do not repeat
+  a global-boolean/omission approach or choose an arbitrary output.
+- Native classifier policy, local selection/send/trailing policy, fullscreen /
+  multi-Space explicit unknown-membership facts and native executors are still
+  unfinished. No core type/comment or sticky semantics were changed here.
+- Current accepted checkpoint consumes stage 1b from `bddfef15`: macOS build,
+  full tests (1,283 passed, 0 failed), strict all-target clippy PASS; locked
+  core/protocol build and strict all-target clippy PASS; ordered acceptance
+  PASS, 6/6. No signed-bundle/live acceptance is claimed.
+
+### Sticky per-display verification plan
+
+- Use signed fixture-only windows on two outputs; capture ordered desktop IDs,
+  current desktop per output, exact caller/AX/CG lifetime, frame and visibility.
+  Keep the separate-Spaces setting unchanged and record its observed mode.
+- Assign one owned fixture window to All Desktops using the native control;
+  switch existing desktops on each output independently and freshly read its
+  membership, output affinity and visibility after each settled switch. Compare
+  against the complete desktop order for each output, not a membership count.
+- Restore that window's exact prior assignment/current desktops and verify the
+  baseline. Stop on uncertain ownership, unsupported readback or unrelated drift.
+  Scope remains TBD until this native evidence exists; no all-Spaces proof is
+  inferred from multiple membership IDs, and no game probe is required.
 
 ## Stage-2 hide/unhide evidence (2026-10-25)
 
@@ -455,6 +519,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: finish stage-2 policy ownership and
-  coordinate/gesture tests, then independent stage-3 native executor/readback
-  work. Keep pending stage-1b shapes and new core proposals separate.
+- Remaining exact next step: resolve the proposed D2 core correction before
+  removing the automatic-float echo, then finish shared classification and native
+  lifetime/inventory ownership. Native executors can consume the now-landed
+  stage-1b contract; no new shared shape should be invented in the adapter.

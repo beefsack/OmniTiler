@@ -8,9 +8,11 @@
 
 use std::collections::HashMap;
 
+use tiler_core::geometry::Rect;
 use tiler_macos::dev_selection::TileScope;
 use tiler_macos::ffi::AxFrame;
 use tiler_macos::focus_route::FocusRoute;
+use tiler_macos::native_facts::NativeWindowFacts;
 use tiler_macos::native_tile_backend::{
     AxSetter, LegOutcome, ScopedAxFactory, TileGates, WindowShowState, apply_scoped_frame,
     build_scoped_snapshot, fence_scoped_focus, session_safe_verdict, validate_identity_triple,
@@ -18,6 +20,7 @@ use tiler_macos::native_tile_backend::{
 use tiler_macos::runtime_backend::AxBackendFactory;
 use tiler_macos::runtime_types::AxCompletion;
 use tiler_macos::scope::{AppScope, ProcessIdentity};
+use tiler_macos::topology::PointsRect;
 
 struct FakeGates {
     identity_ok: bool,
@@ -936,4 +939,236 @@ fn unscoped_effect_boundary_parity_with_scoped() {
     let factory = ScopedAxFactory::unscoped(vec!["com.example.skip".to_owned()])
         .expect("unscoped selection validates");
     assert!(factory.create(424242).is_err());
+}
+
+#[test]
+fn cross_display_first_size_clamp_recovers_through_real_silica_legs() {
+    // yabai window_manager.c 741-760 and AeroSpace MacApp.swift 411-419 both
+    // land cross-display resizes as size-position-size against the
+    // screen-area clamp: the first size leg clamps to the old display, the
+    // position leg moves, and the second size leg recovers the target. The
+    // fake below models exactly that first-leg clamp; every leg and
+    // readback runs through production apply_scoped_frame.
+    struct CrossDisplayClamp {
+        current: AxFrame,
+        clamped: AxFrame,
+        size_calls: usize,
+        sets: Vec<&'static str>,
+    }
+    impl AxSetter for CrossDisplayClamp {
+        fn set_position(&mut self, _wid: u32, frame: &AxFrame) -> Result<(), String> {
+            self.sets.push("position");
+            self.current.x = frame.x;
+            self.current.y = frame.y;
+            Ok(())
+        }
+        fn set_size(&mut self, _wid: u32, frame: &AxFrame) -> Result<(), String> {
+            self.sets.push("size");
+            self.size_calls += 1;
+            if self.size_calls == 1 {
+                self.current.w = self.clamped.w;
+                self.current.h = self.clamped.h;
+            } else {
+                self.current.w = frame.w;
+                self.current.h = frame.h;
+            }
+            Ok(())
+        }
+        fn set_focus(&mut self, _wid: u32, _route: FocusRoute) -> Result<(), String> {
+            Ok(())
+        }
+        fn readback(&mut self, _wid: u32) -> Result<Option<AxFrame>, String> {
+            Ok(Some(self.current))
+        }
+    }
+    let scope = scope();
+    let identity = identity();
+    let gates = FakeGates::healthy(11, 9);
+    let clamped = AxFrame {
+        x: 10.0,
+        y: 10.0,
+        w: 700.0,
+        h: 500.0,
+    };
+    let target = AxFrame {
+        x: 1500.0,
+        y: 100.0,
+        w: 1200.0,
+        h: 800.0,
+    };
+    let mut setter = CrossDisplayClamp {
+        current: frame(),
+        clamped,
+        size_calls: 0,
+        sets: Vec::new(),
+    };
+    let (completion, report) = apply_scoped_frame(
+        &scope,
+        &identity,
+        &gates,
+        &mut setter,
+        4242,
+        7,
+        &target,
+        9,
+        3,
+    );
+    assert_eq!(setter.sets, vec!["size", "position", "size"]);
+    assert!(
+        matches!(completion, AxCompletion::Applied { .. }),
+        "clamped first leg still lands: the second size leg recovers"
+    );
+    assert_eq!(report.size_first, LegOutcome::Applied);
+    assert_eq!(report.position, LegOutcome::Applied);
+    assert_eq!(report.size, LegOutcome::Applied);
+    let moved = AxFrame {
+        x: 1500.0,
+        y: 100.0,
+        w: 700.0,
+        h: 500.0,
+    };
+    assert_eq!(
+        report.leg_readbacks,
+        [Some(clamped), Some(moved), Some(target)]
+    );
+    assert_eq!(report.readback, Some(target));
+    assert!(!report.readback_unreadable);
+    // Whole logical points reach the core through the real rounding seam.
+    let points = PointsRect {
+        x: target.x,
+        y: target.y,
+        w: target.w,
+        h: target.h,
+    };
+    assert_eq!(
+        points.to_rect(),
+        Some(Rect {
+            x: 1500,
+            y: 100,
+            w: 1200,
+            h: 800,
+        })
+    );
+}
+
+#[test]
+fn fractional_ax_readback_stays_raw_and_rounds_through_real_points_rect() {
+    // The window server may read back fractional points immediately after
+    // an integer set (async settle). Production keeps the raw fractional
+    // readback in the report (never guessed) while planning rounds through
+    // PointsRect::to_rect (nearest, ties away from zero). dpi_before/after
+    // stay None on the macOS FrameAttempt path (pinned in world_builder).
+    struct FractionalReadback {
+        readback: AxFrame,
+    }
+    impl AxSetter for FractionalReadback {
+        fn set_position(&mut self, _wid: u32, _frame: &AxFrame) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_size(&mut self, _wid: u32, _frame: &AxFrame) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_focus(&mut self, _wid: u32, _route: FocusRoute) -> Result<(), String> {
+            Ok(())
+        }
+        fn readback(&mut self, _wid: u32) -> Result<Option<AxFrame>, String> {
+            Ok(Some(self.readback))
+        }
+    }
+    let scope = scope();
+    let identity = identity();
+    let gates = FakeGates::healthy(11, 9);
+    let target = AxFrame {
+        x: 240.0,
+        y: 240.0,
+        w: 480.0,
+        h: 320.0,
+    };
+    let fractional = AxFrame {
+        x: 240.5,
+        y: 239.5,
+        w: 480.4,
+        h: 320.5,
+    };
+    let mut setter = FractionalReadback {
+        readback: fractional,
+    };
+    let (completion, report) = apply_scoped_frame(
+        &scope,
+        &identity,
+        &gates,
+        &mut setter,
+        4242,
+        7,
+        &target,
+        9,
+        3,
+    );
+    assert!(matches!(completion, AxCompletion::Applied { .. }));
+    assert_eq!(
+        report.readback,
+        Some(fractional),
+        "the report carries the raw fractional readback, never a guess"
+    );
+    let points = PointsRect {
+        x: fractional.x,
+        y: fractional.y,
+        w: fractional.w,
+        h: fractional.h,
+    };
+    assert_eq!(
+        points.to_rect(),
+        Some(Rect {
+            x: 241,
+            y: 240,
+            w: 480,
+            h: 321,
+        }),
+        "planning rounds the fractional readback through the real seam"
+    );
+    // Ties round away from zero through the same production seam.
+    assert_eq!(
+        PointsRect {
+            x: 0.5,
+            y: -0.5,
+            w: 10.0,
+            h: 10.0,
+        }
+        .to_rect()
+        .map(|r| (r.x, r.y)),
+        Some((1, -1))
+    );
+    // Physical fixture minima ceil at scale through production size_hints;
+    // maxima stay absent (no surveyed AX max source: never invented).
+    let scale = 2.0;
+    let logical_min_w = 1281.0 / scale;
+    assert_eq!(logical_min_w, 640.5);
+    let mut facts = NativeWindowFacts {
+        wid: 7,
+        role: Some("AXWindow".to_owned()),
+        subrole: Some("AXStandardWindow".to_owned()),
+        fullscreen: Some(false),
+        minimized: Some(false),
+        modal: Some(false),
+        size_settable: Some(true),
+        min_size: Some((logical_min_w, 480.25)),
+        max_size: None,
+        frame: Some(target),
+        cg_layer: Some(0),
+        cg_onscreen: Some(true),
+    };
+    let hints = facts.size_hints();
+    assert_eq!((hints.min_w, hints.min_h), (Some(641), Some(481)));
+    assert!(
+        hints.max_w.is_none() && hints.max_h.is_none(),
+        "no AX max is probed, so none is ever filled"
+    );
+    // Non-positive and non-finite minima stay absent, never a claim.
+    for bad in [0.0, -3.0, f64::NAN, f64::INFINITY] {
+        facts.min_size = Some((bad, 480.0));
+        assert!(
+            facts.size_hints().min_w.is_none(),
+            "bad minimum {bad} must not fill a hint"
+        );
+    }
 }

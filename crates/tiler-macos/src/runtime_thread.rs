@@ -3846,4 +3846,292 @@ mod drag_gesture_handoff_tests {
         );
         assert!(refused.settled.is_none(), "new generation settles nothing");
     }
+
+    #[test]
+    fn orphan_cancelled_consumes_without_influence_and_new_gesture_binds_clean() {
+        let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        let frame = Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        // Started never reached core: the orphan Cancelled for a fresh id
+        // consumes its identity and records an uncommitted
+        // terminal with no retained session, no slot, and no commit.
+        let orphan = gesture_ingress(
+            50,
+            "4242_7",
+            GesturePhase::Cancelled,
+            Some((300, 250)),
+            (300, 250),
+            frame,
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            orphan.clone(),
+            Some(9),
+        );
+        assert!(
+            matches!(reply.preview, PreviewOutcome::HideTransient { .. }),
+            "orphan cancel hides, never shows a stale slot"
+        );
+        match reply.settled {
+            Some(settled) => {
+                assert_eq!(settled.id, 50);
+                assert!(!settled.committed, "orphan cancel never commits");
+            }
+            None => panic!("orphan cancel records its uncommitted terminal"),
+        }
+        // Replay of the consumed orphan stays dead with no second terminal.
+        let replay = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            orphan,
+            Some(9),
+        );
+        assert!(replay.settled.is_none(), "consumed orphan replays dead");
+        assert!(matches!(
+            replay.preview,
+            PreviewOutcome::HideTransient { .. }
+        ));
+        // A later real gesture binds clean on a fresh id: no stale preview,
+        // commit, or influence from the orphan.
+        let started = gesture_ingress(
+            51,
+            "4242_7",
+            GesturePhase::Started,
+            Some((300, 250)),
+            (300, 250),
+            frame,
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            started,
+            Some(9),
+        );
+        assert!(
+            matches!(reply.preview, PreviewOutcome::HideTransient { .. }),
+            "start binds only, never previews"
+        );
+        assert!(reply.settled.is_none(), "start never settles");
+        let updated = gesture_ingress(
+            51,
+            "4242_7",
+            GesturePhase::Updated,
+            Some((10, 450)),
+            (300, 250),
+            frame,
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            updated,
+            Some(9),
+        );
+        match reply.preview {
+            PreviewOutcome::Show { target, .. } => {
+                assert_eq!(target.0, "4243_9", "slot resolves the live neighbor");
+            }
+            other => panic!("moved sample must preview, got {other:?}"),
+        }
+        assert!(reply.settled.is_none(), "update never settles");
+    }
+
+    #[test]
+    fn late_old_terminal_cannot_mutate_newer_gesture_and_capture_releases() {
+        let (mut session, mut retained, shared, inbox, focus_queue) = harness();
+        let frame = Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        // Old gesture binds and previews its slot.
+        let old_started = gesture_ingress(
+            61,
+            "4242_7",
+            GesturePhase::Started,
+            Some((300, 250)),
+            (300, 250),
+            frame,
+        );
+        let _ = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            old_started,
+            Some(9),
+        );
+        let old_updated = gesture_ingress(
+            61,
+            "4242_7",
+            GesturePhase::Updated,
+            Some((10, 450)),
+            (300, 250),
+            frame,
+        );
+        let _ = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            old_updated,
+            Some(9),
+        );
+        // A newer gesture supersedes the old session before any old
+        // terminal arrives.
+        let new_started = gesture_ingress(
+            62,
+            "4242_7",
+            GesturePhase::Started,
+            Some((300, 250)),
+            (300, 250),
+            frame,
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            new_started,
+            Some(9),
+        );
+        assert!(
+            matches!(reply.preview, PreviewOutcome::HideTransient { .. }),
+            "superseding start binds only"
+        );
+        assert!(reply.settled.is_none(), "superseding start settles nothing");
+        // Native post-gesture observation: the window server moved the
+        // window with the gesture (same size, new origin).
+        retained.apps.get_mut(&4242).expect("mover").windows[0].x = 100;
+        retained.apps.get_mut(&4242).expect("mover").windows[0].y = 400;
+        // Late terminal for the OLD id while the newer session is
+        // retained: held with an uncommitted drain record, never a commit
+        // and never a stale slot. The newer session is untouched.
+        let late = gesture_ingress(
+            61,
+            "4242_7",
+            GesturePhase::Released,
+            Some((10, 450)),
+            (300, 250),
+            frame,
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            late,
+            Some(9),
+        );
+        match reply.settled {
+            Some(settled) => {
+                assert_eq!(settled.id, 61);
+                assert!(!settled.committed, "late old terminal never commits");
+            }
+            None => panic!("late old terminal records its uncommitted drain"),
+        }
+        assert!(
+            matches!(reply.preview, PreviewOutcome::HideTransient { .. }),
+            "late old terminal shows no stale slot"
+        );
+        // The newer gesture still previews its own slot, then commits its
+        // own release exactly once.
+        let new_updated = gesture_ingress(
+            62,
+            "4242_7",
+            GesturePhase::Updated,
+            Some((10, 450)),
+            (300, 250),
+            frame,
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            new_updated,
+            Some(9),
+        );
+        assert!(
+            matches!(reply.preview, PreviewOutcome::Show { .. }),
+            "newer gesture previews intact after the late old terminal"
+        );
+        let new_released = gesture_ingress(
+            62,
+            "4242_7",
+            GesturePhase::Released,
+            Some((10, 450)),
+            (300, 250),
+            frame,
+        );
+        let reply = submit(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            new_released,
+            Some(9),
+        );
+        let settled = reply.settled.expect("newer release settles its terminal");
+        assert!(settled.committed, "newer gesture commits exactly once");
+        assert_eq!(settled.id, 62);
+        // Main-side capture/carrier release through the production session:
+        // Escape clears the capture, the trailing up balances to idle, and
+        // a degenerate preview rect hides the carrier instead of rendering.
+        let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
+        arm(&drag);
+        assert!(drag.active());
+        let cancelled = drag.on_escape().expect("Escape cancels the held gesture");
+        assert_eq!(cancelled.phase, GesturePhase::Cancelled);
+        assert!(!drag.active(), "cancel releases the single-flight capture");
+        assert!(
+            matches!(
+                drag.on_up(10, 450),
+                crate::drag_session::HitIntent::Release(crate::drag_session::ReleaseIntent::Ignore)
+            ),
+            "post-cancel up balances to idle, never a drop"
+        );
+        assert!(drag.cancel_ingress().is_none());
+        assert!(drag.start_ingress().is_none());
+        assert!(
+            crate::drag_session::preview_outer_appkit(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 0,
+                    h: 10,
+                },
+                Some(900.0)
+            )
+            .is_none(),
+            "degenerate rect hides the carrier"
+        );
+        assert!(
+            !crate::drag_session::carrier_above_verified(&[9, 7], 55, 9),
+            "absent carrier never verifies above the target"
+        );
+    }
 }

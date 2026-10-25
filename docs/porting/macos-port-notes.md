@@ -106,8 +106,12 @@ with the fixture-first rules and the signed bundle in
   shared discriminator tests must confirm this. Sticky requires positive
   all-Spaces proof; per-display scope still needs checking.
 - KDE stage 1b owns creation-attempt correlation, optional native current and
-  authoritative native order. Do not invent these shapes in macOS before they
-  land; independent native select/send/remove/readback tests can proceed.
+  authoritative native order; it landed in `4bd4aca9` (native-only view
+  settlement `28c3cff2`). Consume those shapes, never a separate macOS equivalent.
+- Stage-2 policy removal is incomplete: eliminating the current automatic-float
+  echo exposes a core D2 hint-loss retile mismatch. Existing behavior/tests are
+  preserved pending a core correction; no host policy expansion is selected.
+  [Mechanical coverage, blocker and sticky verification plan](../changes/macos-world-v2-port.md#stage-2-mechanical-evidence-and-policy-blocker-2026-10-25).
 - Activities default stays tentative pending KDE evidence (see
   [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):
   inactive-activity windows stay retained unmanaged (never tile, move,
