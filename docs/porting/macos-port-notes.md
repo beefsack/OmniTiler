@@ -109,8 +109,9 @@ with the fixture-first rules and the signed bundle in
   authoritative native order; it landed in `4bd4aca9` (native-only view
   settlement `28c3cff2`). Consume those shapes, never a separate macOS equivalent.
 - Stage-2 policy removal is incomplete. The approved D2 hint-loss correction
-  now preserves automatic floats in core without a native floating echo;
-  macOS removes its automatic assertion cache in a separate checkpoint.
+  `0b65cad5` preserves automatic floats in core without a native floating echo;
+  the separate macOS checkpoint removes its automatic assertion cache and
+  first-sight hint-policy copy. The unchanged D2 integration test passes.
   [Mechanical coverage, blocker and sticky verification plan](../changes/macos-world-v2-port.md#stage-2-mechanical-evidence-and-policy-blocker-2026-10-25).
 - Activities default stays tentative pending KDE evidence (see
   [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):

@@ -1006,7 +1006,7 @@ fn bound_drain_refuses_vanished_position_and_unbound_revision_skips_leg() {
 /// logical mapping table.
 #[cfg(test)]
 mod ordinal_parity_repro {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     use tiler_core::directional::OutputId;
     use tiler_core::world_engine::WorldOutcome;
@@ -1083,7 +1083,6 @@ mod ordinal_parity_repro {
         let empty_unreadable = BTreeMap::new();
         let build =
             |obs: u64, req: u64, req_id: &str, seq: Option<u64>, command: Option<WorldCommand>| {
-                let mut auto_asserted = BTreeSet::new();
                 let mut input = ReportInput::new(
                     OWNER,
                     INCARNATION,
@@ -1094,7 +1093,6 @@ mod ordinal_parity_repro {
                     req_id,
                     &empty_members,
                     &empty_memory,
-                    &mut auto_asserted,
                     &empty_closed,
                     &empty_unreadable,
                     &[],

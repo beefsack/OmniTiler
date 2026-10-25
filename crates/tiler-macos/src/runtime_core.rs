@@ -5,13 +5,13 @@
 //! [`crate::runtime_thread`] own these values and drive them; reports are
 //! built by [`crate::world_builder`] over this retained truth.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use tiler_core::{
     directional::{OutputId, WindowId, WorkspaceId},
     geometry::Rect,
     session::{DomainKey, OutputDomain},
-    size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with},
+    size_hints::WindowSizeHints,
     window_policy::should_hold_born_fullscreen,
     world_report::WindowFact,
 };
@@ -24,14 +24,13 @@ use crate::runtime_types::{
 
 /// Core-session lifetime for one observed window, read from the existing
 /// core session (no adapter lifetime maps). Unknown means first-seen: the
-/// wire hold and the first-sight fixed assert both key off it. A stored
+/// wire hold keys off it. A stored
 /// minimize slot counts as known lifetime (previously tiled) without being
 /// a reserved tile slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct KnownState {
     pub member: bool,
     pub exception: bool,
-    pub automatic: bool,
     pub slot: bool,
     /// Session holds a floating placement for this window (intentional
     /// ToggleFloat or lifecycle-admitted float). Born-fullscreen holds and
@@ -48,10 +47,7 @@ impl KnownState {
     /// maps each native `(output, space)` domain to its core-published
     /// logical `(output, workspace)` home (from the same reply's
     /// `native_binding` rows — a live reply lookup, never a durable host
-    /// table). `auto_asserted` names lifetimes the adapter itself asserted
-    /// automatic-float origin for (first-sight fixed asserts, re-asserted
-    /// while retained — cleared when the reply stops floating them or a
-    /// ToggleFloat retargets them). Unknown windows and unmapped domains
+    /// table). Unknown windows and unmapped domains
     /// read first-sight
     /// (the pre-adoption steady state, matching the old empty-session
     /// read on early reports).
@@ -59,13 +55,9 @@ impl KnownState {
     /// Field mapping from the core's own delivery:
     /// - `member`: a non-float row homed to the translated domain with
     ///   controlled membership (the reserved tile slot).
-    /// - `exception`/`placed`/`automatic`: the row's float echo and
+    /// - `exception`/`placed`: the row's float echo and
     ///   effective frame (the retained target or session placement the core
-    ///   publishes for floats) plus the adapter's own automatic assertion.
-    ///   The reply cannot distinguish a retained D2 automatic from an
-    ///   intentional float without placement (identical rows), so that bit
-    ///   stays adapter-side: only lifetimes the adapter asserted re-assert
-    ///   automatic, and only while the core still floats them.
+    ///   publishes for floats).
     /// - `slot`: a `Hold(Minimized)` frame authority (the stored minimize
     ///   slot for a previously tiled lifetime).
     /// - `placed`: a float row carrying an effective frame (the retained
@@ -73,7 +65,6 @@ impl KnownState {
     pub(crate) fn of_reply(
         rows: &BTreeMap<String, tiler_core::world_report::WindowDesire>,
         native_home: &BTreeMap<(String, String), (String, String)>,
-        auto_asserted: &BTreeSet<String>,
         domain: &DomainKey,
         id: &WindowId,
     ) -> Self {
@@ -89,7 +80,6 @@ impl KnownState {
                 && !row.floating
                 && row.membership_authority == tiler_core::world_report::ScopeAuthority::Controlled,
             exception: row.floating,
-            automatic: row.floating && auto_asserted.contains(&id.0),
             slot: row.frame_authority
                 == tiler_core::world_report::ScopeAuthority::Hold(
                     tiler_core::world_report::HoldReason::Minimized,
@@ -109,7 +99,7 @@ impl KnownState {
 
 /// Wire flags for one observed window: normalized `(floating, fixed_auto)`
 /// over the truthful classifier facts plus core-session lifetime (KDE
-/// `withInitialFullscreenHold` / `withFixedSizeFloats` parity, macos side
+/// `withInitialFullscreenHold` parity, macos side
 /// without adapter maps). Fullscreen and hints always ride truthfully and
 /// are NOT decided here — see [`build_event`].
 ///
@@ -121,45 +111,32 @@ impl KnownState {
 /// - Retained fullscreen passes through truthfully (slot kept in plan
 ///   truth; the engine withholds geometry writes). A still-held arrival
 ///   keeps synthetic floating while fullscreen.
-/// - First-sight fixed hints assert adapter automatic origin
-///   (floating + fixed_auto, membership only, no writes). Ordinary pins
-///   stay plain; retained automatics re-assert across hint loss (D2);
-///   classified floats never gain provenance (intentional/transient).
-/// - Retained intentional (non-automatic) floats with a session placement
+/// - Retained intentional floats with a session placement
 ///   re-assert across observations: macOS has no AX-level float state, so
 ///   without this echo the next converge would read the floated window as
 ///   tiled and revert the exception (KWin/Windows parity, where the
 ///   compositor reports the float natively). Placement-less holds (born
 ///   fullscreen, fresh-admitted floats) still report truthfully, so hold
-///   exits tile. Never gains provenance.
+///   exits tile. Never gains provenance: `fixed_auto` is always false, the
+///   core owns the automatic marker from admission hints.
+/// - Classified floats ride truthfully; first-sight fixed hints ride as
+///   plain tiles on the wire and the core admits them automatic (D1/D8).
 #[must_use]
 pub(crate) fn normalize_wire_flags(
     floating_cls: bool,
     fullscreen: bool,
-    hints: WindowSizeHints,
     known: &KnownState,
-    predicate: FixedSizePredicate,
 ) -> (bool, bool) {
     if should_hold_born_fullscreen(fullscreen, known.reserved_slot(), known.known_lifetime()) {
         return (true, false);
     }
-    if known.exception && !known.automatic && fullscreen && !floating_cls {
+    if known.exception && fullscreen && !floating_cls {
         return (true, false);
     }
-    if known.exception && !known.automatic && !fullscreen && !floating_cls && known.placed {
+    if known.exception && !fullscreen && !floating_cls && known.placed {
         return (true, false);
     }
-    if known.exception && known.automatic && !fullscreen {
-        return (true, true);
-    }
-    if !known.known_lifetime()
-        && !fullscreen
-        && !floating_cls
-        && is_fixed_size_with(hints, predicate)
-    {
-        return (true, true);
-    }
-    (floating_cls, known.exception && known.automatic)
+    (floating_cls, false)
 }
 
 pub(crate) struct RetainedApp {
@@ -326,12 +303,8 @@ impl LifetimeMemory {
 /// Collect one app's retained windows into v2 [`WindowFact`] rows for a
 /// single native domain. Wire flags reuse [`normalize_wire_flags`] over
 /// the adapter-side [`LifetimeMemory`] (last applied reply rows plus the
-/// native-to-logical home map) and the adapter's own automatic-float
-/// assertions, so world wire flags stay identical to the retired
-/// session-read path. Lifetimes the adapter reports `fixed_auto` for are
-/// recorded into `auto_asserted` (the caller prunes un-floated lifetimes
-/// from the last reply first): only adapter-asserted lifetimes re-assert
-/// automatic origin, never classified floats gaining provenance.
+/// native-to-logical home map). `fixed_auto` is always false: the core owns
+/// the automatic marker from admission hints, never the adapter echo.
 /// Fullscreen, hints, and the minimized flag ride truthfully; maximized is
 /// never inferred; sticky needs positive all-Spaces proof (stage 2) and
 /// stays false. Logical receipts stay unknown (`observed_workspace:
@@ -343,15 +316,12 @@ pub(crate) fn collect_window_facts(
     observed: &[ObservedWindow],
     domain: &DomainKey,
     memory: &LifetimeMemory,
-    auto_asserted: &mut BTreeSet<String>,
-    predicate: FixedSizePredicate,
 ) {
     for w in observed {
         let id = window_id(pid, w.wid);
         let known = KnownState::of_reply(
             &memory.rows,
             &memory.native_home,
-            auto_asserted,
             domain,
             &WindowId(id.clone()),
         );
@@ -362,14 +332,10 @@ pub(crate) fn collect_window_facts(
             h: w.h,
         };
         // Wire normalization over core-delivery lifetime: fullscreen and
-        // hints ride truthfully; floating/fixed_auto carry the hold and
-        // first-sight asserts. The macOS adapter performs no maximized
-        // inference.
-        let (floating, fixed_auto) =
-            normalize_wire_flags(w.floating, w.fullscreen, w.hints, &known, predicate);
-        if fixed_auto {
-            auto_asserted.insert(id.clone());
-        }
+        // hints ride truthfully; floating carries the hold and the
+        // intentional placed echo. The macOS adapter performs no maximized
+        // inference and asserts no automatic origin.
+        let (floating, fixed_auto) = normalize_wire_flags(w.floating, w.fullscreen, &known);
         facts.push(WindowFact {
             window: WindowId(id),
             output: domain.output.clone(),
@@ -729,30 +695,19 @@ mod tests {
     use super::*;
     use tiler_core::size_hints::WindowSizeHints;
 
-    fn fixed() -> WindowSizeHints {
-        WindowSizeHints {
-            min_w: Some(640),
-            min_h: Some(480),
-            max_w: Some(640),
-            max_h: Some(480),
-        }
-    }
-
-    fn known(member: bool, exception: bool, automatic: bool) -> KnownState {
+    fn known(member: bool, exception: bool) -> KnownState {
         KnownState {
             member,
             exception,
-            automatic,
             slot: false,
             placed: false,
         }
     }
 
-    fn placed(member: bool, exception: bool, automatic: bool) -> KnownState {
+    fn placed(member: bool, exception: bool) -> KnownState {
         KnownState {
             member,
             exception,
-            automatic,
             slot: false,
             placed: true,
         }
@@ -766,116 +721,50 @@ mod tests {
     }
 
     #[test]
-    fn wire_flags_hold_born_and_assert_first_sight() {
-        let plain = WindowSizeHints::none();
+    fn wire_flags_hold_born_and_plain_first_sight() {
         let unknown = KnownState::default();
         // Born fullscreen: synthetic floating, never automatic, overlay
         // decided outside (fullscreen rides truthfully).
-        assert_eq!(
-            normalize_wire_flags(false, true, plain, &unknown, FixedSizePredicate::BothAxes),
-            (true, false)
-        );
-        // Born dialog+fullscreen keeps its float origin under the hold.
-        assert_eq!(
-            normalize_wire_flags(true, true, plain, &unknown, FixedSizePredicate::BothAxes),
-            (true, false)
-        );
-        // First-sight fixed asserts automatic origin (membership only).
-        assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                fixed(),
-                &unknown,
-                FixedSizePredicate::BothAxes
-            ),
-            (true, true)
-        );
-        // Ordinary first sight passes through plain.
-        assert_eq!(
-            normalize_wire_flags(false, false, plain, &unknown, FixedSizePredicate::BothAxes),
-            (false, false)
-        );
-        // Classified floats never gain provenance.
-        assert_eq!(
-            normalize_wire_flags(true, false, fixed(), &unknown, FixedSizePredicate::BothAxes),
-            (true, false)
-        );
+        assert_eq!(normalize_wire_flags(false, true, &unknown), (true, false));
+        // Born dialog+fullscreen keeps its float state under the hold.
+        assert_eq!(normalize_wire_flags(true, true, &unknown), (true, false));
+        // First-sight fixed rides plain on the wire: the core admits the
+        // automatic float from hints (D1/D8), never the adapter echo.
+        assert_eq!(normalize_wire_flags(false, false, &unknown), (false, false));
+        // Classified floats ride truthfully, never gaining provenance.
+        assert_eq!(normalize_wire_flags(true, false, &unknown), (true, false));
     }
 
     #[test]
     fn wire_flags_keep_retained_shapes_truthful() {
-        let plain = WindowSizeHints::none();
         // Retained tile going fullscreen: truthful, slot kept core-side.
         assert_eq!(
-            normalize_wire_flags(
-                false,
-                true,
-                plain,
-                &known(true, false, false),
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(false, true, &known(true, false)),
             (false, false)
         );
         // Pinned tile reporting fixed hints: stays plain (D2/D3).
         assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                fixed(),
-                &known(true, false, false),
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(false, false, &known(true, false)),
             (false, false)
-        );
-        // Retained automatic re-asserts across hint loss (D2).
-        assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                plain,
-                &known(false, true, true),
-                FixedSizePredicate::BothAxes
-            ),
-            (true, true)
         );
         // Still-held arrival keeps synthetic floating while fullscreen.
         assert_eq!(
-            normalize_wire_flags(
-                false,
-                true,
-                plain,
-                &known(false, true, false),
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(false, true, &known(false, true)),
             (true, false)
         );
         // Retained dialog+fullscreen stays a truthful overlay exception.
         assert_eq!(
-            normalize_wire_flags(
-                true,
-                true,
-                plain,
-                &known(false, true, false),
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(true, true, &known(false, true)),
             (true, false)
         );
-        // Stored-slot returnees never synthetic-hold and never claim
-        // first-sight origin: the gate sees prior life and the truthful
-        // fullscreen shape converges core-side.
+        // Stored-slot returnees never synthetic-hold: the gate sees prior
+        // life and the truthful fullscreen shape converges core-side.
         assert_eq!(
-            normalize_wire_flags(false, true, plain, &slotted(), FixedSizePredicate::BothAxes),
+            normalize_wire_flags(false, true, &slotted()),
             (false, false)
         );
         assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                fixed(),
-                &slotted(),
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(false, false, &slotted()),
             (false, false)
         );
     }
@@ -887,61 +776,28 @@ mod tests {
         // non-floating. Without this echo the next converge reads it as
         // tiled and reverts the exception (~90 ms live: one sibling
         // expansion frame, then reconcile back to halves). A retained
-        // intentional (non-automatic, non-fullscreen) exception WITH a
-        // session placement must re-assert floating on the wire — without
-        // automatic provenance, even across fixed-hint sightings. A
+        // intentional (non-fullscreen) exception WITH a
+        // session placement must re-assert floating on the wire, always
+        // without automatic provenance. A
         // placement-less hold (born fullscreen exit, fresh-admitted float)
         // still reports truthfully so the hold exit tiles.
-        let plain = WindowSizeHints::none();
-        let intentional = placed(false, true, false);
+        let intentional = placed(false, true);
         assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                plain,
-                &intentional,
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(false, false, &intentional),
             (true, false)
         );
+        // Placement-less exceptions (hold exits) tile.
+        let hold_exit = known(false, true);
         assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                fixed(),
-                &intentional,
-                FixedSizePredicate::BothAxes
-            ),
-            (true, false),
-            "fixed hints never promote an intentional float to automatic"
-        );
-        // Placement-less intentional-shaped exceptions (hold exits) tile.
-        let hold_exit = known(false, true, false);
-        assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                plain,
-                &hold_exit,
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(false, false, &hold_exit),
             (false, false)
         );
         // Classified float state still rides truthfully for unknowns, and
         // ordinary retained tiles stay plain.
         let unknown = KnownState::default();
+        assert_eq!(normalize_wire_flags(true, false, &unknown), (true, false));
         assert_eq!(
-            normalize_wire_flags(true, false, plain, &unknown, FixedSizePredicate::BothAxes),
-            (true, false)
-        );
-        assert_eq!(
-            normalize_wire_flags(
-                false,
-                false,
-                plain,
-                &known(true, false, false),
-                FixedSizePredicate::BothAxes
-            ),
+            normalize_wire_flags(false, false, &known(true, false)),
             (false, false)
         );
     }

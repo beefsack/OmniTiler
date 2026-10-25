@@ -90,10 +90,6 @@ pub(crate) struct ReportInput<'a> {
     /// Adapter-side core-delivery lifetime memory (last applied reply rows
     /// plus the native-to-logical home map) for wire-flag normalization.
     pub memory: &'a LifetimeMemory,
-    /// Adapter-side automatic-float assertions (see
-    /// [`LifetimeMemory`]): pruned to core-floating rows by the caller,
-    /// extended with newly asserted lifetimes during collection.
-    pub auto_asserted: &'a mut BTreeSet<String>,
     /// Explicit closes per native domain (always honored, even incomplete).
     pub closed: &'a BTreeMap<DomainKey, Vec<WindowId>>,
     /// Explicit minimized lifetimes (absent from domain membership).
@@ -167,7 +163,6 @@ impl<'a> ReportInput<'a> {
         request_id: &'a str,
         members: &'a BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
         memory: &'a LifetimeMemory,
-        auto_asserted: &'a mut BTreeSet<String>,
         closed: &'a BTreeMap<DomainKey, Vec<WindowId>>,
         unreadable: &'a BTreeMap<DomainKey, HoldReason>,
         minimized: &'a [MinimizedRecord],
@@ -186,7 +181,6 @@ impl<'a> ReportInput<'a> {
             ctx,
             members,
             memory,
-            auto_asserted,
             closed,
             minimized,
             unreadable,
@@ -354,15 +348,7 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         }
         let mut domain_facts: Vec<WindowFact> = Vec::new();
         for (pid, observed) in &by_pid {
-            collect_window_facts(
-                &mut domain_facts,
-                *pid,
-                observed,
-                &key,
-                input.memory,
-                input.auto_asserted,
-                input.predicate,
-            );
+            collect_window_facts(&mut domain_facts, *pid, observed, &key, input.memory);
         }
         domain_facts.sort_by(|a, b| a.window.0.cmp(&b.window.0));
         windows.extend(domain_facts);
@@ -513,7 +499,6 @@ mod tests {
         ctx: &NativeContext,
         members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
         memory: &LifetimeMemory,
-        auto_asserted: &mut BTreeSet<String>,
         closed: &BTreeMap<DomainKey, Vec<WindowId>>,
         unreadable: &BTreeMap<DomainKey, HoldReason>,
         minimized: &[MinimizedRecord],
@@ -532,7 +517,6 @@ mod tests {
             &owned_id,
             members,
             memory,
-            auto_asserted,
             closed,
             unreadable,
             minimized,
@@ -603,19 +587,7 @@ mod tests {
         let ctx = two_display_ctx();
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report), "builder output validates");
         assert_eq!(report.workspace_mode, WorkspaceMode::PerOutputLocal);
         assert!(report.host_owned_workspace_domains);
@@ -688,19 +660,7 @@ mod tests {
         };
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report));
         assert_eq!(report.screens[0].full_rect, Some(rect(0, -900, 1440, 900)));
         assert_eq!(report.screens[1].full_rect, Some(rect(0, 0, 1440, 900)));
@@ -781,19 +741,7 @@ mod tests {
         assert_eq!(ctx.domains.len(), 3, "hidden Space retains its domain");
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report));
         assert_eq!(report.screens.len(), 2);
         // 1:1 rounding lands the fractional seam on the exact shared edge.
@@ -900,19 +848,7 @@ mod tests {
         assert!(skipped.is_empty(), "all three home: {skipped:?}");
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report));
         let geometry = |out: &str| {
             report
@@ -969,19 +905,7 @@ mod tests {
         assert_eq!(skipped.len(), 1, "skipped honestly, never guessed");
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report));
         // The skipped display stays reported as one incomplete screen
         // (last-observed geometry, never guessed homing) with no windows
@@ -1003,19 +927,7 @@ mod tests {
         assert!(!bootstrap.ready, "bootstrap carries no desired state");
         assert!(bootstrap.windows.is_empty());
 
-        let mut auto_asserted = BTreeSet::new();
-        let first = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let first = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         let reply = accepted(&first, &mut engine);
         assert!(reply.ready);
         assert_eq!(engine.state_revision(), 1);
@@ -1030,19 +942,7 @@ mod tests {
         }
 
         // Advanced observation + request: accepted with a new revision.
-        let mut auto_asserted = BTreeSet::new();
-        let second = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            2,
-            2,
-        );
+        let second = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
         let reply = accepted(&second, &mut engine);
         assert_eq!(reply.state_revision, 2);
         assert_eq!(reply.based_on_observation_seq, 2);
@@ -1051,7 +951,8 @@ mod tests {
     #[test]
     fn maximized_never_inferred_and_fixed_newcomer_asserts() {
         // Fullscreen natives still report maximized:false (fence inert);
-        // first-sight fixed hints assert automatic origin (membership only).
+        // first-sight fixed hints ride plain on the wire and the core
+        // admits the automatic float (membership only).
         let ctx = two_display_ctx();
         let (mut members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
@@ -1066,19 +967,7 @@ mod tests {
             max_h: Some(480),
         };
         members.insert(d1.clone(), vec![(1001, full), (1001, fixed)]);
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report));
         assert_eq!(report.windows.len(), 2);
         assert!(report.windows.iter().all(|w| !w.maximized));
@@ -1100,13 +989,27 @@ mod tests {
             .find(|w| w.window.0 == "1001_2")
             .expect("live");
         assert!(
-            fixed_row.floating && fixed_row.fixed_auto,
-            "first-sight fixed asserts automatic origin"
+            !fixed_row.floating && !fixed_row.fixed_auto,
+            "first-sight fixed rides plain; the core owns the automatic marker"
         );
-        // Engine admits the newcomer without any invented maximization.
+        // Engine admits the fixed newcomer as an automatic float
+        // (membership only) without any invented maximization.
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
         let reply = accepted(&report, &mut engine);
         assert!(reply.ready);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_2")
+            .expect("admitted float");
+        assert!(
+            desired.floating,
+            "fixed newcomer floats automatic core-side"
+        );
+        assert!(
+            desired.allocation.is_none(),
+            "automatic float takes no tile allocation"
+        );
     }
 
     #[test]
@@ -1122,12 +1025,10 @@ mod tests {
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
         }];
-        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -1176,23 +1077,11 @@ mod tests {
         let ctx = two_display_ctx();
         let (mut members, closed, mut unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
         let hidden = key("macos-display-1", "space-12");
         let live = key("macos-display-1", "space-11");
         members.insert(live.clone(), vec![(1001, observed(3, 10, 10, 100, 100))]);
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let first = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let first = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&first));
         let reply = accepted(&first, &mut engine);
         assert!(reply.ready);
@@ -1206,18 +1095,7 @@ mod tests {
         // scope publishes nothing for that Space: no guessed membership.
         members.insert(hidden.clone(), vec![(1001, observed(3, 10, 10, 100, 100))]);
         unreadable.insert(hidden.clone(), HoldReason::Unreadable);
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            2,
-            2,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
         assert!(validate_report(&report));
         assert!(!report.inventory_complete);
         assert!(
@@ -1263,70 +1141,23 @@ mod tests {
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let mut auto_asserted = BTreeSet::new();
-        let first = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            5,
-            5,
-        );
+        let first = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 5, 5);
         accepted(&first, &mut engine);
 
         // Older request sequence: superseded, never executed.
-        let mut auto_asserted = BTreeSet::new();
-        let stale_req = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            6,
-            4,
-        );
+        let stale_req = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 6, 4);
         match engine.handle_report(&stale_req) {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
             other => panic!("expected superseded, got {other:?}"),
         }
         // Older observation sequence on a fresh request: stale observation.
-        let mut auto_asserted = BTreeSet::new();
-        let stale_obs = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            4,
-            6,
-        );
+        let stale_obs = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 4, 6);
         match engine.handle_report(&stale_obs) {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "observation-stale"),
             other => panic!("expected observation-stale, got {other:?}"),
         }
         // Foreign core generation: mismatch without state.
-        let mut foreign = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            6,
-            6,
-        );
+        let mut foreign = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 6, 6);
         foreign.core_generation = "gen-2".to_owned();
         match engine.handle_report(&foreign) {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
@@ -1349,12 +1180,10 @@ mod tests {
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
         }];
-        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -1379,137 +1208,104 @@ mod tests {
     }
 
     #[test]
-    fn retained_automatic_float_reasserts_across_hint_loss() {
-        // D2: a retained automatic float (adapter-asserted, core still
-        // floating it) stays floating with its origin across hint loss —
-        // never reclassified to tile. An intentional float without
-        // placement and no automatic assertion reports tiled instead, so
-        // hold exits tile.
-        use tiler_core::world_report::{ScopeAuthority, WindowDesire};
+    fn automatic_float_survives_hint_loss_until_explicit_tile() {
+        // Production seam (no adapter cache): the core admits a first-sight
+        // fixed window as an automatic float, keeps it floating across hint
+        // loss (D2), and tiles it only on an explicit suppress signal (D3).
+        // The adapter wire stays plain throughout (`fixed_auto` false).
         let ctx = two_display_ctx();
         let (mut members, closed, unreadable) = empty_maps();
         let d1 = key("macos-display-1", "space-11");
-        // Hintless observation: the classifier calls it tiled.
-        members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
-        let mut rows = BTreeMap::new();
-        rows.insert(
-            "1001_1".to_owned(),
-            WindowDesire {
-                lifetime: WindowId("1001_1".to_owned()),
-                output: OutputId("macos-display-1".to_owned()),
-                workspace: "ws-1".to_owned(),
-                allocation: None,
-                effective_frame: Some(rect(10, 10, 800, 600)),
-                frame_authority: ScopeAuthority::Untouched,
-                membership_authority: ScopeAuthority::Untouched,
-                floating: true,
-                float_origin: None,
-                frame_operation: None,
-                clear_operation: None,
-            },
-        );
-        let mut native_home = BTreeMap::new();
-        native_home.insert(
-            ("macos-display-1".to_owned(), "space-11".to_owned()),
-            ("macos-display-1".to_owned(), "ws-1".to_owned()),
-        );
-        let memory = LifetimeMemory { rows, native_home };
-        // Adapter-asserted: re-asserts floating with automatic origin.
-        let mut auto_asserted = BTreeSet::from(["1001_1".to_owned()]);
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
-        assert!(validate_report(&report));
-        let row = report
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "1001_1")
-            .expect("live row");
-        assert!(
-            row.floating && row.fixed_auto,
-            "retained automatic re-asserts across hint loss, got floating={} fixed_auto={}",
-            row.floating,
-            row.fixed_auto,
-        );
-        // Not asserted but placed (effective frame): the intentional
-        // placement re-asserts floating without automatic origin.
-        let mut auto_empty = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_empty,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            2,
-            2,
-        );
-        assert!(validate_report(&report));
-        let row = report
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "1001_1")
-            .expect("live row");
-        assert!(
-            row.floating && !row.fixed_auto,
-            "placed intentional float re-asserts without origin"
-        );
-        // Not asserted and placement-less: reports tiled (hold exit),
-        // never a guessed float.
-        let mut rows_bare = BTreeMap::new();
-        rows_bare.insert(
-            "1001_1".to_owned(),
-            WindowDesire {
-                lifetime: WindowId("1001_1".to_owned()),
-                output: OutputId("macos-display-1".to_owned()),
-                workspace: "ws-1".to_owned(),
-                allocation: None,
-                effective_frame: None,
-                frame_authority: ScopeAuthority::Untouched,
-                membership_authority: ScopeAuthority::Untouched,
-                floating: true,
-                float_origin: None,
-                frame_operation: None,
-                clear_operation: None,
-            },
-        );
-        let memory_bare = LifetimeMemory {
-            rows: rows_bare,
-            native_home: memory.native_home.clone(),
+        let mut fixed = observed(1, 10, 10, 640, 480);
+        fixed.hints = WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(480),
         };
-        let mut auto_empty = BTreeSet::new();
-        let report = assemble(
+        members.insert(d1.clone(), vec![(1001, fixed)]);
+        let first = assemble(
             &ctx,
             &members,
-            &memory_bare,
-            &mut auto_empty,
+            &empty_memory(),
             &closed,
             &unreadable,
             &[],
             "",
-            3,
-            3,
+            1,
+            1,
         );
-        assert!(validate_report(&report));
-        let row = report
+        assert!(validate_report(&first));
+        let wire = first
             .windows
             .iter()
             .find(|w| w.window.0 == "1001_1")
             .expect("live row");
         assert!(
-            !row.floating && !row.fixed_auto,
-            "unasserted placement-less float reports tiled"
+            !wire.floating && !wire.fixed_auto,
+            "adapter sends no automatic echo"
+        );
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&first, &mut engine);
+        assert!(reply.ready);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_1")
+            .expect("admitted float");
+        assert!(
+            desired.floating,
+            "fixed newcomer floats automatic core-side"
+        );
+        // Hint loss: the same window classifies tiled now. The wire stays
+        // plain, but the core keeps the automatic float (D2).
+        let (mut members, closed, unreadable) = empty_maps();
+        members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 640, 480))]);
+        let memory = LifetimeMemory::from_reply(&reply);
+        let second = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
+        assert!(validate_report(&second));
+        let wire = second
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "1001_1")
+            .expect("live row");
+        assert!(
+            !wire.floating && !wire.fixed_auto,
+            "hintless wire stays plain without adapter echo"
+        );
+        let reply = accepted(&second, &mut engine);
+        assert!(reply.ready);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_1")
+            .expect("retained float");
+        assert!(
+            desired.floating,
+            "hint loss keeps the automatic float core-side"
+        );
+        // Explicit tile (D3): the same hintless observation carrying the
+        // suppress signal tiles instead of floating.
+        let memory = LifetimeMemory::from_reply(&reply);
+        let mut third = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 3, 3);
+        assert!(validate_report(&third));
+        let suppressed = third
+            .windows
+            .iter_mut()
+            .find(|w| w.window.0 == "1001_1")
+            .expect("live row");
+        suppressed.fixed_suppress = true;
+        assert!(validate_report(&third), "suppressed row still validates");
+        let reply = accepted(&third, &mut engine);
+        assert!(reply.ready);
+        let desired = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == "1001_1")
+            .expect("tiled row");
+        assert!(
+            !desired.floating,
+            "explicit suppress tiles the automatic float"
         );
     }
 
@@ -1519,12 +1315,10 @@ mod tests {
         let ctx = two_display_ctx();
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
         let report = assemble(
             &ctx,
             &members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -1558,7 +1352,6 @@ mod tests {
         let d1 = key("macos-display-1", "space-11");
         members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
         let owned_id = "req-1".to_owned();
-        let mut auto_asserted = BTreeSet::new();
         let mut input = ReportInput::new(
             OWNER,
             INCARNATION,
@@ -1569,7 +1362,6 @@ mod tests {
             &owned_id,
             &members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -1641,19 +1433,7 @@ mod tests {
         }
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report));
         assert_eq!(
             report.native[0].current_native, None,
@@ -1673,19 +1453,7 @@ mod tests {
         };
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
-        let mut auto_asserted = BTreeSet::new();
-        let report = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let report = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&report));
         assert!(report.windows.is_empty() && report.screens.is_empty());
     }
@@ -1704,19 +1472,7 @@ mod tests {
         let memory = empty_memory();
         let members = BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 10, 10, 800, 600))])]);
         // A: omission under complete inventory.
-        let mut auto_asserted = BTreeSet::new();
-        let omitted = assemble(
-            &ctx,
-            &members,
-            &memory,
-            &mut auto_asserted,
-            &closed,
-            &unreadable,
-            &[],
-            "",
-            1,
-            1,
-        );
+        let omitted = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 1, 1);
         assert!(validate_report(&omitted));
         assert!(
             omitted.windows.iter().all(|w| w.window.0 != "1001_7"),
@@ -1729,12 +1485,10 @@ mod tests {
             workspace: d1.workspace.clone(),
             sticky: false,
         }];
-        let mut auto_asserted = BTreeSet::new();
         let flagged = assemble(
             &ctx,
             &members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -1798,12 +1552,10 @@ mod tests {
         // Bootstrap both engines identically.
         let mut omit_engine = WorldEngine::new(GENERATION).expect("valid generation");
         let mut flag_engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -1813,12 +1565,10 @@ mod tests {
         );
         assert!(validate_report(&first));
         let r1 = accepted(&first, &mut omit_engine);
-        let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -1829,12 +1579,10 @@ mod tests {
         accepted(&first, &mut flag_engine);
         let a1 = alloc(&r1, "1001_7");
         // Hide: omission on one engine, flagged row on the other.
-        let mut auto_asserted = BTreeSet::new();
         let hide_omit = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -1844,12 +1592,10 @@ mod tests {
         );
         assert!(validate_report(&hide_omit));
         let r2_omit = accepted(&hide_omit, &mut omit_engine);
-        let mut auto_asserted = BTreeSet::new();
         let hide_flag = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -1894,12 +1640,10 @@ mod tests {
             "no focus effect on the flagged window"
         );
         // Return on both paths: same restored allocation, still no focus.
-        let mut auto_asserted = BTreeSet::new();
         let back = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -1909,12 +1653,10 @@ mod tests {
         );
         assert!(validate_report(&back));
         let r3_omit = accepted(&back, &mut omit_engine);
-        let mut auto_asserted = BTreeSet::new();
         let back = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -2010,12 +1752,10 @@ mod tests {
             ],
         )]);
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -2047,12 +1787,10 @@ mod tests {
         assert_eq!(minted[0].window.0, "1001_7");
         let hidden_members =
             BTreeMap::from([(d1.clone(), vec![(1002, observed(8, 720, 35, 700, 800))])]);
-        let mut auto_asserted = BTreeSet::new();
         let hide = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minted,
@@ -2096,12 +1834,10 @@ mod tests {
             reply.windows.iter().any(|w| w.lifetime.0 == "1002_8"),
             "survivor keeps tiling"
         );
-        let mut auto_asserted = BTreeSet::new();
         let back = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -2126,12 +1862,10 @@ mod tests {
         let mut closed_map: BTreeMap<tiler_core::session::DomainKey, Vec<WindowId>> =
             BTreeMap::new();
         closed_map.insert(d1.clone(), vec![WindowId("1001_7".to_owned())]);
-        let mut auto_asserted = BTreeSet::new();
         let gone = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed_map,
             &unreadable,
             &[],
@@ -2183,12 +1917,10 @@ mod tests {
             sticky: false,
         }];
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -2197,12 +1929,10 @@ mod tests {
             1,
         );
         accepted(&first, &mut engine);
-        let mut auto_asserted = BTreeSet::new();
         let hide = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -2211,7 +1941,6 @@ mod tests {
             2,
         );
         accepted(&hide, &mut engine);
-        let mut auto_asserted = BTreeSet::new();
         let owned_id = "req-3".to_owned();
         let mut input = ReportInput::new(
             OWNER,
@@ -2223,7 +1952,6 @@ mod tests {
             &owned_id,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -2245,12 +1973,10 @@ mod tests {
             }
             other => panic!("direct-target focus at hidden must refuse, got {other:?}"),
         }
-        let mut auto_asserted = BTreeSet::new();
         let still = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -2306,12 +2032,10 @@ mod tests {
             sticky: false,
         }];
         let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-        let mut auto_asserted = BTreeSet::new();
         let first = assemble(
             &ctx,
             &full,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &[],
@@ -2320,12 +2044,10 @@ mod tests {
             1,
         );
         accepted(&first, &mut engine);
-        let mut auto_asserted = BTreeSet::new();
         let hide = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -2334,7 +2056,6 @@ mod tests {
             2,
         );
         accepted(&hide, &mut engine);
-        let mut auto_asserted = BTreeSet::new();
         let owned_id = "req-3".to_owned();
         let mut input = ReportInput::new(
             OWNER,
@@ -2346,7 +2067,6 @@ mod tests {
             &owned_id,
             &hidden_members,
             &memory,
-            &mut auto_asserted,
             &closed,
             &unreadable,
             &minimized,
@@ -2431,12 +2151,10 @@ mod tests {
             ("incomplete-transitional", &partial_unreadable),
         ] {
             let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
-            let mut auto_asserted = BTreeSet::new();
             let first = assemble(
                 &ctx,
                 &full,
                 &memory,
-                &mut auto_asserted,
                 &closed,
                 &BTreeMap::new(),
                 &[],
@@ -2448,7 +2166,6 @@ mod tests {
             accepted(&first, &mut engine);
             // Same report: first minimized transition plus direct-target
             // focus at the hidden lifetime.
-            let mut auto_asserted = BTreeSet::new();
             let owned_id = "req-2".to_owned();
             let mut input = ReportInput::new(
                 OWNER,
@@ -2460,7 +2177,6 @@ mod tests {
                 &owned_id,
                 &hidden_members,
                 &memory,
-                &mut auto_asserted,
                 &closed,
                 unreadable,
                 &minimized,
@@ -2526,12 +2242,10 @@ mod tests {
             }
             // Follow-up observation-only report: the minimized transition
             // itself holds with no focus effect either way.
-            let mut auto_asserted = BTreeSet::new();
             let still = assemble(
                 &ctx,
                 &hidden_members,
                 &memory,
-                &mut auto_asserted,
                 &closed,
                 unreadable,
                 &minimized,

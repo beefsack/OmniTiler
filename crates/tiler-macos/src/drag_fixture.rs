@@ -23,7 +23,7 @@
 //! snapshot, expected versus applied frames, overlay intent and ordering,
 //! gate decision counts, capture release, and restoration.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
@@ -310,7 +310,6 @@ impl DragFixture {
             BTreeMap::new();
         let memory = LifetimeMemory::empty();
         let a_token = self.pair.a.token();
-        let mut no_assertions = BTreeSet::new();
         let mut input = ReportInput::new(
             "macos-drag-fixture",
             "drag-fixture-1",
@@ -321,7 +320,6 @@ impl DragFixture {
             &request_id,
             &members,
             &memory,
-            &mut no_assertions,
             &empty_closed,
             &empty_unreadable,
             &[],

@@ -2538,9 +2538,8 @@ mod trailing_join_tests {
                 prewrite: None,
             },
         );
-        session.auto_asserted.insert("4242_7".to_owned());
         // Fixed-hint window homed to the live domain: the next real build
-        // asserts automatic origin first-sight and records it back.
+        // rides it plain on the wire (the core owns admission).
         retained.apps.insert(
             4242,
             RetainedApp {
@@ -2605,12 +2604,8 @@ mod trailing_join_tests {
         assert_eq!(session.pending_views.len(), 1, "view row retained");
         assert_eq!(session.pending_members.len(), 1, "member row retained");
         assert_eq!(session.pending_frames.len(), 1, "frame row retained");
-        assert!(
-            session.auto_asserted.contains("4242_7"),
-            "assertion retained (prune runs only on real builds)"
-        );
         // Next real dispatch carries every staged row; the fixed-hint
-        // window asserts automatic origin and records it back.
+        // window rides plain with no adapter automatic echo.
         let report = build_dispatch_report(
             &mut session,
             &retained,
@@ -2635,9 +2630,14 @@ mod trailing_join_tests {
             "member row rides next report"
         );
         assert_eq!(report.frames.len(), 1, "frame row rides next report");
+        let wire = report
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "4242_7")
+            .expect("homed window rides");
         assert!(
-            session.auto_asserted.contains("4242_7"),
-            "first-sight fixed assert records back after the gap"
+            !wire.floating && !wire.fixed_auto,
+            "fixed hints ride plain; the core owns admission"
         );
     }
 

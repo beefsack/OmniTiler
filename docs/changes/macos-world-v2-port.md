@@ -4,7 +4,7 @@
 
 - Stage 0 reviewed; stage 1 complete offline; stage 2 and independent offline
   stage-3 work are partial, with app-hidden option B selected. The approved D2
-  core correction is verified; automatic-float echo removal follows separately.
+  core correction and separate macOS automatic-float echo removal are verified.
   Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
@@ -357,6 +357,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 
 ## Approved D2 core correction (2026-10-25)
 
+- Landed as isolated correction `0b65cad5`.
 - Known automatic floats now retain floating across fixed-hint loss with native
   `floating=false`; observed suppression or retained tile override still tiles.
   Explicit ToggleFloat remains a genuine tile win. Only the existing retained
@@ -387,6 +388,23 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 - Review whether `WindowFact.floating` should carry genuine host float signals
   only, rather than adapter echoes of core state. This review is after the port;
   no field semantics or intentional-float echo change is selected here.
+
+## macOS automatic-float echo removal (2026-10-25)
+
+- Removed `WorldSession.auto_asserted`, builder assertion parameters, first-sight
+  fixed-hint assertions and retained automatic-origin reassertion. Native facts
+  now carry `fixed_auto=false`; admission hints and the report predicate let core
+  own the automatic marker. No compatibility path or replacement host cache.
+- `cold_fixed_only_floats_automatic` passes with its original D2 expectation.
+  A builder/world-engine seam separately proves plain-wire fixed admission,
+  hint-loss retention and explicit suppress-to-tile without an adapter cache.
+- Full locked macOS recipe tests PASS (1,283 tests); all-target build, strict
+  all-target clippy and fmt PASS. Intentional placed-float echo and other existing
+  lifetime/born handling are unchanged pending their own ownership review.
+- The automatic-hint-loss blocker is closed. Shared classification and native
+  lifetime/inventory redesign, local selection/send/trailing policy deletion and
+  native executor integration remain unfinished; this checkpoint claims only
+  the automatic-float policy-copy removal.
 
 ## Stage-2 mechanical evidence and policy blocker (2026-10-25)
 
@@ -554,7 +572,6 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: remove the automatic-float echo in macOS, then
-  finish shared classification and native
+- Remaining exact next step: finish shared classification and native
   lifetime/inventory ownership. Native executors can consume the now-landed
   stage-1b contract; no new shared shape should be invented in the adapter.

@@ -9,7 +9,7 @@
 //! (engine facts, per-edge proof, tagged posts, terminal reaper) is proven
 //! separately in `workspace_send_live_tests` over scripted native readers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::session::DomainKey;
@@ -1452,7 +1452,6 @@ fn repro_report(
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
 ) -> tiler_core::world_report::WorldReport {
-    let mut auto_asserted = BTreeSet::new();
     let mut input = ReportInput::new(
         REPRO_OWNER,
         REPRO_INCARNATION,
@@ -1463,7 +1462,6 @@ fn repro_report(
         req_id,
         members,
         memory,
-        &mut auto_asserted,
         closed,
         unreadable,
         &[],

@@ -882,7 +882,6 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         )],
     )]);
     let memory = crate::runtime_core::LifetimeMemory::empty();
-    let mut auto_asserted = std::collections::BTreeSet::new();
     let closed: BTreeMap<DomainKey, Vec<WindowId>> = BTreeMap::new();
     let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
     let owned_first = "req-1".to_owned();
@@ -896,7 +895,6 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         &owned_first,
         &members,
         &memory,
-        &mut auto_asserted,
         &closed,
         &unreadable,
         &[],
@@ -922,7 +920,6 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     // View transfer via SwitchView to the hidden logical view retains
     // operation `op-2`; staging native Space reads must ride as absence.
     let owned_second = "req-2".to_owned();
-    let mut auto_asserted = std::collections::BTreeSet::new();
     let mut second = crate::world_builder::ReportInput::new(
         &incarnation,
         &incarnation,
@@ -933,7 +930,6 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         &owned_second,
         &members,
         &memory,
-        &mut auto_asserted,
         &closed,
         &unreadable,
         &[],
@@ -954,7 +950,6 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     // Window transfer via Send to the hidden logical workspace retains
     // operation `op-3`; its native post must also ride as absence.
     let owned_third = "req-3".to_owned();
-    let mut auto_asserted = std::collections::BTreeSet::new();
     let mut third = crate::world_builder::ReportInput::new(
         &incarnation,
         &incarnation,
@@ -965,7 +960,6 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         &owned_third,
         &members,
         &memory,
-        &mut auto_asserted,
         &closed,
         &unreadable,
         &[],

@@ -102,12 +102,6 @@ pub(crate) struct WorldSession {
     /// Explicit float-placement tokens already written once (exactly-once
     /// geometry under `frame_operation`).
     spent_frame_ops: BTreeSet<String>,
-    /// Adapter-asserted automatic-float lifetimes: windows the adapter
-    /// reported `fixed_auto` for (first-sight fixed asserts, re-asserted
-    /// while retained). Pruned to core-floating rows on every dispatch;
-    /// the builder inserts newly asserted lifetimes. Never inferred, never
-    /// a durable binding — only the adapter's own assertion echo.
-    pub(crate) auto_asserted: BTreeSet<String>,
     /// True once an observation was refused (stale revision, no context):
     /// retained truth missed input, so the next report publishes
     /// `inventory_complete = false` until a fresh observation lands.
@@ -144,7 +138,6 @@ impl WorldSession {
             pending_frames: BTreeMap::new(),
             pending_writes: BTreeMap::new(),
             spent_frame_ops: BTreeSet::new(),
-            auto_asserted: BTreeSet::new(),
             coverage_gap: false,
         }
     }
@@ -499,9 +492,8 @@ pub(crate) fn build_dispatch_report(
 ) -> Option<WorldReport> {
     // No-context guard BEFORE any drain: an empty native context reports
     // nothing (KDE null parity), and the staged rows must survive for the
-    // next real dispatch — attempts describe attempted actuation and the
-    // assertion set names asserted lifetimes, and neither may be dropped
-    // by a report that never runs.
+    // next real dispatch — attempts describe attempted actuation and must
+    // not be dropped by a report that never runs.
     if let DispatchContext::Native(ctx) = dispatch
         && ctx.domains.is_empty()
     {
@@ -511,13 +503,6 @@ pub(crate) fn build_dispatch_report(
     let member_rows = session.take_member_attempts();
     let frame_rows = session.take_frame_attempts();
     let memory = session.lifetime_memory();
-    // Prune automatic-float assertions to lifetimes the core still floats
-    // (un-floated lifetimes drop the assertion with the exception); the
-    // builder inserts newly asserted lifetimes during collection.
-    session
-        .auto_asserted
-        .retain(|id| memory.rows.get(id).is_some_and(|row| row.floating));
-    let mut auto_asserted = std::mem::take(&mut session.auto_asserted);
     let focused_global = retained
         .observed_focus
         .as_ref()
@@ -572,7 +557,6 @@ pub(crate) fn build_dispatch_report(
                 ctx,
                 members: &members,
                 memory: &memory,
-                auto_asserted: &mut auto_asserted,
                 closed: &closed,
                 minimized: &minimized_entries(retained),
                 unreadable: &unreadable,
@@ -596,7 +580,6 @@ pub(crate) fn build_dispatch_report(
                 monotonic_ms: 0,
             };
             let report = build_report(&mut input);
-            session.auto_asserted = std::mem::take(&mut auto_asserted);
             Some(report)
         }
         DispatchContext::Synthetic => {
@@ -638,7 +621,6 @@ pub(crate) fn build_dispatch_report(
                 ctx: &ctx,
                 members: &members,
                 memory: &memory,
-                auto_asserted: &mut auto_asserted,
                 closed: &closed,
                 minimized: &[],
                 unreadable: &empty_unreadable,
@@ -664,7 +646,6 @@ pub(crate) fn build_dispatch_report(
                 monotonic_ms: 0,
             };
             let report = build_report(&mut input);
-            session.auto_asserted = std::mem::take(&mut auto_asserted);
             Some(report)
         }
     }
