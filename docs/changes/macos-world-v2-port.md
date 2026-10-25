@@ -4,7 +4,8 @@
 
 - Stage 0 reviewed; stage 1 complete offline; stage 2 and independent offline
   stage-3 work are partial, with app-hidden option B selected. The approved D2
-  core correction and separate macOS automatic-float echo removal are verified.
+  core correction, separate macOS automatic-float echo removal, born-state policy
+  deletion and per-app native lifetime/flat-close path are verified offline.
   Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
@@ -488,6 +489,49 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   Scope remains TBD until this native evidence exists; no all-Spaces proof is
   inferred from multiple membership IDs, and no game probe is required.
 
+## Per-app native lifetime and close authority (2026-10-25)
+
+- Each app generation owns a persistent native roster plus its own incomplete
+  flag/cause. Repeated missing/hidden reads retain identity; only that app's
+  covering read clears its hold. Another app's read or a session watermark/gap
+  reset cannot clear it. Homed input-member lists are derived projections, not
+  lifetime owners or logical workspace policy.
+- Reportable unknown membership uses `native_workspace=None`, no logical
+  receipts and no inferred sticky flag. Output affinity requires uniquely
+  grounded FULL-screen frame overlap; ties, off-screen or unreadable output
+  retain identity under an app hold instead of choosing an arbitrary display.
+  Excluded roster rows never reappear as stale live facts. Selected unmanaged
+  exclusions do not stall the world merely because they have no managed frame;
+  hidden/minimized lifetimes without representable facts stay held.
+- Explicit closes are flat IDs, independent of native workspace homing. Removed
+  partitioned close helpers/carriers. A pending outbox survives no-report,
+  rejection, duplicate and stale replies; only IDs in an incorporated applied
+  report drain. Relaunch fences old-generation pending IDs before a reused WID
+  can be reported; unrelated app closes survive.
+- Crucial read-side proof: an empty AX list is not a close oracle. An outside
+  move to a hidden Space with stay can leave topology/current unchanged while
+  `AXWindows` goes empty. The existing full CG window-server read now carries
+  explicit completeness and exact bound-PID window IDs into the snapshot and
+  republish equality. CG-alive or unreadable cases retain/hold; only fresh
+  complete CG absence plus covering AX absence permits a missing lifetime to
+  close. Both partial and empty AX prune paths use this evidence. No engine
+  thread FFI, new polling cadence or fabricated error-to-empty conversion.
+- Native order and FULL/work-area rows survive a native fullscreen current view
+  with `current_native=None`; the actual context-derivation seam is tested.
+- Regressions cover positive CG liveness after move-with-stay, genuine absence
+  and close/reflow, partial AX plus a CG-live missing sibling, unreadable CG,
+  repeated hidden reads interleaved with another app, selected unmanaged
+  exclusions, grounded versus tied output, flat terminate while another app is
+  incomplete, no-report/redelivery, and actual Launch/new-generation/WID reuse.
+- Locked macOS build and full tests PASS (1,308 tests, 0 failed), strict
+  all-target clippy and workspace fmt PASS. No live hide/reveal or signed-bundle
+  acceptance claimed. The liveness oracle uses the existing all-window CG read;
+  native fixture acceptance must still corroborate its across-Spaces behavior.
+- The earlier withdrawn global-boolean/ephemeral-roster approach is superseded
+  by this per-app path. Classification API fit and local select/send/trailing
+  policy deletion/native executor integration remain open; no new shared core
+  abstraction was introduced.
+
 ## Stage-2 hide/unhide evidence (2026-10-25)
 
 - Stage 1 landed as `d7a87d82`. Interim app-hidden A is unchanged; this checkpoint
@@ -596,6 +640,6 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: finish shared classification and native
-  lifetime/inventory ownership. Native executors can consume the now-landed
-  stage-1b contract; no new shared shape should be invented in the adapter.
+- Remaining exact next step: review the shared classification interface gap,
+  then finish select/send/trailing policy removal and native executor integration
+  on the landed stage-1b contract. Do not invent shared shapes in the adapter.

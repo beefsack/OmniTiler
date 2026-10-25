@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
+use tiler_core::directional::{OutputId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureIngress;
 use tiler_core::session::DomainKey;
@@ -305,7 +305,6 @@ impl DragFixture {
             key,
             vec![(self.pair.a.pid, observed_a), (self.pair.b.pid, observed_b)],
         );
-        let empty_closed: BTreeMap<DomainKey, Vec<WindowId>> = BTreeMap::new();
         let empty_unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> =
             BTreeMap::new();
         let memory = LifetimeMemory::empty();
@@ -320,7 +319,7 @@ impl DragFixture {
             &request_id,
             &members,
             &memory,
-            &empty_closed,
+            &[],
             &empty_unreadable,
             &[],
             &a_token,

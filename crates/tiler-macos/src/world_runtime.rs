@@ -106,6 +106,10 @@ pub(crate) struct WorldSession {
     /// retained truth missed input, so the next report publishes
     /// `inventory_complete = false` until a fresh observation lands.
     coverage_gap: bool,
+    /// Pending explicit closes (flat ids) not yet incorporated by the core.
+    /// Staged on covering roster prune and terminate; drained only on an
+    /// applied or duplicate reply, never on NoReport or refusal.
+    pub(crate) pending_closes: BTreeSet<WindowId>,
 }
 
 impl WorldSession {
@@ -139,6 +143,7 @@ impl WorldSession {
             pending_writes: BTreeMap::new(),
             spent_frame_ops: BTreeSet::new(),
             coverage_gap: false,
+            pending_closes: BTreeSet::new(),
         }
     }
 
@@ -398,48 +403,6 @@ pub(crate) fn refresh_minimized(
     });
 }
 
-/// Per-domain explicit closes partitioned from window ids through current
-/// homing (unknown ids omit: an unhomed close proves nothing).
-pub(crate) fn partition_closes(
-    retained: &RetainedCore,
-    closed: &[WindowId],
-) -> BTreeMap<DomainKey, Vec<WindowId>> {
-    let mut out: BTreeMap<DomainKey, Vec<WindowId>> = BTreeMap::new();
-    for id in closed {
-        if let Some(key) = retained.window_domains.get(&id.0) {
-            out.entry(key.clone()).or_default().push(id.clone());
-        }
-    }
-    out
-}
-
-/// Explicit closes for one terminating PID: member closes partitioned
-/// through live homing plus minimized closes through their entry homing.
-/// Minimized windows ride no membership, so without this their slots
-/// would leak core-side. Call BEFORE forgetting homing/minimized state.
-pub(crate) fn terminate_close_map(
-    retained: &RetainedCore,
-    pid: u32,
-    closed: &[WindowId],
-) -> BTreeMap<DomainKey, Vec<WindowId>> {
-    let mut map = partition_closes(retained, closed);
-    let prefix = format!("{pid}_");
-    for entry in retained
-        .minimized
-        .iter()
-        .filter(|(id, _)| id.starts_with(&prefix))
-        .map(|(_, entry)| entry.clone())
-    {
-        map.entry(DomainKey {
-            output: entry.output.clone(),
-            workspace: entry.workspace.clone(),
-        })
-        .or_default()
-        .push(entry.window.clone());
-    }
-    map
-}
-
 /// Member windows per domain as `(pid, window)` pairs for
 /// [`ReportInput`]: every retained window currently homed to the key.
 /// Observations arrive per app, but each report converges complete domain
@@ -481,7 +444,7 @@ pub(crate) fn build_dispatch_report(
     session: &mut WorldSession,
     retained: &RetainedCore,
     dispatch: &DispatchContext,
-    closed: BTreeMap<DomainKey, Vec<WindowId>>,
+    closed: &[WindowId],
     ticket_observation: u64,
     ticket_request: u64,
     ticket_command_seq: Option<u64>,
@@ -518,10 +481,42 @@ pub(crate) fn build_dispatch_report(
                 })
                 .collect();
             let members = report_members(retained, &keys);
-            // Explicit closes arrive pre-partitioned by the caller
-            // (terminate homes member closes through live homing plus
-            // minimized closes through their entry homing, before
-            // forgetting either — never members, never dropped).
+            // Explicit closes are flat ids (the actual authority, no
+            // homing, no invented keys): the caller flat list plus the
+            // pending outbox merge. Unknown-home ids ride explicitly even
+            // with incomplete inventory.
+            let mut closed_flat: Vec<WindowId> = session
+                .pending_closes
+                .iter()
+                .cloned()
+                .chain(closed.iter().cloned())
+                .collect::<BTreeSet<WindowId>>()
+                .into_iter()
+                .collect();
+            closed_flat.sort_by(|a, b| a.0.cmp(&b.0));
+            // Unknown-home roster rows surface explicitly (native None):
+            // live-only rows with no domain homing (empty, multi, tied,
+            // or unhomed SID). Classifier-excluded rows never surface as
+            // live facts, even when a stale prior frame lingers: a hold
+            // (not a false live fact) covers the unrepresentable, and
+            // genuine minimized lifetimes ride the MinimizedRecord path.
+            // Homing is the authority, not the normalized spaces alone,
+            // so shared-Space ties also hold here.
+            let mut unknown: Vec<(u32, ObservedWindow)> = Vec::new();
+            for (pid, app) in &retained.apps {
+                for (wid, entry) in &app.roster {
+                    if entry.excluded.is_some() {
+                        continue;
+                    }
+                    let Some(obs) = entry.observed else { continue };
+                    let id = crate::runtime_types::window_id(*pid, *wid);
+                    if !retained.window_domains.contains_key(&id) {
+                        unknown.push((*pid, obs));
+                    }
+                }
+            }
+            unknown.sort_by_key(|(pid, w)| (*pid, w.wid));
+            let roster_incomplete = retained.apps.values().any(|a| a.roster_incomplete);
             let unreadable: BTreeMap<DomainKey, HoldReason> = ctx
                 .domains
                 .iter()
@@ -556,7 +551,9 @@ pub(crate) fn build_dispatch_report(
                 ctx,
                 members: &members,
                 memory: &memory,
-                closed: &closed,
+                closed: &closed_flat,
+                unknown: &unknown,
+                roster_incomplete,
                 minimized: &minimized_entries(retained),
                 unreadable: &unreadable,
                 frames: &frame_rows,
@@ -608,6 +605,17 @@ pub(crate) fn build_dispatch_report(
             let owned_command = ticket_command.clone();
             let owned_request = request_id.to_owned();
             let empty_unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+            // Synthetic lifecycle also carries the pending flat outbox so
+            // enqueued closes are never lost on that route.
+            let mut closed_flat: Vec<WindowId> = session
+                .pending_closes
+                .iter()
+                .cloned()
+                .chain(closed.iter().cloned())
+                .collect::<BTreeSet<WindowId>>()
+                .into_iter()
+                .collect();
+            closed_flat.sort_by(|a, b| a.0.cmp(&b.0));
             let mut input = ReportInput {
                 owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
@@ -620,7 +628,9 @@ pub(crate) fn build_dispatch_report(
                 ctx: &ctx,
                 members: &members,
                 memory: &memory,
-                closed: &closed,
+                closed: &closed_flat,
+                unknown: &[],
+                roster_incomplete: false,
                 minimized: &[],
                 unreadable: &empty_unreadable,
                 frames: &frame_rows,

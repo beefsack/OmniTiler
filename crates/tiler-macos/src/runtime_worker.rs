@@ -733,6 +733,8 @@ mod tests {
             meta: Vec::new(),
             excluded: 0,
             excluded_reasons: Vec::new(),
+            cg_complete: true,
+            cg_owner_wids: Vec::new(),
             revision: 9,
         }
     }

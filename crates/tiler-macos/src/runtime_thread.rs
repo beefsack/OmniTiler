@@ -8,7 +8,7 @@
 //! [`crate::runtime_core`]; the public typed surface lives in
 //! [`crate::runtime`], which alone spawns and supervises these owners.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -962,7 +962,9 @@ fn process_job(
                     // starts with empty retained state, and observed focus
                     // into this PID is authoritatively lost until observed.
                     // Homing, minimized lifetimes, and write correlation
-                    // from the dead lifetime drop with it.
+                    // from the dead lifetime drop with it. Stale pending
+                    // closes for the old lifetime drop too, or a reused
+                    // same-PID/WID would falsely close the new lifetime.
                     retained.apps.insert(
                         pid,
                         RetainedApp {
@@ -971,9 +973,16 @@ fn process_job(
                             cmd_counter: 0,
                             windows: Vec::new(),
                             focused_wid: None,
+                            roster: std::collections::BTreeMap::new(),
+                            roster_incomplete: false,
+                            roster_cause: String::new(),
                         },
                     );
                     forget_world_members(session, retained, pid);
+                    let prefix = format!("{pid}_");
+                    session
+                        .pending_closes
+                        .retain(|id| !id.0.starts_with(&prefix));
                 }
                 emit(shared, pid, generation, 0, "launch", "registered", 0);
             } else {
@@ -991,20 +1000,42 @@ fn process_job(
                 return;
             }
             let removed = retained.apps.remove(&pid);
-            let closed: Vec<WindowId> = removed
+            let (closed, roster_ids): (Vec<WindowId>, Vec<WindowId>) = removed
                 .map(|app| {
-                    app.windows
+                    let members: Vec<WindowId> = app
+                        .windows
                         .iter()
                         .map(|w| WindowId(window_id(pid, w.wid)))
-                        .collect()
+                        .collect();
+                    let roster: Vec<WindowId> = app
+                        .roster
+                        .keys()
+                        .map(|wid| WindowId(window_id(pid, *wid)))
+                        .collect();
+                    (members, roster)
                 })
                 .unwrap_or_default();
-            // Partition member closes through live homing, plus minimized
-            // closes through their entry homing (minimized windows ride no
-            // membership, so without this their slots would leak core-side
-            // — never silent absence, never an inferred close elsewhere).
-            // Both partitions happen BEFORE forgetting either.
-            let closed_map = crate::world_runtime::terminate_close_map(retained, pid, &closed);
+            // Flat close authority: every previously known roster id plus
+            // minimized entries, no homing needed. Roster ids ride from the
+            // removed app (already taken), minimized from retained state.
+            let mut flat_set: std::collections::BTreeSet<WindowId> =
+                std::collections::BTreeSet::new();
+            for id in closed.iter().chain(roster_ids.iter()) {
+                flat_set.insert(id.clone());
+            }
+            let prefix = format!("{pid}_");
+            for (id, _) in retained
+                .minimized
+                .iter()
+                .filter(|(id, _)| id.starts_with(&prefix))
+            {
+                flat_set.insert(WindowId(id.clone()));
+            }
+            let flat: Vec<WindowId> = flat_set.into_iter().collect();
+            let flat_count = flat.len() as u64;
+            for id in &flat {
+                session.pending_closes.insert(id.clone());
+            }
             // Forget homing/minimized/correlation before dispatch so the
             // closed windows ride as explicit closes, never members.
             forget_world_members(session, retained, pid);
@@ -1015,11 +1046,9 @@ fn process_job(
                 0,
                 "terminate",
                 "retained-removed",
-                closed_map.values().map(Vec::len).sum::<usize>() as u64,
+                flat_count,
             ); // Reconcile the survivors so unaffected apps stay operational.
-            // Native mode reports every current domain with the closed ids
-            // homed per domain (unknown ids omit there); synthetic mode
-            // keeps the skeleton report.
+            // Flat ids ride explicitly on both routes; synthetic included.
             let dispatch = dispatch_context(shared, session);
             dispatch_report(
                 session,
@@ -1029,7 +1058,7 @@ fn process_job(
                 focus_queue,
                 focus_capacity,
                 dispatch,
-                closed_map,
+                flat.clone(),
                 None,
                 None,
                 false,
@@ -1107,6 +1136,9 @@ fn process_job(
                 cmd_counter: 0,
                 windows: Vec::new(),
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             });
             if entry.generation != generation {
                 entry.generation = generation;
@@ -1156,7 +1188,7 @@ fn process_job(
                 focus_queue,
                 focus_capacity,
                 DispatchContext::Synthetic,
-                BTreeMap::new(),
+                Vec::new(),
                 None,
                 None,
                 false,
@@ -1274,7 +1306,7 @@ fn process_job(
                 focus_queue,
                 focus_capacity,
                 dispatch,
-                BTreeMap::new(),
+                Vec::new(),
                 Some(tiler_core::world_report::WorldCommand::Operation(command)),
                 None,
                 false,
@@ -1584,7 +1616,7 @@ fn handle_select_action_with(
         focus_queue,
         focus_capacity,
         DispatchContext::Native(Arc::clone(&ctx)),
-        BTreeMap::new(),
+        Vec::new(),
         Some(command),
         None,
         true,
@@ -1859,7 +1891,7 @@ fn handle_send_action_with(
             focus_queue,
             focus_capacity,
             DispatchContext::Native(Arc::clone(&ctx)),
-            BTreeMap::new(),
+            Vec::new(),
             Some(command),
             None,
             true,
@@ -1922,7 +1954,7 @@ fn handle_send_action_with(
         focus_queue,
         focus_capacity,
         DispatchContext::Native(Arc::clone(&ctx)),
-        BTreeMap::new(),
+        Vec::new(),
         Some(command),
         None,
         true,
@@ -2349,6 +2381,9 @@ mod trailing_join_tests {
                 cmd_counter: 0,
                 windows: vec![observed(9)],
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         retained.window_domains.insert(
@@ -2463,7 +2498,7 @@ mod trailing_join_tests {
             &mut session,
             &retained,
             &crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
-            BTreeMap::new(),
+            &[],
             1,
             1,
             None,
@@ -2562,6 +2597,9 @@ mod trailing_join_tests {
                     },
                 }],
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         retained.window_domains.insert(
@@ -2585,7 +2623,7 @@ mod trailing_join_tests {
             &focus_queue,
             8,
             crate::world_runtime::DispatchContext::Native(empty),
-            BTreeMap::new(),
+            Vec::new(),
             None,
             None,
             false,
@@ -2610,7 +2648,7 @@ mod trailing_join_tests {
             &mut session,
             &retained,
             &crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
-            BTreeMap::new(),
+            &[],
             1,
             1,
             None,
@@ -2641,6 +2679,335 @@ mod trailing_join_tests {
         );
     }
 
+    /// Fresh Launch drops the old lifetime's pending closes through the
+    /// real engine queue: an old close staged but refused (or never
+    /// reported) must not falsely close a reused same-PID/WID after
+    /// relaunch. Stage an old close, Launch the new generation, observe
+    /// the same WID as a new fact, and prove the report carries no stale
+    /// close; a stale old-generation read then mutates nothing.
+    #[test]
+    fn fresh_launch_drops_stale_pending_closes_for_reused_wid() {
+        use crate::runtime_shared::AppRecord;
+        use crate::runtime_types::{ScopedBackendSnapshot, ScopedWindowMeta};
+
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        // Old lifetime: PID 1001 generation 1 owns WID 7; its close was
+        // staged (refused/no-report path) but never incorporated.
+        lock_shared(&shared).apps.insert(
+            1001,
+            AppRecord {
+                generation: 1,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::new(FrameSlot::new()),
+                focus: Arc::new(FocusSlot::new()),
+                ready: Arc::new(Mutex::new(Some(Ok(())))),
+                worker: None,
+                worker_name: "test-1001".to_owned(),
+            },
+        );
+        retained.apps.insert(
+            1001,
+            RetainedApp {
+                generation: 1,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: Vec::new(),
+                focused_wid: None,
+                roster: BTreeMap::from([(
+                    7,
+                    crate::runtime_core::RosterEntry {
+                        observed: Some(observed(7)),
+                        spaces: vec![1],
+                        fullscreen_meta: false,
+                        minimized_meta: false,
+                        hidden_meta: false,
+                        excluded: None,
+                    },
+                )]),
+                roster_incomplete: false,
+                roster_cause: String::new(),
+            },
+        );
+        session.pending_closes.insert(WindowId("1001_7".to_owned()));
+        session.pending_closes.insert(WindowId("1002_8".to_owned()));
+        // Relaunch admits generation 2 in shared state, then the engine
+        // owns the Launch job (real queue order, not the helper).
+        lock_shared(&shared)
+            .apps
+            .get_mut(&1001)
+            .expect("old app")
+            .generation = 2;
+        process_job(
+            EngineJob::Launch {
+                pid: 1001,
+                generation: 2,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert!(
+            !session
+                .pending_closes
+                .iter()
+                .any(|id| id.0.starts_with("1001_")),
+            "fresh Launch drops the old lifetime's pending closes"
+        );
+        assert!(
+            session
+                .pending_closes
+                .contains(&WindowId("1002_8".to_owned())),
+            "unrelated PID closes survive another PID relaunch"
+        );
+        assert!(
+            retained
+                .apps
+                .get(&1001)
+                .expect("relaunched app")
+                .roster
+                .is_empty(),
+            "new generation starts with an empty roster"
+        );
+        // New lifetime observes the same WID as a live homed fact.
+        let snapshot = ScopedBackendSnapshot {
+            windows: vec![observed(7)],
+            focused_wid: None,
+            focus_cg_owned: false,
+            focus_evidence: None,
+            sys_focus: None,
+            global_focus: None,
+            meta: vec![ScopedWindowMeta {
+                wid: 7,
+                spaces: vec![1],
+                fullscreen: false,
+                minimized: false,
+                hidden: false,
+            }],
+            excluded: 0,
+            excluded_reasons: Vec::new(),
+            cg_complete: true,
+            cg_owner_wids: vec![7],
+            revision: 9,
+        };
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: 1001,
+                generation: 2,
+                seq: 1,
+                snapshot,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let report = build_dispatch_report(
+            &mut session,
+            &retained,
+            &crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
+            &[],
+            2,
+            2,
+            None,
+            None,
+            None,
+            "req-2",
+        )
+        .expect("nonempty context reports");
+        assert!(
+            !report.closed.iter().any(|id| id.0 == "1001_7"),
+            "reused WID carries no stale close"
+        );
+        assert!(
+            report.windows.iter().any(|w| w.window.0 == "1001_7"),
+            "new lifetime fact rides the report"
+        );
+        // Stale old-generation read mutates nothing: roster, hold, and
+        // pending closes all keep the new lifetime's truth.
+        let stale = ScopedBackendSnapshot {
+            windows: vec![observed(7)],
+            focused_wid: None,
+            focus_cg_owned: false,
+            focus_evidence: None,
+            sys_focus: None,
+            global_focus: None,
+            meta: vec![ScopedWindowMeta {
+                wid: 7,
+                spaces: vec![1],
+                fullscreen: false,
+                minimized: false,
+                hidden: false,
+            }],
+            excluded: 0,
+            excluded_reasons: Vec::new(),
+            cg_complete: true,
+            cg_owner_wids: vec![7],
+            revision: 9,
+        };
+        let pending_before = session.pending_closes.clone();
+        let incomplete_before = retained
+            .apps
+            .get(&1001)
+            .expect("new lifetime")
+            .roster_incomplete;
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: 1001,
+                generation: 1,
+                seq: 99,
+                snapshot: stale,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let app = retained.apps.get(&1001).expect("new lifetime");
+        assert_eq!(app.generation, 2, "stale read never rolls generation back");
+        assert!(app.roster.contains_key(&7), "new fact survives stale read");
+        assert_eq!(
+            app.roster_incomplete, incomplete_before,
+            "stale read clears no new-lifetime gap"
+        );
+        assert_eq!(
+            session.pending_closes, pending_before,
+            "stale read stages no close"
+        );
+    }
+
+    /// Blocker end-to-end through the real dispatch path: known window
+    /// homed current, then an AX-empty snapshot with the window server
+    /// still listing it. The retained id survives with a hold and no
+    /// pending close stages (the old fence pruned it as a current loss).
+    /// Same-shape CG-absent proof closes it instead.
+    #[test]
+    fn cg_alive_empty_observation_retains_current_without_pending_close() {
+        use crate::runtime_shared::AppRecord;
+        use crate::runtime_types::ScopedBackendSnapshot;
+
+        for (cg_complete, cg_owner, retains) in [
+            (true, vec![7u32], true),
+            (true, Vec::new(), false),
+            (false, Vec::new(), true),
+        ] {
+            let ctx = ctx();
+            let mut seed = RetainedCore::default();
+            seed.apps.insert(
+                1001,
+                RetainedApp {
+                    generation: 1,
+                    seq_last: 1,
+                    cmd_counter: 0,
+                    windows: Vec::new(),
+                    focused_wid: None,
+                    roster: BTreeMap::from([(
+                        7,
+                        crate::runtime_core::RosterEntry {
+                            observed: Some(observed(7)),
+                            spaces: vec![1],
+                            fullscreen_meta: false,
+                            minimized_meta: false,
+                            hidden_meta: false,
+                            excluded: None,
+                        },
+                    )]),
+                    roster_incomplete: false,
+                    roster_cause: String::new(),
+                },
+            );
+            seed.window_domains.insert(
+                crate::runtime::window_id(1001, 7),
+                DomainKey {
+                    output: output(),
+                    workspace: WorkspaceId(crate::topology::workspace_key(1)),
+                },
+            );
+            let (mut session, mut retained, shared, inbox, focus_queue) =
+                harness(Arc::clone(&ctx), seed);
+            lock_shared(&shared).apps.insert(
+                1001,
+                AppRecord {
+                    generation: 1,
+                    terminated: false,
+                    stop: Arc::new(AtomicBool::new(false)),
+                    frames: Arc::new(FrameSlot::new()),
+                    focus: Arc::new(FocusSlot::new()),
+                    ready: Arc::new(Mutex::new(Some(Ok(())))),
+                    worker: None,
+                    worker_name: "test-1001".to_owned(),
+                },
+            );
+            let snapshot = ScopedBackendSnapshot {
+                windows: Vec::new(),
+                focused_wid: None,
+                focus_cg_owned: false,
+                focus_evidence: None,
+                sys_focus: None,
+                global_focus: None,
+                meta: Vec::new(),
+                excluded: 0,
+                excluded_reasons: Vec::new(),
+                cg_complete,
+                cg_owner_wids: cg_owner,
+                revision: 9,
+            };
+            process_job(
+                EngineJob::ScopedObservation {
+                    pid: 1001,
+                    generation: 1,
+                    seq: 2,
+                    snapshot,
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+            let app = retained.apps.get(&1001).expect("app");
+            assert_eq!(
+                app.roster.contains_key(&7),
+                retains,
+                "cg_complete={cg_complete} retains={retains}"
+            );
+            if retains {
+                // Staged nothing: the live id is unknown-held, never an
+                // explicit close.
+                assert!(
+                    !session
+                        .pending_closes
+                        .contains(&WindowId("1001_7".to_owned())),
+                    "CG-alive/unreadable stages no close"
+                );
+                assert!(app.roster_incomplete, "retained unknown holds the PID");
+            } else {
+                // Proven absence pruned the roster and staged the flat
+                // close (incorporation may already have drained the
+                // outbox into the dispatched report, so the covering
+                // emission is the stable witness).
+                assert!(
+                    lock_shared(&shared).log.iter().any(|entry| {
+                        entry.kind == "observation"
+                            && entry.outcome == "covering-close"
+                            && entry.count == 1
+                    }),
+                    "proven absence emits the covering close"
+                );
+            }
+        }
+    }
+
     /// Retained truth for the trailing send lane: subject window A on the
     /// current Space (observed focus) plus an occupied trailing, so the
     /// core pends the send under a fresh token.
@@ -2654,6 +3021,9 @@ mod trailing_join_tests {
                 cmd_counter: 0,
                 windows: vec![observed(7)],
                 focused_wid: Some(7),
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         retained.window_domains.insert(
@@ -2691,7 +3061,7 @@ mod trailing_join_tests {
             focus_queue,
             8,
             crate::world_runtime::DispatchContext::Native(Arc::clone(ctx)),
-            BTreeMap::new(),
+            Vec::new(),
             None,
             None,
             false,
@@ -2966,7 +3336,7 @@ mod trailing_join_tests {
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
-                BTreeMap::new(),
+                &[],
                 3,
                 3,
                 None,
@@ -3029,7 +3399,7 @@ mod trailing_join_tests {
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
-                BTreeMap::new(),
+                &[],
                 4,
                 4,
                 None,
@@ -3150,7 +3520,7 @@ mod trailing_join_tests {
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
-                BTreeMap::new(),
+                &[],
                 3,
                 3,
                 None,
@@ -3223,7 +3593,7 @@ mod trailing_join_tests {
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
-                BTreeMap::new(),
+                &[],
                 4,
                 4,
                 None,
@@ -3352,6 +3722,9 @@ mod drag_gesture_handoff_tests {
                 cmd_counter: 0,
                 windows: vec![observed_a()],
                 focused_wid: Some(7),
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         retained.apps.insert(
@@ -3362,6 +3735,9 @@ mod drag_gesture_handoff_tests {
                 cmd_counter: 0,
                 windows: vec![observed_b()],
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         retained

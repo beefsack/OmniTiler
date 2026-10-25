@@ -1443,7 +1443,7 @@ fn repro_report(
     ctx: &NativeContext,
     members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
     memory: &LifetimeMemory,
-    closed: &BTreeMap<DomainKey, Vec<WindowId>>,
+    closed: &[WindowId],
     unreadable: &BTreeMap<DomainKey, HoldReason>,
     focused_global: &str,
     obs: u64,
@@ -1475,10 +1475,10 @@ fn repro_report(
 
 fn repro_empty_maps() -> (
     LifetimeMemory,
-    BTreeMap<DomainKey, Vec<WindowId>>,
+    Vec<WindowId>,
     BTreeMap<DomainKey, HoldReason>,
 ) {
-    (LifetimeMemory::empty(), BTreeMap::new(), BTreeMap::new())
+    (LifetimeMemory::empty(), Vec::new(), BTreeMap::new())
 }
 
 /// Native Desktop-N resolves positionally core-side under adoption: a

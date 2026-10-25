@@ -208,6 +208,15 @@ pub struct NativeReadOutcome {
     pub failed: usize,
     pub first_cause: String,
     pub windows: Vec<NativeWindowFacts>,
+    /// Fresh CG window-server identity inventory for exactly this PID,
+    /// read from the full title-free list alongside the AX legs (never
+    /// derived from AX wids). `true` only on a fresh complete read;
+    /// `false` is explicit unreadable (unknown, never absence).
+    pub cg_complete: bool,
+    /// Sorted owner wids present in the fresh complete CG list
+    /// (`cg_complete` true). Empty with `cg_complete` false carries no
+    /// claim; empty with `cg_complete` true proves absence.
+    pub cg_owner_wids: Vec<u32>,
 }
 
 impl NativeReadOutcome {
@@ -306,12 +315,50 @@ pub(crate) fn check_window_bound(requested: usize) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Fresh CG liveness inventory for exactly one bound PID from the full
+/// title-free window-server list (never derived from AX wids: the caller
+/// passes the full `cg_window_list_basic()` read). Returns completeness
+/// plus the sorted owner wids. `Err` (unreadable list) is explicit
+/// unreadable: `(false, empty)` claims nothing, never absence. Pure for
+/// the injectable seam.
+pub(crate) fn cg_owner_inventory(
+    pid: u32,
+    cg_result: &Result<Vec<crate::ffi::CgWindowBasic>, String>,
+) -> (bool, Vec<u32>) {
+    match cg_result {
+        Ok(list) => {
+            let mut owned: Vec<u32> = list
+                .iter()
+                .filter(|w| w.pid == pid)
+                .map(|w| w.wid)
+                .collect();
+            owned.sort_unstable();
+            owned.dedup();
+            (true, owned)
+        }
+        Err(_) => (false, Vec::new()),
+    }
+}
 /// Read one app's window facts on the calling (per-app AX owner) thread.
 /// Every `AxElement` is constructed, used, and dropped here; only owned
 /// plain data returns. CG owner/layer/on-screen join by exact `(wid, pid)`
 /// over the title-free list; a missing join leaves CG facts unknown (the
 /// classification gate refuses the snapshot, it never defaults to layer 0).
+/// The full CG list is read once per read for the owner identity
+/// inventory below (never derived from AX wids); an unreadable list keeps
+/// the AX legs but marks the oracle unreadable (unknown, never absence).
 pub fn read_app_window_facts(pid: u32) -> Result<NativeReadOutcome, String> {
+    read_app_window_facts_with_cg(pid, cg_window_list_basic())
+}
+
+/// Injectable CG seam for the oracle: production passes the fresh full
+/// `cg_window_list_basic()` read; tests pass explicit `Ok`/`Err` values.
+/// Only this PID's wids enter the inventory, sorted and deduplicated.
+pub fn read_app_window_facts_with_cg(
+    pid: u32,
+    cg_result: Result<Vec<crate::ffi::CgWindowBasic>, String>,
+) -> Result<NativeReadOutcome, String> {
     if pid <= 1 || pid > i32::MAX as u32 {
         return Err(format!("refusing out-of-range pid {pid}"));
     }
@@ -332,7 +379,11 @@ pub fn read_app_window_facts(pid: u32) -> Result<NativeReadOutcome, String> {
     check_window_bound(windows.len())?;
     // Title-free CG list once per read; an unreadable list leaves every
     // window's CG facts unknown (gated later), it never fails the AX legs.
-    let cg_list = cg_window_list_basic().unwrap_or_default();
+    // The owner inventory records explicit completeness: success carries
+    // exactly this PID's wids from the FULL list; failure carries
+    // unreadable (unknown, never absence).
+    let (cg_complete, cg_owner_wids) = cg_owner_inventory(pid, &cg_result);
+    let cg_list = cg_result.unwrap_or_default();
     let requested = windows.len();
     let mut out = Vec::new();
     let mut failed = 0usize;
@@ -402,6 +453,8 @@ pub fn read_app_window_facts(pid: u32) -> Result<NativeReadOutcome, String> {
         failed,
         first_cause,
         windows: out,
+        cg_complete,
+        cg_owner_wids,
     })
 }
 
@@ -594,6 +647,8 @@ mod tests {
             failed: 0,
             first_cause: String::new(),
             windows: vec![full_facts()],
+            cg_complete: true,
+            cg_owner_wids: vec![7],
         }
     }
 
@@ -631,6 +686,62 @@ mod tests {
         let mut outcome = complete_outcome();
         outcome.windows[0].modal = None;
         assert_eq!(outcome.classify_all(false).expect("maps").len(), 1);
+    }
+
+    #[test]
+    fn cg_owner_inventory_filters_sorts_and_names_unreadable() {
+        use crate::ffi::{CgBounds, CgWindowBasic};
+        let entry = |wid: u32, pid: u32| CgWindowBasic {
+            wid,
+            pid,
+            layer: 0,
+            onscreen: true,
+            bounds: CgBounds {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+        };
+        // Full list filters to exactly the bound PID, sorted and deduped
+        // (never derived from AX wids: other PIDs never leak in).
+        let full = Ok(vec![
+            entry(9, 4242),
+            entry(7, 4242),
+            entry(7, 4242),
+            entry(3, 9999),
+        ]);
+        assert_eq!(cg_owner_inventory(4242, &full), (true, vec![7, 9]));
+        assert_eq!(cg_owner_inventory(9999, &full), (true, vec![3]));
+        // Success with no owner rows is complete absence (provable gone).
+        let none: Result<Vec<CgWindowBasic>, String> = Ok(vec![entry(3, 9999)]);
+        assert_eq!(cg_owner_inventory(4242, &none), (true, Vec::new()));
+        // Unreadable names itself (unknown, never absence).
+        let down: Result<Vec<CgWindowBasic>, String> = Err("cg down".to_owned());
+        assert_eq!(cg_owner_inventory(4242, &down), (false, Vec::new()));
+    }
+
+    #[test]
+    fn injectable_cg_seam_refuses_reserved_pids_before_any_native_touch() {
+        use crate::ffi::{CgBounds, CgWindowBasic};
+        let full: Result<Vec<CgWindowBasic>, String> = Ok(vec![CgWindowBasic {
+            wid: 7,
+            pid: 4242,
+            layer: 0,
+            onscreen: true,
+            bounds: CgBounds {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+        }]);
+        // Reserved PIDs refuse before any native touch, live or faked.
+        assert!(read_app_window_facts_with_cg(0, full.clone()).is_err());
+        assert!(read_app_window_facts_with_cg(1, full.clone()).is_err());
+        assert!(read_app_window_facts_with_cg(u32::MAX, full).is_err());
+        let down: Result<Vec<CgWindowBasic>, String> = Err("cg down".to_owned());
+        assert!(read_app_window_facts_with_cg(0, down).is_err());
     }
 
     #[cfg(not(target_os = "macos"))]

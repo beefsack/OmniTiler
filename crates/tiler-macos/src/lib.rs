@@ -73,6 +73,8 @@ pub mod native_facts;
 pub mod native_input;
 #[cfg(test)]
 mod native_input_tests;
+#[cfg(test)]
+mod native_lifetime_tests;
 pub mod native_tile_backend;
 #[cfg(test)]
 mod native_tile_backend_tests;

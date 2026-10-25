@@ -448,6 +448,13 @@ pub struct ScopedBackendSnapshot {
     /// compares the count): a reason change with identical windows, meta,
     /// and count stages nothing new.
     pub excluded_reasons: Vec<ExcludedOmission>,
+    /// Fresh CG liveness oracle for exactly this PID: `true` only on a
+    /// fresh complete window-server read alongside the AX legs; `false`
+    /// is explicit unreadable (unknown, never absence). `cg_owner_wids`
+    /// lists the owner wids in that fresh complete list (sorted); empty
+    /// with `true` proves absence, empty with `false` claims nothing.
+    pub cg_complete: bool,
+    pub cg_owner_wids: Vec<u32>,
     pub revision: u64,
 }
 
@@ -472,6 +479,8 @@ impl ScopedBackendSnapshot {
             meta: Vec::new(),
             excluded: 0,
             excluded_reasons: Vec::new(),
+            cg_complete: false,
+            cg_owner_wids: Vec::new(),
             revision,
         }
     }

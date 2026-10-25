@@ -1079,7 +1079,6 @@ mod ordinal_parity_repro {
 
         let empty_members = BTreeMap::new();
         let empty_memory = crate::runtime_core::LifetimeMemory::empty();
-        let empty_closed = BTreeMap::new();
         let empty_unreadable = BTreeMap::new();
         let build =
             |obs: u64, req: u64, req_id: &str, seq: Option<u64>, command: Option<WorldCommand>| {
@@ -1093,7 +1092,7 @@ mod ordinal_parity_repro {
                     req_id,
                     &empty_members,
                     &empty_memory,
-                    &empty_closed,
+                    &[],
                     &empty_unreadable,
                     &[],
                     "",

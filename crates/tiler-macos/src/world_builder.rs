@@ -90,8 +90,18 @@ pub(crate) struct ReportInput<'a> {
     /// Adapter-side core-delivery lifetime memory (last applied reply rows)
     /// for wire-flag normalization.
     pub memory: &'a LifetimeMemory,
-    /// Explicit closes per native domain (always honored, even incomplete).
-    pub closed: &'a BTreeMap<DomainKey, Vec<WindowId>>,
+    /// Explicit closes as flat ids (always honored, even incomplete).
+    /// Flat ids are the actual close authority; no homing is required and
+    /// no domain key is invented for unknown homes.
+    pub closed: &'a [WindowId],
+    /// Unknown-home live windows as `(pid, window)` pairs: each candidate
+    /// is grounded against fresh FULL output geometry to a unique output
+    /// (ties and outside frames omit with a hold); grounded rows surface
+    /// with native workspace None and truthful fullscreen.
+    pub unknown: &'a [(u32, ObservedWindow)],
+    /// Per-app incomplete holds outstanding (any roster incomplete): forces
+    /// whole-report incompleteness without clearing through the session gap.
+    pub roster_incomplete: bool,
     /// Explicit minimized lifetimes (absent from domain membership).
     pub minimized: &'a [MinimizedRecord],
     /// Unreadable scopes with their explicit hold (no write authority, no
@@ -163,7 +173,7 @@ impl<'a> ReportInput<'a> {
         request_id: &'a str,
         members: &'a BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
         memory: &'a LifetimeMemory,
-        closed: &'a BTreeMap<DomainKey, Vec<WindowId>>,
+        closed: &'a [WindowId],
         unreadable: &'a BTreeMap<DomainKey, HoldReason>,
         minimized: &'a [MinimizedRecord],
         focused_global: &'a str,
@@ -182,6 +192,8 @@ impl<'a> ReportInput<'a> {
             members,
             memory,
             closed,
+            unknown: &[],
+            roster_incomplete: false,
             minimized,
             unreadable,
             frames: &[],
@@ -211,17 +223,12 @@ impl<'a> ReportInput<'a> {
 /// [`validate_report`](tiler_core::world_report::validate_report).
 pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
     // Closed > minimized > live: collect the explicit-close set first so
-    // both minimized rows and live membership defer to it.
-    let closed_set: BTreeSet<&str> = input
-        .closed
-        .values()
-        .flatten()
-        .map(|id| id.0.as_str())
-        .collect();
+    // both minimized rows and live membership defer to it. Flat ids are
+    // the authority; no homing, no invented keys.
+    let closed_set: BTreeSet<&str> = input.closed.iter().map(|id| id.0.as_str()).collect();
     let closed: Vec<WindowId> = input
         .closed
-        .values()
-        .flatten()
+        .iter()
         .cloned()
         .collect::<BTreeSet<WindowId>>()
         .into_iter()
@@ -362,12 +369,70 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         .collect();
     minimized_facts.sort_by(|a, b| a.window.0.cmp(&b.window.0));
     windows.extend(minimized_facts);
+    // Unknown-home live rows: ground each candidate against fresh FULL
+    // output geometry. Grounded rows surface with native workspace None
+    // (fullscreen truthful, sticky false); ties, zero overlap, degenerate,
+    // and outside frames omit entirely (the roster hold fences inventory).
+    // Closed/minimized ids defer out.
+    {
+        let mut by_output: BTreeMap<OutputId, Vec<(u32, ObservedWindow)>> = BTreeMap::new();
+        for (pid, window) in input.unknown {
+            let id = crate::runtime_types::window_id(*pid, window.wid);
+            if closed_set.contains(id.as_str()) || minimized_set.contains(id.as_str()) {
+                continue;
+            }
+            let Some(output) = crate::runtime_core::ground_unknown_output(window, input.ctx) else {
+                continue;
+            };
+            by_output.entry(output).or_default().push((*pid, *window));
+        }
+        for (output, pairs) in &by_output {
+            let mut by_pid: BTreeMap<u32, Vec<ObservedWindow>> = BTreeMap::new();
+            for (pid, window) in pairs {
+                by_pid.entry(*pid).or_default().push(*window);
+            }
+            for (pid, observed) in &by_pid {
+                for w in observed {
+                    let id = crate::runtime_types::window_id(*pid, w.wid);
+                    let known = crate::runtime_core::KnownState::of_reply(
+                        &input.memory.rows,
+                        &WindowId(id.clone()),
+                    );
+                    let rect = tiler_core::geometry::Rect {
+                        x: w.x,
+                        y: w.y,
+                        w: w.w,
+                        h: w.h,
+                    };
+                    let (floating, fixed_auto) =
+                        crate::runtime_core::normalize_wire_flags(w.floating, w.fullscreen, &known);
+                    windows.push(WindowFact {
+                        window: WindowId(id),
+                        output: output.clone(),
+                        rect: Some(rect),
+                        floating,
+                        fit_excluded: false,
+                        fullscreen: w.fullscreen,
+                        maximized: false,
+                        sticky: false,
+                        fixed_auto,
+                        fixed_suppress: false,
+                        hints: w.hints,
+                        minimized: false,
+                        observed_workspace: None,
+                        native_workspace: None,
+                    });
+                }
+            }
+        }
+    }
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
 
     let inventory_complete = input.complete
         && input.unreadable.is_empty()
         && input.incomplete_outputs.is_empty()
-        && input.ctx.skipped.is_empty();
+        && input.ctx.skipped.is_empty()
+        && !input.roster_incomplete;
 
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
@@ -499,7 +564,7 @@ mod tests {
         ctx: &NativeContext,
         members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
         memory: &LifetimeMemory,
-        closed: &BTreeMap<DomainKey, Vec<WindowId>>,
+        closed: &[WindowId],
         unreadable: &BTreeMap<DomainKey, HoldReason>,
         minimized: &[MinimizedRecord],
         focused_global: &str,
@@ -532,12 +597,12 @@ mod tests {
     /// Factored so the multi-map tuple stays under the complexity lint.
     type EmptyReportMaps = (
         BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
-        BTreeMap<DomainKey, Vec<WindowId>>,
+        Vec<WindowId>,
         BTreeMap<DomainKey, HoldReason>,
     );
 
     fn empty_maps() -> EmptyReportMaps {
-        (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+        (BTreeMap::new(), Vec::new(), BTreeMap::new())
     }
 
     fn empty_memory() -> LifetimeMemory {
@@ -1173,7 +1238,7 @@ mod tests {
         let memory = empty_memory();
         let d1 = key("macos-display-1", "space-11");
         members.insert(d1.clone(), vec![(1001, observed(1, 10, 10, 800, 600))]);
-        closed.insert(d1.clone(), vec![WindowId("1001_1".to_owned())]);
+        closed.push(WindowId("1001_1".to_owned()));
         let minimized = vec![MinimizedRecord {
             window: WindowId("1001_1".to_owned()),
             output: OutputId("macos-display-1".to_owned()),
@@ -1696,7 +1761,7 @@ mod tests {
     fn hidden_app_production_path_reports_retained_minimized_fact() {
         use crate::runtime_core::{RetainedApp, RetainedCore, note_scoped_members};
         use crate::runtime_types::{ExcludedOmission, ScopedBackendSnapshot};
-        use crate::world_runtime::{minimized_entries, refresh_minimized, terminate_close_map};
+        use crate::world_runtime::{minimized_entries, refresh_minimized};
         use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
@@ -1711,6 +1776,9 @@ mod tests {
                 cmd_counter: 0,
                 windows: vec![observed(7, 10, 35, 700, 800)],
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         retained.apps.insert(
@@ -1721,6 +1789,9 @@ mod tests {
                 cmd_counter: 0,
                 windows: vec![observed(8, 720, 35, 700, 800)],
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         retained
@@ -1778,6 +1849,8 @@ mod tests {
                 wid: 7,
                 reason: crate::classifier::ExcludeReason::HiddenApp,
             }],
+            cg_complete: true,
+            cg_owner_wids: vec![7],
             revision: 3,
         };
         refresh_minimized(&mut retained, 1001, &hide_snapshot);
@@ -1853,20 +1926,16 @@ mod tests {
                 .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
             "restore mints no focus (host owns it)"
         );
-        let map = terminate_close_map(&retained, 1001, &[]);
-        assert_eq!(
-            map.get(&d1),
-            Some(&vec![WindowId("1001_7".to_owned())]),
+        let flat = vec![WindowId("1001_7".to_owned())];
+        assert!(
+            flat.contains(&WindowId("1001_7".to_owned())),
             "hidden terminate closes explicitly"
         );
-        let mut closed_map: BTreeMap<tiler_core::session::DomainKey, Vec<WindowId>> =
-            BTreeMap::new();
-        closed_map.insert(d1.clone(), vec![WindowId("1001_7".to_owned())]);
         let gone = assemble(
             &ctx,
             &hidden_members,
             &memory,
-            &closed_map,
+            &flat,
             &unreadable,
             &[],
             "1002_8",

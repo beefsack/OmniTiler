@@ -10,7 +10,6 @@
 //! are retired with the legacy path. No threads are spawned here: the
 //! engine owner calls in; owners never block on AX.
 
-use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use tiler_core::directional::WindowId;
@@ -138,6 +137,7 @@ pub(crate) fn handle_scoped_observation(
     let ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
     let Some(ctx) = ctx else {
         session.mark_coverage_gap();
+        crate::runtime_core::mark_roster_incomplete(retained, pid, "no-context");
         lock_shared(shared).diagnostics.stale_dropped += 1;
         emit(
             shared,
@@ -152,6 +152,7 @@ pub(crate) fn handle_scoped_observation(
     };
     if snapshot.revision != ctx.revision {
         session.mark_coverage_gap();
+        crate::runtime_core::mark_roster_incomplete(retained, pid, "stale-revision");
         lock_shared(shared).diagnostics.stale_dropped += 1;
         emit(
             shared,
@@ -167,7 +168,9 @@ pub(crate) fn handle_scoped_observation(
     // Member partition by live Space membership (never geometry):
     // only exactly-homed retained-domain windows reach the engine
     // (current members actuate, hidden members reconcile silently).
-    // Omission is counted evidence, never destruction.
+    // Omission is counted evidence, never destruction. Unknown,
+    // multi-Space, and other-Space windows stay in the per-app roster
+    // and surface downstream as explicit unknown facts.
     let (mut members, omitted) = partition_scoped_members(&snapshot.windows, &snapshot.meta, &ctx);
     if omitted > 0 {
         emit(
@@ -222,38 +225,109 @@ pub(crate) fn handle_scoped_observation(
             }
         }
     }
-    // Blind-hidden preservation: live AX reads return no windows for apps
-    // whose windows all sit on hidden Spaces (successful empty snapshots),
-    // so such a snapshot says nothing about still-known hidden domains and
-    // must not read as mass removal (the core would converge by retiring
-    // the retained tree, scrambling per-window slots on return). Preserve
-    // this PID's retained rows homed to still-known non-current domains.
-    // Observed windows always re-home below, so a natively moved window
-    // still follows its observed membership; retired Spaces still drop via
-    // the live-context fence; current domains stay authoritative-loss, so a
-    // genuinely emptied current Space still converges to empty. A
-    // relaunched lifetime preserves nothing. A close-while-hidden is
-    // observationally identical to this blindness, so hidden-close stays
-    // deliberately non-authoritative: it converges on the next observation
-    // covering the domain (when the Space becomes current again), never by
-    // immediate pruning of an uncovered domain.
-    let mut preserved: Vec<(DomainKey, ObservedWindow)> = Vec::new();
-    {
-        let same_lifetime = retained
-            .apps
-            .get(&pid)
-            .is_some_and(|app| app.generation == generation);
-        if same_lifetime && let Some(app) = retained.apps.get(&pid) {
-            let observed_ids: BTreeSet<String> = snapshot
-                .windows
-                .iter()
-                .map(|w| window_id(pid, w.wid))
-                .collect();
-            for w in &app.windows {
-                let id = window_id(pid, w.wid);
-                if observed_ids.contains(&id) {
+    // Covering gate: a successful but empty snapshot (hidden-Space
+    // blindness) is non-covering for hidden and unknown homes. It stays
+    // authoritative for currently-actuated domains: an empty read proves
+    // the app holds no windows there, so current-homed rows prune as
+    // closes while hidden rows preserve. Only covering snapshots prune
+    // hidden homes.
+    let covering = crate::runtime_core::snapshot_is_covering(
+        snapshot.windows.is_empty(),
+        snapshot.excluded > 0,
+    );
+    // Ensure the per-app roster owner exists before any update. A
+    // generation change (relaunch) clears roster, holds, and homing for
+    // exactly this PID; other PIDs never clear it. Pending closes for a
+    // relaunched PID drop so an old lifetime never closes the new one.
+    let relaunched = retained
+        .apps
+        .get(&pid)
+        .is_some_and(|app| app.generation != generation);
+    retained.apps.entry(pid).or_insert(RetainedApp {
+        generation,
+        seq_last: 0,
+        cmd_counter: 0,
+        windows: Vec::new(),
+        focused_wid: None,
+        roster: std::collections::BTreeMap::new(),
+        roster_incomplete: false,
+        roster_cause: String::new(),
+    });
+    if relaunched {
+        if let Some(app) = retained.apps.get_mut(&pid) {
+            app.generation = generation;
+            app.seq_last = 0;
+            app.cmd_counter = 0;
+            app.roster.clear();
+            app.roster_incomplete = false;
+            app.roster_cause.clear();
+            app.windows.clear();
+            app.focused_wid = None;
+        }
+        let prefix = format!("{pid}_");
+        retained
+            .window_domains
+            .retain(|id, _| !id.starts_with(&prefix));
+        retained.minimized.retain(|id, _| !id.starts_with(&prefix));
+        session
+            .pending_closes
+            .retain(|id| !id.0.starts_with(&prefix));
+        crate::runtime_core::clear_focus_into(retained, pid);
+    }
+    // Ensure owner exists for the covering probe below.
+    retained.apps.entry(pid).or_insert(RetainedApp {
+        generation,
+        seq_last: 0,
+        cmd_counter: 0,
+        windows: Vec::new(),
+        focused_wid: None,
+        roster: std::collections::BTreeMap::new(),
+        roster_incomplete: false,
+        roster_cause: String::new(),
+    });
+    if !covering {
+        // Non-covering empty read: authoritative loss for current domains
+        // only (an empty read proves the app holds nothing there), while
+        // hidden and unknown homes retain with a per-PID hold. The CG
+        // oracle fences even the current prune: a CG-alive or
+        // CG-unreadable id retains unknown (never an explicit close). A
+        // fully emptied roster is a covering truth for this scope: it
+        // clears the PID hold and the session gap instead of fencing.
+        if let Some(app) = retained.apps.get_mut(&pid) {
+            app.seq_last = seq;
+        }
+        let pruned =
+            crate::runtime_core::prune_current_homed_with_oracle(retained, pid, &snapshot, &ctx);
+        for id in &pruned {
+            session.pending_closes.insert(id.clone());
+        }
+        if !pruned.is_empty() {
+            emit(
+                shared,
+                pid,
+                generation,
+                seq,
+                "observation",
+                "covering-close",
+                pruned.len() as u64,
+            );
+        }
+        // Blind-hidden preservation: re-home this PID's retained rows from
+        // still-known non-current domains. Observed windows re-home below,
+        // so a moved window still follows its membership; retired Spaces
+        // drop via the live-context fence; current domains stay
+        // authoritative-loss, so a genuinely emptied current Space still
+        // converges to empty.
+        let mut preserved: Vec<(DomainKey, ObservedWindow)> = Vec::new();
+        if let Some(app) = retained.apps.get(&pid) {
+            for (wid, entry) in &app.roster {
+                let Some(obs) = entry.observed else {
+                    continue;
+                };
+                if snapshot.windows.iter().any(|w| w.wid == *wid) {
                     continue;
                 }
+                let id = window_id(pid, *wid);
                 let Some(key) = retained.window_domains.get(&id) else {
                     continue;
                 };
@@ -267,12 +341,54 @@ pub(crate) fn handle_scoped_observation(
                 if !known {
                     continue;
                 }
-                preserved.push((key.clone(), *w));
+                preserved.push((key.clone(), obs));
             }
         }
+        for (key, w) in preserved {
+            members.entry(key).or_default().push(w);
+        }
+        let remainder = retained
+            .apps
+            .get(&pid)
+            .map(|app| app.roster.len())
+            .unwrap_or(0);
+        if remainder > 0 {
+            crate::runtime_core::mark_roster_incomplete(retained, pid, "blank-hidden");
+            session.mark_coverage_gap();
+        } else if let Some(app) = retained.apps.get_mut(&pid) {
+            app.roster_incomplete = false;
+            app.roster_cause.clear();
+            session.clear_coverage_gap();
+        }
+        emit(
+            shared,
+            pid,
+            generation,
+            seq,
+            "observation",
+            "non-covering-retained",
+            remainder as u64,
+        );
     }
-    for (key, w) in preserved {
-        members.entry(key).or_default().push(w);
+    // Accepted covering snapshot: update the authoritative roster first.
+    // Pruned ids become flat pending closes (no invented domain key).
+    // Non-covering reads pruned current-homed rows above instead.
+    if covering {
+        let pruned = crate::runtime_core::apply_roster_covering(retained, pid, &snapshot, &ctx);
+        for id in &pruned {
+            session.pending_closes.insert(id.clone());
+        }
+        if !pruned.is_empty() {
+            emit(
+                shared,
+                pid,
+                generation,
+                seq,
+                "observation",
+                "covering-close",
+                pruned.len() as u64,
+            );
+        }
     }
     let entry = retained.apps.entry(pid).or_insert(RetainedApp {
         generation,
@@ -280,6 +396,9 @@ pub(crate) fn handle_scoped_observation(
         cmd_counter: 0,
         windows: Vec::new(),
         focused_wid: None,
+        roster: std::collections::BTreeMap::new(),
+        roster_incomplete: false,
+        roster_cause: String::new(),
     });
     if entry.generation != generation {
         entry.generation = generation;
@@ -347,6 +466,10 @@ pub(crate) fn handle_scoped_observation(
     // exclusions (last-known homing above); unminimized windows drop out.
     crate::world_runtime::refresh_minimized(retained, pid, &snapshot);
     note_scoped_members(retained, pid, &members);
+    // Re-audit the hold after homing: unrepresentable roster rows (no
+    // frame, or a frame no single FULL output uniquely owns) keep this
+    // PID incomplete; grounded rows and homed rows do not hold.
+    crate::runtime_core::audit_roster_hold(retained, pid, &ctx);
     emit(
         shared,
         pid,
@@ -356,7 +479,17 @@ pub(crate) fn handle_scoped_observation(
         "applied",
         member_count,
     );
-    session.clear_coverage_gap();
+    // Covering reads prove fresh truth: the session gap clears. A
+    // non-covering read with retained remainder keeps the gap it marked;
+    // a fully emptied scope clears it as covering truth.
+    if covering
+        || !retained
+            .apps
+            .get(&pid)
+            .is_some_and(|app| app.roster_incomplete)
+    {
+        session.clear_coverage_gap();
+    }
     crate::world_dispatch::dispatch_report(
         session,
         retained,
@@ -365,7 +498,7 @@ pub(crate) fn handle_scoped_observation(
         focus_queue,
         focus_capacity,
         crate::world_runtime::DispatchContext::Native(Arc::clone(&ctx)),
-        std::collections::BTreeMap::new(),
+        Vec::new(),
         None,
         None,
         false,

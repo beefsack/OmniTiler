@@ -248,6 +248,10 @@ fn meta(wid: u32) -> ScopedWindowMeta {
 
 fn scripted(windows: Vec<ObservedWindow>, focused: Option<u32>) -> ScopedBackendSnapshot {
     let meta = windows.iter().map(|w| meta(w.wid)).collect();
+    // Fake attests a fresh complete CG read for its own windows.
+    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
     ScopedBackendSnapshot {
         windows,
         focused_wid: focused,
@@ -258,6 +262,8 @@ fn scripted(windows: Vec<ObservedWindow>, focused: Option<u32>) -> ScopedBackend
         meta,
         excluded: 0,
         excluded_reasons: Vec::new(),
+        cg_complete: true,
+        cg_owner_wids,
         revision: 0,
     }
 }
@@ -290,6 +296,10 @@ fn arrival(
     revision: u64,
 ) -> ScopedObservation {
     let meta = windows.iter().map(|w| meta(w.wid)).collect();
+    // Fake attests a fresh complete CG read for its own windows.
+    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
     ScopedObservation {
         pid,
         generation,
@@ -301,6 +311,8 @@ fn arrival(
         ax_focus: Some((pid, Some(focused_wid))),
         cg_owned: true,
         meta,
+        cg_complete: true,
+        cg_owner_wids,
     }
 }
 

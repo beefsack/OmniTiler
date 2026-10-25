@@ -99,6 +99,34 @@ pub(crate) struct RetainedApp {
     pub(crate) cmd_counter: u64,
     pub(crate) windows: Vec<ObservedWindow>,
     pub(crate) focused_wid: Option<u32>,
+    /// Authoritative per-PID native roster: every known window id plus its
+    /// latest plain facts. Only this PID's accepted covering snapshot,
+    /// explicit close, terminate, or relaunch updates it. Refused or
+    /// non-covering reads keep prior identity. `windows` above is a derived
+    /// projection of homed members, never a second policy owner.
+    pub(crate) roster: BTreeMap<u32, RosterEntry>,
+    /// Per-app incomplete hold: true while the last read for this PID was
+    /// refused or non-covering. Cleared only by the same PID's fresh
+    /// covering read, never by unrelated PIDs or the session gap flag.
+    pub(crate) roster_incomplete: bool,
+    /// Diagnostic real cause for the hold (classifier token or read cause).
+    pub(crate) roster_cause: String,
+}
+
+/// One roster row: latest plain facts for a known window id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RosterEntry {
+    pub(crate) observed: Option<ObservedWindow>,
+    /// Normalized membership: exactly one observed SID homed in the current
+    /// context, else empty (unknown). Multi-Space, empty, and unhomed all
+    /// map to unknown, never a guessed home.
+    pub(crate) spaces: Vec<u64>,
+    pub(crate) fullscreen_meta: bool,
+    pub(crate) minimized_meta: bool,
+    pub(crate) hidden_meta: bool,
+    /// Classifier exclusion cause when omitted (minimized/hidden sources
+    /// mint minimized lifetimes; other causes hold without homing).
+    pub(crate) excluded: Option<crate::classifier::ExcludeReason>,
 }
 
 /// Native-mode explicit minimized lifetime from classifier exclusions,
@@ -555,6 +583,298 @@ impl RetainedCore {
         })
     }
 }
+/// Normalize membership to the actual single observed SID homed in the
+/// current context, else unknown (empty). Multi-Space, empty, and unhomed
+/// SIDs all map to unknown, never a guessed home. Sticky needs positive
+/// all-Spaces proof (unavailable), so multi-Space never mints sticky.
+pub(crate) fn normalize_roster_spaces(spaces: &[u64], ctx: &NativeContext) -> Vec<u64> {
+    if spaces.len() != 1 {
+        return Vec::new();
+    }
+    let sid = spaces[0];
+    if ctx.domains.iter().any(|d| d.space == sid) {
+        vec![sid]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Mark one PID's roster incomplete with the real cause. Prior identity is
+/// kept; only the same PID's fresh covering read clears it. Other PIDs and
+/// the session gap flag never clear it.
+pub(crate) fn mark_roster_incomplete(retained: &mut RetainedCore, pid: u32, cause: &str) {
+    if let Some(app) = retained.apps.get_mut(&pid) {
+        app.roster_incomplete = true;
+        app.roster_cause = cause.to_owned();
+    }
+}
+
+/// Ground an unknown-home window to its genuinely observed output: the
+/// unique maximum integer overlap of its fresh frame against each output's
+/// observed FULL display rectangle. Ties, zero overlap, degenerate frames,
+/// and missing geometry all return None (unresolvable, never guessed).
+/// Multi-display ties never pick first; outside frames never attach.
+pub(crate) fn ground_unknown_output(
+    observed: &ObservedWindow,
+    ctx: &NativeContext,
+) -> Option<OutputId> {
+    if observed.w <= 0 || observed.h <= 0 {
+        return None;
+    }
+    let mut bounds: BTreeMap<String, Rect> = BTreeMap::new();
+    let mut order: Vec<OutputId> = Vec::new();
+    for domain in &ctx.domains {
+        if bounds.contains_key(&domain.output.0) {
+            continue;
+        }
+        bounds.insert(domain.output.0.clone(), domain.bounds);
+        order.push(domain.output.clone());
+    }
+    let (ax0, ay0, ax1, ay1) = (
+        i64::from(observed.x),
+        i64::from(observed.y),
+        i64::from(observed.x) + i64::from(observed.w),
+        i64::from(observed.y) + i64::from(observed.h),
+    );
+    let mut best: Option<(OutputId, i64)> = None;
+    let mut tied = false;
+    for output in &order {
+        let Some(r) = bounds.get(&output.0) else {
+            continue;
+        };
+        let (bx0, by0, bx1, by1) = (
+            i64::from(r.x),
+            i64::from(r.y),
+            i64::from(r.x) + i64::from(r.w),
+            i64::from(r.y) + i64::from(r.h),
+        );
+        let overlap =
+            ((ax1.min(bx1) - ax0.max(bx0)).max(0)) * ((ay1.min(by1) - ay0.max(by0)).max(0));
+        match &best {
+            None => best = Some((output.clone(), overlap)),
+            Some((_, top)) if overlap > *top => {
+                best = Some((output.clone(), overlap));
+                tied = false;
+            }
+            Some((_, top)) if overlap == *top => {
+                tied = true;
+            }
+            _ => {}
+        }
+    }
+    match best {
+        Some((output, top)) if top > 0 && !tied => Some(output),
+        _ => None,
+    }
+}
+
+/// Re-audit one PID roster hold after homing. Only genuinely
+/// unrepresentable rows hold: live rows with no frame or with a frame no
+/// single FULL output uniquely owns, and minimized-source exclusions
+/// (Minimized/HiddenApp) with no minimized record to represent them. A
+/// stale prior frame behind any classifier exclusion never reports as a
+/// live fact (the unknown derivation skips excluded rows); selected
+/// non-minimized exclusions (own bundle, accessory/prohibited policy,
+/// nonordinary layer, unknown role) keep baseline omission semantics and
+/// hold nothing, since those IDs were never live or reportable. Only the
+/// owning PID is audited; other PIDs never clear it.
+pub(crate) fn audit_roster_hold(retained: &mut RetainedCore, pid: u32, ctx: &NativeContext) {
+    use crate::classifier::ExcludeReason;
+    let Some(app) = retained.apps.get(&pid) else {
+        return;
+    };
+    let mut unrepresentable: Option<String> = None;
+    for (wid, entry) in &app.roster {
+        let id = window_id(pid, *wid);
+        if retained.window_domains.contains_key(&id) {
+            continue;
+        }
+        if let Some(reason) = entry.excluded {
+            // Represented minimized lifetimes ride their record, not a
+            // hold. Deliberate hidden/minimized holds persist without one.
+            // All other exclusions were never reportable: retain the ID
+            // mechanically for closes, hold nothing.
+            if retained.minimized.contains_key(&id) {
+                continue;
+            }
+            if matches!(reason, ExcludeReason::Minimized | ExcludeReason::HiddenApp) {
+                unrepresentable = Some(reason.log_token().to_owned());
+                break;
+            }
+            continue;
+        }
+        match entry.observed {
+            None => {
+                unrepresentable = Some("unknown-no-frame".to_owned());
+                break;
+            }
+            Some(obs) => {
+                if ground_unknown_output(&obs, ctx).is_none() {
+                    unrepresentable = Some("unknown-output-ungrounded".to_owned());
+                    break;
+                }
+            }
+        }
+    }
+    if let (Some(cause), Some(app)) = (unrepresentable, retained.apps.get_mut(&pid)) {
+        app.roster_incomplete = true;
+        app.roster_cause = cause;
+    }
+}
+
+/// True when a snapshot is covering: it lists at least one live window or
+/// one exclusion. A successful but empty snapshot (hidden-Space blindness)
+/// is non-covering: it retains lifetimes and fences incomplete.
+pub(crate) fn snapshot_is_covering(windows_empty: bool, excluded_nonzero: bool) -> bool {
+    !windows_empty || excluded_nonzero
+}
+
+/// Prune one PID's current-homed roster ids under a non-covering (empty)
+/// snapshot, fenced by the fresh CG liveness oracle. Only a fresh complete
+/// oracle proving absence prunes (authoritative loss for exactly this
+/// lifetime); a CG-alive id retains (window-server truth beats AX
+/// blindness even on the current domain) and a CG-unreadable snapshot
+/// prunes nothing (unknown, never guessed absence). Hidden and unknown
+/// homes never prune here (only covering snapshots prune those). Returns
+/// the flat close ids pruned. Pure over retained state plus the snapshot
+/// oracle; callers stage the returned ids and mark the hold.
+pub(crate) fn prune_current_homed_with_oracle(
+    retained: &mut RetainedCore,
+    pid: u32,
+    snapshot: &crate::runtime_types::ScopedBackendSnapshot,
+    ctx: &NativeContext,
+) -> Vec<WindowId> {
+    use std::collections::BTreeSet;
+    let cg_alive: BTreeSet<u32> = snapshot.cg_owner_wids.iter().copied().collect();
+    let mut pruned: Vec<WindowId> = Vec::new();
+    if let Some(app) = retained.apps.get_mut(&pid) {
+        let current_homed: Vec<u32> = app
+            .roster
+            .keys()
+            .copied()
+            .filter(|wid| {
+                let id = window_id(pid, *wid);
+                retained
+                    .window_domains
+                    .get(&id)
+                    .is_some_and(|key| ctx.is_current(key))
+            })
+            .collect();
+        for wid in current_homed {
+            if snapshot.cg_complete {
+                if cg_alive.contains(&wid) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            app.roster.remove(&wid);
+            pruned.push(WindowId(window_id(pid, wid)));
+        }
+    }
+    pruned.sort_by(|a, b| a.0.cmp(&b.0));
+    pruned
+}
+
+/// Apply one accepted covering snapshot to a PID roster. Returns the flat
+/// close ids proven gone by actual covering absence: previously known
+/// roster ids now in neither windows nor exclusions AND (fresh complete
+/// CG oracle) absent from this PID's window-server inventory. A CG-alive
+/// absent id is retained with a hold (never an explicit close); a CG
+/// unreadable absent id is retained with a hold (unknown, never guessed
+/// absence). Clears the incomplete hold only when nothing needed it.
+/// Callers must fence generation and sequence before calling.
+pub(crate) fn apply_roster_covering(
+    retained: &mut RetainedCore,
+    pid: u32,
+    snapshot: &crate::runtime_types::ScopedBackendSnapshot,
+    ctx: &NativeContext,
+) -> Vec<WindowId> {
+    use std::collections::BTreeSet;
+    let live: BTreeSet<u32> = snapshot.windows.iter().map(|w| w.wid).collect();
+    let excluded: BTreeSet<u32> = snapshot.excluded_reasons.iter().map(|o| o.wid).collect();
+    let cg_alive: BTreeSet<u32> = snapshot.cg_owner_wids.iter().copied().collect();
+    let mut closed: Vec<WindowId> = Vec::new();
+    let mut oracle_hold: Option<String> = None;
+    if let Some(app) = retained.apps.get_mut(&pid) {
+        let known: Vec<u32> = app.roster.keys().copied().collect();
+        for wid in known {
+            if !live.contains(&wid) && !excluded.contains(&wid) {
+                if snapshot.cg_complete {
+                    if cg_alive.contains(&wid) {
+                        // Window-server truth: still alive despite AX
+                        // absence (hidden-Space blindness). Retain.
+                        if oracle_hold.is_none() {
+                            oracle_hold = Some("cg-alive".to_owned());
+                        }
+                        continue;
+                    }
+                } else {
+                    // Unreadable oracle proves nothing: retain unknown.
+                    if oracle_hold.is_none() {
+                        oracle_hold = Some("cg-unreadable".to_owned());
+                    }
+                    continue;
+                }
+                app.roster.remove(&wid);
+                closed.push(WindowId(window_id(pid, wid)));
+            }
+        }
+        let meta_of = |wid: u32| {
+            snapshot
+                .meta
+                .iter()
+                .find(|m| m.wid == wid)
+                .map(|m| m.spaces.as_slice())
+                .unwrap_or(&[])
+        };
+        for w in &snapshot.windows {
+            let raw = meta_of(w.wid);
+            let norm = normalize_roster_spaces(raw, ctx);
+            let meta = snapshot.meta.iter().find(|m| m.wid == w.wid);
+            app.roster.insert(
+                w.wid,
+                RosterEntry {
+                    observed: Some(*w),
+                    spaces: norm,
+                    fullscreen_meta: meta.is_some_and(|m| m.fullscreen),
+                    minimized_meta: meta.is_some_and(|m| m.minimized),
+                    hidden_meta: meta.is_some_and(|m| m.hidden),
+                    excluded: None,
+                },
+            );
+        }
+        for o in &snapshot.excluded_reasons {
+            let entry = app.roster.entry(o.wid).or_insert(RosterEntry {
+                observed: None,
+                spaces: Vec::new(),
+                fullscreen_meta: false,
+                minimized_meta: false,
+                hidden_meta: false,
+                excluded: Some(o.reason),
+            });
+            entry.excluded = Some(o.reason);
+            entry.minimized_meta = false;
+            entry.hidden_meta = false;
+        }
+        // Roster entries excluded then live again clear the exclusion.
+        for wid in &live {
+            if let Some(entry) = app.roster.get_mut(wid) {
+                entry.excluded = None;
+            }
+        }
+        if let Some(cause) = oracle_hold {
+            app.roster_incomplete = true;
+            app.roster_cause = cause;
+        } else {
+            app.roster_incomplete = false;
+            app.roster_cause.clear();
+        }
+    }
+    closed.sort_by(|a, b| a.0.cmp(&b.0));
+    closed
+}
+
 /// Record one scoped observation's homing: insert this PID's member
 /// mappings and prune this PID's mappings for windows no longer homed
 /// anywhere (authoritative loss for exactly this lifetime — other PIDs are
@@ -854,6 +1174,9 @@ mod tests {
                     cmd_counter: 0,
                     windows: windows.clone(),
                     focused_wid: None,
+                    roster: std::collections::BTreeMap::new(),
+                    roster_incomplete: false,
+                    roster_cause: String::new(),
                 },
             );
         }
@@ -1045,6 +1368,9 @@ mod tests {
                 cmd_counter: 0,
                 windows: vec![observed(1, 0, 0, 10, 10), observed(2, 0, 0, 10, 10)],
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         note_scoped_members(&mut retained, 1001, &members);
@@ -1098,6 +1424,9 @@ mod tests {
                 cmd_counter: 0,
                 windows: vec![plain, full],
                 focused_wid: None,
+                roster: std::collections::BTreeMap::new(),
+                roster_incomplete: false,
+                roster_cause: String::new(),
             },
         );
         let mut members: BTreeMap<DomainKey, Vec<ObservedWindow>> = BTreeMap::new();

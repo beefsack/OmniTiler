@@ -36,12 +36,13 @@ pub struct BackendSnapshot {
 
 /// True when resending `next` after `prev` would be busy feedback: same
 /// geometry, focus knowledge, owner-read selected-oracle focus, membership
-/// metadata, omissions, and revision. Focus evidence is deliberately
+/// metadata, omissions, CG liveness oracle, and revision. Focus evidence is deliberately
 /// EXCLUDED (stamped fresh at every send; including it would republish on
 /// every evidence refresh), but `sys_focus` is COMPARED: it is a real
 /// owner-thread selected-oracle read per snapshot, so a changed selected
 /// focus must republish — otherwise an app-local focus of a background app
-/// would preserve stale global focus forever.
+/// would preserve stale global focus forever. The CG oracle is COMPARED:
+/// a changed liveness verdict changes close decisions, so it must republish.
 #[must_use]
 pub fn scoped_snapshots_equal(prev: &ScopedBackendSnapshot, next: &ScopedBackendSnapshot) -> bool {
     prev.focused_wid == next.focused_wid
@@ -50,6 +51,8 @@ pub fn scoped_snapshots_equal(prev: &ScopedBackendSnapshot, next: &ScopedBackend
         && prev.windows == next.windows
         && prev.meta == next.meta
         && prev.excluded == next.excluded
+        && prev.cg_complete == next.cg_complete
+        && prev.cg_owner_wids == next.cg_owner_wids
         && prev.revision == next.revision
 }
 
@@ -251,6 +254,8 @@ mod tests {
             }],
             excluded: 0,
             excluded_reasons: Vec::new(),
+            cg_complete: true,
+            cg_owner_wids: vec![wid],
             revision,
         }
     }

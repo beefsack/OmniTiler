@@ -318,6 +318,10 @@ fn scripted(
         .zip(spaces.iter())
         .map(|(w, s)| meta(w.wid, s))
         .collect();
+    // Fake attests a fresh complete CG read for its own windows.
+    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
     ScopedBackendSnapshot {
         windows,
         focused_wid: focused,
@@ -328,6 +332,8 @@ fn scripted(
         meta,
         excluded: 0,
         excluded_reasons: Vec::new(),
+        cg_complete: true,
+        cg_owner_wids,
         revision: 0,
     }
 }
@@ -397,16 +403,20 @@ fn scoped_obs(
     focused_wid: Option<u32>,
     revision: u64,
 ) -> ScopedObservation {
-    let windows = members.iter().map(|(w, _)| *w).collect();
-    let meta = members
-        .iter()
-        .map(|(w, spaces)| meta(w.wid, spaces))
-        .collect();
+    let windows: Vec<ObservedWindow> = members.iter().map(|(w, _)| *w).collect();
     // Agreeing global evidence: frontmost + AX + CG all name the reporter.
     let (frontmost_pid, ax_focus) = match focused_wid {
         Some(wid) => (Some(pid), Some((pid, Some(wid)))),
         None => (None, None),
     };
+    // Fake attests a fresh complete CG read for its own windows.
+    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
+    let meta = members
+        .iter()
+        .map(|(w, spaces)| meta(w.wid, spaces))
+        .collect();
     ScopedObservation {
         pid,
         generation,
@@ -418,6 +428,8 @@ fn scoped_obs(
         ax_focus,
         cg_owned: focused_wid.is_some(),
         meta,
+        cg_complete: true,
+        cg_owner_wids,
     }
 }
 
@@ -2308,6 +2320,8 @@ fn out_of_scope_config_and_unknown_focus_never_actuate() {
         ax_focus: Some((9999, Some(1))),
         cg_owned: true,
         meta: vec![meta(1, &[11])],
+        cg_complete: true,
+        cg_owner_wids: vec![1],
     };
     assert_eq!(
         fixture.handle.submit_scoped_observation(disagreeing),

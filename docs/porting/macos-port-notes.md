@@ -116,6 +116,11 @@ with the fixture-first rules and the signed bundle in
   removed; native fullscreen facts now use core's own slotless/first-exit policy.
   Shared classifier integration remains open: selected transient float members
   cannot simply become shared eligibility refusals without changing behavior.
+  Per-app native rosters now retain unknown/hidden lifetimes and incompleteness
+  independently of other apps; closes are flat and homing-independent. Fresh
+  full-CG liveness corroborates missing AX windows before close, including
+  move-to-hidden-with-stay when topology is unchanged. This remains offline
+  evidence, not native hide/reveal acceptance.
   [Mechanical coverage, blocker and sticky verification plan](../changes/macos-world-v2-port.md#stage-2-mechanical-evidence-and-policy-blocker-2026-10-25).
 - Activities default stays tentative pending KDE evidence (see
   [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):

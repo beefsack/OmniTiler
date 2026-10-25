@@ -142,6 +142,13 @@ pub struct ScopedObservation {
     pub ax_focus: Option<(u32, Option<u32>)>,
     pub cg_owned: bool,
     pub meta: Vec<ScopedWindowMeta>,
+    /// Fresh CG liveness oracle attested by the submitter: `true` only on
+    /// a fresh complete window-server read alongside the AX legs; `false`
+    /// is explicit unreadable (unknown, never absence).
+    pub cg_complete: bool,
+    /// Owner wids in that fresh complete CG list (sorted); empty with
+    /// `true` proves absence, empty with `false` claims nothing.
+    pub cg_owner_wids: Vec<u32>,
 }
 
 // -- Shared lifecycle state ----------------------------------------------------
@@ -1067,6 +1074,8 @@ impl RuntimeHandle {
                 meta: obs.meta,
                 excluded: 0,
                 excluded_reasons: Vec::new(),
+                cg_complete: obs.cg_complete,
+                cg_owner_wids: obs.cg_owner_wids,
                 revision: obs.revision,
             },
         };

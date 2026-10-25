@@ -505,12 +505,10 @@ pub fn validate_identity_triple(
 /// injected readers, so offline tests drive the exact admission shape):
 /// whole-snapshot classification refusal on the first gap, classifier
 /// mapping per window (omitted shapes counted, never published), and
-/// per-window Space membership with whole-snapshot refusal on ANY
-/// unreadable membership — a transient read error and an empty (unknown)
-/// home both refuse the whole snapshot instead of publishing a partial one
-/// that would churn minimize slots downstream. Known other-Space
-/// membership is distinct: it admits with metadata (the engine omits
-/// non-homed windows), because a known home is evidence, not a gap.
+/// per-window Space membership. A failed membership read refuses the whole
+/// snapshot; empty (unknown-home), multi-Space, and other-Space lists admit
+/// with metadata (the roster retains every observed window and unknown
+/// membership surfaces explicitly downstream, never omission-as-close).
 /// `focused_wid` plus `focus_cg_owned` ride for the worker-stamped evidence
 /// gate.
 #[allow(clippy::too_many_arguments)]
@@ -572,24 +570,18 @@ pub fn build_scoped_snapshot(
                 read.facts.wid
             )
         });
-        // Membership is homing evidence: a failed read or an empty
-        // (unknown-home) list refuses the WHOLE snapshot — publishing the
-        // readable siblings as complete would invent the unreadable
-        // window's destruction downstream (same rule as classification
-        // gaps). A known home on another Space admits with metadata; the
-        // engine omits it per domain without destroying.
+        // Membership is homing evidence: a failed membership read still
+        // refuses the whole snapshot (transient read error, never a
+        // partial publish). Known, multi-Space, and empty (unknown-home)
+        // lists admit with metadata: the roster retains every observed
+        // window and the engine surfaces unknown membership explicitly
+        // (native workspace None) instead of omission-as-close.
         let spaces = spaces_of(observed.wid).map_err(|_| {
             format!(
                 "pid {pid}: refusing whole snapshot (wid {}: membership unreadable)",
                 observed.wid
             )
         })?;
-        if spaces.is_empty() {
-            return Err(format!(
-                "pid {pid}: refusing whole snapshot (wid {}: home Space unknown)",
-                observed.wid
-            ));
-        }
         meta.push(ScopedWindowMeta {
             wid: observed.wid,
             spaces,
@@ -609,6 +601,8 @@ pub fn build_scoped_snapshot(
         meta,
         excluded: excluded_reasons.len(),
         excluded_reasons,
+        cg_complete: outcome.cg_complete,
+        cg_owner_wids: outcome.cg_owner_wids.clone(),
         revision,
     })
 }
@@ -1946,6 +1940,8 @@ mod tests {
                 cg_layer: Some(0),
                 cg_onscreen: Some(true),
             }],
+            cg_complete: true,
+            cg_owner_wids: vec![wid],
         }
     }
 

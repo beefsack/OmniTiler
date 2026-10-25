@@ -248,7 +248,7 @@ fn scoped_obs(
     focused_wid: Option<u32>,
     revision: u64,
 ) -> ScopedObservation {
-    let windows = members.iter().map(|(window, _)| *window).collect();
+    let windows: Vec<ObservedWindow> = members.iter().map(|(window, _)| *window).collect();
     let meta = members
         .iter()
         .map(|(window, spaces)| meta(window.wid, spaces))
@@ -258,6 +258,10 @@ fn scoped_obs(
         Some(wid) => (Some(pid), Some((pid, Some(wid)))),
         None => (None, None),
     };
+    // Fake attests a fresh complete CG read for its own windows.
+    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
     ScopedObservation {
         pid,
         generation,
@@ -269,6 +273,8 @@ fn scoped_obs(
         ax_focus,
         cg_owned: focused_wid.is_some(),
         meta,
+        cg_complete: true,
+        cg_owner_wids,
     }
 }
 

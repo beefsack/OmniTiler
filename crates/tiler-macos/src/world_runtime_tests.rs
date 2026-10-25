@@ -36,6 +36,9 @@ fn retained_with_window(pid: u32, wid: u32, domain: &DomainKey) -> RetainedCore 
                 hints: tiler_core::size_hints::WindowSizeHints::none(),
             }],
             focused_wid: Some(wid),
+            roster: std::collections::BTreeMap::new(),
+            roster_incomplete: false,
+            roster_cause: String::new(),
         },
     );
     retained
@@ -305,6 +308,8 @@ fn minimized_entries_home_through_last_known_domains() {
             wid: 7,
             reason: ExcludeReason::Minimized,
         }],
+        cg_complete: true,
+        cg_owner_wids: vec![7],
         revision: 3,
     };
     refresh_minimized(&mut retained, 1001, &snapshot);
@@ -352,6 +357,8 @@ fn minimized_close_in_app_and_at_terminate_ride_explicit_closes() {
             wid: 7,
             reason: ExcludeReason::Minimized,
         }],
+        cg_complete: true,
+        cg_owner_wids: vec![7],
         revision: 3,
     };
     refresh_minimized(&mut retained, 1001, &minimized_snapshot());
@@ -366,10 +373,13 @@ fn minimized_close_in_app_and_at_terminate_ride_explicit_closes() {
     // Terminate with a live minimized entry: it rides the explicit
     // close map under its entry homing (recreate, then terminate).
     refresh_minimized(&mut retained, 1001, &minimized_snapshot());
-    let map = terminate_close_map(&retained, 1001, &[]);
-    assert_eq!(
-        map.get(&key),
-        Some(&vec![WindowId("1001_7".to_owned())]),
+    let flat: Vec<WindowId> = retained
+        .minimized
+        .values()
+        .map(|entry| entry.window.clone())
+        .collect();
+    assert!(
+        flat.contains(&WindowId("1001_7".to_owned())),
         "minimized terminate closes explicitly"
     );
 }
@@ -590,7 +600,7 @@ fn raw_attempt_staging_drops_unknown_operations_without_evidence() {
         &mut session,
         &retained,
         &DispatchContext::Synthetic,
-        BTreeMap::new(),
+        &[],
         1,
         1,
         None,
@@ -642,6 +652,8 @@ fn hidden_app_snapshot(wid: u32) -> ScopedBackendSnapshot {
             wid,
             reason: ExcludeReason::HiddenApp,
         }],
+        cg_complete: true,
+        cg_owner_wids: vec![wid],
         revision: 3,
     }
 }
@@ -706,6 +718,8 @@ fn hidden_app_exclusion_mints_minimized_record_for_explicit_close() {
         meta: Vec::new(),
         excluded: 0,
         excluded_reasons: Vec::new(),
+        cg_complete: true,
+        cg_owner_wids: vec![7],
         revision: 4,
     };
     refresh_minimized(&mut retained, 1001, &unhide);
@@ -722,17 +736,20 @@ fn hidden_app_exclusion_mints_minimized_record_for_explicit_close() {
 /// and never resurrects.
 #[test]
 fn hidden_then_terminate_produces_explicit_close() {
-    let (mut retained, key) = retained_with_known_domain(1001, 7);
+    let (mut retained, _key) = retained_with_known_domain(1001, 7);
     refresh_minimized(&mut retained, 1001, &hidden_app_snapshot(7));
     {
         use crate::runtime_core::note_scoped_members;
         note_scoped_members(&mut retained, 1001, &BTreeMap::new());
     }
-    let map = terminate_close_map(&retained, 1001, &[]);
-    assert_eq!(
-        map.get(&key),
-        Some(&vec![WindowId("1001_7".to_owned())]),
-        "hidden terminate closes explicitly under entry homing"
+    let flat: Vec<WindowId> = retained
+        .minimized
+        .values()
+        .map(|entry| entry.window.clone())
+        .collect();
+    assert!(
+        flat.contains(&WindowId("1001_7".to_owned())),
+        "hidden terminate closes explicitly"
     );
 }
 
@@ -765,10 +782,13 @@ fn hidden_repeat_snapshots_after_prune_retain_fact_and_close() {
     assert_eq!(entries[0].window.0, "1001_7");
     assert_eq!(entries[0].output, key.output);
     assert_eq!(entries[0].workspace, key.workspace);
-    let map = terminate_close_map(&retained, 1001, &[]);
-    assert_eq!(
-        map.get(&key),
-        Some(&vec![WindowId("1001_7".to_owned())]),
+    let flat: Vec<WindowId> = retained
+        .minimized
+        .values()
+        .map(|entry| entry.window.clone())
+        .collect();
+    assert!(
+        flat.contains(&WindowId("1001_7".to_owned())),
         "repeat-hide terminate closes explicitly"
     );
     // Unknown never-homed window: repeated HiddenApp exclusions with no
@@ -882,7 +902,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         )],
     )]);
     let memory = crate::runtime_core::LifetimeMemory::empty();
-    let closed: BTreeMap<DomainKey, Vec<WindowId>> = BTreeMap::new();
+    let closed: Vec<WindowId> = Vec::new();
     let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
     let owned_first = "req-1".to_owned();
     let mut input = crate::world_builder::ReportInput::new(
@@ -987,7 +1007,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         &mut session,
         &retained,
         &crate::world_runtime::DispatchContext::Native(Arc::new(ctx.clone())),
-        BTreeMap::new(),
+        &[],
         4,
         4,
         None,

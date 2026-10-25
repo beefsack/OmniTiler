@@ -22,7 +22,6 @@ use std::sync::{Arc, Mutex};
 use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIngress, GestureSettled};
-use tiler_core::session::DomainKey;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{OneShotEffect, ScopeAuthority, WorldCommand, WorldReply};
 
@@ -130,7 +129,7 @@ pub(crate) fn dispatch_report(
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
     dispatch: DispatchContext,
-    closed: BTreeMap<DomainKey, Vec<WindowId>>,
+    closed: Vec<WindowId>,
     command: Option<WorldCommand>,
     gesture: Option<GestureIngress>,
     command_is_select: bool,
@@ -312,7 +311,7 @@ pub(crate) fn dispatch_gesture_report(
         session,
         retained,
         &dispatch,
-        BTreeMap::new(),
+        &[],
         ticket.observation_seq,
         ticket.request_seq,
         ticket.command_seq,
@@ -503,7 +502,7 @@ fn dispatch_ticket(
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
     dispatch: DispatchContext,
-    closed: BTreeMap<DomainKey, Vec<WindowId>>,
+    closed: Vec<WindowId>,
     ticket: RequestTicket,
     gesture: Option<GestureIngress>,
     command_is_select: bool,
@@ -525,7 +524,7 @@ fn dispatch_ticket(
         session,
         retained,
         &dispatch,
-        closed,
+        &closed,
         ticket.observation_seq,
         ticket.request_seq,
         ticket.command_seq,
@@ -602,6 +601,9 @@ fn dispatch_ticket(
                         generation,
                         seq,
                     );
+                    for id in &report.closed {
+                        session.pending_closes.remove(id);
+                    }
                     DispatchVerdict::Applied { select_operation }
                 }
                 ReplyVerdict::Refused { reason } => {
@@ -706,6 +708,9 @@ fn dispatch_ticket(
                         generation,
                         seq,
                     );
+                    for id in &report.closed {
+                        session.pending_closes.remove(id);
+                    }
                     DispatchVerdict::Applied { select_operation }
                 }
                 ReplyVerdict::Refused { reason } => {
@@ -801,7 +806,7 @@ fn retry_observation_only(
         focus_queue,
         focus_capacity,
         dispatch,
-        BTreeMap::new(),
+        Vec::new(),
         retry,
         None,
         false,
