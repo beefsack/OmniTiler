@@ -4,9 +4,10 @@
 // output views) and carries them on the next report with original write
 // stamps, actual setter evidence, immediate readbacks, and nullable DPI.
 // Host-owned logical receipts stay empty: native homing/views never ride
-// as logical pre/post evidence (the current attempt shape has no native
-// namespace; translation through the adapter binding table would forge
-// logical evidence and poison core third-location proof). Maximize-clear
+// as logical pre/post/base evidence (translation through the adapter
+// binding table would forge logical evidence and poison core
+// third-location proof). The fresh same-turn native desktop/current ids
+// ride the native keys for core-side translation. Maximize-clear
 // stays absent: Stage 3 parks native clear actuation, so no setter ever
 // runs and there is nothing truthful to report. Included in `npm test`.
 
@@ -275,23 +276,24 @@ describe("world raw mechanical attempts", () => {
                 { win: "win-c", target: [300, 200, 250, 180], setter: "accepted", readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "op-float-1", pre: [10, 10, 100, 100] },
             );
             // Membership: exact logical target correlation plus the real
-            // setter; native homing never rides as logical pre/post
-            // evidence (host-owned gap: translation would forge proof).
+            // setter; logical pre/post stay null while the fresh same-turn
+            // native desktop ids ride the native keys for core translation.
             assert.deepEqual(
                 members[0],
-                { op: "op-9", win: "win-a", out: "out-2", ws: "w2", setter: "accepted", pre: null, post: null, attemptMs: "1" },
+                { op: "op-9", win: "win-a", out: "out-2", ws: "w2", setter: "accepted", pre: null, post: null, nativePre: "d1", nativePost: "d2", attemptMs: "1" },
             );
-            // Views: follow parent plus standalone, same null-evidence
-            // rule; the adapter never invents logical proof.
+            // Views: follow parent plus standalone, same null logical
+            // rule with fresh native currents plus the observation-time
+            // baseline; the adapter never invents logical proof.
             const follow = views.find((v) => v["op"] === "op-9");
             assert.deepEqual(
                 follow,
-                { op: "op-9", out: "out-2", ws: "w2", setter: "accepted", pre: null, post: null, base: null, attemptMs: "1" },
+                { op: "op-9", out: "out-2", ws: "w2", setter: "accepted", pre: null, post: null, base: null, nativePre: "d1", nativePost: "d2", nativeBase: "d1", attemptMs: "1" },
             );
             const alone = views.find((v) => v["op"] === "op-10");
             assert.deepEqual(
                 alone,
-                { op: "op-10", out: "out-1", ws: "w1", setter: "accepted", pre: null, post: null, base: null, attemptMs: "1" },
+                { op: "op-10", out: "out-1", ws: "w1", setter: "accepted", pre: null, post: null, base: null, nativePre: "d2", nativePost: "d1", nativeBase: "d2", attemptMs: "1" },
             );
         } finally {
             flow.handle.stop();
@@ -694,7 +696,8 @@ describe("world setter attempt correspondence", () => {
         const members = state.memberAttemptsForReport();
         assert.deepEqual(members, [{
             op: "op-9", win: "win-a", out: "out-2", ws: "w2",
-            setter: "accepted", pre: null, post: null, attemptMs: "9",
+            setter: "accepted", pre: null, post: null,
+            nativePre: "d1", nativePost: "d1", attemptMs: "9",
         }], "veto keeps the one real setter disposition");
         assert.equal(result.membershipWrites, 0, "unproven setter earns no write credit");
     });
@@ -825,7 +828,8 @@ describe("world setter attempt correspondence", () => {
         assert.equal(setters, 1, "output setter ran once before throwing");
         assert.deepEqual(state.memberAttemptsForReport(), [{
             op: "op-9", win: "win-a", out: "out-2", ws: "w2",
-            setter: "threw", pre: null, post: null, attemptMs: "9",
+            setter: "threw", pre: null, post: null,
+            nativePre: "d1", nativePost: "d2", attemptMs: "9",
         }], "throw after moving keeps the threw disposition, never accepted");
         assert.equal(result.membershipWrites, 0, "ambiguous throw earns no write credit");
     });
@@ -887,7 +891,8 @@ describe("world setter attempt correspondence", () => {
         assert.equal(sends, 1, "output setter ran once before the homing went unreadable");
         assert.deepEqual(state.memberAttemptsForReport(), [{
             op: "op-10", win: "win-q", out: "out-b", ws: "w1",
-            setter: "accepted", pre: null, post: null, attemptMs: "9",
+            setter: "accepted", pre: null, post: null,
+            nativePre: "da", nativePost: null, attemptMs: "9",
         }], "superseded flight keeps the real output disposition");
         assert.equal(result.membershipWrites, 0, "superseded flight earns no write credit");
     });

@@ -53,7 +53,7 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   broker below. The stale alignment option and v1 discovery route are removed;
   there is no compatibility shim.
 
-### Stage 2 draft boundary (not accepted)
+### Stage 2 boundary (complete offline)
 
 - The paired implementation removes the stale alignment option and v1 discovery,
   and introduces sole-broker capture, sender-bound queue/take and presentation
@@ -83,8 +83,9 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   original write stamp. Never fabricate an empty after-order.
 - Raw frame/member/view attempts now report dispatched setters with original
   broker-clock stamps, truthful immediate frame/prewrite reads and null DPI in
-  KWin-logical coordinates. Host-owned member/view pre/post/base stay null: the
-  shared fields are logical, not native evidence. Bound valid acknowledgements
+  KWin-logical coordinates. Host-owned logical member/view pre/post/base stay
+  null; fresh native reads use `nativePre/nativePost/nativeBase`. Core alone
+  resolves their identities. Bound valid acknowledgements
   retire only delivered matching rows; transport loss retains them, generation
   reset clears them. Clear actuation remains a stage 3 hold, so that attempt lane
   is empty rather than invented.
@@ -94,12 +95,15 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   Core desires under actuatable scope supply members (including zero), never
   requester-only terminal results. Untouched floating scope is actuatable only
   with an unheld output and no gesture, as in the Windows v2 reference.
-- The five old red oracles now pass. A restored both-view-rewind discriminator
-  remains red: the source-view safety veto holds a proven-then-abandoned refill,
-  but current raw logical attempt fields cannot settle that host-owned
-  supersession. Only paired core refill desires may actuate; the legacy
-  first-remaining-row fallback is deleted. See [B2](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration).
-  Omission is not settlement proof. Do not run this draft live as accepted behavior.
+- The five old oracles and restored both-view rewind pass. Released source
+  backing adopts fresh at native order, even if never selected. The migration
+  transfer remains in the first proven-rewind reply; the next observation
+  resolves fresh adoption, retires the abandoned refill and settles with the
+  destination identity/members retained and both user switches winning. No view
+  is reapplied after the rewind. Only paired core refill desires may actuate;
+  the legacy first-remaining-row fallback is deleted. See
+  [B2](../changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration).
+  Omission is not settlement proof. Offline acceptance is not live acceptance.
 
 ## Delivered-baseline inventory (port or delete)
 

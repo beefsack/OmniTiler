@@ -4683,7 +4683,7 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   spares remain unbound until needed. These are existing core outcomes, not a
   new native reuse/deletion policy. Eligible-unbound reuse remains parked;
   [source-view supersession B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration)
-  is implemented in core; KDE paired delivery is tracked separately.
+  is delivered offline in core and KDE; native acceptance remains separate.
 - **Tentative native attempt settlement (option 1), user-selected 2026-10-25;
   review after KDE and macOS land:** optional capability-gated native
   before/after/baseline ids extend `MemberAttempt`/`ViewAttempt`. Non-null

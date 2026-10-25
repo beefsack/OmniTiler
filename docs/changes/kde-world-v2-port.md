@@ -6,13 +6,10 @@
   Windows is the migrated reference. No v1 compatibility, policy copies or
   second owner. [Principles](../principles.md#layering) and the
   [adapter guide](../porting/world-adapter-guide.md) are authoritative.
-- Stage 0 complete against `a0f54105`; stage 1 implements capability-gated
-  host-owned adoption in core/protocol. KDE remains unported and native
-  acceptance remains TBD. This record stays active for the whole port;
-  stage 2 has a partial paired implementation, not accepted as a completed
-  stage: the five original integration oracles are resolved, but the
-  restored B2 source-view discriminator remains blocked; B1 wake is delivered
-  offline. Stages 3 onward remain outstanding except for the
+- Stages 0/1/1b/2 are complete offline. The strict paired broker/v2 cutover,
+  B1 command wake and B2 native-attempt/source-release settlement are delivered;
+  all 720 KDE JS tests pass. Native acceptance remains TBD and this record stays
+  active for the whole port. Stages 3 onward are not started except for the
   observation/actuation vocabulary required by the atomic wire cutover.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
@@ -33,7 +30,7 @@
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
-| 2. Broker and strict v2 cutover | Partial: strict broker, creation consumption, raw attempts, migration/lifecycle oracles and B1 wake delivered offline; B2 source-release implementation/oracle conflict blocks closure | Rust 216/216; JS 719/720, only original both-view rewind red; no native or completion claim |
+| 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
@@ -333,14 +330,16 @@
 
 <a id="b1-external-command-wake-delivery-parked"></a>
 
+<a id="b2-source-view-rewind-during-migration-parked"></a>
+
 ### B2. Source-view rewind during migration
 
-- Core/protocol complete offline with 19 native-attempt settlement pins. Source
-  release is arrival-gated, also covers explicit closes/newer off-output proof,
+- Core/protocol and paired KDE complete offline with 19 native-attempt settlement
+  pins. Source release is arrival-gated, also covers explicit closes/newer off-output proof,
   and adopts listed backing even if never selected. The first proven-rewind
   reply retains the migration parent; fresh adoption supplies its echo on the
-  next report, then the refill retires and both switches win. KDE paired delivery
-  and Stage 2 closure follow separately. Earlier investigation below is historical
+  next report, then the refill retires and both switches win. Stage 2 is closed
+  offline. Earlier investigation below is historical
   and superseded by the core outcome at the end of this record.
 
 - Minimal discriminator: migrate a workspace; let members and both native views
@@ -794,3 +793,58 @@
   scenario faults and final convergence stay. The paired delivery records the
   exact assertion changes and final KDE gates; Stage 2 is not closed by this
   core-only outcome. Native acceptance and Stage 3+ remain outstanding.
+
+## Stage 2 closure and exact assertion alignment (2026-10-25)
+
+- Core delivery `c76ba5f1` precedes the paired KDE delivery. KDE now captures
+  member native pre/post and view native pre/post/baseline from fresh reads around
+  actual setters and observation-time baselines. Logical fields remain null;
+  no adapter binding table. Pending attempt identity/dedup includes native keys.
+  A proven abandoned refill plus abandoned target suppresses both view rewrites;
+  target-only lag still retries. Core owns settlement and adoption.
+- Superseded assertions, and only their contract reasons:
+  - `world-aligned-migration-engine.test.ts`, ordinary settled migration:
+    `!finalRows.some(source ws-1 binding)` becomes positive fresh source logical
+    presence, distinct from the migrated logical. The old absence encoded
+    dormant retention; the approved contract adopts released listed backing.
+  - Same file, both-view rewind: the old `held.some(kind === "view")` requirement
+    becomes refill retirement on the next observation and zero re-application.
+    Retaining an abandoned child conflicts with permanent refill retirement.
+    The original migration-transfer retention assertion, bound refill assertion,
+    scenario and final empty-transfer convergence all remain and pass.
+  - Same file's post-rewind write allow-list becomes the strictly stronger empty
+    write list. Counting begins before either current is rewound, covering the
+    immediate lagged apply as well as subsequent rounds. Added source native-
+    order position, distinct fresh identity, retained destination identity and
+    native member homing, both user currents, and final binding-survival checks.
+  - `world-aligned-migration-producer.test.ts`, return leg:
+    `leg2backing === "ws-1"` becomes nonempty freshly created backing absent from
+    the pre-return native order, with the original `ws-1` still owned by its
+    distinct adopted logical. Dormant return reuse was superseded; no generated
+    replacement id is assumed. All unreadable/stale/close/echo faults, stable
+    logical identity, membership, both views, exactly-once and leg-3 checks stay.
+- Final paired gates through devenv: locked `omnitiler` all-target build/tests
+  216/216 (167 library, 38 flow, 11 tray), strict all-target clippy and workspace
+  formatting pass. JS typecheck/build and full suite pass 720/720, zero failures,
+  skipped or cancelled, including the rewind with the earlier write boundary.
+  Core/protocol/Windows gates remain 2,057/2,057 and acceptance 6/6 as above.
+- Additional verification disclosed, not repaired here: four unchanged macOS
+  dock-swipe version-read failures on a non-macOS host and existing macOS lib-test
+  dead-code strict-clippy failure. An optional broader KDE settings-exporter test
+  also exposes the previously noted catalog-count drift (19 versus 23); that
+  crate is unchanged and outside the service/JS Stage 2 delivery gates. No
+  dependency or live-state change. The earlier helper exits/heap failures did
+  not recur; original causes remain unproven, diagnostics are now retained.
+- Stage 2 is complete offline, not native-accepted. Source-release and other
+  host-owned adoption decisions remain tentative for the comprehensive
+  cross-platform review in the backlog. Existing parked native-order merging,
+  eligible-spare reuse, unknown sticky retention, Activities/configure and
+  deferred directional policy questions are unchanged. Deferred release work
+  on an absent output remains deduplicated until that output is observed or the
+  incarnation resets; no per-report growth is introduced.
+- Exact next action: Stage 3 observe/actuate - finish fresh v2 facts and attempt
+  receipts, presentation ingress and frame/member/view/clear operation-token
+  handling; preserve native identity, recovery, watermark/generation fencing and
+  last-moment vetoes; remove legacy feedback/verdict and native-derived homing
+  routes. Do not claim native arrival from a setter or logical receipt alone.
+  Stage 3 and native testing were not started by this delivery.

@@ -19,7 +19,7 @@
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
 import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter } from "./world-report";
-import { isCanonicalU64 } from "./world-seq";
+import { isCanonicalU64, isOpaqueId } from "./world-seq";
 import { WorldAdapterState } from "./world-state";
 
 export interface ApplyEnv {
@@ -251,6 +251,42 @@ function safeResolve(resolve: () => object | null): object | null {
     }
 }
 
+// Fresh same-turn native evidence for host-owned attempt rows (never a
+// binding table): the adapter reads live native ids immediately
+// before/after each setter and reports them raw; the core translates
+// through its own per-output bindings. Logical pre/post/base stay null.
+// Unreadable or non-opaque reads ride null (unknown), never a guess.
+function liveNativeWsOf(home: { out: string; ws: string } | null): string | null {
+    if (home === null || !isOpaqueId(home.ws)) {
+        return null;
+    }
+    return home.ws;
+}
+
+function readNativeWsNow(env: ApplyEnv, ref: object): string | null {
+    try {
+        return liveNativeWsOf(env.readLiveMembership(ref));
+    } catch (error) {
+        void error;
+        return null;
+    }
+}
+
+function readNativeViewNow(env: ApplyEnv, out: string): string | null {
+    try {
+        const current = env.readLiveView(out);
+        return typeof current === "string" && isOpaqueId(current) ? current : null;
+    } catch (error) {
+        void error;
+        return null;
+    }
+}
+
+function observationNativeView(observation: WorldObservation, out: string): string | null {
+    const current = observation.topology.find((entry) => entry.out === out)?.current;
+    return typeof current === "string" && current !== "" && isOpaqueId(current) ? current : null;
+}
+
 // Friendly KDE-style name for a proven desktop: `Desktop N` with the
 // native one-based position in the proving enumeration (mirroring KWin's
 // own `defaultName`, i18n `Desktop %1`). Position comes from the snapshot
@@ -480,6 +516,10 @@ function actuateViewForTransfer(
     if (wsRef === null || outRef === null) {
         return false;
     }
+    // Fresh same-turn native currents around the write; the observation
+    // baseline is the entry observation's current for the target output.
+    const viewPre = readNativeViewNow(env, transfer.out);
+    const viewBase = observationNativeView(env.observation, transfer.out);
     let threw = false;
     let ok = false;
     try {
@@ -488,15 +528,16 @@ function actuateViewForTransfer(
         void error;
         threw = true;
     }
+    const viewPost = readNativeViewNow(env, transfer.out);
     // One native view write ran: the mechanical disposition rides the next
     // report under the owning phase identity (the window follow parent or
-    // the migration parent). Native views never ride as logical
-    // pre/post/base evidence (host-owned gap); the exact logical target
-    // correlation plus the real setter is the whole row.
+    // the migration parent). Logical pre/post/base stay null; the fresh
+    // native currents ride the native keys for core-side translation.
     state.recordViewAttempt({
         op: transfer.op, out: transfer.out, ws: transfer.ws,
         setter: threw ? "threw" : ok ? "accepted" : "refused",
         pre: null, post: null, base: null,
+        nativePre: viewPre, nativePost: viewPost, nativeBase: viewBase,
         attemptMs: isCanonicalU64(state.lastClock) ? state.lastClock : "0",
     });
     return targetNative !== null && liveViewShowsOn(env, transfer.out, targetNative);
@@ -888,7 +929,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
                     setter: threw ? "threw" : outOk ? "accepted" : "refused",
-                    pre: null, post: null, attemptMs: stamp,
+                    pre: null, post: null,
+                    nativePre: liveNativeWsOf(liveHome),
+                    nativePost: readNativeWsNow(env, observed.ref),
+                    attemptMs: stamp,
                 });
                 result.held += 1;
                 if (midApplyStopped(env, entryObs)) {
@@ -920,7 +964,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
                     setter: threw ? "threw" : outOk ? "accepted" : "refused",
-                    pre: null, post: null, attemptMs: stamp,
+                    pre: null, post: null,
+                    nativePre: liveNativeWsOf(liveHome),
+                    nativePost: liveNativeWsOf(midHome),
+                    attemptMs: stamp,
                 });
             }
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
@@ -940,7 +987,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
                     setter: threw ? "threw" : outOk ? "accepted" : "refused",
-                    pre: null, post: null, attemptMs: stamp,
+                    pre: null, post: null,
+                    nativePre: liveNativeWsOf(liveHome),
+                    nativePost: liveNativeWsOf(midHome),
+                    attemptMs: stamp,
                 });
             }
             state.settleAttempt(op, "superseded-external", "");
@@ -970,9 +1020,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             proof = null;
         }
         // The mechanical disposition plus the immediate homing readback
-        // rides the next report when a setter ran. Native homing never
-        // rides as logical pre/post evidence (host-owned gap); the exact
-        // logical target correlation plus the real setter is the whole row.
+        // rides the next report when a setter ran. Logical pre/post stay
+        // null; the fresh native desktop ids ride the native keys.
         if (outAttempted || wsAttempted) {
             const memberSetter: FrameSetter = threw
                 ? "threw"
@@ -981,7 +1030,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     : "accepted";
             state.recordMemberAttempt({
                 op, win: row.win, out: targetOut, ws: targetWs,
-                setter: memberSetter, pre: null, post: null, attemptMs: stamp,
+                setter: memberSetter, pre: null, post: null,
+                nativePre: liveNativeWsOf(liveHome),
+                nativePost: liveNativeWsOf(proof),
+                attemptMs: stamp,
             });
         }
         if (proof !== null && proof.out === targetOut && proof.ws === targetNative) {
@@ -1500,6 +1552,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         state.armPossiblyExecuted(t.op, "view", `${t.out}/${t.ws}`);
+        // Fresh same-turn native currents around the write; the baseline
+        // is the entry observation's current for the target output.
+        const viewPre = readNativeViewNow(env, t.out);
+        const viewBase = observationNativeView(observation, t.out);
         let threw = false;
         let ok = false;
         try {
@@ -1508,13 +1564,16 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             threw = true;
         }
+        const viewPost = readNativeViewNow(env, t.out);
         // One native view write ran: the mechanical disposition rides the
-        // next report under the owning view identity. Native views never
-        // ride as logical pre/post/base evidence (host-owned gap).
+        // next report under the owning view identity. Logical pre/post/base
+        // stay null; the fresh native currents ride the native keys.
         state.recordViewAttempt({
             op: t.op, out: t.out, ws: t.ws,
             setter: threw ? "threw" : ok ? "accepted" : "refused",
-            pre: null, post: null, base: null, attemptMs: stamp,
+            pre: null, post: null, base: null,
+            nativePre: viewPre, nativePost: viewPost, nativeBase: viewBase,
+            attemptMs: stamp,
         });
         if (targetNative !== null && liveViewShowsOn(env, t.out, targetNative)) {
             result.viewWrites += 1;
@@ -1723,6 +1782,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
             let home = liveHomeOf(observed.ref);
             const pre = migrationHomeShape(home, observed, targetLogical);
+            // Fresh same-turn native pre for every attempt row below: the
+            // live desktop id before any setter in this iteration.
+            const memberPreWs = liveNativeWsOf(home);
             if (home === null) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=null tgtView=null echo=skipped set=skipped proof=unreadable branch=failed-home-unreadable`);
                 result.held += 1;
@@ -1785,7 +1847,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     state.recordMemberAttempt({
                         op: t.op, win: id, out: t.out, ws: t.ws,
                         setter: threw ? "threw" : outOk ? "accepted" : "refused",
-                        pre: null, post: null, attemptMs: stamp,
+                        pre: null, post: null,
+                        nativePre: memberPreWs,
+                        nativePost: readNativeWsNow(env, observed.ref),
+                        attemptMs: stamp,
                     });
                     result.held += 1;
                     failed = true;
@@ -1805,7 +1870,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     state.recordMemberAttempt({
                         op: t.op, win: id, out: t.out, ws: t.ws,
                         setter: threw ? "threw" : outOk ? "accepted" : "refused",
-                        pre: null, post: null, attemptMs: stamp,
+                        pre: null, post: null,
+                        nativePre: memberPreWs,
+                        nativePost: liveNativeWsOf(home),
+                        attemptMs: stamp,
                     });
                 }
                 state.noteAppliedWindowTarget(id, t.op, t.out, targetNative);
@@ -1827,7 +1895,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     state.recordMemberAttempt({
                         op: t.op, win: id, out: t.out, ws: t.ws,
                         setter: threw ? "threw" : outOk ? "accepted" : "refused",
-                        pre: null, post: null, attemptMs: stamp,
+                        pre: null, post: null,
+                        nativePre: memberPreWs,
+                        nativePost: liveNativeWsOf(home),
+                        attemptMs: stamp,
                     });
                 }
                 state.settleAttempt(t.op, "superseded-external", "");
@@ -1865,7 +1936,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                         : "accepted";
                 state.recordMemberAttempt({
                     op: t.op, win: id, out: t.out, ws: t.ws,
-                    setter: migrateSetter, pre: null, post: null, attemptMs: stamp,
+                    setter: migrateSetter, pre: null, post: null,
+                    nativePre: memberPreWs,
+                    nativePost: liveNativeWsOf(proof),
+                    attemptMs: stamp,
                 });
             }
             const proofShape = migrationHomeShape(proof, observed, targetLogical);
@@ -1903,6 +1977,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         let refillChild = pairedRefill;
         // Newer external input supersedes a proven-then-abandoned refill
         // child: drop it for this apply with no replacement.
+        let refillAbandoned = false;
         if (refillChild !== undefined && sourceOut !== null) {
             const appliedView = state.appliedViewTarget.get(sourceOut);
             const topoNow = observation.topology.find((entry) => entry.out === sourceOut);
@@ -1910,6 +1985,23 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 topoNow !== undefined && topoNow.current !== appliedView.ws) {
                 state.settleAttempt(refillChild.op, "superseded-external", "");
                 refillChild = undefined;
+                refillAbandoned = true;
+            }
+        }
+        // Both views proven-then-abandoned (user switch, not lag): the
+        // refill above was just superseded as abandoned AND the target
+        // output also left its applied view under this same migration.
+        // Retrying the target alone would fight the user's switch while
+        // core settles it as external input, so skip it with no
+        // replacement and no attempt row. Target-only lag (refill still
+        // shown) still retries below.
+        let targetAbandoned = false;
+        if (refillAbandoned) {
+            const appliedTarget = state.appliedViewTarget.get(t.out);
+            const topoTgt = observation.topology.find((entry) => entry.out === t.out);
+            if (appliedTarget !== undefined && appliedTarget.op === t.op &&
+                topoTgt !== undefined && topoTgt.current !== appliedTarget.ws) {
+                targetAbandoned = true;
             }
         }
         let refillWs: string | null = null;
@@ -1924,17 +2016,23 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         const refillShown = refillWs === null || (sourceOut !== null && refillNative !== null && liveViewShowsOn(env, sourceOut, refillNative));
         let viewsProven = targetShown && refillShown;
         if (membersProven && !viewsProven && replyFresh(env, reply, entryObs)) {
-            if (!targetShown) {
+            if (!targetShown && !targetAbandoned) {
                 // Same-flight switch: the entry check above is the
                 // freshness proof; read-back decides.
+                const targetPre = readNativeViewNow(env, t.out);
+                const targetBase = observationNativeView(observation, t.out);
                 const targetView = actuateViewSameFlight(env, reply, t);
                 if (targetView.setter !== null) {
                     // One native target-view write ran under the stable
-                    // migration identity: mechanical fact only (native
-                    // views never ride as logical evidence).
+                    // migration identity: mechanical fact only. Logical
+                    // pre/post/base stay null; fresh natives ride the
+                    // native keys.
                     state.recordViewAttempt({
                         op: t.op, out: t.out, ws: t.ws,
                         setter: targetView.setter, pre: null, post: null, base: null,
+                        nativePre: targetPre,
+                        nativePost: readNativeViewNow(env, t.out),
+                        nativeBase: targetBase,
                         attemptMs: stamp,
                     });
                 }
@@ -1955,11 +2053,16 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     // switch's own synchronous signal cannot fail this
                     // attempt closed.
                     state.armPossiblyExecuted(refillOp, "view", `${sourceOut}/${refillWs}`);
+                    const refillPre = readNativeViewNow(env, sourceOut);
+                    const refillBase = observationNativeView(observation, sourceOut);
                     const refillView = actuateViewSameFlight(env, reply, { ...refillChild, follow: false });
                     if (refillView.setter !== null) {
                         state.recordViewAttempt({
                             op: refillOp, out: refillChild.out, ws: refillChild.ws,
                             setter: refillView.setter, pre: null, post: null, base: null,
+                            nativePre: refillPre,
+                            nativePost: readNativeViewNow(env, sourceOut),
+                            nativeBase: refillBase,
                             attemptMs: stamp,
                         });
                     }

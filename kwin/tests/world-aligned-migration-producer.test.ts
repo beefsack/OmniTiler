@@ -781,6 +781,7 @@ describe("world aligned migration producer", () => {
             // output step re-homes onto the destination current first.
             h.activeScreen = { name: LEFT };
             h.activeRef = winA;
+            const nativeOrderBeforeLeg2 = h.desktops.map((d) => d.id);
             h.handle.requestWorkspaceMigrate("right");
             h.runTimers();
             // One unreadable arrival round holds truthfully, then converges.
@@ -827,11 +828,21 @@ describe("world aligned migration producer", () => {
             const leg2refillWs = leg2refill?.["ws"] as string;
             assert.ok(leg2refillWs !== "" && leg2refillWs !== sourceLogical, "return refill excludes the riding logical");
             const settled2early = lastReply(h);
-            // The returned logical rebinds its dormant native cell (the
-            // initial (RIGHT, ws-1) mapping revalidates once the logical
-            // returns; only the refill needs fresh creation this leg).
+            // Released-source return (option 1): leg 1 released the
+            // (RIGHT, ws-1) pair and adopted it as a distinct fresh
+            // source row, so the returning logical cannot rebind its old
+            // cell - another logical workspace's empty desktop is never
+            // eligible reuse. The return publishes fresh backing through
+            // correlated creation alongside the refill, which keeps its
+            // own bound row on the source.
             const leg2backing = ((settled2early["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === RIGHT && b["id"] === sourceLogical)?.["bind"] ?? "");
-            assert.equal(leg2backing, "ws-1", "returned logical rebinds its dormant native cell (no second creation for the target)");
+            assert.ok(leg2backing !== "", "returned logical publishes fresh backing once created");
+            assert.ok(!nativeOrderBeforeLeg2.includes(leg2backing), `return backing is a fresh desktop, never a reused pre-existing id (got ${leg2backing})`);
+            const releasedCell = ((settled2early["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === RIGHT && b["bind"] === "ws-1"));
+            assert.ok(
+                releasedCell !== undefined && (releasedCell["id"] as string) !== sourceLogical,
+                `released ws-1 cell still belongs to its distinct adopted source row, never retaken: ${JSON.stringify(settled2early["workspaces"])}`,
+            );
             const leg2refillNative = ((settled2early["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === LEFT && b["id"] === leg2refillWs)?.["bind"] ?? "");
             assert.ok(leg2refillNative !== "", "return refill logical stays bound");
             assert.equal(winA.output.name, RIGHT, "returned member output moved");

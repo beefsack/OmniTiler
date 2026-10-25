@@ -211,8 +211,10 @@ export interface WorldFrameAttempt {
 // adapter binding table would forge logical evidence and poison core
 // third-location proof), so both ride `null` there: the setter plus exact
 // logical target correlation is the whole row, and the core holds the
-// flight ambiguous without re-actuation. At most one latest-wins entry per
-// operation window.
+// flight ambiguous without re-actuation. The fresh same-turn native
+// desktop ids ride `nativePre`/`nativePost` (null when unreadable); the
+// core translates them through its own per-output bindings. At most one
+// latest-wins entry per operation window.
 export interface WorldMemberAttempt {
     op: string;
     win: string;
@@ -221,14 +223,20 @@ export interface WorldMemberAttempt {
     setter: FrameSetter;
     pre: { out: string; ws: string } | null;
     post: { out: string; ws: string } | null;
+    nativePre?: string | null;
+    nativePost?: string | null;
     attemptMs: string;
 }
 // One normalized raw view attempt: the mechanical facts behind a single
 // native view write for one owning phase (standalone view id, window
 // follow parent, migration-target parent, or refill child id). Same
 // host-owned null-evidence rule as membership: `pre`/`post`/`base` ride
-// `null`, never translated native ids. At most one latest-wins entry per
-// owning view phase.
+// `null`, never translated native ids. The fresh same-turn native current
+// ids ride `nativePre` (live current before the write), `nativePost`
+// (live current immediately after), and `nativeBase` (observation-time
+// current for the target output, null when unreadable). The core
+// translates them through its own bindings for the attempt's target
+// output. At most one latest-wins entry per owning view phase.
 export interface WorldViewAttempt {
     op: string;
     out: string;
@@ -237,6 +245,9 @@ export interface WorldViewAttempt {
     pre: string | null;
     post: string | null;
     base: string | null;
+    nativePre?: string | null;
+    nativePost?: string | null;
+    nativeBase?: string | null;
     attemptMs: string;
 }
 // One normalized raw maximize-clear attempt: the mechanical facts behind a
@@ -1550,14 +1561,18 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
     const memberAttempts = input.memberAttempts.map((a) => {
         const homing = (h: { out: string; ws: string } | null): string =>
             h === null ? "null" : `{"out":${esc(h.out)},"ws":${esc(h.ws)}}`;
+        const native = (v: string | null): string => (v === null ? "null" : esc(v));
         return `{"op":${esc(a.op)},"win":${esc(a.win)},"out":${esc(a.out)},"ws":${esc(a.ws)},` +
             `"setter":${esc(a.setter)},"pre":${homing(a.pre)},"post":${homing(a.post)},` +
+            `"nativePre":${native(a.nativePre ?? null)},"nativePost":${native(a.nativePost ?? null)},` +
             `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
     }).join(",");
     const viewAttempts = input.viewAttempts.map((a) => {
         const view = (v: string | null): string => (v === null ? "null" : esc(v));
+        const native = (v: string | null): string => (v === null ? "null" : esc(v));
         return `{"op":${esc(a.op)},"out":${esc(a.out)},"ws":${esc(a.ws)},` +
             `"setter":${esc(a.setter)},"pre":${view(a.pre)},"post":${view(a.post)},"base":${view(a.base)},` +
+            `"nativePre":${native(a.nativePre ?? null)},"nativePost":${native(a.nativePost ?? null)},"nativeBase":${native(a.nativeBase ?? null)},` +
             `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
     }).join(",");
     const clearAttempts = input.clearAttempts.map((a) => {

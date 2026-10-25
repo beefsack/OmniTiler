@@ -457,19 +457,29 @@ export class WorldAdapterState {
     // Record one raw mechanical membership attempt. Latest-wins per
     // (operation, window); same refusal rules as frames (opaque
     // op/win/out/ws, null-or-shaped homings that are never translated
-    // logical receipts).
+    // logical receipts). Fresh same-turn native desktop ids ride
+    // nativePre/nativePost (null/empty unknown, opaque otherwise); the
+    // core translates them through its own bindings.
     recordMemberAttempt(attempt: WorldMemberAttempt): boolean {
         const homingOk = (h: { out: string; ws: string } | null): boolean =>
             h === null || (isOpaqueId(h.out) && isOpaqueId(h.ws));
+        const nativeOk = (v: string | null | undefined): boolean =>
+            v === null || v === undefined || v === "" || isOpaqueId(v);
         if (
             !isOpaqueId(attempt.op) || !isOpaqueId(attempt.win) ||
             !isOpaqueId(attempt.out) || !isOpaqueId(attempt.ws) ||
             !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
-            !homingOk(attempt.pre) || !homingOk(attempt.post)
+            !homingOk(attempt.pre) || !homingOk(attempt.post) ||
+            !nativeOk(attempt.nativePre) || !nativeOk(attempt.nativePost)
         ) {
             return false;
         }
-        this.memberAttempts.set(`${attempt.op}\u0000${attempt.win}`, { ...attempt });
+        const clean: WorldMemberAttempt = {
+            ...attempt,
+            nativePre: attempt.nativePre === "" ? null : (attempt.nativePre ?? null),
+            nativePost: attempt.nativePost === "" ? null : (attempt.nativePost ?? null),
+        };
+        this.memberAttempts.set(`${clean.op}\u0000${clean.win}`, { ...clean });
         while (this.memberAttempts.size > MAX_MEMBER_ATTEMPTS) {
             const oldest = this.memberAttempts.keys().next();
             if (oldest.done === true) {
@@ -482,15 +492,16 @@ export class WorldAdapterState {
     }
 
     // Record one raw mechanical view attempt. Latest-wins per owning view
-    // phase; empty pre/post/base normalize to null (unknown, like the
-    // wire decoder), never to forged proof.
+    // phase; empty pre/post/base/nativePre/nativePost/nativeBase normalize
+    // to null (unknown, like the wire decoder), never to forged proof.
     recordViewAttempt(attempt: WorldViewAttempt): boolean {
-        const viewOk = (v: string | null): boolean =>
-            v === null || v === "" || isOpaqueId(v);
+        const viewOk = (v: string | null | undefined): boolean =>
+            v === null || v === undefined || v === "" || isOpaqueId(v);
         if (
             !isOpaqueId(attempt.op) || !isOpaqueId(attempt.out) || !isOpaqueId(attempt.ws) ||
             !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
-            !viewOk(attempt.pre) || !viewOk(attempt.post) || !viewOk(attempt.base)
+            !viewOk(attempt.pre) || !viewOk(attempt.post) || !viewOk(attempt.base) ||
+            !viewOk(attempt.nativePre) || !viewOk(attempt.nativePost) || !viewOk(attempt.nativeBase)
         ) {
             return false;
         }
@@ -499,6 +510,9 @@ export class WorldAdapterState {
             pre: attempt.pre === "" ? null : attempt.pre,
             post: attempt.post === "" ? null : attempt.post,
             base: attempt.base === "" ? null : attempt.base,
+            nativePre: attempt.nativePre === "" ? null : (attempt.nativePre ?? null),
+            nativePost: attempt.nativePost === "" ? null : (attempt.nativePost ?? null),
+            nativeBase: attempt.nativeBase === "" ? null : (attempt.nativeBase ?? null),
         };
         this.viewAttempts.set(clean.op, clean);
         while (this.viewAttempts.size > MAX_VIEW_ATTEMPTS) {
@@ -600,6 +614,8 @@ export class WorldAdapterState {
             a.setter === b.setter &&
             JSON.stringify(a.pre) === JSON.stringify(b.pre) &&
             JSON.stringify(a.post) === JSON.stringify(b.post) &&
+            (a.nativePre ?? "") === (b.nativePre ?? "") &&
+            (a.nativePost ?? "") === (b.nativePost ?? "") &&
             a.attemptMs === b.attemptMs;
         for (const sent of this.inFlight.delivered.members) {
             const live = this.memberAttempts.get(`${sent.op}\u0000${sent.win}`);
@@ -612,6 +628,9 @@ export class WorldAdapterState {
             a.op === b.op && a.out === b.out && a.ws === b.ws &&
             a.setter === b.setter && (a.pre ?? "") === (b.pre ?? "") &&
             (a.post ?? "") === (b.post ?? "") && (a.base ?? "") === (b.base ?? "") &&
+            (a.nativePre ?? "") === (b.nativePre ?? "") &&
+            (a.nativePost ?? "") === (b.nativePost ?? "") &&
+            (a.nativeBase ?? "") === (b.nativeBase ?? "") &&
             a.attemptMs === b.attemptMs;
         for (const sent of this.inFlight.delivered.views) {
             const live = this.viewAttempts.get(sent.op);

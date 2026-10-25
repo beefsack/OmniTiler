@@ -698,9 +698,9 @@ describe("world aligned migration engine", () => {
             // Settlement: the logical unit rode to the destination on fresh
             // backing; the destination trailing native still backs its own
             // logical (no steal by ordinal reuse); the migrated logical
-            // appears exactly once (on the target); the emptied source
-            // native cell carries no fresh logical (core retains the
-            // mapping dormantly; the ring keeps its remaining cells).
+            // appears exactly once (on the target); the released source
+            // native adopts as a fresh empty logical row at native-order
+            // position (no dormant return binding, never the migrated id).
             assert.equal(moved?.["id"], sourceLogicalBefore, "logical identity rides the move");
             const trailingCell = finalRows.find((b) => b["out"] === "out-b" && b["bind"] === "ws-3");
             assert.ok(
@@ -713,9 +713,11 @@ describe("world aligned migration engine", () => {
                 "migrated logical lives exactly once, on the target",
             );
             assert.ok(
-                !finalRows.some((b) => b["out"] === "out-a" && b["bind"] === "ws-1"),
-                "emptied source native publishes no fresh logical",
+                finalRows.some((b) => b["out"] === "out-a" && b["bind"] === "ws-1" && b["id"] !== sourceLogicalBefore),
+                `released source native adopts a fresh logical: ${JSON.stringify(finalRows)}`,
             );
+            const freshSource = finalRows.find((b) => b["out"] === "out-a" && b["bind"] === "ws-1") as Record<string, string>;
+            assert.notEqual(freshSource["id"], sourceLogicalBefore, "fresh row is never the migrated id");
             // No replay anywhere: one command, bounded native calls.
             assert.equal(migrateCalls.length, 1);
             assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no busy refills");
@@ -749,11 +751,15 @@ describe("world aligned migration engine", () => {
         });
     });
 
-    it("retains both transfers while members arrived but BOTH views lag", { timeout: 180000 }, async () => {
-        // Both-view rewind discriminator, deliberately red: after both
-        // currents rewind, the adapter holds the source (superseded refill
-        // authorizes no replacement view) and the flight never converges
-        // here. Parked contract: zero unchosen source view writes.
+    it("retains the migration while members arrived but BOTH views lag, then converges on fresh adoption", { timeout: 180000 }, async () => {
+        // Both-view rewind discriminator (released-source contract): after
+        // both currents rewind to the pre-move desktops - including the
+        // migration-vacated source desktop - the first reply retains the
+        // migration (never settled from a gap) while the vacated source
+        // already adopts as a fresh logical row. The refill retires on the
+        // next round and never re-actuates; both user switches win with
+        // zero view writes, and the flight converges to empty.
+        // Parked contract: zero unchosen source view writes.
         const h = await makeHarness();
         try {
             await discover(h);
@@ -790,6 +796,7 @@ describe("world aligned migration engine", () => {
             // Native actuation landed: members moved, both views followed.
             assert.equal(h.currents.get("out-b"), createdNative, "target view follows the created backing");
             // Rewind both views to the pre-move currents.
+            const writesBefore = h.viewWrites.length;
             h.currents.set("out-b", "ws-2");
             h.currents.set("out-a", "ws-1");
             h.fire("currentDesktopChanged");
@@ -803,33 +810,91 @@ describe("world aligned migration engine", () => {
                 held.some((t) => t["kind"] === "migration"),
                 `members arrived but both views old retains the migration: ${JSON.stringify(held)}`,
             );
-            assert.ok(
-                held.some((t) => t["kind"] === "view"),
-                `members arrived but both views old retains the refill: ${JSON.stringify(held)}`,
-            );
-            // Zero unchosen source writes after the rewind: every
-            // source-output switch must name the core-chosen refill backing.
             const laggedRows = (lagged["workspaces"] as Array<Record<string, string>>);
+            // The vacated source desktop adopts as a FRESH logical row on
+            // the rewind reply itself (never the migrated id, never the
+            // refill): released-source adoption at native-order position.
+            const laggedFresh = laggedRows.find((b) => b["out"] === "out-a" && b["bind"] === "ws-1");
+            assert.ok(
+                laggedFresh !== undefined && laggedFresh["id"] !== migratedLogical,
+                `rewound source adopts a fresh row for the vacated desktop: ${JSON.stringify(laggedRows)}`,
+            );
+            const laggedRefillWs = (held.find((t) => t["kind"] === "view")?.["ws"] as string) ?? "";
+            assert.ok(
+                (laggedFresh as Record<string, string>)["id"] !== laggedRefillWs,
+                "fresh row is never the retired refill",
+            );
+            assert.equal(
+                Number((laggedFresh as Record<string, string>)["order"]),
+                0,
+                "fresh row sits at its native-order position",
+            );
+            // The migrated logical rides on the destination on its fresh
+            // backing, with members homed there.
+            const laggedMoved = laggedRows.find((b) => b["out"] === "out-b" && b["id"] === migratedLogical);
+            assert.equal(
+                laggedMoved?.["bind"],
+                createdNative,
+                "migrated logical stays on the destination on fresh backing",
+            );
+            for (const id of ["win-a", "win-c"]) {
+                const win = h.wins.find((w) => w.internalId === id) as FakeWindow;
+                assert.equal(win.output.name, "out-b", `member output moved: ${id}`);
+                assert.deepEqual(
+                    win.desktops.map((d) => d.id),
+                    [createdNative],
+                    `member homed on the created backing: ${id}`,
+                );
+            }
+            // Zero unchosen source writes after the rewind: the refill
+            // retires on the next round (asserted below), so no later
+            // source-output switch may name it.
             const laggedRefill = held.find((t) => t["kind"] === "view");
             const refillBacking = laggedRefill !== undefined
                 ? (laggedRows.find((b) => b["out"] === (laggedRefill["out"] as string) && b["id"] === (laggedRefill["ws"] as string))?.["bind"] ?? "")
                 : "";
             assert.ok(refillBacking !== "", "lagged reply binds the core-chosen refill");
-            const writesBefore = h.viewWrites.length;
-            // The held reply re-actuates both views; the next rounds must
-            // settle to empty. Bounded rounds (not the converging settle
-            // helper) so the failure names the stuck transfers instead of
-            // timing out.
+            // The refill retires on the next round and never re-actuates:
+            // a proven-then-abandoned view is newer external input, not
+            // lag, on either output. Bounded rounds (not the converging
+            // settle helper) so the failure names the stuck transfers
+            // instead of timing out.
+            let firstRound: Array<Record<string, unknown>> | null = null;
             for (let round = 0; round < 6; round += 1) {
                 h.runTimers();
                 await h.flushAll();
+                if (round === 0) {
+                    firstRound = transfersOf(lastReply(h));
+                }
             }
-            const fresh = h.viewWrites.slice(writesBefore);
             assert.ok(
-                fresh.every((w) => w === `out-b->${createdNative}` || w === `out-a->${refillBacking}`),
-                `no unchosen refill actuation after the rewind, got ${JSON.stringify(fresh)}`,
+                firstRound !== null && !firstRound.some((t) => t["kind"] === "view"),
+                `refill retires the round after the rewind, never reapplied: ${JSON.stringify(firstRound)}`,
+            );
+            const fresh = h.viewWrites.slice(writesBefore);
+            assert.deepEqual(
+                fresh,
+                [],
+                `no view re-actuation after the rewind: both switches win, got ${JSON.stringify(fresh)}`,
             );
             assert.deepEqual(transfersOf(lastReply(h)), [], "members plus both views settle");
+            assert.deepEqual(
+                Object.fromEntries(h.currents),
+                { "out-a": "ws-1", "out-b": "ws-2" },
+                "both rewound currents stick: the user's switch wins both outputs",
+            );
+            const finalRows = (lastReply(h)["workspaces"] as Array<Record<string, string>>);
+            const finalMoved = finalRows.find((b) => b["out"] === "out-b" && b["id"] === migratedLogical);
+            assert.equal(
+                finalMoved?.["bind"],
+                createdNative,
+                "destination logical identity and backing survive convergence",
+            );
+            const finalFresh = finalRows.find((b) => b["out"] === "out-a" && b["bind"] === "ws-1");
+            assert.ok(
+                finalFresh !== undefined && finalFresh["id"] !== migratedLogical,
+                `fresh source row survives convergence: ${JSON.stringify(finalRows)}`,
+            );
         } finally {
             await h.stop();
         }
