@@ -43,7 +43,7 @@ function makeFloatWin(
         ? { width: 200, height: 200 }
         : { width: 640, height: 480 };
     const ref: Record<string, unknown> = {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x: 0, y: 0, width: size.width, height: size.height },
         output: { name: opts.out ?? "out" },
@@ -198,7 +198,7 @@ function floatObservation(
         complete: true,
         gesture: false,
         focusedGlobal,
-        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,
         switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
@@ -475,7 +475,7 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
             complete: true,
             gesture: false,
             focusedGlobal: focused,
-            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
             cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
             focusFollowsCursor: false, cursorWarp: false,
             switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
@@ -679,6 +679,13 @@ interface EntryDesk { id: string; name: string }
 interface EntryWin {
     internalId: string;
     normalWindow: boolean;
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
     desktops: EntryDesk[];
@@ -716,7 +723,7 @@ function entryWin(id: string, out: string, ws: EntryDesk, fixed: boolean, above:
     let keepAbove = false;
     let keepBelow = false;
     const w = {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x: 0, y: 0, width: fixed ? 640 : 200, height: fixed ? 480 : 200 },
         output: { name: out },

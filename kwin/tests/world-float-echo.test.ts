@@ -21,7 +21,7 @@ function makeSurface() {
     const ws1 = desk("ws1");
     const wins = [
         {
-            internalId: "win-tiled", normalWindow: true,
+            internalId: "win-tiled", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximizeMode: 0, sticky: false,
@@ -29,7 +29,7 @@ function makeSurface() {
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-cap", normalWindow: true,
+            internalId: "win-cap", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 300, y: 0, width: 200, height: 200 },
             output: { name: "out" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximizeMode: 0, sticky: false,
@@ -37,7 +37,7 @@ function makeSurface() {
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-held", normalWindow: true,
+            internalId: "win-held", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 600, y: 0, width: 100, height: 100 },
             output: { name: "out" }, desktops: [ws1],
             minimized: false, fullscreen: true, maximizeMode: 0, sticky: false,
@@ -236,14 +236,15 @@ function replyFor(h: Harness, mutate: (body: Record<string, unknown>) => void): 
     last.callback(JSON.stringify({ ...snapshot, result: null }));
 }
 
-function reportFloating(h: Harness): Record<string, boolean> {
+function reportFloatIntent(h: Harness): Record<string, boolean> {
     const last = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
     assert.ok(last !== undefined);
     const body = JSON.parse(last.payload) as Record<string, unknown>;
     const inner = body["report"] as Record<string, unknown>;
+    const intent = new Set((inner["floatIntent"] as Array<unknown>).map(String));
     const out: Record<string, boolean> = {};
     for (const w of inner["windows"] as Array<Record<string, unknown>>) {
-        out[w["win"] as string] = w["floating"] as boolean;
+        out[w["win"] as string] = intent.has(w["win"] as string);
     }
     return out;
 }
@@ -286,7 +287,7 @@ describe("world capacity-float echo", () => {
         // The next report echoes the converged membership back to core.
         h.handle.requestFloat();
         runTimers(h);
-        const flags = reportFloating(h);
+        const flags = reportFloatIntent(h);
         assert.equal(flags["win-cap"], true, "capacity float echoes floating");
         assert.equal(flags["win-tiled"], false, "tile echoes tiled");
         assert.equal(flags["win-held"], false, "held overlay never echoes floating");
@@ -297,7 +298,7 @@ describe("world capacity-float echo", () => {
         const h = setup({ members: ["win-cap"], tile: [] });
         discover(h);
         runTimers(h);
-        const flags = reportFloating(h);
+        const flags = reportFloatIntent(h);
         assert.equal(flags["win-cap"], true, "stored float rides the first admission");
         h.handle.stop();
     });

@@ -118,7 +118,7 @@ function freshObservation(wins: Array<{ win: string; out: string; ws: string; fl
         complete: true,
         gesture: false,
         focusedGlobal: "",
-        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,
         switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
@@ -731,6 +731,13 @@ function makeBornSurface(backing: Map<string, EntryBacking>) {
             Object.defineProperties(record, {
                 internalId: { get: () => BRACED, enumerable: true },
                 normalWindow: { value: true, enumerable: true },
+                managed: { value: true, enumerable: true },
+                deleted: { value: false, enumerable: true },
+                transient: { value: false, enumerable: true },
+                transientFor: { value: null, enumerable: true },
+                dialog: { value: false, enumerable: true },
+                modal: { value: false, enumerable: true },
+                wantsInput: { value: true, enumerable: true },
                 frameGeometry: {
                     value: { x: 0, y: 0, width: 200, height: 200 }, enumerable: true,
                 },
@@ -916,7 +923,7 @@ describe("world born-maximized entry flow", () => {
         const auto = lastDescribe(calls);
         const body = JSON.parse(auto.payload) as Record<string, unknown>;
         const innerAuto = body["report"] as Record<string, unknown>;
-        assert.ok(((innerAuto["windows"] as Array<Record<string, unknown>>).some((w) => w["maximized"])), "birth rides unproven");
+        assert.ok(((innerAuto["windows"] as Array<Record<string, unknown>>).some((w) => (w["maximizeMode"] as number) !== 0)), "birth rides unproven");
         assert.equal(backing.get("win-b")?.setMaximizeCalls, 0, "zero actuation before bootstrap");
         assert.equal(backing.get("win-b")?.fullScreenWrites, 0, "no fullscreen writes");
         handle?.stop();
@@ -945,7 +952,7 @@ describe("world born-maximized entry flow", () => {
         const innerNext = body["report"] as Record<string, unknown>;
         assert.ok(!("command" in innerNext), "no command replay");
         assert.ok(
-            ((innerNext["windows"] as Array<Record<string, unknown>>).some((w) => w["win"] === BARE && !w["maximized"])),
+            ((innerNext["windows"] as Array<Record<string, unknown>>).some((w) => w["win"] === BARE && (w["maximizeMode"] as number) === 0)),
             "recaptured truth carries the restored tile",
         );
         handle?.stop();

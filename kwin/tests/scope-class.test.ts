@@ -24,7 +24,7 @@ function observe(scope: string | readonly string[] | undefined, wins: Array<{ id
     const desktops = [{ id: "ws-1" }];
     const screens = [{ name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }];
     const refs = wins.map((w) => ({
-        internalId: w.id,
+        internalId: w.id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
         output: { name: "out-1" },

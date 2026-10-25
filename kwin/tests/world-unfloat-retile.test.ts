@@ -94,7 +94,7 @@ function makeHarness(initial: LiveSpec[]) {
     const screens = [{ name: OUT, geometry: { x: 0, y: 0, width: 1920, height: 1080 } }];
     const wrap = (spec: LiveSpec): object => {
         const w: Record<string, unknown> = {
-            internalId: spec.braced,
+            internalId: spec.braced, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             output: { name: OUT },
             desktops: qmlLike([{ id: spec.ws }]),

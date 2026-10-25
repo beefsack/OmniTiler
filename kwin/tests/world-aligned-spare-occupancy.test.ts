@@ -1,6 +1,6 @@
 // Occupancy-only spare lifecycle for aligned per-output workspaces.
 // Producer-shaped regression through the real `WorldEngine` (via the
-// test-only `world_eval` example with `WORLD_EVAL_ALIGNED=1`) plus the
+// test-only `raw_world_eval` example with `WORLD_EVAL_ALIGNED=1`) plus the
 // production entry/apply path with fresh serial replies: showing an empty
 // end (including via a production-shaped empty-list sticky anchor, homed
 // by the observer at its output's current) creates no spare, relative-next
@@ -47,7 +47,7 @@ class WorldBridge {
         this.proc = proc;
         const stdout = proc.stdout;
         if (stdout === null || stdout === undefined) {
-            throw new Error("world_eval stdout unavailable");
+            throw new Error("raw_world_eval stdout unavailable");
         }
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
@@ -59,7 +59,7 @@ class WorldBridge {
             this.failAll(error instanceof Error ? error : new Error(String(error)));
         });
         proc.on("close", (code, signal) => {
-            this.failAll(new Error(`world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
+            this.failAll(new Error(`raw_world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
         });
     }
 
@@ -74,7 +74,7 @@ class WorldBridge {
 
     static start(): WorldBridge {
         return new WorldBridge(
-            spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
+            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
@@ -87,7 +87,7 @@ class WorldBridge {
             return Promise.reject(new Error(this.dead));
         }
         if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
-            return Promise.reject(new Error("world_eval process already exited"));
+            return Promise.reject(new Error("raw_world_eval process already exited"));
         }
         const line = JSON.stringify({ method, body: payload });
         return new Promise<string>((resolve, reject) => {
@@ -155,6 +155,13 @@ interface FakeDesktop {
 }
 
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -226,7 +233,7 @@ async function makeSpareHarness(): Promise<Harness> {
         const outputChanged = makeSignal();
         const winDesktopsChanged = makeSignal();
         return {
-            internalId: id,
+            internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 8, y: 52, width: 200, height: 200 },
             output: { name: out },
@@ -579,7 +586,7 @@ describe("world aligned spare occupancy-only", () => {
             const fillEnd = (tag: string, out: string, ws: string): void => {
                 const desk = h.desktops.find((d) => d.id === ws) as FakeDesktop;
                 const newcomer: FakeWindow = {
-                    internalId: tag,
+                    internalId: tag, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                     normalWindow: true,
                     frameGeometry: { x: 8, y: 52, width: 200, height: 200 },
                     output: { name: out },

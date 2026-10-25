@@ -23,6 +23,13 @@ interface FakeDesktop {
     name: string;
 }
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -110,7 +117,7 @@ function fakeSignal(): FakeSignal {
 
 const desk = (id: string, name?: string): FakeDesktop => ({ id, name: name ?? id });
 const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => ({
-    internalId: id,
+    internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
     normalWindow: true,
     frameGeometry: { x, y: 0, width: 200, height: 200 },
     output: { name: out },
@@ -1329,7 +1336,7 @@ describe("world apply safety reads", () => {
             complete: true,
             gesture: false,
             focusedGlobal: "",
-            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
             cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
             focusFollowsCursor: false, cursorWarp: false,
             switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
@@ -1595,7 +1602,7 @@ describe("world admission focus on settled floats", () => {
             complete: true,
             gesture: false,
             focusedGlobal: "",
-            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
             cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
             focusFollowsCursor: false, cursorWarp: false,
             switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",

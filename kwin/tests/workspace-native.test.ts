@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-    ensureTrailingEmptyDesktop,
     orderedDesktopEntries,
     parseWorkspaceMode,
     symbolForDigit,
@@ -11,8 +10,10 @@ import {
 
 // Retained free-function coverage for the trimmed workspace-native module:
 // mode parsing, the numbered shortcut catalog, and the pure desktop
-// ordering/trailing-empty helpers. The session adapter class and its
-// entry wiring are retired with the legacy plan route.
+// ordering helper. Trailing-empty and displacement decisions are retired:
+// owned by the shared core (`plan_trailing` in
+// crates/tiler-core/src/workspace.rs and `choose_displaced_destination` in
+// crates/tiler-core/src/workspace_scope.rs, covered there).
 
 describe("workspace mode parsing and chord catalog", () => {
     it("selects workspaceMode with invalid defaulting to per-output-local", () => {
@@ -53,7 +54,7 @@ describe("workspace mode parsing and chord catalog", () => {
     });
 });
 
-describe("workspace lifecycle mapping and trailing empty", () => {
+describe("workspace lifecycle mapping", () => {
     it("orders backing desktops by x11 number with positional default", () => {
         const a = { ref: {}, id: "b", num: 2 };
         const b = { ref: {}, id: "a", num: 1 };
@@ -64,33 +65,5 @@ describe("workspace lifecycle mapping and trailing empty", () => {
             { ref: {}, id: "y", num: 1 },
         ]);
         assert.deepEqual(positional.map((entry) => entry.id), ["x", "y"]);
-    });
-
-    it("keeps the literal last ordered desktop as trailing empty and retires only safe owned empties", () => {
-        const removed: string[] = [];
-        const result = ensureTrailingEmptyDesktop({
-            orderedIds: ["a", "b", "c"],
-            isEmpty: (id) => id !== "a",
-            isVisible: (id) => id === "a",
-            removeDesktop: (id) => {
-                removed.push(id);
-                return true;
-            },
-            createDesktop: () => null,
-        });
-        assert.deepEqual(removed, ["b"]);
-        assert.deepEqual(result.removedIds, ["b"]);
-        assert.equal(result.appendedId, null);
-    });
-
-    it("appends one trailing empty when the last ordered desktop is occupied", () => {
-        const result = ensureTrailingEmptyDesktop({
-            orderedIds: ["a", "b"],
-            isEmpty: () => false,
-            isVisible: () => false,
-            removeDesktop: () => false,
-            createDesktop: () => "c",
-        });
-        assert.equal(result.appendedId, "c");
     });
 });

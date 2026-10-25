@@ -240,8 +240,11 @@ the v2 codec does not carry raw `SafetyFacts`, richer native role/app-rule facts
 or a remote classification request. Windows calls the shared policy in-process.
 A remote broker must expose a fact-capture transport to its Rust policy owner
 and run these same core entry points there, not copy them into the observer.
-That wrapper transport is port work; a richer shared ingress would be a larger
-interface change to review, not a compatibility route or an API already shipped.
+KDE's wrapper now carries raw candidate facts and calls the existing shared
+fixed predicate in Rust. Role/control normalization and the remaining policy
+deletions are still [partial port work](../changes/kde-world-v2-port.md#stage-4-partial-outcome-and-deletion-boundary);
+a richer shared ingress would be a larger interface change to review, not a
+compatibility route or an API already shipped.
 
 ## 3. Identity, sequencing and dedup
 

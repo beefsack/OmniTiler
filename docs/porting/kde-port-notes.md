@@ -7,8 +7,10 @@ describes the delivered baseline, not an accepted v2 KDE runtime.
 The staged implementation and parked boundaries are tracked in
 [KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1/1b/2/3 are
 complete offline, including command wake, source-view rewind settlement,
-raw attempts and native presentation ingress. Stage 4 removes classification
-policy copies; Stage 5 replaces renderer derivation. Native acceptance remains
+raw attempts and native presentation ingress. Stage 4 is partial: required raw
+candidate capture and Rust fixed-size wire classification are delivered, with
+role/born/gesture/toggle policy still outstanding. Stage 5 replaces renderer
+derivation. Native acceptance remains
 outstanding; no logical receipt or offline test is native arrival proof.
 
 KWin source is read from the local sibling clone at the documented
@@ -124,11 +126,13 @@ JS adapter (`kwin/src/`):
   `world-shortcuts.ts`, `world-settings-live.ts`: delete adapter-side
   policy copies (admission, gesture resolution, refill, tiling toggle
   decisions). Shortcuts submit planner-resolved world commands only.
-- `workspace-native.ts`, `born-maximized.ts`,
-  `fixed-size-predicate.ts`, `migration-source-refill.ts`,
-  `scope-class.ts`, `same-axis-move.ts`: delete TypeScript policy
-  copies; these are core-owned (`workspace_scope.rs`,
-  `window_policy.rs`, `output_selection.rs`, `admission.rs`).
+- Stage 4 deleted `born-maximized.ts`, `fixed-size-predicate.ts`,
+  `migration-source-refill.ts` and `same-axis-move.ts`; configuration carriage
+  moved into `world-settings-live.ts`, not policy. Unused trailing/displacement
+  helpers in `workspace-native.ts` and the refill selector were deleted.
+  `scope-class.ts` remains the fixture-only safety filter; local fixed/born
+  and command/gesture policy deletion remains incomplete. Shared owners include
+  `workspace_scope.rs`, `window_policy.rs`, `output_selection.rs`, `admission.rs`.
   `tray-publisher.ts` keeps native placement/anchoring/styling and
   click-to-command; pager content comes from core.
 - `world-born-maximized.ts`, `provenance-entry.ts`, `native-id.ts`,
@@ -302,10 +306,14 @@ request fixtures pin the JS producer, including populated raw attempts.
 ## Material rough edges (no behavior change selected)
 
 - The v2 world wire carries projected `WindowFact`s, not raw `SafetyFacts` or
-  rich native classification/rule facts. Define the JS-to-Rust broker capture
-  envelope so the Rust owner calls the existing shared policy entry points;
-  never replace missing transport with TypeScript policy copies. A shared
-  classification-ingress redesign is not implemented here.
+  rich native classification/rule facts. The sole KDE capture wrapper now
+  requires KWin-shaped raw candidate rows; Rust `kde_raw.rs` calls the existing
+  shared fixed predicate and emits strict projected facts. There is no old
+  projected-capture fallback. Native role/control normalization, richer app/rule
+  capture, born clear and neutral tiling-toggle intents remain unresolved in
+  [Stage 4](../changes/kde-world-v2-port.md#stage-4-partial-outcome-and-deletion-boundary).
+  The gesture lifecycle API already exists and is next. No shared ingress
+  redesign or broker logical-policy owner is introduced.
 
 - B1 command wake and B2 released-source rewind pass offline.
   No passing transport or logical receipt is native settlement evidence.

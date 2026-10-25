@@ -7,7 +7,7 @@ import {
     SAME_AXIS_MOVE_SWAP,
     normalizeSameAxisMove,
     readSameAxisMoveValue,
-} from "../src/same-axis-move";
+} from "../src/world-settings-live";
 
 function entryXml(path: string): string {
     return readFileSync(path, "utf8");

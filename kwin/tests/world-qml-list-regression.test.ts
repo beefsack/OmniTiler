@@ -79,6 +79,13 @@ const qmlLike = (items: ReadonlyArray<unknown>): object => {
 };
 
 interface SyntheticWin {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     frameGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
@@ -126,7 +133,7 @@ describe("world qml-list regression", () => {
         // normalized bare ids.
         const liveWins: SyntheticWin[] = [
             {
-                internalId: `{${WIN_A}}`,
+                internalId: `{${WIN_A}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 8, y: 8, width: 380, height: 584 },
                 output: { name: OUT },
                 desktops: qmlLike([{ id: WS_A }]),
@@ -136,7 +143,7 @@ describe("world qml-list regression", () => {
                 onAllDesktops: false,
             },
             {
-                internalId: `{${WIN_B}}`,
+                internalId: `{${WIN_B}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 412, y: 8, width: 380, height: 584 },
                 output: { name: OUT },
                 desktops: qmlLike([{ id: WS_B }]),
@@ -177,7 +184,7 @@ describe("world qml-list regression", () => {
             win: string, ws: string, rect: { x: number; y: number; w: number; h: number },
         ) => {
             const ref = {
-                internalId: win,
+                internalId: win, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: rect.x, y: rect.y, width: rect.w, height: rect.h },
                 output: { name: OUT },
                 desktops: qmlLike([{ id: ws }]),
@@ -235,7 +242,7 @@ describe("world qml-list regression", () => {
             complete: true,
             gesture: false,
             focusedGlobal: WIN_A,
-            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
             cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
             focusFollowsCursor: false, cursorWarp: false,
             switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",

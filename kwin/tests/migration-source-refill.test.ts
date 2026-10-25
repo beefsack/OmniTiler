@@ -11,8 +11,7 @@ import {
     MIGRATION_SOURCE_REFILL_MRU,
     normalizeMigrationSourceRefill,
     readMigrationSourceRefillValue,
-    selectMigrationSourceRefill,
-} from "../src/migration-source-refill";
+} from "../src/world-settings-live";
 
 function entryFile(path: string): string {
     return readFileSync(path, "utf8");
@@ -49,55 +48,9 @@ describe("migration source-refill setting validation", () => {
     });
 });
 
-describe("migration source-refill pure selector", () => {
-    it("refills the eligible remembered id under MRU and the last id by default", () => {
-        assert.equal(
-            selectMigrationSourceRefill("most-recently-used-workspace", "ws-1", ["ws-1", "ws-e"]),
-            "ws-1",
-        );
-        assert.equal(
-            selectMigrationSourceRefill("last-remaining-workspace", "ws-1", ["ws-1", "ws-e"]),
-            "ws-e",
-        );
-    });
-
-    it("falls back to last remaining without an eligible entry", () => {
-        // No history.
-        assert.equal(
-            selectMigrationSourceRefill("most-recently-used-workspace", undefined, ["ws-1", "ws-e"]),
-            "ws-e",
-        );
-        assert.equal(
-            selectMigrationSourceRefill("most-recently-used-workspace", null, ["ws-1", "ws-e"]),
-            "ws-e",
-        );
-        // Remembered id is the migrated one (excluded from remaining).
-        assert.equal(
-            selectMigrationSourceRefill("most-recently-used-workspace", "ws-2", ["ws-1", "ws-e"]),
-            "ws-e",
-        );
-        // Remembered id was deleted or moved out of scope.
-        assert.equal(
-            selectMigrationSourceRefill("most-recently-used-workspace", "ws-gone", ["ws-1", "ws-e"]),
-            "ws-e",
-        );
-        // Empty previous never matches.
-        assert.equal(
-            selectMigrationSourceRefill("most-recently-used-workspace", "", ["ws-1", "ws-e"]),
-            "ws-e",
-        );
-        // Nothing remains: no recreation.
-        assert.equal(selectMigrationSourceRefill("most-recently-used-workspace", "ws-1", []), null);
-        assert.equal(selectMigrationSourceRefill("last-remaining-workspace", "ws-1", []), null);
-    });
-
-    it("accepts a surviving empty remembered id", () => {
-        assert.equal(
-            selectMigrationSourceRefill("most-recently-used-workspace", "ws-empty", ["ws-empty", "ws-e"]),
-            "ws-empty",
-        );
-    });
-});
+// Config carriage only (validation + schema/KCM): the pure refill selector
+// is retired, owned by the shared core `select_migration_source_refill` in
+// crates/tiler-core/src/output_selection.rs (covered there).
 
 describe("migration source-refill schema and native KCM persistence", () => {
     it("declares migrationSourceRefill as an Enum setting defaulting to last-remaining-workspace", () => {

@@ -54,7 +54,7 @@ function world66(): Fixture66 {
     const ws2: Record<string, unknown> = { id: "ws-2", x11DesktopNumber: 2 };
     const winA: Record<string, unknown> = {
         normalWindow: true,
-        internalId: "win-a",
+        internalId: "win-a", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true, minimized: false,
         resourceClass: "test-app",
         output: out1,
         desktops: [ws1],
@@ -69,7 +69,7 @@ function world66(): Fixture66 {
     };
     const winB: Record<string, unknown> = {
         normalWindow: true,
-        internalId: "win-b",
+        internalId: "win-b", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true, minimized: false,
         resourceClass: "test-app",
         output: out2,
         desktops: [ws1],
@@ -84,7 +84,7 @@ function world66(): Fixture66 {
     };
     const winC: Record<string, unknown> = {
         normalWindow: true,
-        internalId: "win-c",
+        internalId: "win-c", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true, minimized: false,
         resourceClass: "test-app",
         output: out1,
         desktops: [ws2],

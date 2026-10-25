@@ -7,7 +7,7 @@ import {
     BORN_MAXIMIZED_OVERLAY,
     normalizeBornMaximized,
     readBornMaximizedValue,
-} from "../src/born-maximized";
+} from "../src/world-settings-live";
 
 // R-MAX-06 KDE `bornMaximized` uses the `bornMaximized` script/kwinrc key,
 // following the existing camelCase convention (`sameAxisMove` <->

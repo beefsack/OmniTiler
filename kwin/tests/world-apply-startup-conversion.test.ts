@@ -30,6 +30,13 @@ interface FakeDesk {
     name: string;
 }
 interface FakeWin {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     output: { name: string };
     desktops: FakeDesk[];
@@ -62,6 +69,13 @@ function makeSurface(): {
         extra: Partial<Pick<FakeWin, "fullScreen" | "maximizeMode" | "onAllDesktops">> = {},
     ): FakeWin => ({
         internalId,
+        managed: true,
+        deleted: false,
+        transient: false,
+        transientFor: null,
+        dialog: false,
+        modal: false,
+        wantsInput: true,
         output: { name: out },
         desktops: [byId.get(ws) as FakeDesk],
         frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
@@ -173,7 +187,7 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
-        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,
         switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",

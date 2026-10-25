@@ -81,7 +81,7 @@ function makeHarness(mode: ClearMode) {
         const st = live.get(bare);
         assert.ok(st !== undefined, `live window ${bare}`);
         const w: Record<string, unknown> = {
-            internalId: `{${bare}}`,
+            internalId: `{${bare}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             output: { name: OUT },
             desktops: qmlLike([{ id: st.ws }]),

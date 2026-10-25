@@ -96,7 +96,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
-        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,
         switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",

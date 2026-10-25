@@ -37,7 +37,7 @@ function makeHarness() {
     const ws1 = { id: "ws-1", name: "Workspace 1" };
     const wins: Array<Record<string, unknown>> = [
         {
-            internalId: "win-a", normalWindow: true,
+            internalId: "win-a", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],

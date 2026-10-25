@@ -136,6 +136,22 @@ interface Output {
 interface Window {
     readonly normalWindow: boolean;
     readonly managed: boolean;
+    // src/window.h Q_PROPERTY `bool deleted READ isDeleted CONSTANT` at
+    // pinned v6.7.4: whether this window is already deleted and only kept
+    // for compositor animations. Read-only: deleted windows never ride the
+    // raw capture lane.
+    readonly deleted: boolean;
+    // src/window.h Q_PROPERTY `bool wantsInput READ wantsInput` at pinned
+    // v6.7.4: whether the window accepts input. Read-only: false maps to
+    // the shared no-activate safety gate.
+    readonly wantsInput: boolean;
+    // src/window.h Q_PROPERTY `bool dialog READ isDialog CONSTANT` at
+    // pinned v6.7.4: whether the window is a dialog. Read-only.
+    readonly dialog: boolean;
+    // src/window.h Q_PROPERTY `bool modal READ isModal` at pinned v6.7.4:
+    // whether the window is modal. Read-only: modal counts as transient
+    // for shared membership classification.
+    readonly modal: boolean;
     readonly resizeable: boolean;
     // src/window.h Q_PROPERTY(QSizeF minSize READ minSize) and maxSize. These
     // are read only and used only by trace diagnostics for native constraints.

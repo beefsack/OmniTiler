@@ -14,7 +14,7 @@ function makeInventory(desktopCount: number, windowCount: number, screenCount: n
         geometry: { x: i * 1920, y: 0, width: 1920, height: 1080 },
     }));
     const wins = Array.from({ length: windowCount }, (_, i) => ({
-        internalId: `win-${i}`,
+        internalId: `win-${i}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
         output: { name: `out-${i % screenCount}` },
@@ -130,7 +130,7 @@ describe("world observation inventory bounds", () => {
         const desktops = [{ id: "ws-a" }, { id: "ws-b" }];
         const screens = [{ name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }];
         const stickyWin = {
-            internalId: "win-sticky",
+            internalId: "win-sticky", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 10, y: 10, width: 200, height: 200 },
             output: { name: "out-1" },
@@ -143,7 +143,7 @@ describe("world observation inventory bounds", () => {
             maxSize: null,
         };
         const tiledWin = {
-            internalId: "win-tiled",
+            internalId: "win-tiled", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" },

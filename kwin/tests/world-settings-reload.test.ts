@@ -25,6 +25,13 @@ interface FakeDesktop {
     id: string;
 }
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -46,7 +53,7 @@ interface FakeWindow {
 const desk = (id: string): FakeDesktop => ({ id });
 function win(id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow {
     const fake = {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x, y: 0, width: 200, height: 200 },
         output: { name: out },

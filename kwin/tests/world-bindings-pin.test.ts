@@ -14,7 +14,7 @@ function makeSurface() {
     const ws2 = { id: "ws-2" };
     const wins = [
         {
-            internalId: "win-a", normalWindow: true,
+            internalId: "win-a", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,

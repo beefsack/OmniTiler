@@ -1,11 +1,12 @@
-// Production KWin dynamic workspace lifecycle plus numbered shortcut routing.
-//
-// Free-function library for the world route: workspace mode parsing, the
-// numbered workspace shortcut catalog, the per-output desktop capability
-// seam, trailing-empty maintenance, and output-displacement destination
-// selection. No tiling, ordering, geometry, or focus policy lives here;
-// Rust owns every structural decision and the world entry owns observation
-// plus safe actuation through public KWin state only.
+// Production KWin dynamic workspace shortcut routing plus the per-output
+// desktop capability seam. No tiling, ordering, geometry, trailing-lifecycle,
+// displacement, or focus policy lives here; Rust owns every structural
+// decision (trailing lifecycle in crates/tiler-core/src/workspace.rs
+// `plan_trailing`, displacement in crates/tiler-core/src/workspace_scope.rs
+// `choose_displaced_destination`, refill in
+// crates/tiler-core/src/output_selection.rs `select_migration_source_refill`)
+// and the world entry owns observation plus safe actuation through public
+// KWin state only.
 
 export type WorkspaceMode = "per-output-local" | "global-unique" | "shared";
 
@@ -574,115 +575,4 @@ export function orderedDesktopEntries(entries: ReadonlyArray<DesktopEntry>): Rea
         return Object.freeze(sorted.map((item) => item.entry));
     }
     return Object.freeze(indexed.map((item) => item.entry));
-}
-
-export interface TrailingEmptyDomainRequest {
-    readonly orderedIds: ReadonlyArray<string>;
-    readonly isEmpty: (id: string) => boolean;
-    readonly isVisible: (id: string) => boolean;
-    readonly removeDesktop: (id: string) => boolean;
-    readonly createDesktop: () => string | null;
-}
-
-export interface TrailingEmptyDomainResult {
-    readonly removedIds: ReadonlyArray<string>;
-    readonly appendedId: string | null;
-}
-
-// The trailing empty is always the literal last ordered desktop, never a
-// cached id. Non-trailing empty and invisible desktops are retired; a missing
-// trailing empty is appended once.
-export function ensureTrailingEmptyDesktop(
-    request: TrailingEmptyDomainRequest,
-): TrailingEmptyDomainResult {
-    const orderedIds = request.orderedIds;
-    const lastId = orderedIds[orderedIds.length - 1];
-    const trailingEmptyId = lastId !== undefined && request.isEmpty(lastId) ? lastId : null;
-    const removedIds: string[] = [];
-    for (const id of orderedIds) {
-        if (id === trailingEmptyId) {
-            continue;
-        }
-        if (!request.isEmpty(id) || request.isVisible(id)) {
-            continue;
-        }
-        if (request.removeDesktop(id)) {
-            removedIds.push(id);
-        }
-    }
-    const removed = new Set(removedIds);
-    const remaining = orderedIds.filter((id) => !removed.has(id));
-    const trailingId = remaining[remaining.length - 1];
-    if (trailingId !== undefined && request.isEmpty(trailingId)) {
-        return { removedIds: Object.freeze(removedIds), appendedId: null };
-    }
-    const appendedId = request.createDesktop();
-    return { removedIds: Object.freeze(removedIds), appendedId };
-}
-
-export interface DisplacedRect {
-    readonly x: number;
-    readonly y: number;
-    readonly w: number;
-    readonly h: number;
-}
-
-export interface DisplacedDestinationCandidate {
-    readonly key: string;
-    readonly rect: DisplacedRect | null;
-}
-
-// Session-local output-displacement destination: nearest survivor only when
-// the caller supplies removed-output geometry from the native handling
-// source, else the current primary (active) survivor, else deterministic
-// existing output ordering. The current adapter does not retain removed
-// geometry, so it passes a null reference and falls back to primary/order.
-// Post-disconnect window frame geometry is never used as a proxy for
-// removed-output geometry. No historical geometry tracking: callers pass
-// only live survivor rects and the live primary key. Pure and deterministic
-// for offline tests.
-export function chooseDisplacedDestination(
-    survivors: ReadonlyArray<DisplacedDestinationCandidate>,
-    activeKey: string | null,
-    reference: DisplacedRect | null,
-): string | null {
-    if (survivors.length === 0) {
-        return null;
-    }
-    if (survivors.length === 1) {
-        const only = survivors[0];
-        return only === undefined ? null : only.key;
-    }
-    if (reference !== null) {
-        const rx = reference.x + reference.w / 2;
-        const ry = reference.y + reference.h / 2;
-        let bestKey: string | null = null;
-        let bestDist = Number.POSITIVE_INFINITY;
-        for (const candidate of survivors) {
-            if (candidate.rect === null) {
-                continue;
-            }
-            const cx = candidate.rect.x + candidate.rect.w / 2;
-            const cy = candidate.rect.y + candidate.rect.h / 2;
-            const dx = cx - rx;
-            const dy = cy - ry;
-            const dist = dx * dx + dy * dy;
-            if (dist < bestDist) {
-                bestDist = dist;
-                bestKey = candidate.key;
-            }
-        }
-        if (bestKey !== null) {
-            return bestKey;
-        }
-    }
-    if (activeKey !== null) {
-        for (const candidate of survivors) {
-            if (candidate.key === activeKey) {
-                return activeKey;
-            }
-        }
-    }
-    const first = survivors[0];
-    return first === undefined ? null : first.key;
 }

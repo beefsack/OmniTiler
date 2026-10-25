@@ -9,12 +9,173 @@
 //   restart and without touching retained state.
 
 import { readDomainGaps, type DomainGaps } from "./domain-gap";
-import {
-    readMigrationSourceRefillValue,
-    type MigrationSourceRefill,
-} from "./migration-source-refill";
-import { readSameAxisMoveValue } from "./same-axis-move";
 import { readShortcutProfileValue, type ShortcutProfile } from "./shortcut-profile";
+
+// Consolidated config carriage (behavior/defaults/timing unchanged):
+// validated KWin script startup tokens previously in same-axis-move.ts,
+// migration-source-refill.ts (carriage only; the pure
+// `selectMigrationSourceRefill` selector is retired: the shared core
+// `select_migration_source_refill` in crates/tiler-core/src/output_selection.rs
+// owns the refill decision), born-maximized.ts, and fixed-size-predicate.ts.
+// Rust owns every policy semantic; KWin only carries these validated tokens.
+// Entries resolve at startup and re-resolve only on the deliberate Options
+// `configChanged` reload owned by the production entry; no polling, reseed,
+// or in-flight mutation. Changing a setting never rebuilds or reclassifies
+// retained windows, only subsequent admissions/moves/migrations.
+
+// R-MOV-03 global KDE `sameAxisMove` with `group-with-neighbor` default and
+// `swap-with-neighbor` alternative.
+export const SAME_AXIS_MOVE_DEFAULT = "group-with-neighbor" as const;
+export const SAME_AXIS_MOVE_SWAP = "swap-with-neighbor" as const;
+
+export type SameAxisMove = typeof SAME_AXIS_MOVE_DEFAULT | typeof SAME_AXIS_MOVE_SWAP;
+
+export function normalizeSameAxisMove(value: unknown): SameAxisMove {
+    if (value === SAME_AXIS_MOVE_DEFAULT || value === SAME_AXIS_MOVE_SWAP) {
+        return value;
+    }
+    return SAME_AXIS_MOVE_DEFAULT;
+}
+
+// R-WS-12 G-37 global KDE `migrationSourceRefill` with
+// `last-remaining-workspace` default and `most-recently-used-workspace`
+// alternative. Absent/invalid values fall back to
+// `last-remaining-workspace`.
+export const MIGRATION_SOURCE_REFILL_DEFAULT = "last-remaining-workspace" as const;
+export const MIGRATION_SOURCE_REFILL_MRU = "most-recently-used-workspace" as const;
+
+export type MigrationSourceRefill =
+    | typeof MIGRATION_SOURCE_REFILL_DEFAULT
+    | typeof MIGRATION_SOURCE_REFILL_MRU;
+
+export function normalizeMigrationSourceRefill(value: unknown): MigrationSourceRefill {
+    if (
+        value === MIGRATION_SOURCE_REFILL_DEFAULT ||
+        value === MIGRATION_SOURCE_REFILL_MRU
+    ) {
+        return value;
+    }
+    return MIGRATION_SOURCE_REFILL_DEFAULT;
+}
+
+// R-MAX-06 global KDE `bornMaximized` with `tile-on-launch` default and
+// `keep-maximized-overlay` alternative. Exact tokens match Windows
+// `core.born_maximized`.
+export const BORN_MAXIMIZED_DEFAULT = "tile-on-launch" as const;
+export const BORN_MAXIMIZED_OVERLAY = "keep-maximized-overlay" as const;
+
+export type BornMaximized = typeof BORN_MAXIMIZED_DEFAULT | typeof BORN_MAXIMIZED_OVERLAY;
+
+export function normalizeBornMaximized(value: unknown): BornMaximized {
+    if (value === BORN_MAXIMIZED_DEFAULT || value === BORN_MAXIMIZED_OVERLAY) {
+        return value;
+    }
+    return BORN_MAXIMIZED_DEFAULT;
+}
+
+// R-SPC-04 D1 global KDE `fixedSizePredicate` with `both-axes-fixed` default
+// and `either-axis-fixed` alternative.
+export const FIXED_SIZE_PREDICATE_DEFAULT = "both-axes-fixed" as const;
+export const FIXED_SIZE_PREDICATE_EITHER = "either-axis-fixed" as const;
+
+export type FixedSizePredicate =
+    | typeof FIXED_SIZE_PREDICATE_DEFAULT
+    | typeof FIXED_SIZE_PREDICATE_EITHER;
+
+export function normalizeFixedSizePredicate(value: unknown): FixedSizePredicate {
+    if (
+        value === FIXED_SIZE_PREDICATE_DEFAULT ||
+        value === FIXED_SIZE_PREDICATE_EITHER
+    ) {
+        return value;
+    }
+    return FIXED_SIZE_PREDICATE_DEFAULT;
+}
+
+function readGlobalConfigValue(key: string, fallback: unknown): unknown {
+    try {
+        if (typeof readConfig === "function") {
+            return readConfig(key, fallback);
+        }
+    } catch (error) {
+        void error;
+    }
+    return fallback;
+}
+
+export function readSameAxisMoveValue(readSameAxisMoveFn?: () => unknown): SameAxisMove {
+    try {
+        if (readSameAxisMoveFn !== undefined) {
+            try {
+                return normalizeSameAxisMove(readSameAxisMoveFn());
+            } catch (error) {
+                void error;
+                return SAME_AXIS_MOVE_DEFAULT;
+            }
+        }
+        return normalizeSameAxisMove(readGlobalConfigValue("sameAxisMove", SAME_AXIS_MOVE_DEFAULT));
+    } catch (error) {
+        void error;
+        return SAME_AXIS_MOVE_DEFAULT;
+    }
+}
+
+export function readMigrationSourceRefillValue(
+    readRefillFn?: () => unknown,
+): MigrationSourceRefill {
+    try {
+        if (readRefillFn !== undefined) {
+            try {
+                return normalizeMigrationSourceRefill(readRefillFn());
+            } catch (error) {
+                void error;
+                return MIGRATION_SOURCE_REFILL_DEFAULT;
+            }
+        }
+        return normalizeMigrationSourceRefill(
+            readGlobalConfigValue("migrationSourceRefill", MIGRATION_SOURCE_REFILL_DEFAULT),
+        );
+    } catch (error) {
+        void error;
+        return MIGRATION_SOURCE_REFILL_DEFAULT;
+    }
+}
+
+export function readBornMaximizedValue(readBornMaximizedFn?: () => unknown): BornMaximized {
+    try {
+        if (readBornMaximizedFn !== undefined) {
+            try {
+                return normalizeBornMaximized(readBornMaximizedFn());
+            } catch (error) {
+                void error;
+                return BORN_MAXIMIZED_DEFAULT;
+            }
+        }
+        return normalizeBornMaximized(readGlobalConfigValue("bornMaximized", BORN_MAXIMIZED_DEFAULT));
+    } catch (error) {
+        void error;
+        return BORN_MAXIMIZED_DEFAULT;
+    }
+}
+
+export function readFixedSizePredicateValue(readPredicateFn?: () => unknown): FixedSizePredicate {
+    try {
+        if (readPredicateFn !== undefined) {
+            try {
+                return normalizeFixedSizePredicate(readPredicateFn());
+            } catch (error) {
+                void error;
+                return FIXED_SIZE_PREDICATE_DEFAULT;
+            }
+        }
+        return normalizeFixedSizePredicate(
+            readGlobalConfigValue("fixedSizePredicate", FIXED_SIZE_PREDICATE_DEFAULT),
+        );
+    } catch (error) {
+        void error;
+        return FIXED_SIZE_PREDICATE_DEFAULT;
+    }
+}
 
 // D2 anchor fallback tokens (main.xml `anchorFallback`, catalog
 // `admission.anchor-fallback`): tolerant readers backfill the default on

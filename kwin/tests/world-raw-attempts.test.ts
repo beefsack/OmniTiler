@@ -25,6 +25,13 @@ interface FakeDesktop {
 }
 
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -43,21 +50,21 @@ function makeSurface() {
     const byId = new Map([["d1", d1], ["d2", d2]]);
     const wins: FakeWindow[] = [
         {
-            internalId: "win-a",
+            internalId: "win-a", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [d1],
             minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
         },
         {
-            internalId: "win-b",
+            internalId: "win-b", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 800, y: 0, width: 200, height: 200 },
             output: { name: "out-2" }, desktops: [d2],
             minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
         },
         {
-            internalId: "win-c",
+            internalId: "win-c", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 10, y: 10, width: 100, height: 100 },
             output: { name: "out-1" }, desktops: [d1],
@@ -68,7 +75,7 @@ function makeSurface() {
     // native nonactivating setter flips maximizeMode synchronously, and
     // the immediate readback proves the clear in the same flight.
     const winD: FakeWindow = {
-        internalId: "win-d",
+        internalId: "win-d", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x: 100, y: 100, width: 50, height: 50 },
         output: { name: "out-1" }, desktops: [d1],
@@ -390,7 +397,7 @@ function emptyObservation(): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
-        screens: [], windowFacts: [], views: [], closed: [],
+        screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [],
         hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,

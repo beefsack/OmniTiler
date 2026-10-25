@@ -43,14 +43,14 @@ function makeSurface() {
     const ws2 = desk("ws2");
     const wins = [
         {
-            internalId: "win-a", normalWindow: true,
+            internalId: "win-a", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             keepAbove: false, keepBelow: false, minSize: null, maxSize: null,
         },
         {
-            internalId: "win-b", normalWindow: true,
+            internalId: "win-b", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out" }, desktops: [ws2],
             minimized: true, fullscreen: false, maximized: false, sticky: false,
@@ -246,12 +246,14 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.deepEqual(screens[0]?.["full"], [0, 0, 1920, 1080]);
         assert.equal(screens[0]?.["primary"], true);
         const wins = inner["windows"] as Array<Record<string, unknown>>;
-        // Truthful native workspace evidence: single-homed windows name
-        // their actual native desktop, never the logical observed slot.
+        // Truthful native workspace evidence: single-homed windows list
+        // their actual native desktop id, never a logical slot.
         const winA = wins.find((w) => w["win"] === "win-a");
         assert.ok(winA !== undefined);
-        assert.equal(winA["nativeWs"], "ws1");
-        assert.equal(winA["observedWs"], null);
+        assert.deepEqual(winA["desktops"], ["ws1"]);
+        for (const row of wins) {
+            assert.ok(!("nativeWs" in row) && !("observedWs" in row), "no projected identity verdicts");
+        }
         const minimized = wins.filter((w) => w["minimized"] === true);
         assert.ok(minimized.some((w) => w["win"] === "win-b"));
         flow.handle.stop();

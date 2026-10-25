@@ -1,5 +1,5 @@
 // Split-edge selection through the WORLD production route: the real
-// `WorldEngine` (via the test-only `world_eval` example: same decode,
+// `WorldEngine` (via the test-only `raw_world_eval` example: same decode,
 // retained engine, codec, and generation binding the shipped world service
 // uses; only D-Bus and signals are stubbed) behind the production
 // `startWorldAdapterEntry` (direction-only commands, full DiscoverWorld /
@@ -14,7 +14,7 @@
 // fake KWin surface (top full-width over an unequal bottom split, so the
 // non-left/top candidate also owns the largest shared edge); retained
 // `WorldEngine` evaluation per DescribeWorld round-trip. The per-test
-// `world_eval` process is the fixture's replay boundary: every command leg
+// `raw_world_eval` process is the fixture's replay boundary: every command leg
 // flushes the entry's dispatches through it in order.
 
 import assert from "node:assert/strict";
@@ -51,7 +51,7 @@ class WorldBridge {
         this.proc = proc;
         const stdout = proc.stdout;
         if (stdout === null || stdout === undefined) {
-            throw new Error("world_eval stdout unavailable");
+            throw new Error("raw_world_eval stdout unavailable");
         }
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
@@ -63,7 +63,7 @@ class WorldBridge {
             this.failAll(error instanceof Error ? error : new Error(String(error)));
         });
         proc.on("close", (code, signal) => {
-            this.failAll(new Error(`world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
+            this.failAll(new Error(`raw_world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
         });
     }
 
@@ -78,7 +78,7 @@ class WorldBridge {
 
     static start(): WorldBridge {
         return new WorldBridge(
-            spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
+            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
             }),
@@ -90,7 +90,7 @@ class WorldBridge {
             return Promise.reject(new Error(this.dead));
         }
         if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
-            return Promise.reject(new Error("world_eval process already exited"));
+            return Promise.reject(new Error("raw_world_eval process already exited"));
         }
         const line = JSON.stringify({ method, body: payload });
         return new Promise<string>((resolve, reject) => {
@@ -163,6 +163,13 @@ interface FakeDesktop {
 }
 
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -242,6 +249,13 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         frame: { x: number; y: number; width: number; height: number },
     ): FakeWindow => ({
         internalId,
+        managed: true,
+        deleted: false,
+        transient: false,
+        transientFor: null,
+        dialog: false,
+        modal: false,
+        wantsInput: true,
         normalWindow: true,
         frameGeometry: { ...frame },
         output,

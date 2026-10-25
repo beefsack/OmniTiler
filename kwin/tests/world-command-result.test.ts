@@ -22,6 +22,13 @@ interface FakeDesktop {
     id: string;
 }
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     frameGeometry: { x: number; y: number; width: number; height: number };
     output: { name: string };
@@ -35,7 +42,7 @@ interface FakeWindow {
 function makeWindow(id: string, out: { name: string }, ws: FakeDesktop): FakeWindow {
     let frame = { x: 0, y: 0, width: 100, height: 100 };
     const win = {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         output: out,
         desktops: [ws],

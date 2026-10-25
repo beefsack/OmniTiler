@@ -36,7 +36,7 @@ function makeSurface() {
     const ws = { id: WS };
     const wins: Array<Record<string, unknown>> = [
         {
-            internalId: `{${WIN_A}}`,
+            internalId: `{${WIN_A}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 400, height: 600 },
             output: { name: OUT },
@@ -49,7 +49,7 @@ function makeSurface() {
             maxSize: { width: 16777215, height: 16777215 },
         },
         {
-            internalId: `{${WIN_B}}`,
+            internalId: `{${WIN_B}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 400, y: 0, width: 400, height: 600 },
             output: { name: OUT },
@@ -166,7 +166,7 @@ describe("world outer-gap regression", () => {
         assert.equal(screens[0]?.["gap"], 8);
         assert.equal(screens[0]?.["outer"], 12);
         // Generic Qt defaults ride verbatim (host-boundary fidelity).
-        assert.ok(payload.includes('"minW":0,"minH":0,"maxW":16777215,"maxH":16777215}'));
+        assert.ok(payload.includes('"minSize":{"width":0,"height":0},"maxSize":{"width":16777215,"height":16777215}'));
         flow.handle.stop();
     });
 
@@ -206,7 +206,7 @@ describe("world outer-gap regression", () => {
         // qml-list host boundary.
         const liveWins = [
             {
-                internalId: `{${WIN_A}}`,
+                internalId: `{${WIN_A}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 0, y: 0, width: 400, height: 600 },
                 output: { name: OUT },
                 desktops: qmlLike([{ id: WS }]),
@@ -216,7 +216,7 @@ describe("world outer-gap regression", () => {
                 onAllDesktops: false,
             },
             {
-                internalId: `{${WIN_B}}`,
+                internalId: `{${WIN_B}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 400, y: 0, width: 400, height: 600 },
                 output: { name: OUT },
                 desktops: qmlLike([{ id: WS }]),
@@ -249,7 +249,7 @@ describe("world outer-gap regression", () => {
         ) => ({
             win,
             ref: {
-                internalId: win,
+                internalId: win, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: rect.x, y: rect.y, width: rect.w, height: rect.h },
                 output: { name: OUT },
                 desktops: qmlLike([{ id: WS }]),
@@ -287,7 +287,7 @@ describe("world outer-gap regression", () => {
             minimized: [],
             predicate: "both-axes-fixed" as const,
             complete: true, gesture: false, focusedGlobal: WIN_A,
-            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
             cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
             focusFollowsCursor: false, cursorWarp: false,
             switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",

@@ -6,11 +6,12 @@
   Windows is the migrated reference. No v1 compatibility, policy copies or
   second owner. [Principles](../principles.md#layering) and the
   [adapter guide](../porting/world-adapter-guide.md) are authoritative.
-- Stages 0/1/1b/2/3 are complete offline. The strict paired broker/v2 cutover,
-  command wake, native-attempt/source-release settlement and observe/actuate
-  boundary are delivered; all 764 KDE JS tests pass. Native acceptance remains
-  TBD and this record stays active for the whole port. Stage 4 is next; renderer,
-  host integration and the documented unknown host facts remain later work.
+- Stages 0/1/1b/2/3 are complete offline. Stage 4 is partial: strict raw capture,
+  Rust fixed-size wire classification and obsolete selector deletion are
+  delivered offline; remaining role, born, gesture and command policy is not
+  deleted. All 758 current KDE JS tests pass. Native acceptance remains TBD
+  and this record stays active for the whole port. Renderer, host integration
+  and the documented unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -32,7 +33,7 @@
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
-| 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
+| 4. Shared policy only | Partial offline: required raw candidate capture and shared Rust fixed-size wire classification; obsolete refill/trailing/displacement selectors removed. Role normalization, born lifetime, gesture/shortcut/toggle policy remain | Rust corpus and real-normalizer engine tests pass; full stage acceptance not claimed; birth-clear and neutral-toggle core requests parked |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; independent active-border and pager-focused-window colors, default system accent, full-strength border/dimmer fill | Declaration/source checks and adapter tests; independent overrides; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
@@ -976,4 +977,170 @@
   unchanged. Tentative host-owned adoption decisions retain their later
   cross-platform review. Exact next action: Stage 4 broker raw-capture envelope
   into existing shared Rust classification/policy entry points, then delete its
-  superseded TypeScript policy copies. Stage 4 has not started.
+  superseded TypeScript policy copies.
+
+## Stage 4 bounded plan (2026-10-26)
+
+- Cut over the paired capture route atomically to required KWin-shaped raw
+  classification facts. The Rust broker normalizes native facts and calls
+  existing shared predicates before producing strict v2 `WindowFact`s; no
+  projected-fact fallback or new core ingress. Preserve capture replay,
+  authentication, freshness and malformed-capture queue retention.
+- Delete fixed-size/admission derivation from the JS wire producer with
+  captured-shape Rust coverage. Follow with independent boundary review and
+  KDE offline gates. Subsequent units remove remaining command/gesture/scope
+  copies only where the existing world command path can represent them.
+- Born-maximized investigation found that the shared stateless predicates exist,
+  but world-engine admission does not call them or issue birth-clear tokens.
+  Moving the JS lifetime sets and clear authorization into the broker would
+  create a second policy owner. Park that deletion pending a minimal neutral
+  world-engine integration proposal; keep existing behavior meanwhile. No core
+  change or new broker authorization lane is selected.
+- Native property evidence includes KWin `v6.7.4:src/window.h` type flags,
+  `transient`, `transientFor`, `modal`, `wantsInput`, `noBorder`, control flags,
+  app identity and client hints. Missing local declarations do not imply a
+  missing native API. Unknown facts must not become invented eligible facts.
+
+### Stage 4 partial outcome and deletion boundary
+
+- The sole capture lane now requires raw `windows` rows with 19 exact keys:
+  `win/out`, `frameGeometry/clientGeometry`, `minSize/maxSize`, `desktops`,
+  `normalWindow/managed/deleted/transient/transientFor/dialog/modal/wantsInput`,
+  `fullScreen/maximizeMode/onAllDesktops/minimized`. Rectangles carry native
+  fractional `x/y/width/height`; hints carry client `width/height`; opaque owner
+  and desktop ids are mechanical native identity reads. Optional float/tile
+  intent arrays retain the existing proven intent inputs, not native role
+  verdicts. Projected verdict keys refuse; no old projected capture fallback.
+- `omnitiler::kde_raw` validates and calls shared `size_hints::is_fixed_size_with`
+  on client hints, preserving the previous client-size fixed predicate when
+  client geometry is unknown. It converts frame-space hints separately using
+  the established frame/client extent difference and TS `Math.round` semantics,
+  including negative halves. Zero/unbounded sentinels and above-bound decorated
+  constraints keep their existing core sanitization, never saturation.
+- Missing required booleans/owner reads, malformed membership or invalid native
+  maximize enums hold the producer inventory instead of inventing eligibility
+  or a single home. Optional unusable client geometry yields unknown hint
+  deltas, not whole-capture failure. Raw validation precedes counter/floor/drain
+  changes; rejected captures replay exactly and do not retire queued commands.
+- Role/control/ownership fields are captured but deliberately not normalized to
+  `SafetyFacts` yet. The existing normal-window candidate filter remains on
+  both sides while that mapping is unresolved. Non-normal popups with no usable
+  frame/output/membership cannot hold ordinary candidates. Full native type,
+  app/rule and borderless capture remain unfinished, not implied by this slice.
+- Deleted `born-maximized.ts`, `fixed-size-predicate.ts`,
+  `migration-source-refill.ts` and `same-axis-move.ts`; their configuration-only
+  exports now live in `world-settings-live.ts`, unchanged defaults/read timing.
+  Deleted unused `selectMigrationSourceRefill`, `ensureTrailingEmptyDesktop`
+  and `chooseDisplacedDestination` copies and their TS policy-only cases;
+  `workspace-output-relocation.test.ts` is removed. Existing Rust refill,
+  trailing, displacement and same-axis tests cover those policies; config
+  carriage tests remain. This is not deletion of the still-active born policy.
+- Explicitly retained: `world-born-maximized.ts` lifetime/clear policy;
+  `world-observe.ts` local fixed-size derivation feeding that deferred path;
+  `scope-class.ts` fixture-only safety filter; oracle/gesture verdict routing;
+  shortcut float/native-toggle and tiling-toggle preselection; remaining
+  workspace/command-context/state policy audit. Native identity/recovery seams
+  are unchanged. No core/protocol/Windows/effect source or dependency-toolchain
+  change; the service adds only an existing workspace core-crate dependency.
+- Integration tests use `raw_world_eval`, which includes the actual Rust
+  normalizer before strict decode/engine evaluation. The initially added TS
+  classifier mirror was deleted, not accepted as another oracle. Rust's
+  captured-shape corpus has 28 rows; actual broker flow tests own rejection,
+  command retention and replay. No live/native acceptance is claimed.
+
+### Stage 4 evidence and rejected approaches
+
+- Final scoped locked all-target tests pass 2,329/2,329 across 60 suites:
+  core/protocol/Windows 2,063; service 252 (183 library, 42 flow, 11 tray,
+  16 repeated production-normalizer tests in the example target); exporter 14.
+  Locked scoped all-target builds/strict clippy, workspace fmt/whitespace,
+  JS typecheck/build and exact core acceptance 6/6 pass. Final official JS suite
+  passes 758/758, zero failed/skipped/cancelled. The lower JS count reflects
+  removed dead selector cases plus three new capture regressions.
+- An initial parallel Rust/JS verification run had two discovery timeouts.
+  After building all targets,
+  the full official JS run passes unchanged; no timeout or assertion was
+  weakened. The timeout cause is not established.
+- Review rejected invented eligible defaults, ignored `LeaveUnmanaged` verdicts
+  and a new transient/modal float behavior. Those membership changes were
+  removed entirely, not worked around in another adapter owner. A decorated-
+  only fixed classifier also lost existing client fixed pins under unknown
+  client geometry; the shared predicate now receives the true client hints.
+  Added absent-property/owner/membership and non-normal-unreadable regressions.
+- Regenerated reply-golden pager content no longer includes minimized
+  `win-min`, matching the current core producer; its projected window facts are
+  unchanged. The exact fixture check remains, not an exception for stale data.
+
+### N5. Native role/control normalization (parked)
+
+- Shared `window_policy::classify_membership` leaves held safety exclusions
+  unmanaged, otherwise transient windows float. Windows maps owned/dialog
+  facts into exclusions; macOS already consumes neutral transient float
+  membership. KWin exposes actual dialog/transient/owner/modal and wants-input
+  properties, but ownership is not automatically a Windows-owned-dialog
+  exclusion, and KWin focusability is not an HWND no-activate style bit.
+- Options: document truthful native-to-existing-neutral-fact mappings; or
+  propose the smallest shared representation change if the existing predicates
+  cannot express a required distinction. Recommendation: try the existing
+  membership entry point first with explicit cross-host examples, never invent
+  false cloaked/privileged/tool facts or collapse `LeaveUnmanaged` into Tile.
+  Preserve current KDE candidate semantics until resolved. Windows must retain
+  its safety exclusions; KDE/macOS and future GNOME/ChromeOS must express native
+  transient/control facts without assuming Windows ownership, styles or
+  visibility semantics. The minimal discriminator remains native/reference TBD.
+
+### N6. Missing world intents (core requests parked)
+
+- **Birth clear:** `window_policy` has stateless born/fullscreen/fixed gates,
+  but world admission does not call them or issue birth-clear tokens. Options:
+  integrate mode and lifetime transitions into `WorldEngine` and reuse existing
+  `clear_operation`/raw `ClearAttempt`; or retain the current adapter policy
+  temporarily. Recommendation: the neutral core integration. Never relocate
+  the JS lifetime sets into the broker or add a broker clear-authorization lane.
+  Windows' existing born behavior must stay; KDE/macOS and future GNOME/ChromeOS
+  need commandless birth/exit reconciliation with truthful asynchronous reads,
+  not synchronous setter completion or platform-specific logical state.
+- **Tiling toggle:** `WorldCommand` has `SetWorkspaceTiling`, not a toggle intent.
+  KDE currently negates a cached reply mode before submitting set, including the
+  tray route. Options: add a neutral toggle resolved against retained mode at
+  execution; or preserve cached preselection. Recommendation: neutral toggle,
+  retaining explicit set for callers that genuinely choose a mode. Windows,
+  KDE, macOS, GNOME and ChromeOS must all resolve racing toggles identically
+  without adapter snapshot policy. Neither core change is implemented here.
+- Gesture transport is not blocked on a new core API: `GestureIngress` already
+  carries stable id/window/kind, start frame/cursor, live cursor, phase, Esc and
+  modal-move facts; `GestureSettled` supplies the terminal outcome. Next bounded
+  implementation: replace KDE oracle verdict/resize-target commands with this
+  existing lifecycle ingress, then remove its TS resolution code. Retain native
+  capture/freshness and truthful unavailable cancel facts.
+
+### Game-identity investigation (parked)
+
+- Windows production `native_guards::classify_foreground` consumes validity,
+  desktop identity, visibility, caption style, DWM/cloak readability and full-
+  monitor containment. `tiling/workspace.rs::is_borderless_fullscreen` is a
+  captionless covering-surface proxy, not positive game identification.
+  `tiling_sys/settings.rs::suspend_read_inner` exempts verified managed overlays;
+  `run_loop_tick.rs` hides border/underlay/preview on suspension and can retain
+  the approved geometry-only lane for other verified windows. A paused flag
+  alone does not describe this complete production behavior.
+- KWin `v6.7.4:src/window.h` exposes BOTH `fullScreen` and `noBorder` as
+  Q_PROPERTYs, plus frame/client geometry, managed/deleted, role and app identity.
+  `noBorder` means compositor decoration absence, not absence of client-side
+  titlebars or proof of a game. App ids/classes and fullscreen are not positive
+  game identity either. No native/shared positive game source was established;
+  KDE keeps `paused=false` and existing fullscreen hide vetoes.
+- Options: retain unsupported game pause; approve a neutral focused fullscreen-
+  surface suspension policy using truthful native control/cover facts (without
+  calling it game identity); or require explicit trusted game classification
+  before pause. Recommendation: review the neutral safety-proxy option against
+  ordinary fullscreen apps and Windows managed-overlay/limited-lane semantics,
+  without adding KDE app-name/size heuristics. Windows style/DWM facts must not
+  become required core inputs for KDE, macOS, GNOME or ChromeOS; each host must
+  provide its own truthful surface/control facts or unknown. No shared change
+  or new suspension behavior is selected.
+- Stage 4 remains partial and the whole-port record remains active. Stage 5 is
+  not started. Existing Stage 3 hint-bound and earlier native-order/sticky/
+  Activities/configure questions remain parked. Next action: implement the
+  existing gesture lifecycle transport; separately review N5/N6 and fullscreen
+  safety before claiming the remaining policy deletions or Stage 4 closure.

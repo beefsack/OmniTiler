@@ -13,7 +13,7 @@ import {
     FIXED_SIZE_PREDICATE_EITHER,
     normalizeFixedSizePredicate,
     readFixedSizePredicateValue,
-} from "./fixed-size-predicate";
+} from "./world-settings-live";
 
 // Fixed-size admission predicate (same validated predicate tokens): a window is fixed-size
 // when its declared min/max extents are finite, in range, non-sentinel, and
@@ -92,24 +92,43 @@ export interface ObservedWindow {
     nativeWs: string | null;
 }
 
-// Projected v2 window fact (wire shape without broker keys): rect is never
-// null here (unreadable frames skip the window and hold the scope); unknown
-// slots read null, never defaults that fabricate state.
-export interface ObservedWindowFact {
+// Raw KWin-shaped capture row (Stage 4 broker-classified lane): native
+// facts only, never verdicts. The Rust broker normalizes these into the
+// projected v2 WindowFacts via the shared window_policy/size_hints entry
+// points before the strict decode; carrying any projected verdict key
+// (`floating`, `fitExcluded`, `fixedAuto`, `fixedSuppress`, `hints`,
+// `rect`, `observedWs`, `nativeWs`) refuses server-side as unknown-field.
+// Container values mirror the KWin Q_PROPERTY shapes (`frameGeometry` /
+// `clientGeometry` RectF as {x,y,width,height}, `minSize` / `maxSize`
+// QSizeF as {width,height}); role/control/ownership/overlay state mirrors
+// the KWin property names. Frame/client extents stay fractional here;
+// rounding happens once at the classification boundary.
+export interface RawWindowFact {
     win: string;
     out: string;
-    rect: { x: number; y: number; w: number; h: number };
-    floating: boolean;
-    fitExcluded: boolean;
-    fullscreen: boolean;
-    maximized: boolean;
-    sticky: boolean;
-    fixedAuto: boolean;
-    fixedSuppress: boolean;
+    frameGeometry: { x: number; y: number; width: number; height: number };
+    clientGeometry: { x: number; y: number; width: number; height: number } | null;
+    minSize: { width: number; height: number } | null;
+    maxSize: { width: number; height: number } | null;
+    // Native desktop membership: every enumerated homing desktop id
+    // (mechanical, never the logical observed slot). Single-member rows
+    // project to nativeWs; anything else projects to unknown.
+    desktops: string[];
+    normalWindow: boolean;
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    // Owning window identity when transient (null when independent).
+    transientFor: string | null;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
+    fullScreen: boolean;
+    // KWin MaximizeMode integer (0 restores, nonzero maximizes); the
+    // broker treats any nonzero value as maximized.
+    maximizeMode: number;
+    onAllDesktops: boolean;
     minimized: boolean;
-    hints: { minW: number | null; minH: number | null; maxW: number | null; maxH: number | null };
-    observedWs: null;
-    nativeWs: string | null;
 }
 
 export interface ObservedScreenFact {
@@ -200,11 +219,16 @@ export interface WorldObservation {
     complete: boolean;
     gesture: boolean;
     focusedGlobal: string;
-    // Projected v2 facts (wire shape without broker keys). The entry formats
-    // these verbatim into the inner report; the broker stamps its own
-    // namespace around them.
+    // Raw KWin-shaped classification facts (Stage 4 broker-classified
+    // lane). The broker normalizes these into projected v2 facts via the
+    // shared Rust predicates; the adapter never preselects verdicts here.
     screens: ObservedScreenFact[];
-    windowFacts: ObservedWindowFact[];
+    windowFacts: RawWindowFact[];
+    // Adapter-retained intent inputs for the broker classification
+    // (mechanical retentions, never verdicts): converged intentional-float
+    // membership and fixed-window tile overrides. Absent reads as empty.
+    floatIntent: string[];
+    tileIntent: string[];
     views: ObservedViewFact[];
     closed: string[];
     // Host-owned native desktop evidence: true only when the native
@@ -332,6 +356,96 @@ function readHintSize(value: unknown): { w: number; h: number } | null {
         return null;
     }
     return { w, h };
+}
+
+// Raw fractional rectangle read for the broker-classified lane: finite
+// KWin-logical pixels carried verbatim (no rounding here; the broker
+// rounds once at classification). Null when the shape is unreadable;
+// degenerate or out-of-bound geometry also reads null so the caller holds
+// the scope exactly like the rounded read below, never sending a rect the
+// broker would refuse.
+function readRawRect(ref: object): { x: number; y: number; width: number; height: number } | null {
+    const g = readProp(ref, "frameGeometry");
+    if (typeof g !== "object" || g === null) {
+        return null;
+    }
+    const r = g as Record<string, unknown>;
+    const xn = r["x"];
+    const yn = r["y"];
+    const wn = r["width"] !== undefined ? r["width"] : r["w"];
+    const hn = r["height"] !== undefined ? r["height"] : r["h"];
+    if (
+        typeof xn !== "number" || !Number.isFinite(xn) ||
+        typeof yn !== "number" || !Number.isFinite(yn) ||
+        typeof wn !== "number" || !Number.isFinite(wn) ||
+        typeof hn !== "number" || !Number.isFinite(hn)
+    ) {
+        return null;
+    }
+    const x: number = xn;
+    const y: number = yn;
+    const w: number = wn;
+    const h: number = hn;
+    if (!(x >= -16384 && x <= 16384 && y >= -16384 && y <= 16384 && w > 0 && w <= 16384 && h > 0 && h <= 16384)) {
+        return null;
+    }
+    return { x, y, width: w, height: h };
+}
+
+// Raw fractional client-rectangle read: null when absent or unreadable
+// (the broker nulls converted hint bounds without a delta, never mixing
+// client and frame spaces).
+function readRawClientRect(ref: object): { x: number; y: number; width: number; height: number } | null {
+    const g = readProp(ref, "clientGeometry");
+    if (typeof g !== "object" || g === null) {
+        return null;
+    }
+    const r = g as Record<string, unknown>;
+    const xn = r["x"];
+    const yn = r["y"];
+    const wn = r["width"] !== undefined ? r["width"] : r["w"];
+    const hn = r["height"] !== undefined ? r["height"] : r["h"];
+    if (
+        typeof xn !== "number" || !Number.isFinite(xn) ||
+        typeof yn !== "number" || !Number.isFinite(yn) ||
+        typeof wn !== "number" || !Number.isFinite(wn) ||
+        typeof hn !== "number" || !Number.isFinite(hn)
+    ) {
+        return null;
+    }
+    const x: number = xn;
+    const y: number = yn;
+    const w: number = wn;
+    const h: number = hn;
+    if (!(w > 0 && h > 0)) {
+        return null;
+    }
+    return { x, y, width: w, height: h };
+}
+
+// Raw client size-hint read: truthful finite QSizeF extents carried
+// verbatim, including negatives and sentinels (the broker and the shared
+// core predicates sanitize). Null only when absent or unreadable.
+function readRawSize(value: unknown): { width: number; height: number } | null {
+    if (typeof value !== "object" || value === null) {
+        return null;
+    }
+    const r = value as Record<string, unknown>;
+    const w = r["width"] !== undefined ? r["width"] : r["w"];
+    const h = r["height"] !== undefined ? r["height"] : r["h"];
+    if (typeof w !== "number" || !Number.isFinite(w) || typeof h !== "number" || !Number.isFinite(h)) {
+        return null;
+    }
+    return { width: w, height: h };
+}
+
+// Required native boolean: missing or non-boolean native facts hold
+// the whole fact set (never eligible defaults, never invented facts).
+// No absent fallbacks: production KWin always provides these
+// Q_PROPERTYs; offline fakes must declare them explicitly.
+function readReqBool(ref: object, property: string): boolean | null {
+    const raw = readProp(ref, property);
+    return typeof raw === "boolean" ? raw : null;
 }
 
 // Client-to-decorated hint conversion (Stage 3/5 coordinate proof): Qt
@@ -616,6 +730,13 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     }
     // Per-window classification from public state only.
     const liveById = new Map<string, ObservedWindow>();
+    // Raw broker-classified capture (native facts plus adapter-retained
+    // intent inputs, never verdicts). Populated per in-scope window with a
+    // readable identity and frame; cleared wholesale when the inventory is
+    // unreadable, exactly like the legacy projected set below.
+    const rawFacts: RawWindowFact[] = [];
+    const floatIntent: string[] = [];
+    const tileIntent: string[] = [];
     let windowsReadable = true;
     let activeId = "";
     // Fixed-size predicate resolves once per capture (startup config plus
@@ -653,7 +774,16 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             continue;
         }
         const ref = item as object;
-        if (readProp(ref, "normalWindow") !== true) {
+        // Preserve the candidate boundary until shared role normalization is
+        // resolved. Non-normal shell/popups need not expose usable managed
+        // geometry or membership and must not hold ordinary candidates.
+        const normalWindowRaw = readProp(ref, "normalWindow");
+        if (typeof normalWindowRaw !== "boolean") {
+            windowsReadable = false;
+            continue;
+        }
+        const normalWindow = normalWindowRaw;
+        if (!normalWindow) {
             continue;
         }
         // Scoped runs exclude foreign windows from observation entirely
@@ -684,6 +814,137 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         if (!membersCapped.complete) {
             windowsReadable = false;
             continue;
+        }
+        // Raw broker-classified capture: native facts only, never verdicts.
+        // Every in-scope normal candidate with readable identity/frame rides,
+        // including minimized windows (retained facts, never excluded).
+        {
+            const rawFrame = readRawRect(ref);
+            const rawClient = readRawClientRect(ref);
+            const rawMin = readRawSize(readProp(ref, "minSize"));
+            const rawMax = readRawSize(readProp(ref, "maxSize"));
+            // Required native control/ownership booleans: missing or
+            // non-boolean holds the fact set (never eligible defaults).
+            const managed = readReqBool(ref, "managed");
+            const deleted = readReqBool(ref, "deleted");
+            const transient = readReqBool(ref, "transient");
+            const dialog = readReqBool(ref, "dialog");
+            const modal = readReqBool(ref, "modal");
+            const wantsInput = readReqBool(ref, "wantsInput");
+            const minimized = readReqBool(ref, "minimized");
+            // Owning-window identity: explicit null is a true native
+            // no-owner; a missing or unreadable owner holds (never a
+            // silent null that would forge independence).
+            const transientRaw = readProp(ref, "transientFor");
+            let transientFor: string | null = null;
+            let ownerReadable = transientRaw === null;
+            if (transientRaw !== null && transientRaw !== undefined) {
+                if (typeof transientRaw === "object") {
+                    transientFor = normalizeNativeId(readProp(transientRaw as object, "internalId"));
+                    ownerReadable = transientFor !== null;
+                } else {
+                    ownerReadable = false;
+                }
+            }
+            // Native overlay reads with the offline-fake lowercase aliases
+            // via the preexisting seam only (absent native property, never
+            // overriding a live read and never inventing values): a fully
+            // absent overlay fact holds.
+            const fullScreenRaw = readProp(ref, "fullScreen");
+            let fullScreen: boolean | null = null;
+            if (typeof fullScreenRaw === "boolean") {
+                fullScreen = fullScreenRaw;
+            } else if (fullScreenRaw === undefined) {
+                const alias = readNativeAlias(readProp, ref, "fullscreen");
+                fullScreen = typeof alias === "boolean" ? alias : null;
+            }
+            // Exact native MaximizeMode enum (0 restore, 1 vertical,
+            // 2 horizontal, 3 full): any other numeric shape holds
+            // client-side and refuses broker-side. The legacy alias only
+            // covers an explicit restore (false) when native is absent.
+            const modeRaw = readProp(ref, "maximizeMode");
+            let maximizeMode: number | null = null;
+            if (typeof modeRaw === "number" && Number.isInteger(modeRaw) && modeRaw >= 0 && modeRaw <= 3) {
+                maximizeMode = modeRaw;
+            } else if (modeRaw === undefined && readNativeAlias(readProp, ref, "maximized") === false) {
+                maximizeMode = 0;
+            }
+            const allDesktopsRaw = readProp(ref, "onAllDesktops");
+            let onAllDesktops: boolean | null = null;
+            if (typeof allDesktopsRaw === "boolean") {
+                onAllDesktops = allDesktopsRaw;
+            } else if (allDesktopsRaw === undefined) {
+                const alias = readNativeAlias(readProp, ref, "sticky");
+                onAllDesktops = typeof alias === "boolean" ? alias : null;
+            }
+            if (
+                rawFrame === null || managed === null || deleted === null ||
+                transient === null || dialog === null || modal === null ||
+                wantsInput === null || minimized === null ||
+                !ownerReadable || fullScreen === null ||
+                maximizeMode === null || onAllDesktops === null
+            ) {
+                windowsReadable = false;
+                continue;
+            }
+            // Native membership is mechanical and exact: any invalid or
+            // disappearing desktop object/id, or any duplicate id, holds
+            // the fact set instead of projecting a fabricated single home.
+            const desktopIds: string[] = [];
+            let membershipReadable = true;
+            const seenDesktops = new Set<string>();
+            for (const m of members) {
+                if (typeof m !== "object" || m === null) {
+                    membershipReadable = false;
+                    break;
+                }
+                const id = readProp(m as object, "id");
+                if (!isOpaqueId(id) || seenDesktops.has(id as string)) {
+                    membershipReadable = false;
+                    break;
+                }
+                seenDesktops.add(id as string);
+                desktopIds.push(id as string);
+            }
+            if (!membershipReadable) {
+                windowsReadable = false;
+                continue;
+            }
+            rawFacts.push({
+                win: rawId,
+                out: outName as string,
+                frameGeometry: rawFrame,
+                clientGeometry: rawClient,
+                minSize: rawMin,
+                maxSize: rawMax,
+                desktops: desktopIds,
+                normalWindow,
+                managed,
+                deleted,
+                transient,
+                transientFor,
+                dialog,
+                modal,
+                wantsInput,
+                fullScreen,
+                maximizeMode,
+                onAllDesktops,
+                minimized,
+            });
+            try {
+                if (env.isFloating !== undefined && env.isFloating(rawId)) {
+                    floatIntent.push(rawId);
+                }
+            } catch (error) {
+                void error;
+            }
+            try {
+                if (env.isTileOverride !== undefined && env.isTileOverride(rawId)) {
+                    tileIntent.push(rawId);
+                }
+            } catch (error) {
+                void error;
+            }
         }
         // Home workspace: first member desktop id (sticky rides homed here;
         // the core excludes sticky occupancy per-domain itself).
@@ -1010,22 +1271,16 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             primary: activeName !== null && activeName === s.name,
         };
     });
-    const windowFacts: ObservedWindowFact[] = [];
+    const windowFacts: RawWindowFact[] = rawFacts;
+    const floatIntentDeduped: string[] = [...new Set(floatIntent)];
+    const tileIntentDeduped: string[] = [...new Set(tileIntent)];
     // An unreadable inventory read holds the whole fact set (never a
     // partial publication): the report stays non-null with complete=false
     // so the core holds instead of inferring from a cut tail.
-    if (windowsReadable) {
-        for (const w of liveById.values()) {
-            windowFacts.push({
-                win: w.win, out: w.out, rect: w.rect,
-                floating: w.floating, fitExcluded: w.fitExcluded,
-                fullscreen: w.fullscreen, maximized: w.maximized, sticky: w.sticky,
-                fixedAuto: w.fixedAuto, fixedSuppress: w.fixedSuppress,
-                minimized: w.minimized, hints: w.hints,
-                observedWs: null,
-                nativeWs: hostOwned ? w.nativeWs : null,
-            });
-        }
+    if (!windowsReadable) {
+        windowFacts.length = 0;
+        floatIntentDeduped.length = 0;
+        tileIntentDeduped.length = 0;
     }
     // Logical view receipts: host-owned adapters omit them (the core
     // derives every view receipt from the native current map in `native[]`
@@ -1196,6 +1451,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         mode, topology, bindings, domains, minimized, predicate: predicateWire, complete, gesture,
         focusedGlobal: activeId,
         screens: screenFacts, windowFacts, views, closed, hostOwned, equalCount, native,
+        floatIntent: floatIntentDeduped, tileIntent: tileIntentDeduped,
         cursor, actionForeground: activeName, actionCached: null,
         actionOutputs: screenEntries.map((s) => s.name),
         focusFollowsCursor: false, cursorWarp: false,

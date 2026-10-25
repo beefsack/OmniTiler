@@ -13,21 +13,21 @@ function makeSurface() {
     const ws2 = { id: "ws-2" };
     const wins = [
         {
-            internalId: "win-tiled", normalWindow: true,
+            internalId: "win-tiled", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-game", normalWindow: true,
+            internalId: "win-game", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 1920, height: 1080 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullScreen: true, maximizeMode: 0, onAllDesktops: false,
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-sticky", normalWindow: true,
+            internalId: "win-sticky", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws2],
             minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: true,
@@ -129,7 +129,7 @@ function start(surface: object) {
 }
 
 describe("world overlay safety", () => {
-    it("classifies native fullScreen/maximizeMode/onAllDesktops like legacy exclusions", () => {
+    it("captures native fullScreen/maximizeMode/onAllDesktops truthfully for broker classification", () => {
         const { surface, world } = makeSurface();
         const { handle, auto } = start(surface);
         const envelope = JSON.parse(auto.payload) as Record<string, unknown>;
@@ -137,15 +137,23 @@ describe("world overlay safety", () => {
         const wins = inner["windows"] as Array<Record<string, unknown>>;
         const game = wins.find((w) => w["win"] === "win-game");
         assert.ok(game !== undefined, "fullscreen game window is observed");
-        assert.equal(game["fullscreen"], true);
-        assert.equal(game["fitExcluded"], true);
+        assert.equal(game["fullScreen"], true);
+        assert.equal(game["maximizeMode"], 0);
+        assert.equal(game["minimized"], false);
+        // No projected verdicts ride the raw lane: the broker derives
+        // fitExcluded/floating from these native facts via the shared
+        // predicates (pinned by the Rust raw tests).
+        assert.ok(!("fitExcluded" in game) && !("floating" in game), "no wire verdicts");
         const sticky = wins.find((w) => w["win"] === "win-sticky");
         assert.ok(sticky !== undefined);
-        assert.equal(sticky["sticky"], true);
-        assert.equal(sticky["floating"], true, "sticky rides floating like legacy");
+        assert.equal(sticky["onAllDesktops"], true);
+        assert.ok(!("floating" in sticky), "no wire verdicts");
         const tiled = wins.find((w) => w["win"] === "win-tiled");
         assert.ok(tiled !== undefined);
-        assert.equal(tiled["fitExcluded"], false);
+        assert.equal(tiled["fullScreen"], false);
+        assert.equal(tiled["maximizeMode"], 0);
+        assert.equal(tiled["onAllDesktops"], false);
+        assert.ok(!("fitExcluded" in tiled), "no wire verdicts");
         assert.equal(world.geometryWrites.length, 0);
         handle.stop();
     });

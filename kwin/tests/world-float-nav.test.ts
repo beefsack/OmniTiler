@@ -11,6 +11,13 @@ interface FakeDesktop {
     id: string;
 }
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -33,7 +40,7 @@ const desk = (id: string): FakeDesktop => ({ id });
 
 function stickyWin(id: string, out: string, ws: FakeDesktop, x: number, extra: Partial<FakeWindow> = {}): FakeWindow {
     return {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x, y: 100, width: 200, height: 200 },
         output: { name: out },
@@ -50,7 +57,7 @@ function stickyWin(id: string, out: string, ws: FakeDesktop, x: number, extra: P
 
 function tiledWin(id: string, out: string, ws: FakeDesktop, x: number): FakeWindow {
     const w: FakeWindow = {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x, y: 0, width: 200, height: 200 },
         output: { name: out },

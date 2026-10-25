@@ -7,7 +7,7 @@ import {
     FIXED_SIZE_PREDICATE_EITHER,
     normalizeFixedSizePredicate,
     readFixedSizePredicateValue,
-} from "../src/fixed-size-predicate";
+} from "../src/world-settings-live";
 
 function entryXml(path: string): string {
     return readFileSync(path, "utf8");

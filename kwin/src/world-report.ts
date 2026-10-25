@@ -9,7 +9,7 @@
 
 import { isCanonicalU64, isCorrelationId, isGenerationId, isOpaqueId, WORLD_CONTRACT_VERSION } from "./world-seq";
 import type { WorldObservation } from "./world-observe";
-import type { MigrationSourceRefill } from "./migration-source-refill";
+import type { MigrationSourceRefill } from "./world-settings-live";
 
 export type WorldMode = "per-output-local" | "global-unique" | "shared";
 
@@ -1508,18 +1508,45 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `{"out":${esc(s.out)},"full":${rectOrNull(s.full)},"work":${rectOrNull(s.work)},` +
         `"gap":${s.gap},"outer":${s.outer},"complete":${s.complete ? "true" : "false"},"primary":${s.primary ? "true" : "false"}}`,
     ).join(",");
+    // Raw broker-classified window lane: KWin-shaped native facts plus the
+    // adapter-retained intent lanes. The broker normalizes these into
+    // projected v2 facts via the shared Rust predicates before the strict
+    // decode; no projected verdict rides here. Exact keys per row; the
+    // broker's exact-keys gate refuses any drift.
+    // Fractional native numbers ride verbatim (JSON round-trips f64
+    // exactly); a non-finite value would serialize as null and refuse
+    // server-side, never silently corrupt the lane.
+    const clientNum = (n: number): string => JSON.stringify(n) ?? "null";
     const windows = observation.windowFacts.map((w) => {
-        const hints =
-            `{"minW":${w.hints.minW ?? "null"},"minH":${w.hints.minH ?? "null"},` +
-            `"maxW":${w.hints.maxW ?? "null"},"maxH":${w.hints.maxH ?? "null"}}`;
-        return `{"win":${esc(w.win)},"out":${esc(w.out)},"rect":${rectOrNull(w.rect)},` +
-            `"floating":${w.floating ? "true" : "false"},"fitExcluded":${w.fitExcluded ? "true" : "false"},` +
-            `"fullscreen":${w.fullscreen ? "true" : "false"},"maximized":${w.maximized ? "true" : "false"},` +
-            `"sticky":${w.sticky ? "true" : "false"},"fixedAuto":${w.fixedAuto ? "true" : "false"},` +
-            `"fixedSuppress":${w.fixedSuppress ? "true" : "false"},"minimized":${w.minimized ? "true" : "false"},` +
-            `"hints":${hints},"observedWs":${w.observedWs === null ? "null" : esc(w.observedWs)},` +
-            `"nativeWs":${w.nativeWs === null ? "null" : esc(w.nativeWs)}}`;
+        const frame = w.frameGeometry;
+        const client = w.clientGeometry === null
+            ? "null"
+            : `{"x":${clientNum(w.clientGeometry.x)},"y":${clientNum(w.clientGeometry.y)},` +
+              `"width":${clientNum(w.clientGeometry.width)},"height":${clientNum(w.clientGeometry.height)}}`;
+        const size = (s: { width: number; height: number } | null): string =>
+            s === null ? "null" : `{"width":${clientNum(s.width)},"height":${clientNum(s.height)}}`;
+        const desktops = w.desktops.map(esc).join(",");
+        return `{"win":${esc(w.win)},"out":${esc(w.out)},` +
+            `"frameGeometry":{"x":${clientNum(frame.x)},"y":${clientNum(frame.y)},` +
+            `"width":${clientNum(frame.width)},"height":${clientNum(frame.height)}},` +
+            `"clientGeometry":${client},` +
+            `"minSize":${size(w.minSize)},"maxSize":${size(w.maxSize)},` +
+            `"desktops":[${desktops}],` +
+            `"normalWindow":${w.normalWindow ? "true" : "false"},` +
+            `"managed":${w.managed ? "true" : "false"},` +
+            `"deleted":${w.deleted ? "true" : "false"},` +
+            `"transient":${w.transient ? "true" : "false"},` +
+            `"transientFor":${w.transientFor === null ? "null" : esc(w.transientFor)},` +
+            `"dialog":${w.dialog ? "true" : "false"},` +
+            `"modal":${w.modal ? "true" : "false"},` +
+            `"wantsInput":${w.wantsInput ? "true" : "false"},` +
+            `"fullScreen":${w.fullScreen ? "true" : "false"},` +
+            `"maximizeMode":${w.maximizeMode},` +
+            `"onAllDesktops":${w.onAllDesktops ? "true" : "false"},` +
+            `"minimized":${w.minimized ? "true" : "false"}}`;
     }).join(",");
+    const floatIntent = observation.floatIntent.map(esc).join(",");
+    const tileIntent = observation.tileIntent.map(esc).join(",");
     const views = observation.views.map((v) =>
         `{"out":${esc(v.out)},"view":${esc(v.view)}}`,
     ).join(",");
@@ -1597,5 +1624,6 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"presentation":${presentationJson},"creationAttempts":[${creationAttempts}],` +
         `"frameAttempts":[${frameAttempts}],"memberAttempts":[${memberAttempts}],` +
         `"viewAttempts":[${viewAttempts}],"clearAttempts":[${clearAttempts}],` +
+        `"floatIntent":[${floatIntent}],"tileIntent":[${tileIntent}],` +
         `"anchorFallback":${esc(input.anchorFallback)},"noSpaceResult":${esc(input.noSpaceResult)}}`;
 }

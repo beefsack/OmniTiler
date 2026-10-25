@@ -48,7 +48,7 @@ function makeWin(
     const stepped = makeSignal();
     const finished = makeSignal();
     const ref: Record<string, unknown> = {
-        internalId: id,
+        internalId: id, normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         frameGeometry: { ...rect },
         output: { name: out },
         desktops: [{ id: ws }],
@@ -86,7 +86,7 @@ function observeFor(wins: Array<{ win: string; ref: object; out: string; ws: str
         complete: true,
         gesture: false,
         focusedGlobal: "",
-        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        screens: [], windowFacts: [], floatIntent: [], tileIntent: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
         cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
         focusFollowsCursor: false, cursorWarp: false,
         switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",

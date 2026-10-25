@@ -15,6 +15,13 @@ interface FakeDesktop {
     name: string;
 }
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -58,7 +65,7 @@ interface CapturedCall {
 const desk = (id: string, name?: string): FakeDesktop => ({ id, name: name ?? id });
 const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => {
     const fake: FakeWindow = {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x, y: 0, width: 200, height: 200 },
         output: { name: out },
@@ -384,9 +391,8 @@ describe("world entry discovery and observation", () => {
         assert.equal((inner["native"] as Array<Record<string, unknown>>)[0]?.["current"], "ws1");
         assert.equal(screens[0]?.["gap"], 8);
         const first = (wins[0] as Record<string, unknown>);
-        assert.equal(typeof first["hints"], "object");
-        assert.equal(first["nativeWs"], "ws1", "truthful native workspace evidence");
-        assert.equal(first["observedWs"], null, "never alias native as logical");
+        assert.deepEqual(first["desktops"], ["ws1"], "truthful native membership evidence");
+        assert.ok(!("nativeWs" in first) && !("observedWs" in first) && !("hints" in first), "no projected identity verdicts");
         const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
         assert.ok(typeof filed["clientCmd"] === "string");
         assert.deepEqual((filed["command"] as Record<string, unknown>)["op"], "select-relative");
@@ -560,7 +566,8 @@ describe("world entry discovery and observation", () => {
         // geometry (never silent absence, never an inferred close).
         const wins = req["windows"] as Array<Record<string, unknown>>;
         const minimized = wins.filter((w) => w["minimized"] === true);
-        assert.ok(minimized.some((m) => m["win"] === "win-b" && m["out"] === "out" && m["nativeWs"] === "ws2"));
+        assert.ok(minimized.some((m) => m["win"] === "win-b" && m["out"] === "out" &&
+            ((m["desktops"] as Array<unknown>) ?? []).includes("ws2")));
         const tiled = wins.filter((w) => w["minimized"] !== true);
         assert.ok(!tiled.some((w) => (w as Record<string, unknown>)["win"] === "win-b"));
         assert.equal(req["predicate"], "both-axes-fixed");
@@ -741,7 +748,7 @@ describe("world entry discovery and observation", () => {
         assert.ok(!h.world.geometryWrites.some((w) => w.startsWith("win-b@22,22")));
     });
 
-    it("classifies fixed-size admissions instead of carrying always-false flags", () => {
+    it("captures fixed-size pins truthfully instead of carrying verdict flags", () => {
         const h = makeHarness();
         const target = h.world.wins.find((w) => w.internalId === "win-a");
         assert.ok(target !== undefined);
@@ -754,9 +761,12 @@ describe("world entry discovery and observation", () => {
         const wins = req["windows"] as Array<Record<string, unknown>>;
         const row = wins.find((w) => w["win"] === "win-a");
         assert.ok(row !== undefined);
-        assert.equal(row["fixedAuto"], true);
-        assert.equal(row["floating"], true);
-        assert.equal(row["fitExcluded"], true);
+        // Raw client extents ride verbatim; classification is broker-owned
+        // (the Rust raw tests pin the equal-nonzero fixed verdict and its
+        // automatic float under the default both-axes predicate).
+        assert.deepEqual(row["minSize"], { width: 400, height: 300 });
+        assert.deepEqual(row["maxSize"], { width: 400, height: 300 });
+        assert.ok(!("fixedAuto" in row) && !("floating" in row) && !("hints" in row), "no wire verdicts");
     });
 
     it("sends append-and-stay as one core-resolved send-numbered with no view switch", () => {
@@ -1290,7 +1300,7 @@ describe("world entry aligned bindings", () => {
 describe("world entry restart float-intent preservation", () => {
     for (const holdMode of ["scoped", "global"] as const) {
     it(`holds settled float across a genuinely held first engine reply (${holdMode} hold)`, { timeout: 120000 }, async () => {
-        // Producer-shaped replay through the real WorldEngine (world_eval
+        // Producer-shaped replay through the real WorldEngine (raw_world_eval
         // with WORLD_EVAL_ALIGNED=1, same bridge as the aligned-migration
         // engine test): no hand-built replies on the asserted paths.
         // Scoped hold is genuinely native: clientArea returns null for ws-1,
@@ -1318,7 +1328,7 @@ describe("world entry restart float-intent preservation", () => {
             resolve: (reply: string) => void;
             reject: (error: Error) => void;
         }
-        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
             env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
@@ -1345,10 +1355,10 @@ describe("world entry restart float-intent preservation", () => {
             failEngine(error);
         });
         proc.on("exit", (code: number | null, signal: string | null) => {
-            failEngine(new Error(`world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+            failEngine(new Error(`raw_world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
         });
         const stdout = proc.stdout;
-        assert.ok(stdout !== null && stdout !== undefined, "world_eval stdout unavailable");
+        assert.ok(stdout !== null && stdout !== undefined, "raw_world_eval stdout unavailable");
         const lines = createInterface({ input: stdout });
         lines.on("line", (line: string) => {
             waiters.shift()?.resolve(line);
@@ -1363,7 +1373,7 @@ describe("world entry restart float-intent preservation", () => {
                 if (index >= 0) {
                     waiters.splice(index, 1);
                 }
-                rejectPromise(new Error(`world_eval timeout method=${method}`));
+                rejectPromise(new Error(`raw_world_eval timeout method=${method}`));
             }, 15000);
             waiters.push({
                 resolve: (reply: string) => {
@@ -1612,12 +1622,14 @@ describe("world entry restart float-intent preservation", () => {
                 assert.ok(!tile.includes("win-a"), `float side stays disjoint: ${JSON.stringify(w)}`);
             }
             // The second dispatched observation still reports the seeded
-            // float as floating with the same live identities.
+            // float via the intent lane (broker-classified): the raw row
+            // carries native facts only, floatIntent carries the membership.
             const secondWins = (secondReport["windows"] as Array<Record<string, unknown>>);
             const rowA = secondWins.find((w) => w["win"] === "win-a");
-            assert.equal(
-                rowA?.["floating"],
-                true,
+            assert.ok(rowA !== undefined, "seeded win-a still observed");
+            assert.ok(!("floating" in rowA), "no wire verdicts on raw rows");
+            assert.ok(
+                ((secondReport["floatIntent"] as Array<unknown>) ?? []).includes("win-a"),
                 `second dispatched observation still floats seeded win-a: ${JSON.stringify(rowA)}`,
             );
         } finally {
@@ -1662,12 +1674,12 @@ describe("world entry restart float-intent preservation", () => {
 describe("world entry script-restart sequence handover", () => {
     it("rotation hands a fresh generation and engine to the new producer lifetime", { timeout: 120000 }, async () => {
         // Producer-shaped restart replay through the real WorldEngine behind
-        // one world_eval process (aligned, like production): the first
+        // one raw_world_eval process (aligned, like production): the first
         // producer advances request+command watermarks with a float + fixed
         // tile seed, then the restarted producer discovers as a NEW
         // lifetime. Like the real WorldBroker::discovery_body, the new
         // lifetime rotates onto a fresh generation and a fresh engine
-        // (world_eval rebinds both on DiscoverWorld): the old generation
+        // (raw_world_eval rebinds both on DiscoverWorld): the old generation
         // refuses outright, queued/settled state from the old world is
         // gone, and the saved default reseeds the fresh engine.
         const { spawn } = await import("node:child_process");
@@ -1688,7 +1700,7 @@ describe("world entry script-restart sequence handover", () => {
             resolve: (reply: string) => void;
             reject: (error: Error) => void;
         }
-        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
             env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
@@ -1715,10 +1727,10 @@ describe("world entry script-restart sequence handover", () => {
             failEngine(error);
         });
         proc.on("exit", (code: number | null, signal: string | null) => {
-            failEngine(new Error(`world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+            failEngine(new Error(`raw_world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
         });
         const stdout = proc.stdout;
-        assert.ok(stdout !== null && stdout !== undefined, "world_eval stdout unavailable");
+        assert.ok(stdout !== null && stdout !== undefined, "raw_world_eval stdout unavailable");
         const lines = createInterface({ input: stdout });
         lines.on("line", (line: string) => {
             waiters.shift()?.resolve(line);
@@ -1733,7 +1745,7 @@ describe("world entry script-restart sequence handover", () => {
                 if (index >= 0) {
                     waiters.splice(index, 1);
                 }
-                rejectPromise(new Error(`world_eval timeout method=${method}`));
+                rejectPromise(new Error(`raw_world_eval timeout method=${method}`));
             }, 15000);
             waiters.push({
                 resolve: (reply: string) => {
@@ -2011,9 +2023,18 @@ describe("world entry script-restart sequence handover", () => {
             lastRev = toggledB.reply["rev"] as string;
             lastReqSeq = toggledB.stamped["reqSeq"] as string;
             const reportedB = findWin(toggledB.req, "win-b");
-            assert.equal(reportedB?.["fixedAuto"], true, `fixed origin declared for win-b: ${JSON.stringify(reportedB)}`);
-            assert.equal(reportedB?.["fixedSuppress"], true, `tile override suppresses float admission: ${JSON.stringify(reportedB)}`);
-            assert.equal(reportedB?.["floating"], false, "tile override stays tiled in report");
+            // Fixed-size pins ride raw and the tile override rides the
+            // intent lane (broker-classified): the raw row carries the
+            // native extents only, never verdicts.
+            assert.ok(
+                (((toggledB.req["report"] as Record<string, unknown>)["tileIntent"] as Array<unknown>) ?? []).includes("win-b"),
+                "tile override rides the intent lane",
+            );
+            assert.ok(
+                !("fixedOrigins" in (toggledB.req["report"] as Record<string, unknown>)),
+                "no origins lane exists (tile intent is the override)",
+            );
+            assert.ok(reportedB !== undefined && !("floating" in reportedB) && !("fixedAuto" in reportedB), "raw row carries no verdicts");
             const replyScopesB = toggledB.reply["scopes"] as Array<Record<string, unknown>>;
             // v2: scope ids name the core logical; the controlled out-b
             // scope must bind the out-b current native (ws2).
@@ -2046,7 +2067,7 @@ describe("world entry script-restart sequence handover", () => {
             // Producer 2: script restart with a fresh production-minted
             // incarnation as a NEW producer lifetime. Like the real
             // WorldBroker::discovery_body, the restart rotates onto a fresh
-            // generation and a fresh engine (world_eval rebinds both on its
+            // generation and a fresh engine (raw_world_eval rebinds both on its
             // own DiscoverWorld, which the restart sends).
             const adapter2 = mintAdapterIncarnation();
             assert.notEqual(adapter2, adapter1, "restart mints a fresh stream");

@@ -27,16 +27,29 @@ fn disabled_presentation() -> String {
 }
 
 fn window_json(id: &str, rect: &str, native_ws: Option<&str>) -> String {
-    let native = match native_ws {
+    let desktops = match native_ws {
         Some(native) => format!("\"{native}\""),
-        None => "null".to_owned(),
+        None => String::new(),
     };
+    let frame = rect
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    assert_eq!(frame.len(), 4, "raw test rects are [x,y,w,h]");
     format!(
-        "{{\"win\":\"{id}\",\"out\":\"DP-1\",\"rect\":{rect},\"floating\":false,\
-          \"fitExcluded\":false,\"fullscreen\":false,\"maximized\":false,\"sticky\":false,\
-          \"fixedAuto\":false,\"fixedSuppress\":false,\"minimized\":false,\
-          \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
-          \"observedWs\":null,\"nativeWs\":{native}}}"
+        "{{\"win\":\"{id}\",\"out\":\"DP-1\",\
+          \"frameGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
+          \"clientGeometry\":{{\"x\":{x},\"y\":{y},\"width\":{w},\"height\":{h}}},\
+          \"minSize\":null,\"maxSize\":null,\"desktops\":[{desktops}],\
+          \"normalWindow\":true,\"managed\":true,\"deleted\":false,\
+          \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
+          \"wantsInput\":true,\"fullScreen\":false,\"maximizeMode\":0,\
+          \"onAllDesktops\":false,\"minimized\":false}}",
+        x = frame[0],
+        y = frame[1],
+        w = frame[2],
+        h = frame[3],
     )
 }
 
@@ -604,10 +617,10 @@ fn invalid_capture_never_retires_a_good_queued_command() {
             ),
         )
         .expect("queued");
-    // A syntactically invalid capture (sticky window flag as a string)
+    // A syntactically invalid capture (raw maximizeMode as a string)
     // rejects without touching the engine or the queue.
     let bad_window = window_json("win-001", "[0,0,960,1040]", None)
-        .replace("\"sticky\":false", "\"sticky\":\"maybe\"");
+        .replace("\"maximizeMode\":0", "\"maximizeMode\":\"maybe\"");
     let bad_inner = inner_report(&[bad_window], true, false, "");
     let refused = parse(
         &service
@@ -840,18 +853,19 @@ fn host_owned_native_capture_adopts_uuid_desktops_truthfully() {
 #[test]
 fn unreadable_frames_hold_without_fabricated_allocations() {
     let (service, generation) = discovered_service();
-    // Explicitly unreadable frame plus an incomplete inventory: the scope
-    // must hold, never invent geometry.
-    let inner = inner_report(&[window_json("win-001", "null", None)], false, false, "");
+    // An unreadable frame never rides the raw lane: the producer skips the
+    // window and marks the inventory incomplete, so the scope holds with
+    // no fabricated geometry.
+    let inner = inner_report(&[], false, false, "");
     let reply = parse(
         &service
             .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
             .expect("accepted"),
     );
     let windows = reply["windows"].as_array().expect("windows");
-    assert_eq!(windows.len(), 1);
-    assert!(
-        windows[0]["alloc"].is_null(),
+    assert_eq!(
+        windows.len(),
+        0,
         "no fabricated allocation for unreadable facts"
     );
 }
@@ -1878,4 +1892,286 @@ fn dropped_waiter_cannot_displace_a_newer_one() {
     let value: serde_json::Value = serde_json::from_str(&wake).expect("wake JSON");
     assert_eq!(value["outcome"], "wake");
     assert_eq!(value["cursor"], "1");
+}
+
+#[test]
+fn raw_capture_rejects_before_drain_without_consuming_counters() {
+    // Strict raw lane: missing/malformed/mismatched/extra/duplicate window
+    // facts reject before any command drain and before the observation
+    // sequence advances, so a queued command stays pending and the next
+    // valid capture still mints the unskipped revision.
+    let (service, generation) = discovered_service();
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+            ),
+        )
+        .expect("queued");
+    let good = window_json("win-001", "[0,0,960,1040]", None);
+    let mutate = |from: &str, to: &str| inner_report(&[good.replace(from, to)], true, false, "");
+    let cases: Vec<(&str, String, &str)> = vec![
+        ("missing", mutate("\"out\":\"DP-1\",", ""), "malformed"),
+        (
+            "malformed",
+            mutate("\"maximizeMode\":0", "\"maximizeMode\":\"maybe\""),
+            "unknown-value",
+        ),
+        (
+            "mismatched",
+            mutate("\"win\":\"win-001\"", "\"win\":\"has space\""),
+            "unknown-value",
+        ),
+        (
+            "extra",
+            mutate(
+                "\"minimized\":false",
+                "\"minimized\":false,\"floating\":false",
+            ),
+            "unknown-field",
+        ),
+        (
+            "legacy-verdict",
+            mutate(
+                "\"minimized\":false",
+                "\"minimized\":false,\"fixedAuto\":false",
+            ),
+            "unknown-field",
+        ),
+    ];
+    for (seq, (name, inner, kind)) in cases.into_iter().enumerate() {
+        let seq = (seq as u64) + 1;
+        let refused = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, seq, seq, &inner))
+                .expect("in-band"),
+        );
+        assert_eq!(refused["outcome"], "rejected", "{name}");
+        assert_eq!(refused["kind"], kind, "{name}");
+        assert_eq!(
+            parse(
+                &service
+                    .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+                    .expect("in-band")
+            )["outcome"],
+            "pending",
+            "{name} drains nothing"
+        );
+    }
+    // Duplicate native identities refuse with the core duplicate vocabulary.
+    let dup_inner = inner_report(
+        &[
+            window_json("win-001", "[0,0,960,1040]", None),
+            window_json("win-001", "[0,0,960,1040]", None),
+        ],
+        true,
+        false,
+        "",
+    );
+    let dup = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 6, 6, &dup_inner))
+            .expect("in-band"),
+    );
+    assert_eq!(dup["outcome"], "rejected");
+    assert_eq!(dup["kind"], "snapshot-invalid");
+    assert_eq!(dup["message"], "duplicate-window");
+    // The next valid capture still mints the unskipped revision and drains.
+    let accepted = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                7,
+                7,
+                &inner_report(&[good], true, false, ""),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(accepted["rev"], "1", "no counter consumed by raw rejects");
+    assert_eq!(
+        parse(
+            &service
+                .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+                .expect("in-band")
+        )["outcome"],
+        "ready"
+    );
+}
+
+#[test]
+fn raw_rejection_replays_exactly_while_changed_source_refuses_reuse() {
+    // A remembered raw rejection replays byte-identically (never draining);
+    // the same source with different bytes refuses as reused.
+    let (service, generation) = discovered_service();
+    let bad_inner = inner_report(
+        &[window_json("win-001", "[0,0,960,1040]", None)
+            .replace("\"maximizeMode\":0", "\"maximizeMode\":\"maybe\"")],
+        true,
+        false,
+        "",
+    );
+    let envelope = capture(ADAPTER, &generation, 1, 1, &bad_inner);
+    let first = service.evaluate_capture(&envelope).expect("in-band");
+    assert_eq!(parse(&first)["kind"], "unknown-value");
+    let replay = service.evaluate_capture(&envelope).expect("replay");
+    assert_eq!(replay, first, "exact redelivery replays");
+    let changed_inner = inner_report(
+        &[window_json("win-002", "[0,0,960,1040]", None)],
+        true,
+        false,
+        "",
+    );
+    let changed = capture_source(ADAPTER, &generation, &js_source(1), 1, 1, &changed_inner);
+    let refused = parse(&service.evaluate_capture(&changed).expect("in-band"));
+    assert_eq!(refused["outcome"], "rejected");
+    assert_eq!(refused["kind"], "source-reused");
+}
+
+#[test]
+fn raw_kwin_shape_projects_fixed_minimized_overlay_and_safety() {
+    // Realistic KWin captured shape: native UUID desktop ids, QSizeF width /
+    // height sentinels (0x0 minimum, Qt unbounded maxima, i32::MAX), partial
+    // bounds, fractional frame/client hints, minimized retention, sticky and
+    // fullscreen overlays, a fixed override lane, and a dropped non-normal
+    // window. The broker converts frame-space hints mechanically and calls
+    // the shared fixed classifier on the captured client sizes.
+    let (service, generation) = discovered_service();
+    let native = format!(
+        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\"}}"
+    );
+    let fixed = window_json("win-fixed", "[0,0,408,308]", Some(UUID_A))
+        .replace(
+            "\"minSize\":null",
+            "\"minSize\":{\"width\":400,\"height\":300}",
+        )
+        .replace(
+            "\"maxSize\":null",
+            "\"maxSize\":{\"width\":400,\"height\":300}",
+        )
+        .replace(
+            "\"clientGeometry\":{\"x\":0,\"y\":0,\"width\":408,\"height\":308}",
+            "\"clientGeometry\":{\"x\":4,\"y\":4,\"width\":400,\"height\":300}",
+        );
+    let sentinel = window_json("win-sentinel", "[0,0,200,200]", Some(UUID_A))
+        .replace("\"minSize\":null", "\"minSize\":{\"width\":0,\"height\":0}")
+        .replace(
+            "\"maxSize\":null",
+            "\"maxSize\":{\"width\":16777215,\"height\":16777215}",
+        );
+    let unbounded = window_json("win-unbounded", "[0,0,200,200]", Some(UUID_A))
+        .replace(
+            "\"minSize\":null",
+            "\"minSize\":{\"width\":176,\"height\":150}",
+        )
+        .replace(
+            "\"maxSize\":null",
+            "\"maxSize\":{\"width\":2147483647,\"height\":2147483647}",
+        );
+    let minimized = window_json("win-min", "[0,0,200,200]", Some(UUID_B))
+        .replace("\"minimized\":false", "\"minimized\":true");
+    let overlay = window_json("win-full", "[0,0,1920,1080]", Some(UUID_B))
+        .replace("\"fullScreen\":false", "\"fullScreen\":true");
+    let dialog = window_json("win-dialog", "[0,0,200,200]", None)
+        .replace("\"normalWindow\":true", "\"normalWindow\":false");
+    // The fullscreen member rides a non-current desktop (as in the
+    // production fixture): the overlay is retained there while the current
+    // scope stays controlled.
+    let inner = inner_report(
+        &[fixed, sentinel, unbounded, minimized, overlay, dialog],
+        true,
+        true,
+        &native,
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+            .expect("accepted"),
+    );
+    assert_eq!(reply["ready"], true);
+    let windows = reply["windows"].as_array().expect("windows");
+    assert_eq!(windows.len(), 5, "non-normal window drops, rest project");
+    let row = |id: &str| {
+        windows
+            .iter()
+            .find(|w| w["win"] == id)
+            .unwrap_or_else(|| panic!("projected row {id}"))
+            .clone()
+    };
+    // Equal nonzero client pin floats automatically.
+    let fixed_row = row("win-fixed");
+    assert_eq!(fixed_row["floating"], true);
+    // Zero/sentinel hints ride for core-side sanitize without floating.
+    assert_eq!(row("win-sentinel")["floating"], false);
+    // Ordinary resizeable client with a real minimum and an unbounded
+    // maximum stays an ordinary tiled client: no automatic float, and the
+    // engine still allocates it a frame.
+    let unbounded_row = row("win-unbounded");
+    assert_eq!(unbounded_row["floating"], false);
+    assert!(
+        !unbounded_row["alloc"].is_null(),
+        "ordinary client keeps its allocation"
+    );
+    // Minimized facts are retained on their native home, never excluded
+    // by the safety predicate.
+    let min_row = row("win-min");
+    assert_eq!(min_row["ws"], "ws-2");
+    // Overlays ride truthfully on their native home; the game pause lane
+    // stays unsupported (no any-fullscreen-game heuristic): the report
+    // ingress still carries paused=false with a fullscreen member present.
+    let full_row = row("win-full");
+    assert_eq!(full_row["ws"], "ws-2");
+    let inner_value: serde_json::Value = serde_json::from_str(&inner).expect("inner parses");
+    assert_eq!(inner_value["presentation"]["paused"], false);
+}
+
+#[test]
+fn raw_intent_lanes_float_and_suppress_without_verdicts() {
+    // Adapter-retained intent rides dedicated lanes (never per-row
+    // verdicts): a floated plain window and a tile-suppressed fixed pin
+    // project accordingly, and the lanes never reach the engine.
+    let (service, generation) = discovered_service();
+    let fixed = window_json("win-fixed", "[0,0,400,300]", None)
+        .replace(
+            "\"minSize\":null",
+            "\"minSize\":{\"width\":400,\"height\":300}",
+        )
+        .replace(
+            "\"maxSize\":null",
+            "\"maxSize\":{\"width\":400,\"height\":300}",
+        );
+    let plain = window_json("win-plain", "[0,0,400,300]", None);
+    let mut inner_value: serde_json::Value =
+        serde_json::from_str(&inner_report(&[fixed, plain], true, false, ""))
+            .expect("inner parses");
+    let map = inner_value.as_object_mut().expect("object");
+    map.insert(
+        "floatIntent".to_owned(),
+        serde_json::Value::Array(vec![serde_json::Value::String("win-plain".to_owned())]),
+    );
+    map.insert(
+        "tileIntent".to_owned(),
+        serde_json::Value::Array(vec![serde_json::Value::String("win-fixed".to_owned())]),
+    );
+    let inner = inner_value.to_string();
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+            .expect("accepted"),
+    );
+    let windows = reply["windows"].as_array().expect("windows");
+    let row = |id: &str| {
+        windows
+            .iter()
+            .find(|w| w["win"] == id)
+            .unwrap_or_else(|| panic!("projected row {id}"))
+            .clone()
+    };
+    assert_eq!(row("win-plain")["floating"], true, "intent floats");
+    let fixed_row = row("win-fixed");
+    assert_eq!(fixed_row["floating"], false, "tile override suppresses");
 }

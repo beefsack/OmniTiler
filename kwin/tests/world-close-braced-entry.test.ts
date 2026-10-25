@@ -69,7 +69,7 @@ function makeHarness() {
     const freshWrappers = (): object =>
         qmlLike(
             live.map((w) => ({
-                internalId: w.braced,
+                internalId: w.braced, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 normalWindow: true,
                 frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
                 output: { name: OUT },

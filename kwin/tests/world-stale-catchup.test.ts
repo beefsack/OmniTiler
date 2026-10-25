@@ -13,6 +13,13 @@ interface FakeDesktop {
     id: string;
 }
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -79,7 +86,7 @@ function makeHarness(): Harness {
     const ws1 = desk("ws1");
     const wins: FakeWindow[] = [
         {
-            internalId: "win-a",
+            internalId: "win-a", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out" },
@@ -92,7 +99,7 @@ function makeHarness(): Harness {
             maxSize: null,
         },
         {
-            internalId: "win-b",
+            internalId: "win-b", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 220, y: 0, width: 200, height: 200 },
             output: { name: "out" },

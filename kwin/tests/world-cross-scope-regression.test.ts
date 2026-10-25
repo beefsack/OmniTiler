@@ -11,6 +11,13 @@ interface FakeDesktop {
     id: string;
 }
 interface FakeWindow {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     normalWindow: boolean;
     frameGeometry: { x: number; y: number; width: number; height: number };
@@ -43,7 +50,7 @@ const qmlLike = (items: ReadonlyArray<unknown>): object => {
 
 function tiledWin(id: string, out: string, ws: FakeDesktop, x: number): FakeWindow {
     return {
-        internalId: id,
+        internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
         normalWindow: true,
         frameGeometry: { x, y: 0, width: 200, height: 200 },
         output: { name: out },
@@ -300,7 +307,7 @@ describe("world directional intent (core-owned crossing)", () => {
             { win: winB, ws: wsA, x: 210 },
         ];
         const wrap = (row: { win: string; ws: string; x: number }): FakeWindow => ({
-            internalId: `{${row.win}}`,
+            internalId: `{${row.win}}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: row.x, y: 0, width: 200, height: 200 },
             output: { name: out },

@@ -48,7 +48,7 @@ function makeFixtureSurface() {
     const windowRemoved = makeSignal();
     const wins: Array<Record<string, unknown>> = [
         {
-            internalId: "win-a", normalWindow: true,
+            internalId: "win-a", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
@@ -60,21 +60,21 @@ function makeFixtureSurface() {
             interactiveMoveResizeFinished: finished.signal,
         },
         {
-            internalId: LONG_ID, normalWindow: true,
+            internalId: LONG_ID, normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 210, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-extreme", normalWindow: true,
+            internalId: "win-extreme", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: -16384, y: -16384, width: 16384, height: 16384 },
             output: { name: "out-2" }, desktops: [ws2],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-sticky", normalWindow: true,
+            internalId: "win-sticky", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-2" }, desktops: [ws2],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
@@ -82,7 +82,7 @@ function makeFixtureSurface() {
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-fixed", normalWindow: true,
+            internalId: "win-fixed", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 400, height: 300 },
             clientGeometry: { x: 0, y: 0, width: 400, height: 300 },
             output: { name: "out-2" }, desktops: [ws2],
@@ -90,14 +90,14 @@ function makeFixtureSurface() {
             minSize: { width: 400, height: 300 }, maxSize: { width: 400, height: 300 },
         },
         {
-            internalId: "win-game", normalWindow: true,
+            internalId: "win-game", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 1920, height: 1080 },
             output: { name: "out-1" }, desktops: [ws3],
-            minimized: false, fullScreen: true, maximizeMode: 0,
+            minimized: false, fullScreen: true, maximizeMode: 0, onAllDesktops: false,
             minSize: null, maxSize: null,
         },
         {
-            internalId: "win-min", normalWindow: true,
+            internalId: "win-min", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: true, fullscreen: false, maximized: false, sticky: false,
@@ -107,7 +107,7 @@ function makeFixtureSurface() {
             // Live-then-closed window: cached while live, removed from the
             // inventory before the removal event so the event-gated
             // difference (never the payload) reports the explicit close.
-            internalId: "win-gone", normalWindow: true,
+            internalId: "win-gone", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 420, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
@@ -181,7 +181,7 @@ function makeSizeHintsSurface() {
     const ws2 = { id: "ws-2" };
     const wins: Array<Record<string, unknown>> = [
         {
-            internalId: "win-default", normalWindow: true,
+            internalId: "win-default", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
@@ -189,7 +189,7 @@ function makeSizeHintsSurface() {
             minSize: { width: 0, height: 0 }, maxSize: { width: 16777215, height: 16777215 },
         },
         {
-            internalId: "win-sentinel", normalWindow: true,
+            internalId: "win-sentinel", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 210, y: 0, width: 200, height: 200 },
             clientGeometry: { x: 210, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
@@ -197,7 +197,7 @@ function makeSizeHintsSurface() {
             minSize: null, maxSize: { width: 2147483647, height: 2147483647 },
         },
         {
-            internalId: "win-wide", normalWindow: true,
+            internalId: "win-wide", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 420, y: 0, width: 200, height: 200 },
             clientGeometry: { x: 420, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
@@ -205,7 +205,7 @@ function makeSizeHintsSurface() {
             minSize: { width: 640, height: 0 }, maxSize: { width: 640, height: 0 },
         },
         {
-            internalId: "win-fixed", normalWindow: true,
+            internalId: "win-fixed", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 630, y: 0, width: 400, height: 300 },
             clientGeometry: { x: 630, y: 0, width: 400, height: 300 },
             output: { name: "out-1" }, desktops: [ws1],
@@ -401,14 +401,25 @@ describe("world shared byte fixtures", () => {
         const observeBody = JSON.parse(observePayload) as Record<string, unknown>;
         const observeInner = observeBody["report"] as Record<string, unknown>;
         // The fixture covers the contract surface the byte gate locks:
-        // minimized lifetimes, native order, hints, long ids, extrema.
+        // minimized lifetimes, native order, raw hints, long ids, extrema.
         const facts = observeInner["windows"] as Array<Record<string, unknown>>;
         assert.ok(facts.some((m) => m["win"] === "win-min" && m["minimized"] === true));
         assert.ok(((observeInner["native"] as Array<Record<string, unknown>>)[0]?.["order"] as Array<unknown>).length >= 3);
         assert.ok(observePayload.includes(LONG_ID), "128-char id rides verbatim");
         assert.ok(observePayload.includes("-16384"), "extrema ride verbatim");
         const game = facts.find((w) => w["win"] === "win-game");
-        assert.ok(game !== undefined && game["fullscreen"] === true && game["fitExcluded"] === true);
+        assert.ok(game !== undefined && game["fullScreen"] === true && game["maximizeMode"] === 0);
+        // No projected verdicts ride the raw lane (broker-classified).
+        for (const row of facts) {
+            for (const verdict of ["floating", "fitExcluded", "fixedAuto", "fixedSuppress", "hints", "rect", "observedWs", "nativeWs"]) {
+                assert.ok(!(verdict in row), `raw row carries no ${verdict}`);
+            }
+            assert.ok("frameGeometry" in row && "clientGeometry" in row && "desktops" in row, "raw row carries native facts");
+        }
+        // Raw membership stays mechanical: single-homed windows name
+        // their native desktop id list.
+        const winA = facts.find((w) => w["win"] === "win-a");
+        assert.deepEqual(winA?.["desktops"], ["ws-1"]);
         // The Rust golden reply for this exact report parses and applies
         // through the production entry (proves byte consumption in-flow).
         // During fixture regeneration the golden may not exist yet (Rust
@@ -494,24 +505,21 @@ describe("world shared byte fixtures", () => {
         const hintsMasked = JSON.stringify({ ...JSON.parse(observePayload), source: "src-masked" });
         checkOrWrite("report-kwin-size-hints.json", hintsMasked);
         const body = JSON.parse(observePayload) as Record<string, unknown>;
-        // Real Qt QSize field shapes ride verbatim on the wire.
-        assert.ok(observePayload.includes('"minW":0,"minH":0,"maxW":16777215,"maxH":16777215}'), "Qt default hints ride");
-        assert.ok(observePayload.includes('"maxW":2147483647'), "unbounded sentinel rides");
-        assert.ok(observePayload.includes('"minW":640,"minH":0,"maxW":640,"maxH":0}'), "partial-zero vector rides");
-        assert.ok(observePayload.includes('"minW":400,"minH":300,"maxW":400,"maxH":300}'), "fixed pin rides");
-        // fixedAuto classification stays meaningful under the default
-        // both-axes predicate: only the equal nonzero pin floats.
+        // Real Qt QSize field shapes ride verbatim on the raw wire.
+        assert.ok(observePayload.includes('"minSize":{"width":0,"height":0},"maxSize":{"width":16777215,"height":16777215}'), "Qt default hints ride");
+        assert.ok(observePayload.includes('"width":2147483647'), "unbounded sentinel rides");
+        assert.ok(observePayload.includes('"minSize":{"width":640,"height":0},"maxSize":{"width":640,"height":0}'), "partial-zero vector rides");
+        assert.ok(observePayload.includes('"minSize":{"width":400,"height":300},"maxSize":{"width":400,"height":300}'), "fixed pin rides");
+        // No projected verdicts ride the raw lane: fixed classification is
+        // broker-owned now (pinned by the Rust raw tests), and only the
+        // equal nonzero pin classifies under the default both-axes
+        // predicate there.
         const innerHints = body["report"] as Record<string, unknown>;
         const rows = innerHints["windows"] as Array<Record<string, unknown>>;
-        const flagOf = (id: string): boolean => {
-            const row = rows.find((w) => w["win"] === id);
-            assert.ok(row !== undefined, `expected row ${id}`);
-            return row["fixedAuto"] === true;
-        };
-        assert.equal(flagOf("win-fixed"), true);
-        assert.equal(flagOf("win-default"), false);
-        assert.equal(flagOf("win-sentinel"), false);
-        assert.equal(flagOf("win-wide"), false);
+        assert.equal(rows.length, 4);
+        for (const row of rows) {
+            assert.ok(!("fixedAuto" in row) && !("hints" in row), "no wire verdicts");
+        }
         // Accepted, never catchup-held: the explicit select rides the next
         // dispatch instead of being dropped to observation-only.
         replyCall(flow, "DescribeWorld")(acceptEmpty(body["source"], "1", "1"));
@@ -536,7 +544,7 @@ describe("world shared byte fixtures", () => {
         const longWs = "s".repeat(128);
         const mkWins = (count: number) =>
             Array.from({ length: count }, (_, i) => ({
-                internalId: `w${"q".repeat(120)}-${i}`,
+                internalId: `w${"q".repeat(120)}-${i}`, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 normalWindow: true,
                 frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
                 clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
@@ -620,17 +628,18 @@ describe("world T05 unbounded-maximum producer shape", () => {
         // Live T05 probe shape on the production DescribeWorld route: an
         // ordinary resizeable client reports a real minimum (176x150) with
         // Qt's unconstrained maximum (2147483647 x 2147483647, INT_MAX,
-        // meaning "no maximum"). The world report carries decorated-frame
-        // hints converted from the client QSize values via the live
-        // frame/client delta; this zero-decoration double keeps the raw
-        // bytes verbatim while the sentinel rides for core-side sanitize
-        // (absent at every use site, never a refusal, never an automatic
-        // float). Generic fake ids, real field shapes.
+        // meaning "no maximum"). The world report carries the raw client
+        // QSize values plus the live frame/client rects; the Rust broker
+        // converts to decorated-frame sizes via the live delta (this
+        // zero-decoration double keeps converted equal to raw) and the
+        // sentinel rides for core-side sanitize (absent at every use site,
+        // never a refusal, never an automatic float). Generic fake ids,
+        // real field shapes.
         const ws1 = { id: "ws-1" };
         const ws2 = { id: "ws-2" };
         const wins: Array<Record<string, unknown>> = [
             {
-                internalId: "win-t05", normalWindow: true,
+                internalId: "win-t05", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
                 clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
                 output: { name: "out-1" }, desktops: [ws1],
@@ -639,7 +648,7 @@ describe("world T05 unbounded-maximum producer shape", () => {
                 maxSize: { width: 2147483647, height: 2147483647 },
             },
             {
-                internalId: "win-fixed", normalWindow: true,
+                internalId: "win-fixed", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 210, y: 0, width: 400, height: 300 },
                 clientGeometry: { x: 210, y: 0, width: 400, height: 300 },
                 output: { name: "out-1" }, desktops: [ws1],
@@ -647,14 +656,14 @@ describe("world T05 unbounded-maximum producer shape", () => {
                 minSize: { width: 400, height: 300 }, maxSize: { width: 400, height: 300 },
             },
             {
-                internalId: "win-neg", normalWindow: true,
+                internalId: "win-neg", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 420, y: 0, width: 200, height: 200 },
                 output: { name: "out-1" }, desktops: [ws1],
                 minimized: false, fullscreen: false, maximized: false, sticky: false,
                 minSize: { width: -5, height: 100 }, maxSize: null,
             },
             {
-                internalId: "win-t", normalWindow: true,
+                internalId: "win-t", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
                 output: { name: "out-1" }, desktops: [ws2],
                 minimized: false, fullscreen: false, maximized: false, sticky: false,
@@ -689,29 +698,38 @@ describe("world T05 unbounded-maximum producer shape", () => {
                 return row as Record<string, unknown>;
             };
             const t05 = rowOf("win-t05");
-            // Decorated hints converted with the zero decoration delta, so
-            // the client bytes ride unchanged; the unbounded max never
-            // promotes an ordinary client to an automatic float.
+            // Raw client QSize values ride verbatim (zero decoration delta
+            // here, so decorated equals client broker-side); the unbounded
+            // max never promotes an ordinary client to an automatic float
+            // (pinned by the Rust raw tests under the shared predicate).
             assert.deepEqual(
-                t05["hints"],
-                { minW: 176, minH: 150, maxW: 2147483647, maxH: 2147483647 },
+                t05["minSize"],
+                { width: 176, height: 150 },
             );
-            assert.equal(t05["fixedAuto"], false);
-            assert.equal(t05["floating"], false);
-            // In-bound finite pairs stay exact and still pin fixed-size.
+            assert.deepEqual(
+                t05["maxSize"],
+                { width: 2147483647, height: 2147483647 },
+            );
+            assert.ok(!("fixedAuto" in t05) && !("floating" in t05) && !("hints" in t05), "no wire verdicts");
+            // In-bound finite pairs ride exact for broker-side pinning.
             const fixed = rowOf("win-fixed");
             assert.deepEqual(
-                fixed["hints"],
-                { minW: 400, minH: 300, maxW: 400, maxH: 300 },
+                fixed["minSize"],
+                { width: 400, height: 300 },
             );
-            assert.equal(fixed["fixedAuto"], true);
-            // Negative extents stay malformed-absent, never a bound.
+            assert.deepEqual(
+                fixed["maxSize"],
+                { width: 400, height: 300 },
+            );
+            // Negative client extents ride truthfully (the shared predicate
+            // reports not-fixed-negative broker-side); the adapter no longer
+            // nulls them into absent.
             const neg = rowOf("win-neg");
             assert.deepEqual(
-                neg["hints"],
-                { minW: null, minH: null, maxW: null, maxH: null },
+                neg["minSize"],
+                { width: -5, height: 100 },
             );
-            assert.equal(neg["fixedAuto"], false);
+            assert.equal(neg["maxSize"], null);
         } finally {
             flow.handle.stop();
         }

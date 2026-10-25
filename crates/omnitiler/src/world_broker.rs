@@ -138,10 +138,12 @@
 //!   re-armed with the old cursor can never skip unseen work.
 //!   `{"v":2,"outcome":"superseded","gen":G}` answers a replaced waiter.
 //!
-//! Projected `WindowFact` capture stays allowed pending the Stage 4 raw
-//! capture work: the broker passes the inner report through verbatim and
-//! synthesizes no facts or defaults. Unreadable stays `null`, incomplete
-//! stays incomplete; nothing here invents an allocation.
+//! Raw classification capture (Stage 4): the inner `windows` lane carries
+//! KWin-shaped native facts plus the tolerant intent lanes; the broker
+//! normalizes them into projected v2 `WindowFact`s via
+//! `crate::kde_raw` before stamping, sequencing, or draining. Carrying
+//! legacy projected verdict keys inside a raw row refuses as
+//! `unknown-field`: there is no projected-fact fallback lane.
 //!
 //! Bounds: 128 queued commands (`queue-full` past that), 1024 settled plus
 //! 1024 retired terminal results with oldest-first eviction (duplicates of
@@ -176,6 +178,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
+
+use serde_json::Map;
 
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome, decode_request,
@@ -611,6 +615,41 @@ impl WorldBroker {
                 clock_now,
             ));
         }
+        // Stage 4 raw classification capture: normalize the KWin-shaped raw
+        // `windows` lane into projected v2 facts before any sequencing,
+        // floor, watermark, queue, or presentation change. A malformed raw
+        // envelope is remembered for exact replay like any other rejection
+        // but drains nothing and consumes no counters. Legacy projected
+        // verdict keys inside a raw row refuse as unknown-field: there is
+        // no projected-fact fallback lane.
+        let ParsedCapture {
+            adapter,
+            generation,
+            source,
+            source_seq,
+            native_invalid,
+            inner,
+        } = parsed;
+        let mut raw_inner = inner;
+        if let Err((kind, message)) = crate::kde_raw::normalize_raw_windows(&mut raw_inner) {
+            let refused = ParsedCapture {
+                adapter,
+                generation,
+                source,
+                source_seq,
+                native_invalid,
+                inner: Map::new(),
+            };
+            return self.remember_rejection(&refused, envelope, kind, message, clock_now);
+        }
+        let parsed = ParsedCapture {
+            adapter,
+            generation,
+            source,
+            source_seq,
+            native_invalid,
+            inner: raw_inner,
+        };
         self.source_floor = parsed.source_seq;
         let observation_seq = self.take_observation_seq()?;
         let request_seq = self.take_request_seq()?;

@@ -12,6 +12,13 @@ import { createWorldApplyHost, createWorldNativeToggles, type WorldNativeEnv } f
 import type { WorldCommand } from "../src/world-report";
 
 interface FakeWin {
+    managed: boolean;
+    deleted: boolean;
+    transient: boolean;
+    transientFor: unknown;
+    dialog: boolean;
+    modal: boolean;
+    wantsInput: boolean;
     internalId: string;
     frameGeometry: { x: number; y: number; width: number; height: number };
     fullScreen: boolean;
@@ -27,7 +34,7 @@ interface FakeWin {
 function makeWin(over: Partial<FakeWin> = {}): { ref: FakeWin; order: string[] } {
     const order: string[] = [];
     const ref = {
-        internalId: "win-a",
+        internalId: "win-a", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true, minimized: false,
         frameGeometry: { x: 0, y: 0, width: 100, height: 100 },
         fullScreen: false,
         maximizeMode: 0,

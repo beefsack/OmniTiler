@@ -63,7 +63,7 @@
 // caller invalidates the CURRENT watermark before the call, recaptures
 // truth, and continues observation-only catchup (commands never replay).
 
-import { BORN_MAXIMIZED_DEFAULT, readBornMaximizedValue } from "./born-maximized";
+import { BORN_MAXIMIZED_DEFAULT, readBornMaximizedValue } from "./world-settings-live";
 import { readNativeAlias } from "./native-alias";
 import type { WorldReply } from "./world-report";
 import type { WorldObservation } from "./world-observe";
