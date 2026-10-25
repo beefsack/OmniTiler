@@ -394,8 +394,9 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   unfinished. No core type/comment or sticky semantics were changed here.
 - Current accepted checkpoint consumes stage 1b from `bddfef15`: macOS build,
   full tests (1,283 passed, 0 failed), strict all-target clippy PASS; locked
-  core/protocol build and strict all-target clippy PASS; ordered acceptance
-  PASS, 6/6. No signed-bundle/live acceptance is claimed.
+  core/protocol build, full tests (1,286 passed, 0 failed; 31 successful suites)
+  and strict all-target clippy PASS; ordered acceptance PASS, 6/6. No
+  signed-bundle/live acceptance is claimed.
 
 ### Sticky per-display verification plan
 
