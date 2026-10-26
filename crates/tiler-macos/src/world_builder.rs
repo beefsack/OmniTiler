@@ -70,31 +70,70 @@ use tiler_core::world_report::{
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, collect_window_facts, minimized_fact};
 use crate::runtime_types::{NativeContext, ObservedWindow, PHASE1_GAP, PHASE1_OUTER_GAP};
 
+/// Grounded focus eligibility facts for one presentation ingress: the
+/// retained home-current verdict, the current work areas and full display
+/// bounds in adapter units, and the engine-placement truth for the focused
+/// window. All three feed core-owned eligibility from the same retained
+/// snapshot as the foreground frame, so eligibility and geometry agree.
+/// Fresh-read renderer vetoes stay as last-moment fences over stale
+/// reports (see [`crate::border_runtime::BorderReplyTick`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FocusEligibilityFacts {
+    /// Retained home-current verdict for the focused window: `Some(true)`
+    /// when its retained home domain is a current user Space, `Some(false)`
+    /// when homed but not current, `None` when unhomed (unknown). Unproven
+    /// currency fails closed to hidden-workspace.
+    pub home_current: Option<bool>,
+    /// Current visible work areas in adapter units (zoom-veto inputs).
+    pub visibles: Vec<tiler_core::geometry::Rect>,
+    /// Current full display bounds in adapter units (fullscreen-fence
+    /// inputs, never work areas).
+    pub full_displays: Vec<tiler_core::geometry::Rect>,
+    /// Engine-placement truth: the last applied reply planned geometry for
+    /// the focused window (tiling truth exempts the zoom heuristic, exactly
+    /// like the renderer's placement join over `last_desired_geometry`).
+    pub engine_placed: bool,
+}
+
 /// Build the presentation ingress for one report from retained truth.
 ///
-/// Tentative stage-4 mapping (offline, no core change):
+/// Stage-4 mapping (offline, no core change):
 /// - Foreground token is the retained observed-focus id (`""` when none);
 ///   the renderer revalidates it live against the reply token, so a stale
 ///   token hides instead of painting.
 /// - The foreground frame is the live retained rect for that id (`None`
 ///   when unreadable or minimized); minimized/fullscreen ride as truthful
-///   flags, maximized stays false (no native zoom inference adapter-side:
-///   the whole-display/work-area zoom approximation stays a render-side
-///   native veto, never an ingress verdict), cloaked/shell/hidden-workspace
-///   stay false (not yet observed: the render-side classifier veto fails
-///   closed instead). Eligibility normalization is partial; see the
-///   renderer.
+///   flags from the retained minimized set and the retained fullscreen bit.
+///   `foreground_shell` is grounded false: classifier exclusions (own
+///   bundle, accessory/prohibited policy, nonordinary layer, unknown role)
+///   are omitted from membership by construction, so an admitted focused
+///   member is never a shell surface.
+/// - `foreground_hidden_workspace` is grounded from the retained home plus
+///   fresh SLS current flags: homed-but-not-current (and unhomed) reads
+///   hidden, so the core — not just the renderer Space leg — owns the
+///   off-Space hide.
+/// - `foreground_maximized` is grounded from the same whole-display and
+///   work-area approximation the renderer vetoes on (1pt tolerance over
+///   the retained frame, exempting engine-placed tiling truth, ORed with
+///   the borderless full-display fence): the core owns the zoom hide with
+///   the same inputs the fresh-read veto would use, so eligibility and
+///   geometry share one snapshot.
+/// - `foreground_cloaked` stays false: no roster fact names cloaking
+///   (CG offscreen alone proves nothing, per the port record), and the
+///   render-side classifier/facts-unknown vetoes fail closed instead.
+/// - No positively grounded game signal exists (a focused fullscreen bit
+///   alone never proves a game; ordinary fullscreen never pauses), so
+///   `paused` rides false and the render-side fullscreen fence stays the
+///   game-lane veto. Session lock stays renderer-side (main-thread only).
 /// - Border enable plus gap/width/extension ride the startup-resolved
 ///   style; underlay enable rides false (no production underlay loop yet).
 /// - Chord/move ride silent (no chord source; the drag gesture ingress
 ///   rides separately).
-/// - `paused` rides false: no positively grounded native game signal
-///   exists (a focused fullscreen bit alone never proves a game). The
-///   render-side fullscreen fence stays as the last-moment veto.
-/// - Pager order rides empty (core falls back to retained then
-///   deterministic order); pager frames carry one live row per live
-///   member with a positively-sized rect (float/tile snapshots are not
-///   yet retained adapter-side).
+/// - Pager order rides empty (no native stacking snapshot is plumbed yet;
+///   the core falls back to retained then deterministic order).
+///   Pager frames carry one live row per live member with a positively-sized
+///   rect: float/tile snapshots are not retained adapter-side, so members
+///   with no live frame render no miniature, never a guess.
 /// - Cursor rides unsampled (core falls back through focused output).
 pub(crate) fn build_presentation_ingress(
     focused_global: &str,
@@ -102,6 +141,7 @@ pub(crate) fn build_presentation_ingress(
     unknown: &[(u32, ObservedWindow)],
     minimized: &[MinimizedRecord],
     focused_fullscreen: bool,
+    eligibility: &FocusEligibilityFacts,
     style: &crate::active_border::PresentationStylePx,
 ) -> tiler_core::world_report::PresentationIngress {
     use tiler_core::world_report::PresentationIngress;
@@ -165,13 +205,53 @@ pub(crate) fn build_presentation_ingress(
         }
     }
     pager_frames.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+    // Grounded eligibility from the same retained snapshot as the frame:
+    // unproven currency fails closed to hidden-workspace (the core owns
+    // the off-Space hide; empty focus still hides as no-target first).
+    let foreground_hidden_workspace = !matches!(eligibility.home_current, Some(true));
+    // Grounded maximized from the renderer's own zoom/full-display inputs
+    // over the retained frame: engine-placed tiling truth exempts the zoom
+    // heuristic, and a borderless full-display frame reads maximized on
+    // both axes. A minimized or unreadable focus has no frame here, so it
+    // never reads maximized from this path.
+    let foreground_maximized = foreground_frame.is_some_and(|frame| {
+        use tiler_core::visual::VisualRect;
+        let visual = VisualRect {
+            x: frame.x as f64,
+            y: frame.y as f64,
+            w: frame.w as f64,
+            h: frame.h as f64,
+        };
+        let to_visual = |rect: tiler_core::geometry::Rect| VisualRect {
+            x: rect.x as f64,
+            y: rect.y as f64,
+            w: rect.w as f64,
+            h: rect.h as f64,
+        };
+        let visibles: Vec<VisualRect> = eligibility
+            .visibles
+            .iter()
+            .copied()
+            .map(to_visual)
+            .collect();
+        let fulls: Vec<VisualRect> = eligibility
+            .full_displays
+            .iter()
+            .copied()
+            .map(to_visual)
+            .collect();
+        let (zoom_h, zoom_v) =
+            crate::border_runtime::zoom_axes(visual, &visibles, eligibility.engine_placed);
+        let full_display = crate::border_runtime::covers_full_display(visual, &fulls);
+        (zoom_h || full_display) || (zoom_v || full_display)
+    });
     PresentationIngress {
         foreground: focused_global.to_owned(),
         foreground_minimized,
-        foreground_maximized: false,
+        foreground_maximized,
         foreground_fullscreen: focused_fullscreen,
         foreground_cloaked: false,
-        foreground_hidden_workspace: false,
+        foreground_hidden_workspace,
         foreground_shell: false,
         foreground_frame,
         border_enabled: style.border_enabled,
@@ -2867,10 +2947,31 @@ mod tests {
         )
     }
 
+    /// Grounded eligible focus: homed on a current Space, an ordinary
+    /// retained frame inside the work area, no engine placement (floats and
+    /// unplaced windows read zoom when work-area-sized).
+    fn eligible() -> FocusEligibilityFacts {
+        FocusEligibilityFacts {
+            home_current: Some(true),
+            visibles: vec![rect(0, 25, 1440, 875)],
+            full_displays: vec![rect(0, 0, 1440, 900)],
+            engine_placed: false,
+        }
+    }
+
+    /// Unhomed focus: unknown currency fails closed to hidden-workspace.
+    fn no_home() -> FocusEligibilityFacts {
+        FocusEligibilityFacts {
+            home_current: None,
+            ..eligible()
+        }
+    }
+
     #[test]
     fn presentation_ingress_carries_live_focus_frame_and_pager_row() {
         let members = ingress_members();
-        let ingress = build_presentation_ingress("1001_1", &members, &[], &[], false, &style());
+        let ingress =
+            build_presentation_ingress("1001_1", &members, &[], &[], false, &eligible(), &style());
         assert_eq!(ingress.foreground, "1001_1");
         assert_eq!(
             ingress.foreground_frame,
@@ -2883,6 +2984,13 @@ mod tests {
         );
         assert!(!ingress.foreground_minimized && !ingress.foreground_fullscreen);
         assert!(!ingress.foreground_maximized);
+        // Shell is grounded false: admitted focused members passed the
+        // classifier, so excluded shell shapes can never name the focus.
+        // Hidden-workspace is grounded false here (homed current); cloaked
+        // stays false with no roster fact, and the renderer vetoes fail
+        // closed instead.
+        assert!(!ingress.foreground_shell);
+        assert!(!ingress.foreground_cloaked && !ingress.foreground_hidden_workspace);
         assert!(ingress.border_enabled);
         assert!(
             !ingress.underlay_enabled,
@@ -2908,10 +3016,12 @@ mod tests {
     #[test]
     fn presentation_ingress_unknown_focus_hides_frame() {
         let members = ingress_members();
-        let ingress = build_presentation_ingress("", &members, &[], &[], false, &style());
+        let ingress =
+            build_presentation_ingress("", &members, &[], &[], false, &eligible(), &style());
         assert!(ingress.foreground.is_empty());
         assert!(ingress.foreground_frame.is_none());
-        let ingress = build_presentation_ingress("1001_9", &members, &[], &[], false, &style());
+        let ingress =
+            build_presentation_ingress("1001_9", &members, &[], &[], false, &no_home(), &style());
         assert_eq!(ingress.foreground, "1001_9");
         assert!(ingress.foreground_frame.is_none());
         assert!(
@@ -2929,8 +3039,15 @@ mod tests {
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
             sticky: false,
         }];
-        let ingress =
-            build_presentation_ingress("1001_1", &members, &[], &minimized, false, &style());
+        let ingress = build_presentation_ingress(
+            "1001_1",
+            &members,
+            &[],
+            &minimized,
+            false,
+            &eligible(),
+            &style(),
+        );
         assert!(ingress.foreground_minimized);
         assert!(ingress.foreground_frame.is_none());
     }
@@ -2941,9 +3058,229 @@ mod tests {
         // classification exists, so the game lane stays off. The
         // render-side fullscreen fence is the safety veto instead.
         let members = ingress_members();
-        let ingress = build_presentation_ingress("1001_1", &members, &[], &[], true, &style());
+        let ingress =
+            build_presentation_ingress("1001_1", &members, &[], &[], true, &eligible(), &style());
         assert!(ingress.foreground_fullscreen);
         assert!(!ingress.paused);
+    }
+
+    #[test]
+    fn presentation_ingress_hidden_and_unhomed_focus_hide_as_hidden_workspace() {
+        // Grounded Space eligibility: a focused window homed to a
+        // non-current Space — and an unhomed focused window — both hide
+        // with the core HiddenWorkspace reason (fail closed on unproven
+        // currency), not as no-target. End to end through the real engine.
+        for eligibility in [
+            FocusEligibilityFacts {
+                home_current: Some(false),
+                ..eligible()
+            },
+            no_home(),
+        ] {
+            let ctx = two_display_ctx();
+            let (closed, unreadable) = (Vec::new(), BTreeMap::new());
+            let memory = empty_memory();
+            let mut members = BTreeMap::new();
+            members.insert(
+                key("macos-display-1", "space-11"),
+                vec![(1001, observed(1, 10, 10, 800, 600))],
+            );
+            let owned_id = "req-1".to_owned();
+            let mut input = ReportInput::new(
+                OWNER,
+                INCARNATION,
+                GENERATION,
+                &ctx,
+                1,
+                1,
+                &owned_id,
+                &members,
+                &memory,
+                &closed,
+                &unreadable,
+                &[],
+                "1001_1",
+                false,
+            );
+            input.presentation = build_presentation_ingress(
+                "1001_1",
+                &members,
+                &[],
+                &[],
+                false,
+                &eligibility,
+                &style(),
+            );
+            let report = build_report(&mut input);
+            assert!(validate_report(&report));
+            assert!(report.presentation.foreground_hidden_workspace);
+            let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+            let reply = accepted(&report, &mut engine);
+            assert!(
+                !reply.presentation.border.visible,
+                "off-Space focus hides the ring"
+            );
+            assert_eq!(
+                reply.presentation.border.reason,
+                Some(tiler_core::visual::BorderHideReason::HiddenWorkspace)
+            );
+        }
+    }
+
+    #[test]
+    fn presentation_ingress_work_area_sized_focus_reads_maximized() {
+        // Grounded zoom eligibility: a retained frame exactly matching the
+        // visible work area reads maximized (the renderer's own 1pt
+        // heuristic over the same snapshot), so the core owns the zoom
+        // hide. End to end through the real engine.
+        let ctx = two_display_ctx();
+        let (closed, unreadable) = (Vec::new(), BTreeMap::new());
+        let memory = empty_memory();
+        let mut members = BTreeMap::new();
+        members.insert(
+            key("macos-display-1", "space-11"),
+            vec![(1001, observed(1, 0, 25, 1440, 875))],
+        );
+        let owned_id = "req-1".to_owned();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            1,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_1",
+            false,
+        );
+        input.presentation =
+            build_presentation_ingress("1001_1", &members, &[], &[], false, &eligible(), &style());
+        let report = build_report(&mut input);
+        assert!(validate_report(&report));
+        assert!(report.presentation.foreground_maximized);
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&report, &mut engine);
+        assert!(!reply.presentation.border.visible);
+        assert_eq!(
+            reply.presentation.border.reason,
+            Some(tiler_core::visual::BorderHideReason::Maximized)
+        );
+    }
+
+    #[test]
+    fn presentation_ingress_engine_placed_window_exempts_zoom() {
+        // Tiling truth exempts the zoom heuristic: the same work-area-sized
+        // frame with a last-applied planned geometry reads placed, so the
+        // core shows the ring exactly like the renderer's placement join.
+        // End to end through the real engine.
+        let ctx = two_display_ctx();
+        let (closed, unreadable) = (Vec::new(), BTreeMap::new());
+        let memory = empty_memory();
+        let mut members = BTreeMap::new();
+        members.insert(
+            key("macos-display-1", "space-11"),
+            vec![(1001, observed(1, 0, 25, 1440, 875))],
+        );
+        let owned_id = "req-1".to_owned();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            1,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_1",
+            false,
+        );
+        input.presentation = build_presentation_ingress(
+            "1001_1",
+            &members,
+            &[],
+            &[],
+            false,
+            &FocusEligibilityFacts {
+                engine_placed: true,
+                ..eligible()
+            },
+            &style(),
+        );
+        let report = build_report(&mut input);
+        assert!(validate_report(&report));
+        assert!(
+            !report.presentation.foreground_maximized,
+            "placed tiling truth is never zoom"
+        );
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&report, &mut engine);
+        assert!(
+            reply.presentation.border.visible,
+            "eligible placed focus shows"
+        );
+    }
+
+    #[test]
+    fn presentation_ingress_full_display_frame_fences_maximized() {
+        // Borderless full-display fence: a frame covering the entire FULL
+        // display reads maximized regardless of engine placement (safety
+        // wins — tiling truth only ever fills work areas, and a borderless
+        // game must never gain a ring from tiled provenance). Mirrors the
+        // renderer fence exactly.
+        let ctx = two_display_ctx();
+        let (closed, unreadable) = (Vec::new(), BTreeMap::new());
+        let memory = empty_memory();
+        let mut members = BTreeMap::new();
+        members.insert(
+            key("macos-display-1", "space-11"),
+            vec![(1001, observed(1, 0, 0, 1440, 900))],
+        );
+        let owned_id = "req-1".to_owned();
+        let mut input = ReportInput::new(
+            OWNER,
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            1,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "1001_1",
+            false,
+        );
+        for engine_placed in [false, true] {
+            input.presentation = build_presentation_ingress(
+                "1001_1",
+                &members,
+                &[],
+                &[],
+                false,
+                &FocusEligibilityFacts {
+                    engine_placed,
+                    ..eligible()
+                },
+                &style(),
+            );
+            let report = build_report(&mut input);
+            assert!(validate_report(&report));
+            assert!(
+                report.presentation.foreground_maximized,
+                "full-display coverage fences even when placed"
+            );
+        }
     }
 
     #[test]
@@ -2951,8 +3288,15 @@ mod tests {
         // Non-default configuration (width 5, gap 2) rides the ingress
         // integers so core shapes use the configured outset.
         let members = ingress_members();
-        let ingress =
-            build_presentation_ingress("1001_1", &members, &[], &[], false, &styled(5.0, 2.0));
+        let ingress = build_presentation_ingress(
+            "1001_1",
+            &members,
+            &[],
+            &[],
+            false,
+            &eligible(),
+            &styled(5.0, 2.0),
+        );
         assert_eq!(
             (
                 ingress.border_gap_px,
@@ -3003,6 +3347,7 @@ mod tests {
             &[],
             &[],
             false,
+            &eligible(),
             &styled(5.0, 2.0),
         );
         let report = build_report(&mut input);
@@ -3120,7 +3465,7 @@ mod tests {
             false,
         );
         input.presentation =
-            build_presentation_ingress("1001_1", &members, &[], &[], false, &style());
+            build_presentation_ingress("1001_1", &members, &[], &[], false, &eligible(), &style());
         let report = build_report(&mut input);
         assert!(validate_report(&report));
         assert_eq!(report.presentation.foreground, "1001_1");

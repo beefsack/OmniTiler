@@ -144,6 +144,9 @@ pub struct DevSettings {
     pub excluded_bundles: Option<Vec<String>>,
     /// Active-border section (else CLI `--active-border-*`, else defaults).
     pub active_border: Option<ActiveBorderSettings>,
+    /// Pager-highlight section (else CLI `--pager-highlight-*`, else
+    /// defaults: fallback `#2a82da`, theme on).
+    pub pager_highlight: Option<PagerHighlightSettings>,
     /// Workspace-indicator section (else CLI `--workspace-indicator*`, else
     /// defaults: all rows, no icons).
     pub workspace_indicator: Option<WorkspaceIndicatorSettings>,
@@ -278,6 +281,70 @@ pub fn resolve_border_config(
     })
 }
 
+/// Pager-highlight settings file section (`"pager_highlight"` object; every
+/// field optional; CLI wins per field). Key naming mirrors the Windows
+/// settings catalog fields (`core.pager_highlight.color/use-theme`)
+/// under the `--pager-highlight-*` CLI prefix: fallback `#2a82da`, theme
+/// on. Independent from the active-border tokens: an override here never
+/// touches the ring, and a border override never touches the focused
+/// miniature.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PagerHighlightSettings {
+    /// Fallback colour as `#rrggbb` (default `#2a82da`).
+    pub color: Option<String>,
+    /// Follow the live system accent (default on).
+    pub use_theme: Option<bool>,
+}
+
+impl PagerHighlightSettings {
+    /// Validate merged file content (no OS reads).
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(color) = &self.color {
+            parse_color(color).map_err(|reason| format!("settings: {reason}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Raw pager-highlight CLI selections (all `None` = unset). Strings stay raw
+/// so `Command` keeps its `Eq` derive; parsing happens in
+/// [`resolve_pager_highlight_config`] with the shared colour bound (Windows
+/// parity: `--pager-highlight-color`, `--pager-highlight-theme` /
+/// `--no-pager-highlight-theme`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PagerHighlightCli {
+    /// Fallback colour `#rrggbb`.
+    pub color: Option<String>,
+    /// Theme source (`Some(true)` via `--pager-highlight-theme`,
+    /// `Some(false)` via `--no-pager-highlight-theme`).
+    pub use_theme: Option<bool>,
+}
+
+/// Merge CLI pager-highlight selections over the settings file: an
+/// explicitly passed CLI flag always wins; otherwise the file value applies;
+/// otherwise the built-in default (`#2a82da`, theme on). Failures refuse
+/// closed (never a silent fallback). Pager-highlight configuration is
+/// startup-only: a running tile session never re-reads it; the live accent
+/// itself resolves per paint, never a frozen boot snapshot.
+pub fn resolve_pager_highlight_config(
+    cli: &PagerHighlightCli,
+    file: Option<&PagerHighlightSettings>,
+) -> Result<crate::pager_highlight::PagerHighlightStyle, String> {
+    let color = match &cli.color {
+        Some(raw) => parse_color(raw)?,
+        None => match file.and_then(|f| f.color.as_ref()) {
+            Some(raw) => parse_color(raw).map_err(|reason| format!("settings: {reason}"))?,
+            None => crate::pager_highlight::DEFAULT_COLOR_RGB,
+        },
+    };
+    let use_theme = cli
+        .use_theme
+        .or(file.and_then(|f| f.use_theme))
+        .unwrap_or(crate::pager_highlight::DEFAULT_USE_THEME);
+    Ok(crate::pager_highlight::PagerHighlightStyle { color, use_theme })
+}
+
 /// Workspace-indicator settings file section (`"workspace_indicator"`
 /// object; every field optional; CLI wins per field). `mode` names the
 /// displayed rows (`"all"` default: every existing native Space in native
@@ -309,6 +376,9 @@ impl DevSettings {
         }
         if let Some(border) = &self.active_border {
             border.validate()?;
+        }
+        if let Some(highlight) = &self.pager_highlight {
+            highlight.validate()?;
         }
         if let Some(drag) = &self.drag_preview {
             drag.validate()?;
@@ -560,6 +630,7 @@ mod tests {
             preset: Some(InputPreset::Compatible),
             excluded_bundles: Some(vec!["com.example.skip".to_owned()]),
             active_border: None,
+            pager_highlight: None,
             workspace_indicator: None,
             drag_preview: None,
         };
@@ -638,6 +709,7 @@ mod tests {
             preset: Some(InputPreset::Compatible),
             excluded_bundles: Some(vec!["com.example.skip".to_owned()]),
             active_border: None,
+            pager_highlight: None,
             workspace_indicator: None,
             drag_preview: None,
         };
@@ -804,6 +876,116 @@ mod tests {
         let resolved = resolve_border_config(&cli, None).expect("resolves");
         assert_eq!(resolved.style.width, 32.0);
         assert_eq!(resolved.style.color, (0x2a, 0x82, 0xda));
+    }
+
+    #[test]
+    fn pager_highlight_defaults_match_shared_parity() {
+        // Nothing set anywhere: fallback `#2a82da`, theme on
+        // (Windows `pager_highlight` parity), independent of the ring.
+        let resolved =
+            resolve_pager_highlight_config(&PagerHighlightCli::default(), None).expect("resolves");
+        assert_eq!(
+            resolved,
+            crate::pager_highlight::PagerHighlightStyle::default()
+        );
+        assert_eq!(resolved.color, (0x2a, 0x82, 0xda));
+        assert!(resolved.use_theme);
+    }
+
+    #[test]
+    fn pager_highlight_file_applies_and_cli_wins_per_field() {
+        let file = PagerHighlightSettings {
+            color: Some("#112233".to_owned()),
+            use_theme: Some(false),
+        };
+        // File alone applies wholesale.
+        let resolved = resolve_pager_highlight_config(&PagerHighlightCli::default(), Some(&file))
+            .expect("resolves");
+        assert_eq!(resolved.color, (0x11, 0x22, 0x33));
+        assert!(!resolved.use_theme);
+        // Explicit CLI wins per field; unset fields keep the file.
+        let cli = PagerHighlightCli {
+            color: Some("#aabbcc".to_owned()),
+            use_theme: None,
+        };
+        let resolved = resolve_pager_highlight_config(&cli, Some(&file)).expect("resolves");
+        assert_eq!(resolved.color, (0xaa, 0xbb, 0xcc));
+        assert!(!resolved.use_theme);
+        let cli = PagerHighlightCli {
+            color: None,
+            use_theme: Some(true),
+        };
+        let resolved = resolve_pager_highlight_config(&cli, Some(&file)).expect("resolves");
+        assert_eq!(resolved.color, (0x11, 0x22, 0x33));
+        assert!(resolved.use_theme);
+    }
+
+    #[test]
+    fn pager_highlight_config_refuses_bad_values() {
+        for cli in [
+            PagerHighlightCli {
+                color: Some("2a82da".to_owned()),
+                use_theme: None,
+            },
+            PagerHighlightCli {
+                color: Some("#fff".to_owned()),
+                use_theme: None,
+            },
+        ] {
+            assert!(resolve_pager_highlight_config(&cli, None).is_err());
+        }
+        let bad = PagerHighlightSettings {
+            color: Some("#zzzzzz".to_owned()),
+            use_theme: None,
+        };
+        assert!(bad.validate().is_err());
+        assert!(resolve_pager_highlight_config(&PagerHighlightCli::default(), Some(&bad)).is_err());
+        // A border override never touches the highlight and vice versa:
+        // resolving one leaves the other at its default.
+        let border_cli = BorderCli {
+            color: Some("#ff0000".to_owned()),
+            ..BorderCli::default()
+        };
+        let border = resolve_border_config(&border_cli, None).expect("resolves");
+        let highlight =
+            resolve_pager_highlight_config(&PagerHighlightCli::default(), None).expect("resolves");
+        assert_eq!(border.style.color, (0xff, 0x00, 0x00));
+        assert_eq!(highlight.color, (0x2a, 0x82, 0xda));
+        assert!(highlight.use_theme);
+    }
+
+    #[test]
+    fn pager_highlight_settings_file_section_parses_and_validates() {
+        let settings: DevSettings =
+            serde_json::from_str(r##"{"pager_highlight":{"color":"#112233","use_theme":false}}"##)
+                .expect("parses");
+        let section = settings.pager_highlight.as_ref().expect("section");
+        assert_eq!(section.color.as_deref(), Some("#112233"));
+        assert_eq!(section.use_theme, Some(false));
+        assert!(settings.validate().is_ok());
+        let resolved = resolve_pager_highlight_config(
+            &PagerHighlightCli::default(),
+            settings.pager_highlight.as_ref(),
+        )
+        .expect("resolves");
+        assert_eq!(resolved.color, (0x11, 0x22, 0x33));
+        assert!(!resolved.use_theme);
+        // Unknown nested fields refuse loudly (typos never silently no-op).
+        assert!(
+            serde_json::from_str::<DevSettings>(r##"{"pager_highlight":{"colour":"#112233"}}"##)
+                .is_err()
+        );
+        // A bad section fails the whole file closed.
+        let bad: DevSettings = serde_json::from_str(r##"{"pager_highlight":{"color":"#zzzzzz"}}"##)
+            .expect("parses shape");
+        assert!(bad.validate().is_err());
+        assert!(
+            resolve_pager_highlight_config(
+                &PagerHighlightCli::default(),
+                bad.pager_highlight.as_ref()
+            )
+            .is_err()
+        );
     }
 
     #[test]

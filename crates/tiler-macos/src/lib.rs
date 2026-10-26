@@ -80,6 +80,8 @@ pub mod native_tile_backend;
 mod native_tile_backend_tests;
 pub mod owned_control;
 pub mod ownership;
+pub mod pager;
+pub mod pager_highlight;
 pub mod probe_target;
 pub mod runtime;
 pub mod runtime_apps;

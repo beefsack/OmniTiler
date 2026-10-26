@@ -326,6 +326,13 @@ pub(crate) struct Shared {
     /// these shapes through the existing native carriers, revalidating the
     /// live foreground against the token before painting.
     pub(crate) last_presentation: tiler_core::world_presentation::WorldPresentation,
+    /// Latest applied reply workspace bindings for the menu-bar pager: the
+    /// stable core logical workspace id per native desktop, translated
+    /// through the reply's `native_binding` rows (current AND hidden
+    /// domains — the indicator shows every Space). Published next to the
+    /// presentation so the tick maps native SIDs to pager content with a
+    /// current-reply live lookup, never a durable host table.
+    pub(crate) last_pager_bindings: Vec<crate::pager::PagerWorkspaceBinding>,
     /// Startup-resolved presentation style numbers for the report ingress
     /// (whole-point rounded width/gap plus the ring switch). Published
     /// once by the tile main thread at startup; the engine copies it into

@@ -899,6 +899,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             log,
             run_dir,
             border,
+            pager_highlight,
             drag,
             indicator,
         } => {
@@ -947,6 +948,14 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 write_refused(&reason);
                 (2, reason)
             })?;
+            let pager_highlight = tiler_macos::dev_selection::resolve_pager_highlight_config(
+                &pager_highlight,
+                file.pager_highlight.as_ref(),
+            )
+            .map_err(|reason| {
+                write_refused(&reason);
+                (2, reason)
+            })?;
             let drag =
                 tiler_macos::drag_drop::resolve_drag_config(&drag, file.drag_preview.as_ref())
                     .map_err(|reason| {
@@ -975,6 +984,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 log,
                 run_dir: run_dir.clone(),
                 border,
+                pager_highlight,
                 drag,
                 indicator,
             };

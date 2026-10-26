@@ -1901,6 +1901,69 @@ fn tile_border_flags_default_unset_and_parse_raw() {
 }
 
 #[test]
+fn tile_pager_highlight_flags_default_unset_and_parse_raw() {
+    // No highlight flags: every selection stays unset (startup merge fills
+    // defaults from the settings file, else shared parity), independent
+    // from the ring selections.
+    let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
+    if let Command::Tile {
+        border,
+        pager_highlight,
+        ..
+    } = r.command
+    {
+        assert_eq!(border, crate::dev_selection::BorderCli::default());
+        assert_eq!(
+            pager_highlight,
+            crate::dev_selection::PagerHighlightCli::default()
+        );
+    } else {
+        panic!("want tile");
+    }
+    // Every highlight flag parses (values stay raw: bounds validate at
+    // startup merge with the shared errors).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--pager-highlight-color",
+        "#112233",
+        "--pager-highlight-theme",
+    ]))
+    .unwrap();
+    if let Command::Tile {
+        pager_highlight, ..
+    } = r.command
+    {
+        assert_eq!(pager_highlight.color.as_deref(), Some("#112233"));
+        assert_eq!(pager_highlight.use_theme, Some(true));
+    } else {
+        panic!("want tile");
+    }
+    // The negative theme flag wins when last (plain last-wins, like the
+    // ring theme flag).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--pager-highlight-theme",
+        "--no-pager-highlight-theme",
+    ]))
+    .unwrap();
+    if let Command::Tile {
+        pager_highlight, ..
+    } = r.command
+    {
+        assert_eq!(pager_highlight.use_theme, Some(false));
+    } else {
+        panic!("want tile");
+    }
+    // Missing values refuse at parse time; unknown flags refuse.
+    assert!(parse_args(&argv(&["tile", "--pager-highlight-color"])).is_err());
+    assert!(parse_args(&argv(&["tile", "--pager-highlight-colour", "#112233"])).is_err());
+}
+
+#[test]
 fn tile_indicator_flags_default_unset_and_parse() {
     // No indicator flags: every selection stays unset (startup merge fills
     // the defaults: all rows, no icons).

@@ -337,6 +337,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         log,
         run_dir,
         border: _,
+        pager_highlight: _,
         drag: _,
         indicator: _,
     } = parsed.command
@@ -357,6 +358,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         log,
         run_dir,
         border: tiler_macos::active_border::ActiveBorderOptions::default(),
+        pager_highlight: tiler_macos::pager_highlight::PagerHighlightStyle::default(),
         drag: tiler_macos::drag_drop::DragOptions::default(),
         indicator: tiler_macos::workspace_indicator::IndicatorOptions::default(),
     }

@@ -2521,6 +2521,7 @@ mod trailing_join_tests {
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }
@@ -4628,6 +4629,7 @@ mod drag_gesture_handoff_tests {
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }

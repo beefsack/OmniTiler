@@ -6741,7 +6741,9 @@ mod macos {
     // activation, no overlay, no polling of its own, no numeric SF Symbols
     // anywhere (representative icons are real app icons or nothing).
 
-    use crate::workspace_indicator::{IndicatorClick, SpaceOccupancy};
+    use crate::workspace_indicator::{
+        IndicatorClick, MINIATURE_BAND_H, SpaceOccupancy, segment_column_width,
+    };
 
     /// One indicator row (plain data in; the handle owns the native
     /// segments and menu items). `position` rides as the segment/menu tag
@@ -6756,7 +6758,10 @@ mod macos {
     /// regular, unknown = full-alpha regular plus the `'?'` title suffix
     /// with an explicit "unknown" tooltip — never conflated with empty;
     /// no label colour is ever set) while `current` adds the bordered
-    /// highlight orthogonally.
+    /// highlight orthogonally. `miniatures` carries the pager's drawable
+    /// window rectangles for this Space in segment-band points (resolved
+    /// colours included): rows without pager content carry none and render
+    /// exactly as before.
     pub struct SegmentRow {
         pub position: usize,
         pub title: String,
@@ -6764,6 +6769,7 @@ mod macos {
         pub enabled: bool,
         pub occupancy: SpaceOccupancy,
         pub icon: Option<objc2::rc::Retained<objc2_app_kit::NSImage>>,
+        pub miniatures: Vec<crate::pager::MiniatureDraw>,
         pub click: IndicatorClick,
     }
 
@@ -6824,6 +6830,91 @@ mod macos {
         }
     }
 
+    struct MiniatureStripIvars {
+        draws: Vec<crate::pager::MiniatureDraw>,
+    }
+
+    // SAFETY: plain-data ivars carried to `set_ivars` (same shape as
+    // `BorderRingIvars` above: drawable rects plus resolved colours, never
+    // dereferenced as an ObjC object).
+    unsafe impl objc2::Encode for MiniatureStripIvars {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Object;
+    }
+
+    objc2::define_class! {
+        // SAFETY: `NSView` subclass with no subclassing requirements beyond
+        // the two drawing overrides below; no `Drop`. `drawRect:` fills
+        // one rect per pager miniature (resolved colours ride the ivars)
+        // and strokes a 1pt full-strength border on the focused one — no
+        // layout, no logging, no panics. The strip is a non-interactive
+        // sibling of the segment buttons (never overlapping them), so
+        // clicks keep flowing to the button target-action unchanged.
+        #[unsafe(super(objc2_app_kit::NSView))]
+        #[thread_kind = objc2::MainThreadOnly]
+        #[ivars = Box<MiniatureStripIvars>]
+        struct WorkspaceMiniatureStrip;
+
+        // SAFETY: signatures match `isOpaque` and `drawRect:` exactly.
+        impl WorkspaceMiniatureStrip {
+            #[unsafe(method(isOpaque))]
+            fn is_opaque(&self) -> bool {
+                false
+            }
+
+            #[unsafe(method(drawRect:))]
+            fn draw_rect(&self, _dirty: objc2_foundation::NSRect) {
+                let band_h = self.bounds().size.height;
+                for draw in &self.ivars().draws {
+                    if ![draw.x, draw.y, draw.w, draw.h]
+                        .iter()
+                        .all(|v| v.is_finite())
+                        || draw.w <= 0.0
+                        || draw.h <= 0.0
+                    {
+                        continue;
+                    }
+                    // Layout units count y from the band top (screen
+                    // convention); AppKit counts from the bottom.
+                    let rect = objc2_foundation::NSRect::new(
+                        objc2_foundation::NSPoint::new(draw.x, band_h - (draw.y + draw.h)),
+                        objc2_foundation::NSSize::new(draw.w, draw.h),
+                    );
+                    let byte = |c: u8| f64::from(c) / 255.0;
+                    objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
+                        byte(draw.fill.0),
+                        byte(draw.fill.1),
+                        byte(draw.fill.2),
+                        1.0,
+                    )
+                    .set();
+                    objc2_app_kit::NSBezierPath::fillRect(rect);
+                    if draw.focused {
+                        objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
+                            byte(draw.border.0),
+                            byte(draw.border.1),
+                            byte(draw.border.2),
+                            1.0,
+                        )
+                        .set();
+                        let inset = objc2_foundation::NSRect::new(
+                            objc2_foundation::NSPoint::new(
+                                rect.origin.x + 0.5,
+                                rect.origin.y + 0.5,
+                            ),
+                            objc2_foundation::NSSize::new(
+                                (rect.size.width - 1.0).max(0.0),
+                                (rect.size.height - 1.0).max(0.0),
+                            ),
+                        );
+                        let path = objc2_app_kit::NSBezierPath::bezierPathWithRect(inset);
+                        path.setLineWidth(1.0);
+                        path.stroke();
+                    }
+                }
+            }
+        }
+    }
+
     /// Owned menu-bar indicator handle: one status item plus its segment
     /// view, its mirror menu, and the per-row click targets. Main-thread
     /// confinement is structural (same shape as [`BorderCarrier`]):
@@ -6845,11 +6936,11 @@ mod macos {
     }
 
     /// Segment button geometry (AppKit points): compact enough for the menu
-    /// bar, wide enough for two-digit ordinals plus a 16pt icon.
+    /// bar, wide enough for two-digit ordinals plus a 16pt icon. Column
+    /// widths share [`crate::workspace_indicator::segment_column_width`]
+    /// with the pager band layout; the 8pt miniature band shares
+    /// [`crate::workspace_indicator::MINIATURE_BAND_H`].
     const SEGMENT_HEIGHT: f64 = 22.0;
-    const SEGMENT_WIDTH: f64 = 26.0;
-    const SEGMENT_WIDTH_ICON: f64 = 44.0;
-    const SEGMENT_WIDTH_WIDE: f64 = 8.0;
 
     impl WorkspaceIndicator {
         /// Create the status item and wire the click channel (bounded; the
@@ -7029,17 +7120,23 @@ mod macos {
             // The segments carry every ordinal: clear the button title so
             // stale text never overlaps them.
             button.setTitle(&NSString::from_str(""));
+            // Pager miniature band: rows carrying drawable miniatures gain
+            // an 8pt strip below the number button (siblings, never
+            // overlapping the button, so clicks keep flowing to the button
+            // target-action unchanged). No miniatures anywhere keeps the
+            // exact current 22pt item.
+            let band = rows.iter().any(|row| !row.miniatures.is_empty());
+            let band_y = if band { MINIATURE_BAND_H } else { 0.0 };
+            let height = SEGMENT_HEIGHT + band_y;
             let mut width = 0.0;
             let mut widths = Vec::with_capacity(rows.len());
             for row in rows {
-                let mut w = if row.icon.is_some() {
-                    SEGMENT_WIDTH_ICON
-                } else {
-                    SEGMENT_WIDTH
-                };
-                if row.position >= 10 || row.title.ends_with('?') {
-                    w += SEGMENT_WIDTH_WIDE;
-                }
+                // Shared rule with the pager band layout: the drawable
+                // rects always match the drawn column.
+                let w = segment_column_width(
+                    row.icon.is_some(),
+                    row.position >= 10 || row.title.ends_with('?'),
+                );
                 widths.push(w);
                 width += w;
             }
@@ -7047,12 +7144,12 @@ mod macos {
             let container: objc2::rc::Retained<objc2_app_kit::NSView> =
                 objc2_app_kit::NSView::initWithFrame(
                     self.mtm.alloc::<objc2_app_kit::NSView>(),
-                    border_nsrect((0.0, 0.0, width.max(1.0), SEGMENT_HEIGHT)),
+                    border_nsrect((0.0, 0.0, width.max(1.0), height)),
                 );
             let mut buttons = Vec::with_capacity(rows.len());
-            // SAFETY: every created button, its per-row target, and the
-            // installed selector are live; tags carry 1-based positions;
-            // frames stay inside the container computed above.
+            // SAFETY: every created button/strip, its per-row target, and
+            // the installed selector are live; tags carry 1-based
+            // positions; frames stay inside the container computed above.
             unsafe {
                 use objc2::sel;
                 let mut x = 0.0;
@@ -7093,8 +7190,23 @@ mod macos {
                         row.enabled,
                     );
                     segment.setToolTip(Some(&NSString::from_str(&tip)));
-                    segment.setFrame(border_nsrect((x, 0.0, *w, SEGMENT_HEIGHT)));
+                    segment.setFrame(border_nsrect((x, band_y, *w, SEGMENT_HEIGHT)));
                     container.addSubview(&segment);
+                    if !row.miniatures.is_empty() {
+                        // SAFETY: `alloc` + direct ivars + superclass
+                        // `initWithFrame:` (the `BorderRingView` shape);
+                        // drawable rects plus resolved colours are
+                        // plain data, never dereferenced as ObjC objects.
+                        let strip: objc2::rc::Retained<WorkspaceMiniatureStrip> = objc2::msg_send![
+                            super(self.mtm.alloc::<WorkspaceMiniatureStrip>().set_ivars(
+                                Box::new(MiniatureStripIvars {
+                                    draws: row.miniatures.clone(),
+                                }),
+                            )),
+                            initWithFrame: border_nsrect((x, 0.0, *w, MINIATURE_BAND_H))
+                        ];
+                        container.addSubview(&strip);
+                    }
                     x += *w;
                     buttons.push(segment);
                 }
@@ -10224,13 +10336,15 @@ mod stub {
     /// Stub indicator row (macOS-only render; never constructed here).
     /// Mirrors the macOS `SegmentRow` field names so portable callers
     /// compile on every host; the click binding is the portable
-    /// [`crate::workspace_indicator::IndicatorClick`].
+    /// [`crate::workspace_indicator::IndicatorClick`]. Miniatures are the
+    /// portable [`crate::pager::MiniatureDraw`] rows (never drawn here).
     pub struct SegmentRow {
         pub position: usize,
         pub title: String,
         pub current: bool,
         pub enabled: bool,
         pub occupancy: crate::workspace_indicator::SpaceOccupancy,
+        pub miniatures: Vec<crate::pager::MiniatureDraw>,
         pub click: crate::workspace_indicator::IndicatorClick,
     }
 

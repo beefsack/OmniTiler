@@ -445,9 +445,10 @@ pub fn decide_border(input: &BorderTickInput) -> Result<BorderShowParams, &'stat
 /// the last applied reply presentation, plus the fresh native frame and
 /// display geometry the last-moment safety vetoes read. Core shapes decide
 /// bounds; native legs veto stale/foreign/locked/excluded/zoomed frames.
-/// Eligibility normalization stays partial: the ingress cannot yet name
-/// maximized/cloaked/shell/hidden truthfully, so these fresh-read vetoes
-/// fail closed instead of painting over them.
+/// The ingress names maximized/hidden/shell from retained truth; these
+/// fresh-read vetoes stay as last-moment fences (never a redraw of the
+/// core shape). Cloaked and the session lock stay renderer-side: no roster
+/// fact names cloaking, and the lock read is main-thread only.
 #[derive(Debug, Clone)]
 pub struct BorderReplyTick<'a> {
     /// Master switch (startup config).
@@ -516,8 +517,9 @@ fn reply_hide_token(reason: Option<tiler_core::visual::BorderHideReason>) -> &'s
 /// token: the shape is stale) and `suspended` (game lane). The native
 /// vetoes (classifier exclusion, fresh minimized/fullscreen, the
 /// whole-display/work-area zoom approximation, the borderless full-display
-/// fence) stay because the ingress cannot name those states truthfully
-/// yet; they fail closed and never redraw the core shape.
+/// fence, the current-Space leg) stay as last-moment fences over
+/// core-owned eligibility: a stale report never paints over changed native
+/// state, and they never redraw the core shape.
 pub fn decide_border_reply(input: &BorderReplyTick<'_>) -> Result<BorderShowParams, &'static str> {
     if !input.enabled {
         return Err("disabled");

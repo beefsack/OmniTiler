@@ -892,6 +892,23 @@ pub fn summarize_retained(
         .collect()
 }
 
+/// Miniature band height in AppKit points: menu-bar indicator segments
+/// gain this band below the number button when any Space paints pager
+/// miniatures (no miniatures anywhere: the item keeps its exact current
+/// 22pt height). Single source of truth for the native column layout and
+/// the pager miniature band layout below.
+pub const MINIATURE_BAND_H: f64 = 8.0;
+
+/// Segment column width in AppKit points: compact for bare ordinals, wider
+/// with a representative icon or a wide (`10+`-position or `?`-suffixed)
+/// title. Single source of truth: the native rebuild and the pager band
+/// layout share this, so the drawable rects always match the drawn column.
+#[must_use]
+pub const fn segment_column_width(has_icon: bool, wide: bool) -> f64 {
+    let base = if has_icon { 44.0 } else { 26.0 };
+    if wide { base + 8.0 } else { base }
+}
+
 /// Rendered title for one segment button (and its mirror menu item):
 /// the 1-based ordinal with an explicit `'?'` suffix if and only if
 /// occupancy is Unknown. The suffix is the honest Unknown marker: the
@@ -977,10 +994,13 @@ pub enum DriverApply {
 /// below are offline-testable and the native shell stays a thin applier.
 ///
 /// The dedup key is the projection PLUS the trailing action slot (slot
-/// presence plus its occupancy): a slot appearing, disappearing, or
-/// flipping availability while the numbered rows read identical still
-/// applies with a new generation — otherwise the extra segment would go
-/// stale while the rows dedup.
+/// presence plus its occupancy) PLUS the pager miniature rows (per-SID
+/// drawable miniatures with their resolved colours): a pager-only change
+/// (focus move, highlight/accent change) with identical rows still applies
+/// — otherwise the miniatures would go stale while the rows dedup. Pager-
+/// only applies keep the SAME generation (no new clickable render), so
+/// queued clicks stay valid across a focus move: only a changed projection
+/// or trailing slot advances the generation and orphans queued bindings.
 ///
 /// Generations are monotonic per applied render (never reset, not even by
 /// [`IndicatorDriver::teardown`]): a click rendered before a teardown or a
@@ -993,6 +1013,8 @@ pub struct IndicatorDriver {
     generation: u64,
     last: Option<IndicatorProjection>,
     last_trailing: Option<(TrailingSlot, SpaceOccupancy)>,
+    last_pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)>,
+    last_accent: Option<crate::active_border::SystemAccent>,
     last_revision: Option<u64>,
     last_observations: u64,
     updates: u64,
@@ -1008,6 +1030,8 @@ impl IndicatorDriver {
             generation: 0,
             last: None,
             last_trailing: None,
+            last_pager: Vec::new(),
+            last_accent: None,
             last_revision: None,
             last_observations: 0,
             updates: 0,
@@ -1041,6 +1065,15 @@ impl IndicatorDriver {
         self.last_trailing
     }
 
+    /// Cached pager miniature rows the native surface draws
+    /// (`(native SID, drawable miniatures)` per Space, empty without pager
+    /// content). Pager-only changes repaint without advancing the
+    /// generation, so queued clicks stay valid across a focus move.
+    #[must_use]
+    pub fn last_pager(&self) -> &[(u64, Vec<crate::pager::MiniatureDraw>)] {
+        &self.last_pager
+    }
+
     /// Applied native pushes (visible renders only).
     #[must_use]
     pub const fn updates(&self) -> u64 {
@@ -1054,45 +1087,71 @@ impl IndicatorDriver {
     }
 
     /// Whether a fresh snapshot revision / engine observation count pair
-    /// requires a projection rebuild: only a moved revision, a published
-    /// observation, or an empty cache rebuilds — never a blind per-cadence
-    /// poll. Disarmed drivers never rebuild.
+    /// plus the live system accent requires a projection rebuild: only a
+    /// moved revision, a published observation, a changed accent, or an
+    /// empty cache rebuilds — never a blind per-cadence poll. The accent
+    /// rides the trigger (settings cannot change at runtime, but the live
+    /// accent can) so a resolved-colour change repaints even on a steady
+    /// snapshot. Pager content itself (focus moves, reply updates) arrives
+    /// with observations and dedups inside [`apply`]. Disarmed drivers
+    /// never rebuild.
     #[must_use]
-    pub fn needs_tick(&self, revision: u64, observations: u64) -> bool {
+    pub fn needs_tick(
+        &self,
+        revision: u64,
+        observations: u64,
+        accent: Option<crate::active_border::SystemAccent>,
+    ) -> bool {
         if !self.armed {
             return false;
         }
         self.last.is_none()
             || self.last_revision.is_some_and(|r| r != revision)
             || self.last_observations != observations
+            || self.last_accent != accent
     }
 
     /// Record that a rebuild was computed at `revision`/`observations`
     /// (call on every computed tick, applied or duplicate, so the trigger
     /// stays edge-driven). Returns the apply verdict: changed projections
-    /// advance the generation, identical ones stay untouched, hidden
-    /// projections store without counting a visible update, and disarmed
-    /// drivers store nothing. The trailing slot rides the dedup key with
-    /// the projection (see the struct docs): a slot-only change applies.
+    /// or trailing slots advance the generation, identical ones with changed
+    /// pager rows apply under the SAME generation (the clickable render is
+    /// unchanged, so queued clicks stay valid across a focus or colour
+    /// move), fully identical ones stay untouched, hidden projections store
+    /// without counting a visible update, and disarmed drivers store
+    /// nothing. The trailing slot rides the dedup key with the projection
+    /// (see the struct docs): a slot-only change applies with a new
+    /// generation.
     pub fn apply(
         &mut self,
         projection: IndicatorProjection,
         trailing: Option<(TrailingSlot, SpaceOccupancy)>,
+        pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)>,
         revision: u64,
         observations: u64,
+        accent: Option<crate::active_border::SystemAccent>,
     ) -> DriverApply {
         if !self.armed {
             return DriverApply::Disarmed;
         }
         self.last_revision = Some(revision);
         self.last_observations = observations;
+        self.last_accent = accent;
         if self.last.as_ref() == Some(&projection) && self.last_trailing == trailing {
-            return DriverApply::Duplicate;
+            if self.last_pager == pager {
+                return DriverApply::Duplicate;
+            }
+            self.last_pager = pager;
+            if projection.visible {
+                self.updates += 1;
+            }
+            return DriverApply::Applied(self.generation);
         }
         self.generation += 1;
         let visible = projection.visible;
         self.last = Some(projection);
         self.last_trailing = trailing;
+        self.last_pager = pager;
         if visible {
             self.updates += 1;
         }
@@ -1108,6 +1167,8 @@ impl IndicatorDriver {
     pub fn teardown(&mut self) {
         self.last = None;
         self.last_trailing = None;
+        self.last_pager = Vec::new();
+        self.last_accent = None;
     }
 
     /// Record one accepted click submission (guarded-lane `Accepted` only;
@@ -1977,18 +2038,21 @@ mod tests {
     fn driver_dedups_change_only_and_counts_visible_applies() {
         let mut driver = IndicatorDriver::new(IndicatorMode::All);
         assert!(driver.armed());
-        assert!(driver.needs_tick(9, 0), "empty cache always rebuilds");
+        assert!(driver.needs_tick(9, 0, None), "empty cache always rebuilds");
         // First render applies as generation 1.
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None),
             DriverApply::Applied(1)
         );
         assert_eq!(driver.updates(), 1);
         // Identical projection at new observation counts: trigger fires
         // (observations moved) but the apply dedups — no native push.
-        assert!(driver.needs_tick(9, 1), "observation publish retriggers");
+        assert!(
+            driver.needs_tick(9, 1, None),
+            "observation publish retriggers"
+        );
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 1),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 1, None),
             DriverApply::Duplicate
         );
         assert_eq!(driver.updates(), 1, "duplicate never pushes");
@@ -1998,21 +2062,21 @@ mod tests {
             "duplicate never advances generation"
         );
         // A changed render (native switch) applies with a new generation.
-        assert!(driver.needs_tick(10, 1), "revision move retriggers");
+        assert!(driver.needs_tick(10, 1, None), "revision move retriggers");
         assert_eq!(
-            driver.apply(projected(&[20, 3], 3), None, 10, 1),
+            driver.apply(projected(&[20, 3], 3), None, Vec::new(), 10, 1, None),
             DriverApply::Applied(2)
         );
         assert_eq!(driver.updates(), 2);
         // Steady state stays silent: no trigger, no apply.
-        assert!(!driver.needs_tick(10, 1));
+        assert!(!driver.needs_tick(10, 1, None));
     }
 
     #[test]
     fn driver_teardown_forces_refresh_and_orphans_queued_clicks() {
         let mut driver = IndicatorDriver::new(IndicatorMode::All);
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None),
             DriverApply::Applied(1)
         );
         // Lifecycle teardown (lock/stale/shutdown): the cache is gone so
@@ -2020,9 +2084,9 @@ mod tests {
         // generation advances monotonically — clicks queued before the
         // teardown can never validate against the refresh.
         driver.teardown();
-        assert!(driver.needs_tick(9, 0), "torn-down cache rebuilds");
+        assert!(driver.needs_tick(9, 0, None), "torn-down cache rebuilds");
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None),
             DriverApply::Applied(2)
         );
         let stale = typed_click(2, 3, 1, 9);
@@ -2038,9 +2102,9 @@ mod tests {
     fn driver_off_never_renders_or_queues() {
         let mut driver = IndicatorDriver::new(IndicatorMode::Off);
         assert!(!driver.armed());
-        assert!(!driver.needs_tick(9, 0));
+        assert!(!driver.needs_tick(9, 0, None));
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None),
             DriverApply::Disarmed
         );
         assert_eq!(driver.updates(), 0);
@@ -2053,12 +2117,12 @@ mod tests {
         // Same numbered rows throughout: only the extra slot state moves.
         let mut driver = IndicatorDriver::new(IndicatorMode::All);
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None),
             DriverApply::Applied(1)
         );
         // An identical render with no slot still dedups.
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 1),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 1, None),
             DriverApply::Duplicate
         );
         // The slot appearing applies with a new generation (no stale
@@ -2068,8 +2132,10 @@ mod tests {
             driver.apply(
                 projected(&[20, 3], 20),
                 Some((slot, SpaceOccupancy::Occupied)),
+                Vec::new(),
                 9,
-                2
+                2,
+                None
             ),
             DriverApply::Applied(2)
         );
@@ -2082,8 +2148,10 @@ mod tests {
             driver.apply(
                 projected(&[20, 3], 20),
                 Some((slot, SpaceOccupancy::Occupied)),
+                Vec::new(),
                 9,
-                3
+                3,
+                None
             ),
             DriverApply::Duplicate
         );
@@ -2094,17 +2162,96 @@ mod tests {
             driver.apply(
                 projected(&[20, 3], 20),
                 Some((slot, SpaceOccupancy::Unknown)),
+                Vec::new(),
                 9,
-                4
+                4,
+                None
             ),
             DriverApply::Applied(3)
         );
         // The slot disappearing applies too.
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), None, 9, 5),
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 5, None),
             DriverApply::Applied(4)
         );
         assert_eq!(driver.last_trailing(), None);
+    }
+
+    #[test]
+    fn driver_pager_only_change_applies_without_new_generation() {
+        use crate::active_border::SystemAccent;
+        use crate::pager::MiniatureDraw;
+        // Identical rows throughout: only the pager miniature rows move
+        // (focus move or highlight/accent change with steady Spaces).
+        let mut driver = IndicatorDriver::new(IndicatorMode::All);
+        assert_eq!(
+            driver.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None),
+            DriverApply::Applied(1)
+        );
+        // A pager-only change retriggers and applies under the SAME
+        // generation: the clickable render is unchanged, so queued clicks
+        // stay valid across the focus move.
+        let mini = MiniatureDraw {
+            x: 1.0,
+            y: 1.0,
+            w: 4.0,
+            h: 4.0,
+            focused: true,
+            border: (0xbd, 0x93, 0xf9),
+            fill: (0x49, 0x3a, 0x62),
+        };
+        let pager = vec![(20u64, vec![mini])];
+        assert!(driver.needs_tick(9, 1, None), "observation retriggers");
+        assert_eq!(
+            driver.apply(projected(&[20, 3], 20), None, pager.clone(), 9, 1, None),
+            DriverApply::Applied(1),
+            "pager-only apply keeps the generation"
+        );
+        assert_eq!(driver.updates(), 2, "pager-only change still pushes");
+        assert_eq!(driver.generation(), 1);
+        assert_eq!(driver.last_pager(), pager.as_slice());
+        let accent = Some(SystemAccent {
+            color: (0x11, 0x22, 0x33),
+            alpha: 0xC4,
+        });
+        // A live accent change with steady revision/observations also
+        // retriggers (resolved colours move even when nothing else does);
+        // the tick recomputes the pager rows under the new accent, so the
+        // apply still carries changed rows under the same generation.
+        assert!(driver.needs_tick(9, 1, accent), "accent change retriggers");
+        let mini_accent = MiniatureDraw {
+            border: (0x11, 0x22, 0x33),
+            fill: (0x07, 0x0d, 0x14),
+            ..mini
+        };
+        let pager_accent = vec![(20u64, vec![mini_accent])];
+        assert_eq!(
+            driver.apply(
+                projected(&[20, 3], 20),
+                None,
+                pager_accent.clone(),
+                9,
+                1,
+                accent
+            ),
+            DriverApply::Applied(1),
+            "accent-only apply keeps the generation too"
+        );
+        assert_eq!(driver.updates(), 3, "accent change still pushes");
+        // Steady state stays silent: no trigger, duplicate apply.
+        assert!(!driver.needs_tick(9, 1, accent));
+        assert_eq!(
+            driver.apply(projected(&[20, 3], 20), None, pager_accent, 9, 1, accent),
+            DriverApply::Duplicate
+        );
+        assert_eq!(driver.updates(), 3, "duplicate never pushes");
+        // A queued click from the first render still validates: the
+        // generation never moved under the pager-only repaint.
+        let click = typed_click(1, 20, 1, 9);
+        assert!(
+            resolve_click(click, driver.generation(), &[20, 3], 9).is_ok(),
+            "queued click survives pager-only repaint"
+        );
     }
 
     #[test]

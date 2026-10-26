@@ -285,6 +285,7 @@ impl Runtime {
                 log: VecDeque::new(),
                 last_desired: Vec::new(),
                 last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+                last_pager_bindings: Vec::new(),
                 presentation_style: crate::active_border::PresentationStylePx::default(),
             }));
             let inbox = Arc::new(Inbox::new(config.engine_queue_depth.max(1)));
@@ -337,6 +338,7 @@ impl Runtime {
             log: VecDeque::new(),
             last_desired: Vec::new(),
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }));
         emit(&shared, 0, 0, 0, "runtime", "starting", 0);
@@ -1476,6 +1478,14 @@ impl RuntimeHandle {
     /// painting.
     pub fn last_presentation(&self) -> tiler_core::world_presentation::WorldPresentation {
         lock_shared(&self.shared).last_presentation.clone()
+    }
+
+    /// Snapshot of the last applied reply workspace bindings for the
+    /// menu-bar pager (native desktop to logical workspace, current and
+    /// hidden domains). The tile main thread maps native SIDs to pager
+    /// content through these rows with a current-reply live lookup.
+    pub fn last_pager_bindings(&self) -> Vec<crate::pager::PagerWorkspaceBinding> {
+        lock_shared(&self.shared).last_pager_bindings.clone()
     }
 
     /// Current generation for a live app, if any.

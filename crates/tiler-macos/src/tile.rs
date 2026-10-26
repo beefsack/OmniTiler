@@ -189,6 +189,11 @@ pub struct TileRequest {
     /// Startup border configuration (master switch plus ring style).
     /// Startup-only: a running session never re-reads it.
     pub border: ActiveBorderOptions,
+    /// Startup pager-highlight configuration (focused-miniature fallback
+    /// colour plus theme source). Startup-only: a running session never
+    /// re-reads it; the live accent itself resolves per paint, never a
+    /// frozen boot snapshot. Independent from the ring.
+    pub pager_highlight: crate::pager_highlight::PagerHighlightStyle,
     /// Startup drag-preview configuration (master switch plus fill).
     /// Startup-only: a running session never re-reads it.
     pub drag: crate::drag_drop::DragOptions,
@@ -953,6 +958,76 @@ mod native {
         }
     }
 
+    /// Pure segment-row assembly for one applied indicator render:
+    /// projection rows plus the trailing slot, each bound to its
+    /// render-time click identity, with the pager miniature rows attached
+    /// by native SID. No AppKit: icons ride in parallel (resolved by the
+    /// caller; `None` renders the plain number alone). The live tick's
+    /// `push_native` renders exactly these rows through
+    /// `WorkspaceIndicator::rebuild`, and the wiring test proves what the
+    /// bar draws by calling this same function — disconnecting the tick
+    /// from the production pager path changes this output and fails that
+    /// test. The trailing slot never carries miniatures.
+    pub(crate) fn assemble_segment_rows(
+        rows: &[crate::workspace_indicator::IndicatorRow],
+        trailing: Option<(
+            crate::workspace_indicator::TrailingSlot,
+            crate::workspace_indicator::SpaceOccupancy,
+            u64,
+        )>,
+        pager: &[(u64, Vec<crate::pager::MiniatureDraw>)],
+        icons: &[Option<objc2::rc::Retained<objc2_app_kit::NSImage>>],
+        generation: u64,
+        revision: u64,
+    ) -> Vec<crate::ffi::SegmentRow> {
+        let mut out: Vec<crate::ffi::SegmentRow> = rows
+            .iter()
+            .zip(icons.iter().chain(std::iter::repeat(&None)))
+            .map(|(row, icon)| {
+                let miniatures = pager
+                    .iter()
+                    .find(|(sid, _)| *sid == row.sid)
+                    .map(|(_, minis)| minis.clone())
+                    .unwrap_or_default();
+                crate::ffi::SegmentRow {
+                    position: row.position,
+                    title: crate::workspace_indicator::segment_title(row.position, row.occupancy),
+                    current: row.current,
+                    enabled: row.selectable,
+                    occupancy: row.occupancy,
+                    miniatures,
+                    icon: icon.clone(),
+                    click: crate::workspace_indicator::IndicatorClick {
+                        kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
+                        position: row.position,
+                        expected_sid: row.sid,
+                        ui_generation: generation,
+                        topology_revision: revision,
+                    },
+                }
+            })
+            .collect();
+        if let Some((slot, last_occupancy, native_last)) = trailing {
+            out.push(crate::ffi::SegmentRow {
+                position: slot.position,
+                title: crate::workspace_indicator::trailing_segment_title(slot, last_occupancy),
+                current: false,
+                enabled: last_occupancy == crate::workspace_indicator::SpaceOccupancy::Occupied,
+                occupancy: last_occupancy,
+                miniatures: Vec::new(),
+                icon: None,
+                click: crate::workspace_indicator::IndicatorClick {
+                    kind: crate::workspace_indicator::IndicatorClickKind::Trailing,
+                    position: slot.position,
+                    expected_sid: native_last,
+                    ui_generation: generation,
+                    topology_revision: revision,
+                },
+            });
+        }
+        out
+    }
+
     /// Owned menu-bar indicator state on the tile main thread: one native
     /// status item showing every Space as a directly clickable segment in
     /// the bar itself (plus a mirror menu), driven change-only from the
@@ -1010,11 +1085,18 @@ mod native {
             self.driver.armed()
         }
 
-        /// Whether a fresh revision/observation pair needs a rebuild (edge
-        /// trigger for the occupancy query and frontmost read below: no
-        /// engine round-trip and no extra reads on a steady cadence).
-        fn needs_tick(&self, revision: u64, observations: u64) -> bool {
-            self.driver.needs_tick(revision, observations)
+        /// Whether a fresh revision/observation pair plus the live accent
+        /// needs a rebuild (edge trigger for the occupancy query and
+        /// frontmost read below: no engine round-trip and no extra reads
+        /// on a steady cadence; the accent rides so a resolved-colour
+        /// change repaints too).
+        fn needs_tick(
+            &self,
+            revision: u64,
+            observations: u64,
+            accent: Option<crate::active_border::SystemAccent>,
+        ) -> bool {
+            self.driver.needs_tick(revision, observations, accent)
         }
 
         fn updates(&self) -> u64 {
@@ -1049,13 +1131,18 @@ mod native {
 
         /// Apply one fresh snapshot revision plus one retained occupancy
         /// report: rebuild the projection only when the driver trigger
-        /// fires (moved revision, published observation, or empty cache -
-        /// never a blind per-cadence poll) and push it to the native item
-        /// only on a changed render (change-only dedup inside the driver).
-        /// Occupancy is retained-engine truth (managed windows only);
-        /// any unproven frame renders every row `Unknown`. Counts,
+        /// fires (moved revision, published observation, changed live
+        /// accent, or empty cache - never a blind per-cadence poll) and
+        /// push it to the native item only on a changed render (change-only
+        /// dedup inside the driver). Occupancy is retained-engine truth
+        /// (managed windows only); any unproven frame renders every row
+        /// `Unknown`. The pager miniatures resolve here too, from the last
+        /// applied reply presentation plus its workspace bindings with the
+        /// loop's highlight style and the live accent: the same production
+        /// inputs every paint uses, never a frozen boot snapshot. Counts,
         /// ordinals, and the UI generation in the log only; SIDs, PIDs,
         /// bundles, titles, and paths never appear.
+        #[allow(clippy::too_many_arguments)]
         pub(crate) fn tick(
             &mut self,
             rows: &[crate::ffi::SlsDisplayRow],
@@ -1063,8 +1150,12 @@ mod native {
             observations: u64,
             report: Option<crate::runtime::WorkspaceOccupancyReport>,
             frontmost_pid: Option<u32>,
+            presentation: &tiler_core::world_presentation::WorldPresentation,
+            bindings: &[crate::pager::PagerWorkspaceBinding],
+            highlight: &crate::pager_highlight::PagerHighlightStyle,
+            accent: Option<crate::active_border::SystemAccent>,
         ) {
-            if !self.driver.needs_tick(revision, observations) {
+            if !self.driver.needs_tick(revision, observations, accent) {
                 return;
             }
             let mut trailing: Option<(
@@ -1149,14 +1240,66 @@ mod native {
                     rows: Vec::new(),
                 },
             };
+            // Representative icons resolve here (main-thread bundle cache,
+            // only when the flag is on): the pager band layout below needs
+            // the exact resolved presence so the drawable rects always
+            // match the drawn column.
+            let icons: Vec<Option<objc2::rc::Retained<objc2_app_kit::NSImage>>> = projection
+                .rows
+                .iter()
+                .map(|row| {
+                    if !self.options.icons {
+                        return None;
+                    }
+                    row.representative.as_ref().and_then(|bundle| {
+                        if let Some(cached) = self.icons.get(bundle) {
+                            return Some(cached.clone());
+                        }
+                        let image = crate::ffi::ns_image_for_bundle(bundle)?;
+                        self.icons.insert(bundle.clone(), image.clone());
+                        Some(image)
+                    })
+                })
+                .collect();
+            // Pager miniature rows per Space, resolved from the last applied
+            // reply presentation plus its workspace bindings with the loop's
+            // highlight style and the live accent — the same production
+            // inputs every paint uses. Band widths share the native column
+            // rule, so layout matches the drawn segments exactly.
+            let highlight_rgb = crate::pager::resolve_highlight(highlight, accent);
+            let pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)> = projection
+                .rows
+                .iter()
+                .zip(icons.iter())
+                .map(|(row, icon)| {
+                    let title =
+                        crate::workspace_indicator::segment_title(row.position, row.occupancy);
+                    let wide = row.position >= 10 || title.ends_with('?');
+                    let band_w =
+                        crate::workspace_indicator::segment_column_width(icon.is_some(), wide);
+                    (
+                        row.sid,
+                        crate::pager::indicator_miniatures(
+                            presentation,
+                            bindings,
+                            row.sid,
+                            highlight_rgb,
+                            band_w,
+                            crate::workspace_indicator::MINIATURE_BAND_H,
+                        ),
+                    )
+                })
+                .collect();
             match self.driver.apply(
                 projection,
                 trailing.map(|(slot, occupancy, _)| (slot, occupancy)),
+                pager,
                 revision,
                 observations,
+                accent,
             ) {
                 crate::workspace_indicator::DriverApply::Applied(generation) => {
-                    self.push_native(generation, revision, trailing);
+                    self.push_native(generation, revision, trailing, &icons);
                 }
                 crate::workspace_indicator::DriverApply::Duplicate
                 | crate::workspace_indicator::DriverApply::Disarmed => {}
@@ -1228,6 +1371,7 @@ mod native {
                 crate::workspace_indicator::SpaceOccupancy,
                 u64,
             )>,
+            icons: &[Option<objc2::rc::Retained<objc2_app_kit::NSImage>>],
         ) {
             let Some(projection) = self.driver.last().cloned() else {
                 return;
@@ -1266,63 +1410,14 @@ mod native {
                 return;
             };
             handle.set_title(self.mtm, "");
-            let mut rows: Vec<crate::ffi::SegmentRow> = projection
-                .rows
-                .iter()
-                .map(|row| {
-                    let icon = if self.options.icons {
-                        row.representative.as_ref().and_then(|bundle| {
-                            if let Some(cached) = self.icons.get(bundle) {
-                                return Some(cached.clone());
-                            }
-                            let image = crate::ffi::ns_image_for_bundle(bundle)?;
-                            self.icons.insert(bundle.clone(), image.clone());
-                            Some(image)
-                        })
-                    } else {
-                        None
-                    };
-                    crate::ffi::SegmentRow {
-                        position: row.position,
-                        title: crate::workspace_indicator::segment_title(
-                            row.position,
-                            row.occupancy,
-                        ),
-                        current: row.current,
-                        enabled: row.selectable,
-                        occupancy: row.occupancy,
-                        icon,
-                        click: crate::workspace_indicator::IndicatorClick {
-                            kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
-                            position: row.position,
-                            expected_sid: row.sid,
-                            ui_generation: generation,
-                            topology_revision: revision,
-                        },
-                    }
-                })
-                .collect();
-            // Trailing action segment: same channel, position `len + 1`,
-            // the render-time NATIVE last SID as the binding. Live
-            // (enabled) only when the last Space is proven occupied;
-            // unknown occupancy renders disabled, never as empty.
-            if let Some((slot, last_occupancy, native_last)) = trailing {
-                rows.push(crate::ffi::SegmentRow {
-                    position: slot.position,
-                    title: crate::workspace_indicator::trailing_segment_title(slot, last_occupancy),
-                    current: false,
-                    enabled: last_occupancy == crate::workspace_indicator::SpaceOccupancy::Occupied,
-                    occupancy: last_occupancy,
-                    icon: None,
-                    click: crate::workspace_indicator::IndicatorClick {
-                        kind: crate::workspace_indicator::IndicatorClickKind::Trailing,
-                        position: slot.position,
-                        expected_sid: native_last,
-                        ui_generation: generation,
-                        topology_revision: revision,
-                    },
-                });
-            }
+            let rows = assemble_segment_rows(
+                &projection.rows,
+                trailing,
+                self.driver.last_pager(),
+                icons,
+                generation,
+                revision,
+            );
             handle.rebuild(self.mtm, &rows);
             let occupied = projection
                 .rows
@@ -2528,14 +2623,20 @@ mod native {
                     // engine's retained domains over the control lane
                     // (bounded round-trip; a timeout renders Unknown, never
                     // a stale report - no independent desktop scan, no
-                    // steady-state polls: the query and the frontmost read
-                    // run only when a rebuild is actually due). Clicks drain
-                    // against this same fresh row below.
+                    // steady-state polls: the accent read, the query and the
+                    // frontmost read run only when a rebuild is actually
+                    // due). The pager inputs ride the same gate: the last
+                    // applied reply presentation plus its workspace
+                    // bindings, the loop's highlight style, and the live
+                    // accent (resolved per paint, never a frozen boot
+                    // snapshot). Clicks drain against this same fresh row
+                    // below.
                     if indicator.armed()
                         && let Some(live) = last_snapshot.as_ref()
                     {
                         let observations = handle.diagnostics().observations_published;
-                        if indicator.needs_tick(live.revision, observations) {
+                        let accent = crate::ffi::border_system_accent();
+                        if indicator.needs_tick(live.revision, observations, accent) {
                             let report =
                                 handle.query_workspace_occupancy(Duration::from_millis(100));
                             let frontmost_pid = crate::ffi::frontmost_app()
@@ -2547,6 +2648,10 @@ mod native {
                                 observations,
                                 report,
                                 frontmost_pid,
+                                &handle.last_presentation(),
+                                &handle.last_pager_bindings(),
+                                &request.pager_highlight,
+                                accent,
                             );
                         }
                     }
@@ -3558,6 +3663,7 @@ mod tests {
             log: TileLogLevel::Normal,
             run_dir: None,
             border: ActiveBorderOptions::default(),
+            pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
             drag: crate::drag_drop::DragOptions::default(),
             indicator: crate::workspace_indicator::IndicatorOptions::default(),
             diag_stay: None,
@@ -3578,6 +3684,7 @@ mod tests {
             log: TileLogLevel::Normal,
             run_dir: None,
             border: ActiveBorderOptions::default(),
+            pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
             drag: crate::drag_drop::DragOptions::default(),
             indicator: crate::workspace_indicator::IndicatorOptions::default(),
             diag_stay: None,
@@ -3998,5 +4105,236 @@ mod tests {
         assert_eq!(lifecycle.owned(), &[2001, 2002]);
         assert!(trailing_cleanup_decision(None, &owned).is_none());
         assert!(trailing_cleanup_decision(None, &[]).is_none());
+    }
+
+    /// Production segment assembly carries the pager miniatures resolved
+    /// through the exact tick path (presentation plus bindings, highlight,
+    /// live accent) with the render-time click bindings intact. macOS-only:
+    /// `SegmentRow` carries AppKit images (passed as `None` here, so no
+    /// AppKit runs). Disconnecting `push_native` from the pager path
+    /// changes this output and fails this test.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn indicator_segments_carry_pager_miniatures_with_click_bindings() {
+        use crate::pager::{indicator_miniatures, pager_bindings_for, resolve_highlight};
+        use crate::workspace_indicator::{
+            IndicatorDriver, IndicatorMode, SpaceOccupancy, project_indicator, segment_column_width,
+        };
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+        use tiler_core::world_report::{
+            NativeObservation, PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION,
+            WindowFact, WorldReport,
+        };
+        // Host-owned admission through the real engine: two Spaces, focus
+        // on the first.
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> tiler_core::geometry::Rect {
+            tiler_core::geometry::Rect { x, y, w, h }
+        }
+        fn fact(window: &str, native_ws: &str, x: i32) -> WindowFact {
+            WindowFact {
+                window: WindowId(window.to_owned()),
+                output: OutputId("out-a".to_owned()),
+                rect: Some(rect(x, 0, 40, 90)),
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                minimized: false,
+                observed_workspace: None,
+                native_workspace: Some(native_ws.to_owned()),
+            }
+        }
+        fn ingress(token: &str) -> PresentationIngress {
+            PresentationIngress {
+                foreground: token.to_owned(),
+                foreground_frame: Some(rect(0, 0, 40, 90)),
+                border_enabled: true,
+                ..PresentationIngress::disabled()
+            }
+        }
+        fn host_report(seq: u64, focused: &str, ingress: PresentationIngress) -> WorldReport {
+            let windows = vec![fact("win-a", "space-1", 0), fact("win-b", "space-2", 100)];
+            let mut pager_frames = Vec::new();
+            let mut pager_order = Vec::new();
+            for w in &windows {
+                pager_frames.push(tiler_core::world_report::PresentationPagerFrame {
+                    window: w.window.clone(),
+                    live: w.rect,
+                    float_frame: None,
+                    tile_frame: None,
+                });
+                pager_order.push(w.window.clone());
+            }
+            let mut presentation = ingress;
+            presentation.pager_frames = pager_frames;
+            presentation.pager_order = pager_order;
+            WorldReport {
+                contract_version: WORLD_CONTRACT_VERSION,
+                owner: "owner-a".to_owned(),
+                adapter_incarnation: "adapter-1".to_owned(),
+                core_generation: "gen-1".to_owned(),
+                observation_seq: seq,
+                request_seq: seq,
+                request_id: format!("req-{seq}"),
+                command_seq: None,
+                command: None,
+                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
+                screens: vec![ScreenReport {
+                    output: OutputId("out-a".to_owned()),
+                    full_rect: Some(rect(0, 0, 800, 600)),
+                    work_area: Some(rect(0, 0, 800, 560)),
+                    gap: 0,
+                    outer_gap: 0,
+                    complete: true,
+                    primary: true,
+                }],
+                windows,
+                views: Vec::new(),
+                closed: vec![],
+                host_owned_workspace_domains: true,
+                equal_workspace_count: false,
+                native: vec![NativeObservation {
+                    output: OutputId("out-a".to_owned()),
+                    native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
+                    current_native: Some("space-1".to_owned()),
+                }],
+                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
+                migration_source_refill:
+                    tiler_core::output_selection::MigrationSourceRefill::default(),
+                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
+                no_space_result: tiler_core::admission::NoSpaceResult::default(),
+                switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+                focus_follows_cursor: false,
+                cursor_warp: false,
+                cursor: None,
+                cursor_hit: None,
+                focused_global: focused.to_owned(),
+                action_foreground: None,
+                action_cached: None,
+                action_outputs: Vec::new(),
+                default_tiled: true,
+                inventory_complete: true,
+                gesture_barrier: false,
+                gesture: None,
+                monotonic_ms: 0,
+                frames: Vec::new(),
+                member_attempts: Vec::new(),
+                view_attempts: Vec::new(),
+                clear_attempts: Vec::new(),
+                creation_attempts: Vec::new(),
+                presentation,
+            }
+        }
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        for seq in 1..=3u64 {
+            match engine.handle_report(&host_report(seq, "win-a", ingress("win-a"))) {
+                WorldOutcome::Accepted(_) => {}
+                other => panic!("expected accepted, got {other:?}"),
+            }
+        }
+        let reply = match engine.handle_report(&host_report(4, "win-a", ingress("win-a"))) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
+        // Bindings through the production mapper (current AND hidden).
+        let bindings = pager_bindings_for(
+            &[
+                ("out-a".to_owned(), "space-1".to_owned()),
+                ("out-a".to_owned(), "space-2".to_owned()),
+            ],
+            &reply.workspaces,
+        );
+        assert_eq!(bindings.len(), 2);
+        // Highlight through the production settings resolver: explicit CLI
+        // colour, theme on (live accent applies).
+        let style = crate::dev_selection::resolve_pager_highlight_config(
+            &crate::dev_selection::PagerHighlightCli {
+                color: Some("#bd93f9".to_owned()),
+                use_theme: None,
+            },
+            None,
+        )
+        .expect("resolves");
+        let accent = Some(crate::active_border::SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        });
+        let highlight = resolve_highlight(&style, accent);
+        assert_eq!(highlight, (0xaa, 0xbb, 0xcc));
+        // Pager rows through the exact tick function in the shared column
+        // width, then applied through the production driver.
+        let band_w = segment_column_width(false, false);
+        let band_h = crate::workspace_indicator::MINIATURE_BAND_H;
+        let pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)> = [1u64, 2u64]
+            .iter()
+            .map(|sid| {
+                (
+                    *sid,
+                    indicator_miniatures(
+                        &reply.presentation,
+                        &bindings,
+                        *sid,
+                        highlight,
+                        band_w,
+                        band_h,
+                    ),
+                )
+            })
+            .collect();
+        assert_eq!(pager[0].1.len(), 1);
+        assert!(pager[0].1[0].focused);
+        assert_eq!(pager[1].1.len(), 1);
+        assert!(!pager[1].1[0].focused);
+        let projection = project_indicator(
+            &[1, 2],
+            1,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+        )
+        .expect("provable row projects");
+        let mut driver = IndicatorDriver::new(IndicatorMode::All);
+        assert_eq!(
+            driver.apply(projection, None, pager, 9, 3, accent),
+            crate::workspace_indicator::DriverApply::Applied(1)
+        );
+        // Segment assembly through the exact function `push_native` calls:
+        // miniatures ride by native SID, click bindings stay intact, and a
+        // highlight-colour change would repaint without touching clicks.
+        let icons: Vec<Option<objc2::rc::Retained<objc2_app_kit::NSImage>>> = vec![None, None];
+        let rows = super::native::assemble_segment_rows(
+            driver.last().expect("render").rows.as_slice(),
+            None,
+            driver.last_pager(),
+            &icons,
+            driver.generation(),
+            9,
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].position, 1);
+        assert_eq!(rows[0].miniatures.len(), 1);
+        assert!(rows[0].miniatures[0].focused);
+        assert_eq!(rows[0].miniatures[0].border, highlight);
+        assert_eq!(rows[1].miniatures.len(), 1);
+        assert!(!rows[1].miniatures[0].focused);
+        for row in &rows {
+            assert_eq!(
+                row.click,
+                crate::workspace_indicator::IndicatorClick {
+                    kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
+                    position: row.position,
+                    expected_sid: row.position as u64,
+                    ui_generation: 1,
+                    topology_revision: 9,
+                }
+            );
+        }
     }
 }

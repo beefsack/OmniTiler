@@ -396,6 +396,39 @@ pub(crate) fn minimized_entries(retained: &RetainedCore) -> Vec<MinimizedRecord>
     entries
 }
 
+/// Grounded focus eligibility facts for one presentation ingress: the
+/// retained home-current verdict (homed-but-not-current and unhomed both
+/// fail closed to hidden-workspace), the current work areas and full
+/// display bounds in adapter units, and the engine-placement truth from
+/// the last applied reply rows. Pure over retained truth plus the dispatch
+/// context; both the native and synthetic branches share it.
+pub(crate) fn focus_eligibility_facts(
+    retained: &RetainedCore,
+    ctx: &NativeContext,
+    memory: &LifetimeMemory,
+    focused_global: &str,
+) -> crate::world_builder::FocusEligibilityFacts {
+    let home_current = retained
+        .window_domains
+        .get(focused_global)
+        .and_then(|home| {
+            ctx.domains
+                .iter()
+                .find(|domain| domain.output == home.output && domain.workspace == home.workspace)
+        })
+        .map(|domain| domain.current);
+    let engine_placed = memory
+        .rows
+        .get(focused_global)
+        .is_some_and(|row| row.effective_frame.or(row.allocation).is_some());
+    crate::world_builder::FocusEligibilityFacts {
+        home_current,
+        visibles: ctx.domains.iter().map(|domain| domain.visible).collect(),
+        full_displays: ctx.domains.iter().map(|domain| domain.bounds).collect(),
+        engine_placed,
+    }
+}
+
 /// Whether the retained observed-focus window currently reports native
 /// fullscreen (the focused-fullscreen-game lane for the presentation
 /// `paused` flag). Unknown or minimized focus reads false.
@@ -646,6 +679,7 @@ pub(crate) fn build_dispatch_report(
             let owned_request = request_id.to_owned();
             let minimized = minimized_entries(retained);
             let focused_fullscreen = is_focused_fullscreen(retained, &focused_global);
+            let eligibility = focus_eligibility_facts(retained, ctx, &memory, &focused_global);
             let style = session.presentation_style;
             let presentation = crate::world_builder::build_presentation_ingress(
                 &focused_global,
@@ -653,6 +687,7 @@ pub(crate) fn build_dispatch_report(
                 &unknown,
                 &minimized,
                 focused_fullscreen,
+                &eligibility,
                 &style,
             );
             let mut input = ReportInput {
@@ -738,6 +773,7 @@ pub(crate) fn build_dispatch_report(
             // too, never empty minimized/false fullscreen.
             let minimized = minimized_entries(retained);
             let focused_fullscreen = is_focused_fullscreen(retained, &focused_global);
+            let eligibility = focus_eligibility_facts(retained, &ctx, &memory, &focused_global);
             let style = session.presentation_style;
             let mut input = ReportInput {
                 owner: PHASE1_OWNER,
@@ -782,6 +818,7 @@ pub(crate) fn build_dispatch_report(
                     &[],
                     &minimized,
                     focused_fullscreen,
+                    &eligibility,
                     &style,
                 ),
             };

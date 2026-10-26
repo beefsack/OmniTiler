@@ -1125,6 +1125,27 @@ fn consume_world_reply(
                 .collect(),
         }
     };
+    // Pager binding rows for the menu-bar indicator: every native domain
+    // (current AND hidden) translated through the applied reply's
+    // `native_binding` rows — the same live-lookup pattern as `current`
+    // above, extended to the hidden Spaces the indicator also shows.
+    // Unmapped natives and unbound spares carry no row (their segments
+    // render with no miniatures, never a guess). Published next to the
+    // presentation below.
+    let pager_bindings: Vec<crate::pager::PagerWorkspaceBinding> = {
+        let guard = lock_shared(shared);
+        match guard.native_context.clone() {
+            Some(ctx) => {
+                let domains: Vec<(String, String)> = ctx
+                    .domains
+                    .iter()
+                    .map(|d| (d.output.0.clone(), d.workspace.0.clone()))
+                    .collect();
+                crate::pager::pager_bindings_for(&domains, &reply.workspaces)
+            }
+            None => Vec::new(),
+        }
+    };
     // Held-scope visibility (diagnostic only): an applied reply whose scope
     // holds authorizes no writes there, yet still counts as accepted with
     // zero frames — without this line the hold is silent in the ring. One
@@ -1204,6 +1225,7 @@ fn consume_world_reply(
     {
         let mut guard = lock_shared(shared);
         guard.last_presentation = reply.presentation.clone();
+        guard.last_pager_bindings = pager_bindings;
     }
     emit_world_frames(
         session,
@@ -2120,6 +2142,7 @@ mod tests {
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }

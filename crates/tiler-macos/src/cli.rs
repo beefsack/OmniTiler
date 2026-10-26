@@ -311,6 +311,12 @@ pub enum Command {
         /// Raw active-border selections (all unset = defaults; the settings
         /// file fills the gaps in `main`, then startup config).
         border: crate::dev_selection::BorderCli,
+        /// Raw pager-highlight selections (all unset = defaults; the
+        /// settings file fills the gaps in `main`, then startup config).
+        /// Independent from the ring: an override here never touches the
+        /// active border, and a border override never touches the focused
+        /// miniature.
+        pager_highlight: crate::dev_selection::PagerHighlightCli,
         /// Raw drag-preview selections (all unset = defaults; the settings
         /// file fills the gaps in `main`, then startup config).
         drag: crate::drag_drop::DragCli,
@@ -425,6 +431,11 @@ pub fn help_text() -> String {
            \x20 \x20 [--active-border-color #rrggbb] [--active-border-theme|--no-active-border-theme]\n\
            \x20 \x20 (width 3, gap 0, radius 6, fallback #2a82da, theme on; border config\n\
            \x20 \x20 resolves CLI-over-settings-file like modifier/preset);\n\
+           \x20 \x20 pager focused-miniature highlight defaults to the live system\n\
+           \x20 \x20 accent: [--pager-highlight-color #rrggbb]\n\
+           \x20 \x20 [--pager-highlight-theme|--no-pager-highlight-theme]\n\
+           \x20 \x20 (fallback #2a82da, theme on; independent from the ring;\n\
+           \x20 \x20 resolves CLI-over-settings-file like border);\n\
            \x20 \x20 drag preview on by default: [--no-drag-preview]\n\
            \x20 \x20 [--drag-preview-color #aarrggbb]\n\
            \x20 \x20 (fill #402a82da; drag config resolves CLI-over-settings-file);\n\
@@ -2123,6 +2134,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut log = crate::tile::TileLogLevel::default();
             let mut run_dir: Option<String> = None;
             let mut border = crate::dev_selection::BorderCli::default();
+            let mut pager_highlight = crate::dev_selection::PagerHighlightCli::default();
             let mut drag = crate::drag_drop::DragCli::default();
             let mut indicator = crate::workspace_indicator::IndicatorCli::default();
             let mut j = 0;
@@ -2222,6 +2234,20 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--no-active-border-theme" => {
                         border.use_theme = Some(false);
                     }
+                    "--pager-highlight-color" => {
+                        j += 1;
+                        pager_highlight.color = Some(
+                            args.get(j)
+                                .ok_or("--pager-highlight-color needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--pager-highlight-theme" => {
+                        pager_highlight.use_theme = Some(true);
+                    }
+                    "--no-pager-highlight-theme" => {
+                        pager_highlight.use_theme = Some(false);
+                    }
                     "--no-drag-preview" => {
                         drag.enabled = Some(false);
                     }
@@ -2261,6 +2287,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 log,
                 run_dir,
                 border,
+                pager_highlight,
                 drag,
                 indicator,
                 diag_stay,

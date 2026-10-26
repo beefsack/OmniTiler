@@ -1067,8 +1067,30 @@ mod live {
             let frontmost = ffi::frontmost_app()
                 .and_then(|(pid, _)| u32::try_from(pid).ok())
                 .filter(|pid| *pid > 1);
-            self.indicator
-                .tick(&rows, revision, observations, report, frontmost);
+            // Production pager inputs: the last applied reply presentation
+            // plus its workspace bindings with the default highlight style
+            // (this harness owns no settings file) and the live accent.
+            let presentation = self
+                .runtime
+                .as_ref()
+                .map(|handle| handle.last_presentation())
+                .unwrap_or_default();
+            let bindings = self
+                .runtime
+                .as_ref()
+                .map(|handle| handle.last_pager_bindings())
+                .unwrap_or_default();
+            self.indicator.tick(
+                &rows,
+                revision,
+                observations,
+                report,
+                frontmost,
+                &presentation,
+                &bindings,
+                &crate::pager_highlight::PagerHighlightStyle::default(),
+                ffi::border_system_accent(),
+            );
             pump(LEG_SETTLE_MS);
             let generation = self
                 .indicator

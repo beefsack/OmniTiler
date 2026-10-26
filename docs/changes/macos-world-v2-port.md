@@ -309,6 +309,9 @@ edge cases tentative. Acceptance of an approach does not claim native evidence.
 | Tentative 2026-10-26 | Topology drift after select dispatch retains the existing `Accepted`/unproven hold | Correct the stale refusal test, not production; no replay or history advance is inferred |
 | Tentative 2026-10-26 | Selection focus defers in the adapter until verified native arrival | Require correlated reply/transfer/binding and grounded focus priors; cancel on supersession or changed/unknown focus; no shared settlement-time change |
 | Tentative 2026-10-26 | Ambiguous trailing creation retains its genuine pre-order and original stamp | First later readable matching-display row completes once without a claimed identity; never echo the pre-order as an unreadable post-order |
+| Tentative 2026-10-26 | Extend the existing menu-bar indicator with a miniature band | Reuse its visibility and freshness/click gates instead of introducing another pager surface; miniature-only repaints retain the click generation |
+| Tentative 2026-10-26 | Independent focused-miniature colour/theme with full-strength border and dimmer same-RGB fill | Border and highlight each default to live accent and retain independent overrides; no shared colour fields |
+| Tentative 2026-10-26 | Normalize grounded hidden-workspace and zoom/full-display facts before core presentation | Reuse retained homing, fresh native currents and existing geometry predicates; unknown cloak and session state retain last-moment renderer vetoes |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -828,6 +831,90 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   by offline tests. Shutdown abandons deferred focus without replay.
 - Exact next action: finish the production pager carrier and presentation
   eligibility, then run signed-fixture sticky-scope and native hide/reveal legs.
+
+## Reviewed production presentation (2026-10-26)
+
+- Accepted offline: the existing menu-bar indicator consumes the last applied
+  reply's pager content and native bindings. Miniatures are drawn by a native
+  strip below the number buttons, without replacing their click targets. The
+  existing indicator mode controls visibility. Miniature/accent-only repaints
+  preserve click generation; topology and target freshness gates remain.
+- `pager.rs` maps only current reply bindings, scales real source rectangles and
+  produces drawable rows consumed by `IndicatorGuard::tick` and the native
+  strip. Unmapped/unbound targets paint nothing. Focused miniatures require
+  both the focused-workspace mark and exact foreground token. Their border is
+  full strength, fill dimmer with the same RGB. Separate highlight colour/theme
+  settings are consumed by the runtime; active border and highlight independently
+  resolve the live accent. No disconnected painter or no-op flags remain.
+- Presentation ingress now grounds hidden-workspace eligibility from retained
+  home plus fresh native current and zoom/full-display eligibility from existing
+  geometry predicates, respecting engine-placed tiling. Minimized/fullscreen
+  facts remain distinct. Ordinary fullscreen is not a game classification.
+  Renderer session/lifetime/focus/current-Space/exclusion vetoes remain additive.
+  No new core facts or unknown-state semantics were introduced.
+- Independent review verified actual tick/native drawing wiring, colour
+  independence, applied-reply publication, native binding mapping, view lifecycle
+  and click fencing. The first disconnected paint-model approach was rejected
+  and replaced by the production carrier; no completion evidence uses it.
+- Final cumulative gates: locked macOS build/tests PASS (1,375: 1,227 library
+  plus 148 integration); strict all-target clippy PASS; locked core/protocol
+  build/tests PASS (1,314), strict clippy PASS; workspace fmt, whitespace and
+  ordered world acceptance 6/6 PASS. Platform recipes expand to these commands;
+  `just fmt` also PASS. No core/protocol or shared-fixture diff.
+- Remaining unsupported presentation: native miniature pixels, physical
+  interaction and accent-change timing; native stacking order and retained
+  float/tile miniature frames are not supplied (core fallback/live-only frames).
+  Cloaked has no ingress roster fact; session state is main-thread confined.
+  Renderer vetoes remain, not a claim that unknown states are grounded false.
+  Full Stage-4/native acceptance is not claimed.
+
+## Current-artifact native checkpoint (2026-10-26)
+
+- Earlier app self-hide/show and runtime results from the older signed product
+  bundle are historical, not evidence for this tree or native Space away/return.
+- Rebuilt product and signed regular-activation fixture retain their persistent
+  identities. Static product/helper/fixture verification passes with deployment
+  floor 15.0. Verification logs were saved after the live leg: artifact digests
+  match those observed for the rebuilt bundles, with unchanged artifacts and
+  signing timestamps preceding the leg. This is continuity evidence, not a
+  contemporaneously saved build log. Development-signature distribution-policy
+  rejection is not misreported as a distribution acceptance.
+- The current signed runtime ran bounded, fixture-only, input off, with an
+  explicit pager-highlight override accepted. Saved native observations cover
+  two fixture windows tiled on home, selection to an existing empty Space, and
+  return. Away: native current changed, fixture AX inventory was empty while
+  the app was not hidden, foreground was not the fixture, and fixture socket
+  frames stayed unchanged. Return: native identity/frame/membership/foreground
+  readback exactly matches the tiled home readback. Socket frames show no net
+  hidden drift; they do not prove zero intervening writes.
+- Saved evidence: `scope-tiled.json`, `scope-away.json`, `scope-back.json`,
+  `fx-tiled.json`, `fx-away.json`, `fx-back.json`, `spaces-before.json`,
+  `spaces-away.json`, `spaces-back.json`, `spaces-after.json`,
+  `select-away.json`, `select-back.json`, `tile-outcome.json`, and
+  `cg-before.json`/`cg-after.json`. Raw records remain outside the repository.
+  The selector's stale `layout_after.current` is not used as arrival evidence;
+  independent native current readbacks establish both transitions.
+- Runtime reports clean shutdown, three topology updates, zero observation
+  failures and zero forwarded input. Saved desktop topology/current restore
+  exactly; common protected-window bounds do not move. Auxiliary foreign CG
+  entries churn, so the full CG inventory is not claimed identical. Process
+  absence/owned run-directory cleanup were observed but not saved independently.
+- Miniature appearance is unproven: indicator update counts establish execution,
+  not painted pixels or effective override colour. Accent-setting reads were not
+  saved, so exact setting restoration is not certified by this checkpoint.
+- Sticky per-display plan remains blocked: no second output or native GUI
+  control was available. Keep sticky scope TBD and require positive proof; a
+  single-output leg cannot discriminate per-display All Desktops semantics.
+- Unexpected startup behavior: Authentic ensures Desktop-N shortcut holders even
+  with input off. The log reports nine applied/resumed results using an existing
+  preimage. Source skips writes when the current value already equals the applied
+  value, so this count proves neither new writes nor zero writes. No per-holder
+  pre/post baseline was saved. The existing preimage was not reverted. The tile
+  help's blanket no-native-setting-writes claim was inconsistent with this path;
+  it is corrected following the confirmed decision above.
+- This is reviewed, scoped hide/reveal observation, not full native acceptance.
+  Signed-fixture visual, physical-input, sticky and complete settings/lifecycle
+  restoration gates remain open.
 
 ## Risks and open evidence
 
