@@ -187,6 +187,13 @@ decisions of 2026-09-24 are under
   adoption decisions and the oversized decorated-hint bound stay queued for
   cross-platform review.
   [Record](changes/kde-world-v2-port.md).
+- P2 | KDE native pager warning and quick fix (user 2026-10-26) | KDE uses
+  the native Plasma workspace pager widget; OmniTiler draws no KDE pager, so
+  the core's pager-focused-window color does not apply on KDE. The settings
+  dialog warns when an output has no panel holding a pager (each output's
+  panels are configured separately). A quick fix adds the pager to the first
+  panel on each output that lacks one; an output with no panel gets a new
+  panel holding the pager. Revisit the no-panel fix if users object.
 - P1 | Live fixture first use on macOS (2026-10-20) |
   `crates/tiler-live-fixture` is the standard agent live-test window
   (KDE live-verified, KDE `--scope-class`). Windows first use and
