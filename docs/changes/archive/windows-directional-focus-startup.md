@@ -353,7 +353,7 @@
   E8 prime after native safety gates and before the single setter. Do not restore
   input-queue attachment. Raw setter return, lifetime fences and independent
   foreground proof remain distinct; trace records the prime's inserted count.
-- Tentative implementation refinement, pending user review: prime-only restoration
+- Implementation refinement (User-approved 2026-10-26): prime-only restoration
   rather than restoring thread-input attachment. This retains the smaller native
   mechanism; native verification must not pre-grant the owner foreground rights.
 - Independent boundary review found no blocking code defect. Scheduling coverage
@@ -422,9 +422,8 @@
   three-window workspace worked every time; switching between two workspaces
   landed correct focus every time. The physical workspace-switch focus P0 is
   closed. Earlier open physical-acceptance statements above are historical.
-- The E8 prime-only restoration remains tentative pending explicit user approval.
-  Physical acceptance does not isolate prime causality or approve removal of
-  thread-input attachment. Rapid native mid-switch veto, pager geometry paint,
+- User-approved 2026-10-26: E8 prime-only restoration without thread-input
+  attachment. Physical acceptance does not isolate prime causality. Rapid native mid-switch veto, pager geometry paint,
   multiple-output and game breadth are not inferred from this acceptance.
 - Separate rare send-follow arrival geometry/stacking failure is tracked
   independently; this acceptance does not close it.

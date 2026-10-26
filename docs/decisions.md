@@ -15,9 +15,6 @@ Superseded excerpts moved out on 2026-10-24 live in
 current product policy.
 
 Tentative index (user review pending; not approved product rules):
-- Windows focus dispatch restores the bounded owner-thread E8 prime without
-  thread-input attachment; native and physical acceptance remain distinct
-  ([record](changes/archive/windows-directional-focus-startup.md#physical-acceptance-2026-10-26))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))
 - macOS adapter defaults, focus oracle, observation recovery, scoped input
@@ -1615,8 +1612,11 @@ platform API behavior.
   field through the existing store; settings polling confirms runtime
   adoption. `Win+1..9` select existing workspaces only;
   `Win+Shift+1..9` send the focused tiled window with follow after verified
-  transfer. E8 prime plus `AttachThreadInput` plus exact foreground readback
-  is the focus mechanism. Terminal is ordinary. CLI: `workspace --select N` /
+  transfer. User-approved 2026-10-26: the focus mechanism is the bounded
+  owner-thread E8 prime (unassigned virtual key, injected after native safety
+  gates and before the single `SetForegroundWindow`, so the owner holds the
+  last-input foreground right) plus exact foreground readback, without
+  `AttachThreadInput` ([record](changes/archive/windows-directional-focus-startup.md#physical-acceptance-2026-10-26)). Terminal is ordinary. CLI: `workspace --select N` /
   `workspace --send N`, plus opt-in `--scope-exe`/`--scope-host-child` proof
   fences. Recovery ledger v4 stores min/max show-state without geometry
   (readers accept v1-v3); the window-lifetime membership property is inert and

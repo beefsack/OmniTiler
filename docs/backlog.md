@@ -75,9 +75,11 @@ decisions of 2026-09-24 are under
   Win+digit to an empty workspace on one output focused a window on another,
   so a following workspace send moved that window. Desired behavior is
   undecided: stay focused on the empty output with no focused window, or move
-  to another output's window? Capture Tier 1 outcomes in the
+  to another output's window? User 2026-10-26: decide from Tier 1 evidence.
+  Capture COSMIC/Hyprland/i3/sway outcomes in the
   [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
-  then decide with the user. Related to cursor-first targeting above.
+  then decide with the user. Related to cursor-first targeting above and the
+  2026-10-26 no-focus decisions ([decisions](decisions.md#workspaces)).
 - P1 | Directional focus with no focused window | All no-focus semantics
   decided User 2026-10-26 ([decision](decisions.md#workspaces),
   [Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
