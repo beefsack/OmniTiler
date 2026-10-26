@@ -6185,6 +6185,78 @@ fn inflight_clears_on_foreground_event_without_switch() {
     );
 }
 
+/// Owed-pass resolution for the key-up stranding incident, pinned at the
+/// diff seam: an accepted-but-unproven focus setter arms the flight, the
+/// own foreground edge drains through the real sink/drain lifecycle, and
+/// an observation-only apply with no switch and no command (the exact
+/// shape of the owed reconcile pass) clears it as `landed-own` with the
+/// full target identity, drains the pending queue, and dispatches nothing
+/// further. Scheduling half:
+/// `keyup_only_turn_owes_observation_for_pending_foreground` in
+/// `world_route_tests.rs` proves the key-up turn owes this pass; the
+/// superseded-foreign half rides
+/// `inflight_transient_foreign_then_return_clears`.
+#[test]
+fn keyup_owed_pass_resolves_armed_flight_as_own_landing() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    // The select tick's accepted setter never lands in the poll: the
+    // unproven target is remembered as in-flight.
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_focus_only_reply(&rig, 1, "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    assert!(
+        diff.in_flight
+            .as_ref()
+            .is_some_and(|flight| flight.token == "w1"),
+        "in-flight remembers the unproven target"
+    );
+    // The own edge drains through the real sink/drain, coalesced on the
+    // key-up turn with no command of its own.
+    let hwnds = drain_foreground_via_real_loop(&[1001]);
+    assert_eq!(hwnds, vec![1001]);
+    diff.push_foreground_events(hwnds);
+    // The owed observation-only pass: no switch, no command, no effects.
+    let stats2 = apply_probe(
+        &mut diff,
+        &reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 0);
+    assert!(stats2.focus_dispatch.is_empty());
+    assert!(
+        diff.in_flight.is_none(),
+        "own-landing event clears the in-flight with no switch"
+    );
+    assert!(
+        diff.pending_foreground.is_empty(),
+        "observation consumed the drained edge"
+    );
+    assert_eq!(stats2.inflight_events.len(), 1);
+    assert_eq!(stats2.inflight_total, 1);
+    let row = &stats2.inflight_events[0];
+    assert_eq!(row.cause, "landed-own");
+    assert_eq!(row.effect, "fx-9");
+    assert_eq!(row.token, "w1");
+    assert_eq!(row.hwnd, Some(1001));
+    assert_eq!(row.pid, Some(2001));
+    assert_eq!(row.creation.as_deref(), Some("proc-1"));
+}
+
 /// Transient foreign foreground followed by a return to the target still
 /// supersedes: the first readable non-match clears, and the return finds
 /// no in-flight to confirm.

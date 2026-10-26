@@ -320,3 +320,97 @@
 - Diagnostics are ready; physical workspace focus remains unresolved and this
   note stays active pending the ordinary-application trace. No new tentative
   product decision was introduced; existing tentative decisions are unchanged.
+
+## Fresh trace diagnosis and correction (2026-10-26)
+
+- Scope: startup native refusals and the delayed occupied-workspace observation;
+  the separate stale source-pager layout after send-follow is not changed.
+- First fresh trace: valid directional commands reach the correct core targets
+  and call `SetForegroundWindow` promptly, but its raw return is false. Calls
+  return within the same millisecond; this is neither blocked dispatch nor an
+  observation catchup refusal. The initially observed origin persists across
+  later presses. No owner menu-mask prime precedes these setters while Win is
+  held. Two early target foreground edges follow false returns; raw return
+  alone does not establish that native foreground never changed.
+- Second fresh trace: the initial setter also returns false. A Win-release E8
+  mask and an outside foreground change both precede subsequent successful
+  setters. The trace cannot separate their causal contributions. History shows
+  that the world-model cutover dropped the previously approved pre-setter E8
+  prime and thread-input attachment; the current primitive was a bare setter.
+- Workspace timing join: select tick 23 posts its destination view, calls the
+  setter at 8890 ms and returns accepted at 8891 ms. The target foreground edge
+  queues at 8899 ms and drains at 8901 ms, coalesced with a Win+1 key-up. That
+  settled-only command turn runs no world observation. The drained edge remains
+  pending until a pager-message wake at 18910 ms produces observation at
+  18917 ms, resolving the flight and refreshing pager state together. Timeout
+  wakes in between produce no observation. The demonstrated delay is owner-side
+  servicing, not a blocked native call or a late top-level foreground edge.
+- Correction: after command-lane processing, pending foreground edges owe the
+  existing observation-only reconcile pass on that same eventful turn. Real
+  commands that already consumed the edges do not add a pass. No timer, wait,
+  replay, retry, or core-policy change is introduced.
+- Startup correction under verification: restore the existing bounded owner-thread
+  E8 prime after native safety gates and before the single setter. Do not restore
+  input-queue attachment. Raw setter return, lifetime fences and independent
+  foreground proof remain distinct; trace records the prime's inserted count.
+- Tentative implementation refinement, pending user review: prime-only restoration
+  rather than restoring thread-input attachment. This retains the smaller native
+  mechanism; native verification must not pre-grant the owner foreground rights.
+- Independent boundary review found no blocking code defect. Scheduling coverage
+  is explicitly paired: the real scheduler regression proves key-up-only turns
+  service an owed pass (RED/GREEN); a separate native-shaped accepted-flight
+  regression proves observation clears the own-landing edge without replay.
+  The scheduler's offline enumeration stub does not execute native resolution.
+  Prime-order and safety-veto regressions also fail before restoration and pass
+  afterward. This is not yet native or physical-shortcut acceptance.
+- Remaining verification: fresh-owner no-prime versus prime-only fixture startup
+  with three pre-existing windows and no grant/priming helper; send-follow then
+  switch back with idle input and joined native/pager latency; rapid toggles and
+  genuine mid-switch supersession; exact restoration and residue checks. Retain
+  ordinary-app keyboard-focus and physical Win+arrow acceptance as user-owned.
+
+### Verification outcome and open acceptance
+
+- Fresh-owner A/B used three pre-existing decorated/resizable windows in one
+  fixture process, without preparatory owner grants, input priming or repair.
+  Both the no-prime and prime-only binaries accepted their first directional
+  setter and reached the expected native foreground and GUI focus. The new
+  trace reports two inserted E8 events. This verifies the restored mechanism's
+  execution, not the incident's causal hypothesis: the refusal did not reproduce.
+  The first command was about five seconds after readiness, not immediate input.
+- Two genuine cross-process occupied-workspace switches, after send-follow setup,
+  retained their expected target across 12-second dwells. Setter calls returned
+  within 1 ms; target foreground edges queued after 8-10 ms, drained after another
+  1-2 ms and resolved as own landings after 22-25 ms. Landing-time GUI samples
+  matched the target active/focus HWND; independent native/fixture reads confirmed
+  persistence. No seconds-long servicing delay occurred in these CLI-driven legs.
+- Pager logical current-view state updated 14/18 ms after setter return and
+  focused state after 36/38 ms. Border show records followed after 45/50 ms.
+  These are not pager cell-geometry paint or screen-presentation timestamps;
+  independent window geometry/visibility reads do not prove pager geometry.
+  Last-input and cursor samples matched across the idle baseline/dwell; the
+  baseline began three seconds after dispatch. Its last-input timestamp matched
+  the expected prime quantum, limiting earlier-input exclusion to that clock's
+  resolution. One earlier dwell failed the input-idle gate and was excluded.
+- The toggle legs do not meet rapid-switch acceptance: each pair contained an
+  empty no-op followed by a genuine select about 1.5 seconds later. Final native
+  targets matched both destinations, but this is only slow-paced convergence.
+- Genuine mid-switch supersession remains unverified on the new payload. A
+  post-command competitor acquired foreground only after own landing; a
+  pre-command competitor never acquired foreground and the owner setter won.
+  Neither ordering produced a `foreground-changed` veto. These attempts do not
+  replace the earlier payload's genuine supersession evidence or current offline
+  identity/supersession regressions.
+- Exact-owner stop/restore, all fixture shutdowns, settings-byte/SPI preimages
+  and no process/control-request residue were verified after every leg. Payload
+  hashes, process lifetimes, native joins and detailed evidence remain external.
+- Latest locked core/Windows package tests pass (853 core and 1,054 Windows
+  library passes, one existing ignored Windows test, plus integration/doc suites).
+  Strict package all-target clippy, package fmt and diff checks pass. After the
+  upstream integration, workspace-wide fmt fails in unrelated macOS sources;
+  those sources are outside this correction.
+- The event-driven scheduling correction is independently reviewed and verified
+  by paired offline obligation/resolution coverage. The broader P0 remains open:
+  startup prime causality, immediate physical shortcut behavior, rapid native
+  toggles, genuine current-payload mid-switch veto, actual pager geometry paint
+  and ordinary-app keyboard-focus acceptance are not claimed complete.

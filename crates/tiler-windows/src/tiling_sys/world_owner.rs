@@ -138,6 +138,12 @@ impl WorldOwner {
         self.diff.push_foreground_drain_traced(hwnds, meta, omitted);
     }
 
+    /// True while drained foreground edges await apply-entry resolution.
+    /// A key-up-only turn owes one observation pass while this holds.
+    pub(super) fn has_pending_foreground(&self) -> bool {
+        !self.diff.pending_foreground.is_empty()
+    }
+
     /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
     /// ffc-enabled)` differs from the last emitted `world-apply` row.
     /// Pure comparison over already-captured values: no native reads.

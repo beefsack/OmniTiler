@@ -6,11 +6,19 @@
 //! offline facade actuates the desired snapshot against fresh proof.
 //! No HWNDs, hooks, or live effects.
 
+use super::observe::OwnerWaitCounts;
+use super::owner_work::OwnerWorkGuard;
+use super::pending_seams::{
+    clear_pending_seams, inject_pending_elevated, inject_pending_foreground,
+    inject_pending_observe, inject_pending_suspend,
+};
 use super::rmax03_adapter_tests::test_state;
+use super::run_loop_tick::{TickFlow, run_active_tick};
 use super::world_capture::capture_world;
 use super::world_diff::{FakeNative, FreshHost, HostDiff, NativeOps, apply_world_reply};
 use super::world_sequencer::{AckOutcome, WorldSequencer};
 use super::{MonitorArea, ObservedTarget, ObservedWindow, RetainedRow};
+use crate::snapkey::{QueuedWorkspaceIntent, SnapEdge, WorkspaceOp};
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 
@@ -1279,5 +1287,202 @@ fn rejected_command_catchup_never_strands_the_next_command() {
         4,
         "unique fresh effect per valid command, never a replay"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Drive one command-lane turn through the real scheduler with the given
+/// workspace batch. Returns the tick delta. The injected observe fixture
+/// makes the owed reconcile pass a tick-only no-op in tests; the key-up
+/// and poll lanes never enumerate.
+#[allow(clippy::too_many_arguments)]
+fn drive_command_lane(
+    state: &mut super::TileLoop,
+    me: &crate::model::ProcessIdentity,
+    dir: &std::path::Path,
+    store: &crate::storage::LedgerStore,
+    areas: &[MonitorArea],
+    batch: Vec<QueuedWorkspaceIntent>,
+) -> u64 {
+    let before = state.tick;
+    let mut monitor_areas = areas.to_vec();
+    let mut monitor = monitor_areas[0].clone();
+    let mut monitor_count = monitor_areas.len();
+    let log_path = state.log_path.clone();
+    let mut owner_work = OwnerWorkGuard::begin(false, &log_path, 0, before, None);
+    let ow_counts = OwnerWaitCounts::default();
+    let mut snap_primed = false;
+    let flow = run_active_tick(
+        state,
+        me,
+        dir,
+        store,
+        &mut monitor_areas,
+        &mut monitor,
+        &mut monitor_count,
+        std::time::Instant::now(),
+        false,
+        false,
+        true,
+        &log_path,
+        &mut owner_work,
+        &ow_counts,
+        false,
+        &mut snap_primed,
+        &mut None,
+        0,
+        0,
+        0,
+        0,
+        Vec::new(),
+        batch,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        &mut None,
+    )
+    .expect("active turn completes");
+    assert!(
+        matches!(flow, TickFlow::Done),
+        "command lane runs to completion"
+    );
+    state.tick.saturating_sub(before)
+}
+
+fn keyup_intent() -> QueuedWorkspaceIntent {
+    // Win+1 key-up: consumed by the hook, never announced. Settles with
+    // no world pass, exactly like the incident's coalesced turn.
+    QueuedWorkspaceIntent {
+        op: WorkspaceOp::Select,
+        index: 1,
+        follow: false,
+        edge: SnapEdge::Up,
+        origin: None,
+        consumed: true,
+        announce: false,
+        tick: std::time::Instant::now(),
+    }
+}
+
+#[test]
+fn keyup_only_turn_owes_observation_for_pending_foreground() {
+    // Incident shape: the select tick's accepted setter arms in-flight
+    // focus; the own foreground edge drains on the next turn coalesced
+    // with a Win+1 key-up. The key-up settles with no world pass, so the
+    // drained edge sits in the owner with no further wake owed. The turn
+    // owes one observation-only pass instead of stranding the flight
+    // until an unrelated wake (the pager message in the incident).
+    // Pairing: this proves the pass is owed (delta 1); the resolution it
+    // buys is pinned at the diff seam by
+    // `keyup_owed_pass_resolves_armed_flight_as_own_landing`. The injected
+    // reconcile short-circuit records the owed pass as a tick only.
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    state.keyboard.takeover = true;
+    let (dir, store, areas, _) = route_dirs("keyup-owed");
+    let me = route_me();
+    state.world.push_foreground_drain(vec![101], Vec::new(), 0);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_observe(Vec::new(), Vec::new(), false);
+    let delta = drive_command_lane(&mut state, &me, &dir, &store, &areas, vec![keyup_intent()]);
+    assert_eq!(
+        delta, 1,
+        "key-up-only turn with pending foreground owes one observation pass"
+    );
+    clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keyup_only_turn_without_pending_foreground_stays_quiet() {
+    // No drained edges, no owed pass: the same settled-only batch must
+    // not spend a pointless observation.
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    state.keyboard.takeover = true;
+    let (dir, store, areas, _) = route_dirs("keyup-quiet");
+    let me = route_me();
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_observe(Vec::new(), Vec::new(), false);
+    let delta = drive_command_lane(&mut state, &me, &dir, &store, &areas, vec![keyup_intent()]);
+    assert_eq!(
+        delta, 0,
+        "settled-only turn with no pending foreground observes nothing"
+    );
+    clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn real_command_turn_consumes_pending_without_extra_pass() {
+    // A real select turn dispatches through the owner and consumes the
+    // drained edge at apply entry, so no owed pass follows: exactly one
+    // tick (the command's own), never a redundant observation.
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    state.keyboard.takeover = true;
+    let key = crate::native_guards::WindowKey {
+        hwnd: 101,
+        pid: 202,
+        creation: "proc-1".to_owned(),
+    };
+    state.member_tokens.insert(key.clone(), "w1".to_owned());
+    state.member_tags.insert(key.clone(), "tag-1".to_owned());
+    state.member_identity.insert(
+        key,
+        crate::model::ProcessIdentity {
+            pid: 202,
+            process_creation: "proc-1".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        },
+    );
+    let observed = vec![observed_window()];
+    let (dir, store, areas, fulls) = route_dirs("real-cmd");
+    let me = route_me();
+    super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("seed converges");
+    // The drained own edge, exactly as `run_tile_loop` pushes it after
+    // the hook-edge drain and before the tick.
+    state.world.push_foreground_drain(vec![101], Vec::new(), 0);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_foreground(Some(101));
+    let select_down = QueuedWorkspaceIntent {
+        op: WorkspaceOp::Select,
+        index: 1,
+        follow: false,
+        edge: SnapEdge::Down,
+        origin: None,
+        consumed: true,
+        announce: true,
+        tick: std::time::Instant::now(),
+    };
+    let delta = drive_command_lane(&mut state, &me, &dir, &store, &areas, vec![select_down]);
+    assert!(
+        state.world.last_reply().is_some(),
+        "real select dispatches through the owner"
+    );
+    assert_eq!(
+        delta, 1,
+        "real command turn consumes the edge with no extra observation pass"
+    );
+    clear_pending_seams();
     let _ = std::fs::remove_dir_all(&dir);
 }

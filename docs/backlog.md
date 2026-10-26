@@ -16,13 +16,16 @@ decisions of 2026-09-24 are under
 ## Open work
 
 - P0 | Windows physical workspace-switch focus defect | User dogfood 2026-10-26:
-  Physical Win+arrow now confirmed fixed; workspace-switch focus still fails.
-  All thirteen selects in the subsequent trace emit the expected core target
-  and dispatch accepted native setters, each immediately foreground-unproven.
-  Later fresh foreground samples match, but cannot attribute arrival or prove
-  keyboard focus; event previews truncate. Next: bounded effect-joined native
-  landing/supersession diagnostics, then discriminating regression and fix.
-  Earlier two initial setter refusals remain unexplained, not claimed fixed.
+  Fresh traces show recurrent startup Win+arrow native refusals and a delayed
+  workspace observation. The switch setter returns promptly; its foreground
+  edge drains after 10 ms but coalesced key-up handling strands observation
+  until an unrelated wake about 10 s later. Event-driven servicing correction
+  and restoration of the dropped pre-setter E8 prime pass offline regressions;
+  prime-only restoration remains tentative. Fixture idle landings resolve in
+  22-25 ms and pager focus state in 36-38 ms, but no-prime startup also succeeds:
+  startup causality is not isolated. Immediate physical shortcuts, rapid native
+  toggles, genuine current-payload mid-switch veto, pager geometry-paint latency
+  and ordinary-app keyboard-focus acceptance remain open.
   [Record](changes/windows-directional-focus-startup.md).
 - P2 | Pager shows stale source layout after send-follow | User dogfood
   2026-10-26: after sending a window away with follow, the source workspace's
