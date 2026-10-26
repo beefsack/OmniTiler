@@ -915,6 +915,11 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
             // = 52 fixed.
             52 + bool_len(*tiled) + json_string_len(&output.0) + json_string_len(workspace)
         }
+        WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
+            // {"op":"toggle-workspace-tiling","out":S,"ws":S}
+            // = 44 fixed.
+            44 + json_string_len(&output.0) + json_string_len(workspace)
+        }
         WorldCommand::MigrateWorkspace {
             source_output,
             target_output,

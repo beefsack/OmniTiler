@@ -78,7 +78,7 @@ import {
     cmdSendDirectional,
     cmdSendNumbered,
     cmdSendRelative,
-    cmdSetWorkspaceTiling,
+    cmdToggleWorkspaceTiling,
     implicitSource,
     isCoreWorldReply,
     isWorldQueueReply,
@@ -3283,7 +3283,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         activeWindowId,
         activeWindowRef,
         currentScopeId,
-        getWorkspaceTilingSnapshot,
         registerShortcutFn: overrides.registerShortcutFn,
         readSameAxisMove: () => settings.readSameAxisLive(),
         readResizeSignature: () => route.resizeSignature(),
@@ -3546,12 +3545,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         getWorkspaceTilingSnapshot: () => getWorkspaceTilingSnapshot(),
         requestWorkspaceTilingToggle: () => {
             const out = activeOutputName();
-            const snapshot = getWorkspaceTilingSnapshot();
-            if (out === null || out === "" || snapshot.scope === "") {
+            const scope = currentScopeId();
+            if (out === null || out === "" || scope === "") {
                 shortcutFailed("toggle-workspace-tiling");
                 return;
             }
-            if (!submitCommand(cmdSetWorkspaceTiling(out, snapshot.scope, !snapshot.tiled), "toggle-workspace-tiling")) {
+            if (!submitCommand(cmdToggleWorkspaceTiling(out, scope), "toggle-workspace-tiling")) {
                 shortcutFailed("toggle-workspace-tiling");
             }
         },

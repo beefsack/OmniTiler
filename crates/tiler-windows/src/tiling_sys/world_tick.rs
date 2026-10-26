@@ -186,6 +186,7 @@ fn world_command_kind(command: &WorldCommand) -> &'static str {
         WorldCommand::SendRelative { .. } => "send-relative",
         WorldCommand::SendNumbered { .. } => "send-numbered",
         WorldCommand::SetWorkspaceTiling { .. } => "set-workspace-tiling",
+        WorldCommand::ToggleWorkspaceTiling { .. } => "toggle-workspace-tiling",
         WorldCommand::MigrateWorkspace { .. } => "migrate-workspace",
         WorldCommand::FocusDirectional { .. } => "focus-directional",
         WorldCommand::MoveDirectional { .. } => "move-directional",

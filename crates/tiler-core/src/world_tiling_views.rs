@@ -76,6 +76,22 @@ impl WorldEngine {
         CommandApplied::NoEffect
     }
 
+    /// Neutral per-workspace tiling toggle. The workspace must be a known
+    /// logical id on `output` (same refusal as
+    /// [`Self::set_workspace_tiling`]); the retained mode is resolved at
+    /// execution time, so queued toggles compose with no adapter snapshot
+    /// policy. Idempotent per execution.
+    pub(crate) fn toggle_workspace_tiling(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        output: &OutputId,
+        workspace: &str,
+    ) -> CommandApplied {
+        let tiled = self.logical_tiling(&output.0, workspace) != TilingMode::Tiled;
+        self.set_workspace_tiling(report, command_seq, output, workspace, tiled)
+    }
+
     /// Policy-retained view target (hotplug displacement/return):
     /// latest per output wins, exactly like command views, under a caller
     /// supplied stable operation identity (per-cycle epoch, see the

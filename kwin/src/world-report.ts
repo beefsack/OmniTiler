@@ -38,6 +38,7 @@ export type WorldCommand =
     | { op: "send-relative"; win: string; source: SendSource; delta: -1 | 1; follow: boolean }
     | { op: "send-numbered"; win: string; source: SendSource; index: number; follow: boolean }
     | { op: "set-workspace-tiling"; out: string; ws: string; tiled: boolean }
+    | { op: "toggle-workspace-tiling"; out: string; ws: string }
     | { op: "migrate-workspace"; from: string; to: string; ws: string }
     | { op: "focus-directional"; win: string; direction: string }
     | { op: "move-directional"; win: string; direction: string; sameAxis: string }
@@ -458,10 +459,15 @@ export function cmdSendNumbered(win: string, source: SendSource, index: number, 
     }
     return { op: "send-numbered", win, source, index, follow };
 }
-// Planner-owned per-workspace tiling toggle: the adapter never decides
-// tiling mode locally.
+// Planner-owned per-workspace tiling mode: explicit sets choose a mode;
+// the neutral toggle flips the core-retained mode at execution time so
+// racing toggles compose with no adapter snapshot policy. The adapter
+// never decides tiling mode locally.
 export function cmdSetWorkspaceTiling(out: string, ws: string, tiled: boolean): WorldCommand {
     return { op: "set-workspace-tiling", out, ws, tiled };
+}
+export function cmdToggleWorkspaceTiling(out: string, ws: string): WorldCommand {
+    return { op: "toggle-workspace-tiling", out, ws };
 }
 export function cmdMigrateWorkspace(from: string, to: string, ws: string): WorldCommand | null {
     if (from === to) {

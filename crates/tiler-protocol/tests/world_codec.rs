@@ -243,6 +243,10 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
             serde_json::json!({"out": "o", "ws": "ws-1", "tiled": false}),
         ),
         (
+            "toggle-workspace-tiling",
+            serde_json::json!({"out": "o", "ws": "ws-1"}),
+        ),
+        (
             "migrate-workspace",
             serde_json::json!({"from": "a", "to": "b", "ws": "ws-1"}),
         ),
@@ -286,6 +290,9 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     assert!(decode_request(&with_command(&bad_same_axis, "7")).is_err());
     let bad_unknown = serde_json::json!({"op": "frobnicate", "out": "o"});
     assert!(decode_request(&with_command(&bad_unknown, "7")).is_err());
+    // The neutral toggle carries no preselected mode: `tiled` refuses.
+    let bad_toggle_extra = serde_json::json!({"op": "toggle-workspace-tiling", "out": "o", "ws": "ws-1", "tiled": true});
+    assert!(decode_request(&with_command(&bad_toggle_extra, "7")).is_err());
     // A null selection output resolves in core: it decodes to `None`,
     // never to an invented output.
     for (op, extra) in [
@@ -330,6 +337,17 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     // Legacy source/workspace legs are deleted and refuse as unknown.
     let legacy_migrate = serde_json::json!({"op": "migrate-directional", "from": "a", "ws": "ws-1", "direction": "right"});
     assert!(decode_request(&with_command(&legacy_migrate, "7")).is_err());
+    // The neutral tiling toggle names the logical scope only; the mode
+    // resolves in core at execution time.
+    let toggle = serde_json::json!({"op": "toggle-workspace-tiling", "out": "o", "ws": "ws-1"});
+    let report = decode_request(&with_command(&toggle, "7")).expect("toggle decodes");
+    match report.command {
+        Some(C::ToggleWorkspaceTiling { output, workspace }) => {
+            assert_eq!(output.0, "o");
+            assert_eq!(workspace, "ws-1");
+        }
+        _ => panic!("toggle-workspace-tiling decoded"),
+    }
     // A send source carries an explicit output or a named implicit
     // fallback; legacy string/null `out` shapes refuse as malformed.
     use tiler_core::world_report::SendSource as S;

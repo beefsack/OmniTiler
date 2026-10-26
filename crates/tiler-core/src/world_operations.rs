@@ -1670,6 +1670,7 @@ pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
         | WorldCommand::SelectTrailing { .. }
         | WorldCommand::MigrateWorkspace { .. }
         | WorldCommand::MigrateDirectional { .. }
-        | WorldCommand::SetWorkspaceTiling { .. } => None,
+        | WorldCommand::SetWorkspaceTiling { .. }
+        | WorldCommand::ToggleWorkspaceTiling { .. } => None,
     }
 }

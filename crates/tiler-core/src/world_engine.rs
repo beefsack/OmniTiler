@@ -509,8 +509,10 @@ pub struct WorldEngine {
     pub(crate) live_topology: BTreeMap<String, Rect>,
     /// Planner-owned per-workspace tiling mode (legacy Meta+Y parity):
     /// absent means [`TilingMode::Tiled`]. Set through
-    /// [`crate::world_report::WorldCommand::SetWorkspaceTiling`] or seeded
-    /// from the reported saved default; the adapter never decides.
+    /// [`crate::world_report::WorldCommand::SetWorkspaceTiling`], flipped
+    /// at execution time through
+    /// [`crate::world_report::WorldCommand::ToggleWorkspaceTiling`], or
+    /// seeded from the reported saved default; the adapter never decides.
     /// Floating workspaces skip convergence and publish explicit untouched
     /// rows (no frame writes while floating).
     pub(crate) tiling: BTreeMap<DomainKey, TilingMode>,

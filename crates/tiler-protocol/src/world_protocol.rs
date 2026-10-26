@@ -127,7 +127,7 @@
 //!   settlement over the fresh native[] readback.
 //! command.op: focus|send|switch-view|select-workspace|select-numbered|
 //!   select-relative|select-previous|select-trailing|send-relative|
-//!   send-numbered|set-workspace-tiling|
+//!   send-numbered|set-workspace-tiling|toggle-workspace-tiling|
 //!   migrate-workspace|focus-directional|move-directional|send-directional|
 //!   migrate-directional|operation (fields per variant, see decode; every
 //!   `ws` field names a stable core logical workspace id; the four
@@ -1506,6 +1506,13 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             check_keys(map, &["op", "direction"])?;
             Ok(WorldCommand::MigrateDirectional {
                 direction: parse_direction_token(req_str(map, "direction")?)?,
+            })
+        }
+        "toggle-workspace-tiling" => {
+            check_keys(map, &["op", "out", "ws"])?;
+            Ok(WorldCommand::ToggleWorkspaceTiling {
+                output: OutputId(req_id(map, "out")?),
+                workspace: req_id(map, "ws")?,
             })
         }
         "operation" => {

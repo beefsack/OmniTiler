@@ -767,6 +767,9 @@ impl WorldEngine {
                 workspace,
                 tiled,
             } => self.set_workspace_tiling(report, command_seq, output, workspace, *tiled),
+            WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
+                self.toggle_workspace_tiling(report, command_seq, output, workspace)
+            }
             WorldCommand::MigrateWorkspace {
                 source_output,
                 target_output,

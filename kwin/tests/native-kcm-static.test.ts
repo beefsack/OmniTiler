@@ -587,7 +587,6 @@ describe("native KCM static contract", () => {
             activeWindowId: () => "win-1",
             activeWindowRef: () => ({}),
             currentScopeId: () => "out-1/ws-1",
-            getWorkspaceTilingSnapshot: () => ({ scope: "out-1/ws-1", tiled: true, defaultTiled: true }),
             registerShortcutFn: (name, text, sequence) => {
                 registered.push({ action: name, text, sequence });
                 return true;

@@ -399,7 +399,6 @@ describe("world shortcut settings", () => {
             activeWindowId: (): string | null => "win-a",
             activeWindowRef: (): object | null => null,
             currentScopeId: (): string => "ws1",
-            getWorkspaceTilingSnapshot: () => ({ scope: "ws1", tiled: true, defaultTiled: true }),
             registerShortcutFn: (name: string, _text: string, _seq: string, cb: () => void): boolean => {
                 registered.set(name, cb);
                 return true;

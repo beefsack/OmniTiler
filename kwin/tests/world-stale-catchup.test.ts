@@ -437,14 +437,14 @@ describe("world stale-reply catchup liveness", () => {
         assert.ok(!("command" in (lastDescribe(h).payload["report"] as Record<string, unknown>)));
     });
 
-    it("pins the Meta+Y toggle to a set-workspace-tiling submission", () => {
+    it("pins the Meta+Y toggle to a toggle-workspace-tiling submission", () => {
         const h = makeHarness();
         discover(h);
         h.handle?.requestWorkspaceTilingToggle();
         h.runDueTimers();
         const filed = JSON.parse([...h.calls].reverse().find((c) => c.method === "QueueWorldCommand")!.payload) as Record<string, unknown>;
         assert.deepEqual(filed["command"], {
-            op: "set-workspace-tiling", out: "out", ws: "ws1", tiled: false,
+            op: "toggle-workspace-tiling", out: "out", ws: "ws1",
         });
     });
 });

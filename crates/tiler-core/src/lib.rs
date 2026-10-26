@@ -110,3 +110,5 @@ mod world_pager_presentation_tests;
 mod world_restored_routing_tests;
 #[cfg(test)]
 mod world_sessionless_migration_tests;
+#[cfg(test)]
+mod world_toggle_tests;

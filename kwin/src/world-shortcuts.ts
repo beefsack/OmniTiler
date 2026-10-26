@@ -13,7 +13,7 @@ import {
     cmdSelectRelative,
     cmdSelectTrailing,
     cmdSendRelative,
-    cmdSetWorkspaceTiling,
+    cmdToggleWorkspaceTiling,
     implicitSource,
     type WorldCommand,
 } from "./world-report";
@@ -96,7 +96,6 @@ export interface WorldShortcutsEnv {
     activeWindowId: () => string | null;
     activeWindowRef: () => object | null;
     currentScopeId: () => string;
-    getWorkspaceTilingSnapshot: () => { scope: string; tiled: boolean; defaultTiled: boolean };
     registerShortcutFn?: WorldShortcutRegisterFn;
     readSameAxisMove?: () => string;
     // Structural membership/focus signature for the resize key-repeat
@@ -111,7 +110,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         submitCatalogMove, submitOutputSend, submitMigration, submitFloat,
         setStickyNative, setMaximizedNative, setFullscreenNative,
         activeOutputName, activeWindowId, activeWindowRef,
-        currentScopeId, getWorkspaceTilingSnapshot,
+        currentScopeId,
     } = env;
     const register = env.registerShortcutFn ?? ((() => {
         try {
@@ -309,23 +308,17 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             }
         }
         tryRegister(WORKSPACE_TILING_TOGGLE_ACTION, "Toggle tiling for current workspace", WORKSPACE_TILING_TOGGLE_SEQUENCE, () => {
-            // Planner-owned tiling toggle (D2): the source mode is the last
-            // ready reply's tiling mode for the current scope, never TS
-            // policy. Legacy Meta+Y/tray behavior preserved: toggle and wait
-            // for the next accepted reply; failures fail closed with one
-            // bounded line and no native writes.
+            // Planner-owned tiling toggle (D2): the neutral toggle intent
+            // carries no adapter-preselected mode. Core flips the retained
+            // mode at execution time, so racing toggles compose identically.
+            // Failures fail closed with one bounded line and no native writes.
             const out = outName();
             const scope = currentScopeId();
             if (out === null || out === "" || scope === "") {
                 shortcutFailed("toggle-workspace-tiling");
                 return;
             }
-            const snapshot = getWorkspaceTilingSnapshot();
-            if (snapshot.scope === "" || snapshot.scope !== scope) {
-                shortcutFailed("toggle-workspace-tiling");
-                return;
-            }
-            if (!submitCommand(cmdSetWorkspaceTiling(out, scope, !snapshot.tiled), "toggle-workspace-tiling")) {
+            if (!submitCommand(cmdToggleWorkspaceTiling(out, scope), "toggle-workspace-tiling")) {
                 shortcutFailed("toggle-workspace-tiling");
             }
         });

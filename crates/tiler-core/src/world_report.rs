@@ -77,8 +77,9 @@ pub const MAX_PRESENTATION_ORDER: usize = 1024;
 pub const MAX_PRESENTATION_STYLE_PX: i32 = 1024;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
-/// per workspace (Planner-owned, toggled only through
-/// [`WorldCommand::SetWorkspaceTiling`); the adapter never decides.
+/// per workspace (Planner-owned, set through
+/// [`WorldCommand::SetWorkspaceTiling`] or flipped through
+/// [`WorldCommand::ToggleWorkspaceTiling`); the adapter never decides.
 /// `Tiled` is core-managed; `Floating` leaves native geometry alone (no
 /// frame writes) with the scope explicitly untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -826,7 +827,8 @@ pub enum SendSource {
 /// a [`TransferKind::View`] or [`TransferKind::Migration`] target,
 /// `Send`/`SendRelative`/`SendNumbered`-to-bound-target and send operations
 /// retain a window transfer, focus operations emit one at-most-once effect,
-/// `SetWorkspaceTiling` retains planner-owned tiling mode, and read-only
+/// `SetWorkspaceTiling` retains planner-owned tiling mode (and
+/// `ToggleWorkspaceTiling` flips it at execution time), and read-only
 /// operations reconcile only.
 ///
 /// Every `workspace` string names a stable core LOGICAL workspace id owned
@@ -896,11 +898,19 @@ pub enum WorldCommand {
     /// retain `tiled` for one live logical workspace. Disabling releases
     /// the retained session (no frame writes while floating); re-enabling
     /// re-adopts through the fresh route. Never decided by the adapter.
+    /// Callers that genuinely choose a mode submit this; racing toggles
+    /// submit [`WorldCommand::ToggleWorkspaceTiling`] instead.
     SetWorkspaceTiling {
         output: OutputId,
         workspace: String,
         tiled: bool,
     },
+    /// Neutral per-workspace tiling toggle: flip the mode retained for one
+    /// live logical workspace at command-execution time. Queued toggles
+    /// compose (each execution re-reads the retained mode), so racing
+    /// adapters resolve identically with no snapshot preselection.
+    /// Semantics otherwise match [`WorldCommand::SetWorkspaceTiling`].
+    ToggleWorkspaceTiling { output: OutputId, workspace: String },
     /// Whole-workspace migration (D2): move one live logical workspace id
     /// from the source scope to the target scope. Retained until member
     /// arrival plus both view proofs confirm it.
@@ -2489,7 +2499,10 @@ pub fn valid_command(command: &WorldCommand) -> bool {
         } => is_opaque_id(&window.0) && valid_send_source(source) && *index <= 9,
         WorldCommand::SetWorkspaceTiling {
             output, workspace, ..
-        } => is_opaque_id(&output.0) && is_opaque_id(workspace),
+        }
+        | WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
+            is_opaque_id(&output.0) && is_opaque_id(workspace)
+        }
         WorldCommand::MigrateWorkspace {
             source_output,
             target_output,

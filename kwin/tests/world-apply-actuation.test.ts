@@ -478,7 +478,7 @@ function drain(h: Harness, rev: { n: number }): void {
 const KNOWN_OPS = new Set([
     "focus", "send", "switch-view", "select-workspace", "select-numbered",
     "select-relative", "select-previous", "select-trailing", "send-relative",
-    "send-numbered", "set-workspace-tiling", "migrate-workspace",
+    "send-numbered", "set-workspace-tiling", "toggle-workspace-tiling", "migrate-workspace",
     "focus-directional", "move-directional", "send-directional",
     "migrate-directional", "operation",
 ]);

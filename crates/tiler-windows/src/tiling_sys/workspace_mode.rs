@@ -110,9 +110,11 @@ fn cancel_workspace_effects(state: &mut TileLoop, output: &str, workspace: &str)
 }
 
 /// Toggle the tiling mode of the owner's current workspace (tray edge).
-/// The planner-owned mode flips through one
-/// [`WorldCommand::SetWorkspaceTiling`](tiler_core::world_report::WorldCommand::SetWorkspaceTiling)
-/// dispatch: disabling releases the retained session with no frame writes,
+/// The planner-owned mode flips through one neutral
+/// [`WorldCommand::ToggleWorkspaceTiling`](tiler_core::world_report::WorldCommand::ToggleWorkspaceTiling)
+/// dispatch resolved against the retained mode at execution time: no
+/// cached-mode preselection rides the command, so racing toggles compose.
+/// Disabling releases the retained session with no frame writes,
 /// re-enabling re-adopts through the fresh route. Per-window float/sticky
 /// and native maximize/fullscreen overlays are never touched. Stale gesture
 /// effects for the workspace cancel; the toggle reports the honest world
@@ -131,7 +133,6 @@ pub(super) fn toggle_workspace_tiling(
     let Some(current) = state.active_view(output) else {
         return;
     };
-    let tiled_now = state.is_tiled_view(output, &current);
     let Some(wire) = state.wire_of(output) else {
         return;
     };
@@ -163,10 +164,9 @@ pub(super) fn toggle_workspace_tiling(
         areas,
         foreground,
         fulls,
-        tiler_core::world_report::WorldCommand::SetWorkspaceTiling {
+        tiler_core::world_report::WorldCommand::ToggleWorkspaceTiling {
             output: tiler_core::directional::OutputId(wire),
             workspace: current.clone(),
-            tiled: !tiled_now,
         },
         super::observation::sample_cursor(),
     );
@@ -177,6 +177,10 @@ pub(super) fn toggle_workspace_tiling(
     if reply.is_some() {
         cancel_workspace_effects(state, output, &current);
     }
+    // Post-execution mode (the world owner already applied the toggle
+    // above): retile converges on current observed geometry only when the
+    // workspace is tiled now.
+    let tiled_after = state.is_tiled_view(output, &current);
     log_json_at(
         &state.log_path,
         serde_json::json!({
@@ -184,11 +188,11 @@ pub(super) fn toggle_workspace_tiling(
             "op": "toggle",
             "output": state.output_token(output),
             "workspace": state.workspace_token(output, &current),
-            "tiled": !tiled_now,
+            "tiled": tiled_after,
             "outcome": outcome,
         }),
     );
-    if reply.is_some() && !tiled_now {
+    if reply.is_some() && tiled_after {
         // Retile converges on current observed geometry through the next
         // observation tick below.
         super::reconcile::reconcile_tick(state, me, store, dir, fulls, areas);
