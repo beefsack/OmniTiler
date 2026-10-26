@@ -27,9 +27,12 @@ decisions of 2026-09-24 are under
   ([record](changes/archive/windows-directional-focus-startup.md)).
 - P2 | Pager shows stale source layout after send-follow | User dogfood
   2026-10-26: after sending a window away with follow, the source workspace's
-  pager cell keeps the pre-send split until revisited. User wants to explore
-  retiling the source workspace on departure so its pager cell is correct.
-  Later; not started.
+  pager cell keeps the pre-send split until revisited. User 2026-10-27: next step
+  is investigation only; find the cause and feasible options, then return to the
+  user before choosing. Assess drawing the source cell from logical layout,
+  retiling hidden source windows on departure (conflicts with the hidden-window
+  write fence; not advised), or leaving as is. Unverified hypothesis: the fence
+  keeps native frames stale. Later; not started.
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies (now owned by the KDE v2 port item
   below); (3) KDE Settings core-catalog
@@ -102,11 +105,20 @@ decisions of 2026-09-24 are under
   three simulated-host schedules pass offline. Windows delay-zero testing found
   and repaired stale hidden-frame facts; hide/reveal now passes that checkpoint.
   Hidden-oracle semantics now follow the existing no-hidden-write safety fence
-  (tentative, pending user review). Strict native runs at 0/10/50ms expose a
+  (user-approved 2026-10-27). Strict native runs at 0/10/50ms expose a
   pager/world trace-proof gap; earlier apparent passes were withdrawn. Trio
   admission-anchor and observation-fence harness defects are repaired offline.
   Runner remains parked pending exact proof binding; no full native pass
   ([active record](changes/platform-neutral-stress-acceptance.md)).
+- P2 | Keyboard stress runner | User 2026-10-27: share definitions and oracles
+  with the existing deterministic-correctness CLI mode; use injected real
+  shortcuts through the hook path for real-input bursts and the test window tool
+  for churn. First check injected-shortcut acceptance and shortcut coverage for
+  every stress action. CLI rate accepted for now: 3.4 actions/s overall, 101ms
+  between contiguous commands; about 100ms/action already exceeds typical human
+  input speed. No batch file/stdin CLI planned; possible follow-up only if
+  keyboard mode cannot cover a case, requiring user approval as a new public CLI
+  feature ([decision](decisions.md#stress-acceptance-and-dispatch-2026-10-27)).
 - P2 | Windows intermittent incomplete workspace hide | Stress home-away at
   10ms once left a view transfer pending for 60s with one fixture member still
   visible; a retry passed under the then-current harness, whose acceptance was

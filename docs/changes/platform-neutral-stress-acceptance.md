@@ -32,57 +32,57 @@
 - Windows connector, native readbacks, pacing, offline seam tests and live runs.
 - Independent review, accepted evidence, documentation and integration.
 
-## Tentative technical decisions
+## Approved technical decisions
 
-- Tentative (pending user review): reuse the existing single-pending exact-owner
+- User-approved 2026-10-27: reuse the existing single-pending exact-owner
   request-file controls. Zero delay means no added pacing; transport availability
   may serialize publication, but per-action native convergence must not pace a burst.
-- Tentative (pending user review): distinguish native frame/visibility/foreground
+- User-approved 2026-10-27: distinguish native frame/visibility/foreground
   observations from owner-reported membership/view and renderer-input pager
   evidence. Renderer payload evidence is not proof of pixels reaching the screen.
-- Tentative (pending user review): strict JSON definitions use logical home/away
+- User-approved 2026-10-27: strict JSON definitions use logical home/away
   aliases, independently authored normalized tile rectangles, explicit fixture
   focus-acquisition actions, and separate retained focus versus nullable actual
   foreground. Initial cases cover one tiled zero-gap output, 102 commands each.
-- Tentative (pending user review): ordered, batched and split/reordered simulated
+- User-approved 2026-10-27: ordered, batched and split/reordered simulated
   host receipts execute the same definitions. Native convergence is checked only
   at explicit observation checkpoints, not after each stress command.
-- Tentative (pending user review): persist recovery intent before settings or
+- User-approved 2026-10-27: persist recovery intent before settings or
   launch effects in the existing leg file; revalidate exact owner/fixture
   lifetimes before recovery and preserve foreign owners and global settings.
-- Tentative (pending user review): fence both control request files for ordered
+- User-approved 2026-10-27: fence both control request files for ordered
   publication, join dispatch outcomes separately at observation barriers, and
   retry native/pager lag only within a bounded checkpoint. Corrupt evidence,
   identity failures and consumed transport/settlement deadlines fail closed.
-- Tentative (pending user review): retain the latest emitted pager payload by
+- User-approved 2026-10-27: retain the latest emitted pager payload by
   revision and emission order, including same-revision changes. Extend existing
   trace rows with DPI, cell/miniature rectangles and opaque window tokens;
   independently project authored tiles with the renderer's rounding contract.
-- Tentative (pending user review): keep home at ring head and rebind away to
+- User-approved 2026-10-27: keep home at ring head and rebind away to
   ring position two after empty-workspace pruning, matching the core driver.
-- Tentative (pending user review): seed hidden snapshot caches from fresh
+- User-approved 2026-10-27: seed hidden snapshot caches from fresh
   exact-lifetime physical frame proof at successful hide commit; never from
   desired geometry or setter acceptance. Unreadable proof retains the existing
   conservative fallback. Core frame-evidence precedence remains unchanged.
-- Tentative (pending user review): hidden-window acceptance checks exact
+- User-approved 2026-10-27: hidden-window acceptance checks exact
   identity, hidden visibility and retained frame proof. Require exact native
   geometry against logical allocation only on reveal. This follows the
   existing adapter safety fence against hidden frame writes; product behavior
   and that safety fence remain unchanged.
-- Tentative (pending user review): expose exact raw miniature source frames in
+- User-approved 2026-10-27: expose exact raw miniature source frames in
   the existing bounded pager trace. Hidden native frames must match that
   token/revision-bound retained proof; miniature quantization alone cannot
   establish exact retained geometry. Track stability per hide epoch, reset on
   actual reveal, close or replacement lifetime.
-- Tentative (pending user review): emit the existing bounded accepted-world
-  trace snapshot when fresh pager content or foreground changes, even without
-  an actuation attempt. Unchanged/duplicate presentations remain quiet. Retain
-  strict renderer/world revision joins; never mix a newer pager with old world
-  proof. Final re-verification inspects any newer world progress before reuse.
-- Tentative (pending user review): explicitly focus the bootstrap anchor before
+- User-approved 2026-10-27; not implemented: whenever the Windows pager payload
+  trace emits, emit exact accepted-world proof paired to the snapshot actually
+  used, with corresponding report/reply provenance. Retain strict renderer/world
+  joins and final re-verification of newer world progress. Review snapshot
+  lifetime/correlation design before implementation; no product behavior change.
+- User-approved 2026-10-27: explicitly focus the bootstrap anchor before
   the trio case's first admission. This removes unspecified bootstrap foreground
   without changing authored layouts, product admission policy or safety gates.
-- Tentative (pending user review): fence observation checkpoints on exact
+- User-approved 2026-10-27: fence observation checkpoints on exact
   lifetime-bound admission ticks as well as command-dispatch ticks. Reject
   missing caller/token mappings before roster sorting; never drop them silently.
 
@@ -152,7 +152,7 @@
 - Before the revised oracle, delay-zero testing failed `hide-S1`: the sent hidden member remained at
   its prior half-width native frame while its logical destination allocation
   is full width. No frame write is attempted after hiding, consistent with
-  `world_diff.rs`'s hidden-window safety fence. The tentative oracle decision
+  `world_diff.rs`'s hidden-window safety fence. The approved oracle decision
   below resolves this mismatch without a product change.
 - Strict trio runs then exposed a stale pre-admission world-row join. The
   harness now fences bootstrap and subsequent admission observations using the
@@ -180,7 +180,8 @@
   101.231ms (about 9.88 actions/s); the 43-93ms CLI service sample above is a
   separate earlier measurement. This route cannot prove true unpaced input
   starvation resistance. No persistent product-control route was found and
-  no new product IPC was added.
+  no new product IPC was added. User 2026-10-27 accepts the measured CLI rate
+  for now: about 3.4 actions/s overall and 101ms between contiguous commands.
 - An earlier 10ms run left a workspace transfer pending for 60s with one
   fixture member still visible. The hide race is backlogged, not silently
   repaired or classified as a passing retry. Later strict runs stop earlier
@@ -206,7 +207,7 @@
 
 ## Hidden-frame decision and next acceptance step
 
-- Tentative (pending user review): adopt hidden identity/visibility and retained
+- User-approved 2026-10-27: adopt hidden identity/visibility and retained
   frame proof, with exact geometry against logical allocation checked on reveal.
   Do not change product behavior or weaken the hidden-window write fence.
   [Minimal discriminator](../spec/reference-outcomes.md#hidden-frame-stress-discriminator).
@@ -215,8 +216,14 @@
 - Existing transport inspection found no persistent product control route.
   Fixture batching controls fixture windows only. Direct request-file writes
   would skip the CLI's same-path medium-caller gate, so they are not used.
-  Retain the existing CLI route and report its measured effective rate; a
-  faster persistent exact-owner product transport requires separate approval.
+  User-approved 2026-10-27: two modes share definitions and oracles. Retain the
+  existing CLI for deterministic correctness; lower-priority keyboard mode uses
+  injected real shortcuts through the hook path plus the test window tool for
+  churn, covering real-input bursts. First check that the tiler accepts injected
+  shortcuts and every stress action has a shortcut. About 100ms/action already
+  exceeds typical human input speed. No batch file/stdin CLI is planned; it is
+  a possible follow-up only if keyboard mode cannot cover a case, requiring user
+  approval as a new public CLI feature.
 - Keep this note active and the backlog open until real execution establishes
   native acceptance or reports a concrete tiler defect.
 
@@ -231,12 +238,12 @@
   unbound evidence; logging only changed fresh pager presentations still misses
   a later unchanged accepted reply's stamp before the renderer pump. Preserve
   the strict cap; the native runner is mechanically parked before effects.
-- Recommendation, not adopted: emit an exact accepted-world proof paired to
+- User-approved 2026-10-27; not implemented: emit exact accepted-world proof paired to
   the snapshot actually used whenever the pager payload trace emits, retaining
   the corresponding report/reply provenance. This closes observability without
   changing tiling or hidden-write safety, and avoids logging every accepted
-  observation. The required snapshot lifetime/correlation design needs review
-  before another implementation attempt. No new product IPC is proposed.
+  observation. The snapshot lifetime/correlation design still requires review
+  before implementation. No new product IPC is proposed.
 - Next: resolve that trace-proof design, verify admission fencing live, then
   rerun all six legs and the incomplete-hide regression. Full native acceptance
   and true burst-rate starvation coverage remain open.

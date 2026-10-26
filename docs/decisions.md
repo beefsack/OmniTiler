@@ -22,16 +22,13 @@ User-approved 2026-10-26 index (implementation status below):
 - Native Plasma pager only on KDE
   ([dated decisions](#kde-port-and-race-decisions-2026-10-26))
 
+User-approved 2026-10-27 index (implementation status below):
+- No-focus directional command encoding: explicit empty `win`
+  ([Workspaces](#workspaces))
+- Platform-neutral stress contract, hidden-frame oracle and paired pager/world
+  proof; CLI/keyboard runner dispatch ([below](#stress-acceptance-and-dispatch-2026-10-27))
+
 Tentative index (user review pending; not approved product rules):
-- Platform-neutral stress test schema, alias/focus oracles, simulated-host
-  schedules, transport fencing, bounded observation barriers, retained pager
-  geometry/token/raw-frame traces, paired accepted-world evidence, explicit
-  admission-anchor preconditions and causal admission fences, evidence separation,
-  effect-aware recovery and fresh
-  hidden snapshot seeds and hidden identity/visibility/retained-frame proof
-  with exact geometry on reveal,
-  tentative (pending user review)
-  ([record](changes/platform-neutral-stress-acceptance.md#tentative-technical-decisions))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))
 - macOS adapter defaults, focus oracle, observation recovery, scoped input
@@ -69,8 +66,30 @@ Tentative index (user review pending; not approved product rules):
 - Independent birth-clear property authority under geometry-convergence holds
   ([below](#world-command-intent-and-birth-ownership-2026-10-26)); tentative,
   safety holds and fresh-native settlement requirements remain binding
-- No-focus directional command encoding: explicit empty `win`, tentative
-  (pending user review) ([below](#workspaces))
+
+## Stress acceptance and dispatch (2026-10-27)
+
+- **User-approved:** platform-neutral schema, alias/focus oracles, simulated-host
+  schedules, transport fencing, bounded observation barriers, pager traces,
+  paired accepted-world evidence, admission fences, evidence separation,
+  effect-aware recovery and hidden snapshot seeds
+  ([contract](changes/platform-neutral-stress-acceptance.md#approved-technical-decisions)).
+- **User-approved:** hidden identity/visibility and retained-frame proof; check
+  exact native geometry against logical allocation on reveal. Product behavior
+  and the hidden-window write fence remain unchanged.
+- **User-approved; not implemented:** whenever the Windows pager payload trace
+  emits, emit exact accepted-world proof paired to the snapshot actually used,
+  with corresponding report/reply provenance. Keep strict joins and product
+  behavior unchanged. Review snapshot lifetime/correlation design before implementation
+  ([blocker](changes/platform-neutral-stress-acceptance.md#remaining-proof-binding-blocker)).
+- **User-approved:** two stress runner modes share definitions and oracles:
+  existing CLI for deterministic correctness; lower-priority keyboard mode uses
+  injected real shortcuts through the hook path and the test window tool for
+  churn. First check injected-shortcut acceptance and shortcut coverage for every
+  stress action. Accept current CLI measurements for now: 3.4 actions/s overall,
+  101ms between contiguous commands; about 100ms/action already exceeds typical
+  human input speed. No batch file/stdin CLI is planned; consider it only if
+  keyboard mode cannot cover a case, with user approval for a new public CLI feature.
 
 ## KDE port and race decisions (2026-10-26)
 
@@ -1522,7 +1541,7 @@ platform API behavior.
   selection; no local-window, MRU/layout fallback or edge-nearest policy is
   added. Existing floating-workspace and safety gates remain. Shared-core,
   wire and Windows routing regressions pass; no-focus physical shortcuts and
-  native output crossing remain unverified. **Tentative (pending user review):**
+  native output crossing remain unverified. **User-approved 2026-10-27:**
   explicit empty `win` on `focus-directional` means no focused window, equally
   for in-process and JSON callers; missing/null/invalid ids and other commands
   retain their strict validation. [Evidence and limits](changes/archive/directional-focus-without-window.md).

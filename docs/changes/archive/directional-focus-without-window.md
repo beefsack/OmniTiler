@@ -39,7 +39,7 @@ checks to core.
   focus. It uses the existing neutral action-output resolver, strict topology,
   pair resolution and remembered tiled destination selection. All four
   directions apply the approved no-focus rule; the focused path is unchanged.
-- Tentative (pending user review): explicit empty `win` on `focus-directional`
+- User-approved 2026-10-27: explicit empty `win` on `focus-directional`
   encodes no focused window for in-process and JSON callers. Missing/null and
   invalid nonempty ids still refuse; move/send still require a subject.
 - Floating-workspace navigation, stale named-subject, held/unreadable scope,
