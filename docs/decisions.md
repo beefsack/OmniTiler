@@ -4916,6 +4916,71 @@ native acceptance still separate:
   geometry predicates; unknown cloak and session state keep last-moment
   renderer vetoes. No new core facts or unknown-state semantics.
 
+## macOS dogfood review decisions 2026-10-27
+
+User-reviewed 2026-10-27; implementation accepted offline in the
+[port record](changes/macos-world-v2-port.md#decisions-and-review-status),
+native acceptance still separate:
+
+- Confirmed T1: a matched numbered-send unbound spare executes its explicit
+  creation desire through the existing creation executor. An explicit backing
+  desire appends exactly once and never silently reuses another Space; true
+  no-desire and bound-target sends keep the usual reuse-or-append behavior.
+  No new eager-spare proposal and no core policy change.
+- Interim approved T2 (not a final pump design): the coalesced 50 ms pump
+  stays now. Selected next work is a latency unit that measures native
+  before/after numbers, then replaces the pump with a direct event-driven
+  main-thread completion wake per Efficiency events-over-polling. No native
+  improvement numbers are claimed.
+- Confirmed T3: same-state holds retain the last applied authorized geometry;
+  a changed-source queued selection refuses before any select effect or
+  creation auth spend. Fresh rows always win; invalidation and safety gates
+  are unchanged and no cache is added to presentation.
+- Confirmed T4: unset radius derives as native base plus `gap + width / 2`
+  centerline outset, capped at the existing configured maximum 64. Base is 16
+  on Tahoe release family 26+ and 9 on older/unknown; explicit values apply
+  verbatim with the existing range handling unchanged. Narrow fixture readback
+  only; no product border-pixel claim. Follow-up selected: dynamic per-window
+  default on 26+ via a private SLS read (Host Integration), sampled at first
+  observation plus window change and never per frame; version-default fallback
+  when unavailable/zero/failed; user routes dynamic/version-default/fixed with
+  explicit radius always winning. No config or API shape is selected here.
+- Lazy physical backing is kept: a native Space is created on first
+  switch/send, never by eager Mission Control append. Follow-up: verify the
+  pager surfaces the core trailing workspace, and make it do so if it does
+  not.
+- Fullscreen games direction (not completed behavior): never force-exit. The
+  selected direction is that native fullscreen windows remain logical workspace
+  members; switching to their logical workspace brings the fullscreen Space
+  forward, and a send reassociates membership without leaving fullscreen. This
+  is macOS platform design first per Layering (core desired world, platform
+  mechanisms); a platform-neutral core proposal follows only if the host cannot
+  honor it. Native ability to bring a specific fullscreen Space forward is
+  unproven. Current evidence (send refused, home desktop does not return
+  fullscreen) stands as current limits, not selected final semantics.
+- Ingress ordering: every user command reaches core; adapter ingress is queued
+  in order and stale-topology commands are superseded per T3. Adapter-only
+  unless a core change is needed, then a proposal first. No busy-drop
+  acceptance.
+- Stress scope: the macOS native stress runner is dev-only and never ships. It
+  consumes the same shared spec directly (`test-fixtures/world-stress-*.json`,
+  `test-fixtures/world-stress.md`, `crates/tiler-protocol/src/world_stress.rs`
+  oracle, approved contracts in
+  [stress acceptance](changes/platform-neutral-stress-acceptance.md)). Only
+  native execution/readback/fixture ownership/restoration is macOS-specific.
+  Complete the native side first, then run staged fixture-first delays
+  including none; never weaken shared oracles. New cases (for example Space
+  change mid switch) belong to the shared spec; shared format/oracle changes
+  need user approval plus Windows alignment.
+- Standing limits kept narrow: no hidden-geometry-change claim beyond the
+  recorded zero-delta stream evidence; zero AX setter-attempt tracing stays
+  parked. Trailing-append remembered focus stays a safe drop; presentation
+  vetoes/fallbacks expand only on reproduced failure. Targeted native
+  acceptance (workspace fixes, pager pixels, input, sticky, multi-display,
+  performance after the wake change) and older deferrals stay parked. The older
+  three-way classifier and `None`-membership rows stay tentative pending the
+  post-port review.
+
 ## Native adoption 2026-10-24
 
 User-approved 2026-10-24; core implementation delivered, native acceptance TBD:

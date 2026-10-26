@@ -1244,6 +1244,17 @@ decisions of 2026-09-24 are under
      classification discriminators.
   10. Distribution: DMG and Homebrew, signing and notarisation (paid Apple
       account), update channel, App Store.
+  **User review 2026-10-27 ordered follow-ups (details in
+  [decisions](decisions.md#macos-dogfood-review-decisions-2026-10-27) and the
+  [port record](changes/macos-world-v2-port.md#dogfood-review-directions-2026-10-27)):**
+  (a) direct-wake latency unit with measured native before/after numbers;
+  (b) ordered ingress queue carrying every command to core;
+  (c) macOS native stress runner against the shared spec (shared oracles stay
+  Windows-owned per the [stress record](changes/platform-neutral-stress-acceptance.md));
+  (d) pager core-trailing-workspace check;
+  (e) fullscreen logical-membership design;
+  (f) dynamic corner radius;
+  (g) targeted live acceptance and redogfood.
   **Pending physical acceptance (dogfooding):** workspace selects, send-follow,
   send-stay and trailing Space, plus the user-approved 2026-10-19 decisions
   ([dogfood checklist](changes/macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19));

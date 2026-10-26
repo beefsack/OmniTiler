@@ -287,7 +287,10 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 
 User review 2026-10-25 confirms the implementation decisions below, retires the
 two superseded interim choices, and leaves classification and `None` membership
-edge cases tentative. Acceptance of an approach does not claim native evidence.
+edge cases tentative. User review 2026-10-27 confirms the four 2026-10-27 rows
+below (event-wake as interim with the approved direct-wake next step) and leaves
+the older three-way classifier and `None`-membership rows tentative.
+Acceptance of an approach does not claim native evidence.
 
 | Status | Decision | Alternatives / reason |
 | --- | --- | --- |
@@ -314,10 +317,10 @@ edge cases tentative. Acceptance of an approach does not claim native evidence.
 | Confirmed 2026-10-26 | Independent focused-miniature colour/theme with full-strength border and dimmer same-RGB fill | Border and highlight each default to live accent and retain independent overrides; no shared colour fields |
 | Confirmed 2026-10-26 | Normalize grounded hidden-workspace and zoom/full-display facts before core presentation | Reuse retained homing, fresh native currents and existing geometry predicates; unknown cloak and session state retain last-moment renderer vetoes |
 | Confirmed 2026-10-26 | Retain Authentic Desktop-N holder ensure even with input off; no new gating | User decision: qualify tile help, save exact per-holder pre/post baselines on the next live leg, and never revert a pre-existing preimage |
-| Tentative 2026-10-27 | Matched numbered-send unbound backing executes through the existing creator; an explicit backing desire requires exactly one append, never a silently reused SID; bound/missing/mismatched stays pinned with no creation | Adapter contract completion, not a core policy or new eager-spare proposal; native macOS result TBD |
-| Tentative 2026-10-27 | Coalesced claim/effect events stage one early cadence body on the existing 50 ms pump; every dispatched terminal outcome requests one owner reread plus one early body even at unchanged revision | Theoretical bound 250 to 50 ms per stage, not a measured native distribution; no native replay, new timer, or polling thread; the 250 ms routine and 1 s `SCOPED_BACKSTOP_INTERVAL` bound silence for lost/unsupported notifications; pending receipts complete once on the first readable row with the original stamp preserved |
-| Tentative 2026-10-27 | Same-state held plan-truth retention (same current scopes, bindings, homing, and current workareas; fresh rows win; minimized absence stands; any change invalidates) plus a queued baseline-SID source fence before select/create auth spend (genuine pre/post evidence, `None` when unknown); presentation is already engine-stable, so no cache; own-append order growth at the same current stays valid | Adapter-only retention and fences; renderers still revalidate every shape against live native legs; native macOS before/after result TBD |
-| Tentative 2026-10-27 | Host-derived active-border centerline default (native base 16 on Tahoe 26+ / legacy 9 source fallback + `gap + width / 2`, capped at 64; explicit values verbatim, host-local, no core) | Standard-window fallback is approximate, not universal; fractional outsets keep pre-existing whole-point rounding; native evidence is the narrow fixture readback below, not product border pixels |
+| Confirmed 2026-10-27 | Matched numbered-send unbound backing executes through the existing creator; an explicit backing desire requires exactly one append, never a silently reused SID; bound/missing/mismatched stays pinned with no creation | Adapter contract completion, not a core policy or new eager-spare proposal; native macOS result TBD |
+| Confirmed interim 2026-10-27 | Coalesced claim/effect events stage one early cadence body on the existing 50 ms pump; every dispatched terminal outcome requests one owner reread plus one early body even at unchanged revision | Current pump stays now; selected next work measures native before/after then replaces it with a direct event-driven main-thread completion wake; no measured native distribution claimed |
+| Confirmed 2026-10-27 | Same-state held plan-truth retention (same current scopes, bindings, homing, and current workareas; fresh rows win; minimized absence stands; any change invalidates) plus a queued baseline-SID source fence before select/create auth spend (genuine pre/post evidence, `None` when unknown); presentation is already engine-stable, so no cache; own-append order growth at the same current stays valid | Adapter-only retention and fences; renderers still revalidate every shape against live native legs; native macOS before/after result TBD |
+| Confirmed 2026-10-27 | Host-derived active-border centerline default (native base 16 on Tahoe 26+ / legacy 9 source fallback + `gap + width / 2`, capped at 64; explicit values verbatim, host-local, no core) | Standard-window fallback is approximate, not universal; fractional outsets keep pre-existing whole-point rounding; native evidence is the narrow fixture readback below, not product border pixels |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -1046,7 +1049,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   148 integration, 0 failed); strict all-target clippy PASS; workspace fmt and
   diff check PASS. No shared-source change, no live acceptance claimed.
 
-## Numbered send backing desire via the existing creation executor (2026-10-27)
+## Numbered send backing desire via the existing creation executor (confirmed 2026-10-27)
 
 - Accepted core behavior: a numbered (`follow 0..=9`) transfer whose current
   correlated reply carries an explicit creation desire still arrives with no
@@ -1075,7 +1078,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   empty-last refusal cases. This part is complete OFFLINE; live native proof
   remains pending.
 
-## Event-wake latency, held-geometry retention, queued-source fence (2026-10-27)
+## Event-wake latency, held-geometry retention, queued-source fence (confirmed interim 2026-10-27)
 
 - Cause: the 250 ms cadence owned claim drain and settled-completion
   reconcile, so both waited out the tick. Original dogfood timings: op-30
@@ -1140,9 +1143,9 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   tentatively by the host-derived default below; this paragraph is now
   historical.
 
-## Tentative host-derived corner default (2026-10-27)
+## Host-derived corner default (confirmed 2026-10-27)
 
-- Tentative default (macOS only, no core change): unset
+- Confirmed default (macOS only, no core change): unset
   `--active-border-radius` derives as native base + `gap + width / 2`
   (centerline outset, so the ring stays concentric with the window corner),
   capped at the configured radius maximum 64. The cap reflects the
@@ -1167,6 +1170,24 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   report notes the probe/run directory was removed). Own
   process/window/socket plus caffeinate cleanup and protected-baseline
   restore are confirmed for the readback leg.
+
+## Dogfood review directions 2026-10-27
+
+- User review 2026-10-27 (durable product decisions live in
+  [decisions](../decisions.md#macos-dogfood-review-decisions-2026-10-27)):
+  T1 numbered-send backing desire, interim T2 coalesced pump with the approved
+  direct-wake latency unit as selected next work, T3 held geometry plus
+  queued-source fence, and T4 host-derived corner default are confirmed;
+  native acceptance for each remains pending.
+- Lazy physical backing is kept (create on first switch/send, no eager
+  Mission Control append); follow up by verifying the pager surfaces the core
+  trailing workspace. Fullscreen/game direction (never force-exit; fullscreen
+  windows stay logical members with bring-forward/reassociate semantics) is
+  platform design first and unproven, not completed behavior; current send
+  refusal and home-desktop limits stand as evidence. Every user command reaches
+  core in order with stale-topology supersession per T3; no busy-drop. macOS
+  stress work is dev-only against the shared spec and oracles, native side
+  first, no shared-format changes here.
 
 ## Risks and open evidence
 
