@@ -102,7 +102,6 @@ import { createWorldCloseTracker } from "./world-close-tracker";
 import { createWorldCommandContext } from "./world-command-context";
 import { createWorldSettingsLive } from "./world-settings-live";
 import { normalizeScopeClassList, readBakedScopeClass, windowMatchesScopeClass } from "./scope-class";
-import { WorldBornMaximizedAdmission } from "./world-born-maximized";
 
 export const WORLD_DBUS_SERVICE = "com.omnitiler.Planner";
 export const WORLD_DBUS_OBJECT = "/com/omnitiler/Planner";
@@ -1204,13 +1203,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // R-MAX-06 born-maximized admission (legacy parity, adapter-owned).
-    // The clear phase runs ONLY after a ready full reply (bootstrap never
-    // actuates), with a current tiled/controlled scope proof from the
-    // reply, before unsafe geometry application. Mode re-resolves per
-    // admission (future admissions only, attempts never reset).
-    const bornMaxAdmission = new WorldBornMaximizedAdmission(overrides.readBornMaximizedFn);
-
     // Deferred B9 attempt lifetime: any terminal report failure ends the
     // attempt narrowly (no retry, no replay); a later explicit press may
     // retry. Stale replies are excluded (no report arrived; the boundary
@@ -1827,13 +1819,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     // Post-accept capture handling with the requester-only terminal result:
-    // binding convergence, close/float convergence, born-maximized clear,
-    // safe actuation, native toggles, and drain scheduling. Runs after the
+    // binding convergence, close/float convergence, safe actuation,
+    // native toggles, and drain scheduling. Runs after the
     // take collects (chained, never raced).
     const postAcceptCapture = (
         parsed: WorldReply,
         flight: CaptureFlight,
-        prevReply: WorldReply | null,
         takeResult: WorldReplyResult | null,
     ): void => {
                     // The terminal take result (requester-only, never the
@@ -1875,10 +1866,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     try {
                         closeTracker.ack();
                     } catch (error) {
-                        void error;
-                    }
-                    try {
-                        bornMaxAdmission.pruneClosed(closedBeforeAck);
                     } catch (error) {
                         void error;
                     }
@@ -2018,42 +2005,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:observe-invalid recovery=on-next-event");
                         return;
                     }
-                    // R-MAX-06 post-ready clear phase: eligible births clear
-                    // once natively BEFORE unsafe geometry application, with
-                    // a same-canonical-ID readback proof. On any clear the
-                    // apply below uses recaptured truth and the next
-                    // dispatch is observation-only catchup (commands never
-                    // replay).
-                    if (bornMaxAdmission.runAfterReady({
-                        readProp,
-                        liveRefById,
-                        log,
-                        token,
-                        invalidate: () => {
-                            state.invalidate();
-                        },
-                    }, fresh, parsed, prevReply)) {
-                        state.observationOnlyCatchup = true;
-                        state.dirty = true;
-                        const recaptured = capture();
-                        if (recaptured === null) {
-                            log("omnitiler:world:observe-invalid recovery=on-next-event");
-                            return;
-                        }
-                        fresh = recaptured;
-                    }
-                    // Settle the admitted lifetime AFTER the birth decision
-                    // above: ids the core provably knew stay admitted across
-                    // a Planner generation rebind (null previous snapshot),
-                    // so a kept, fixed, or floating maximize is never
-                    // reclassified as a new birth. Never native-actuates;
-                    // unknown/held scopes and still-held fullscreen births
-                    // never mark.
-                    try {
-                        bornMaxAdmission.noteAcceptedReply(fresh, parsed);
-                    } catch (error) {
-                        void error;
-                    }
+                    // Born admission and the one-shot clear are core-owned
+                    // (N6): the reply's `clear_operation` desire rides the
+                    // normal apply lane below with fresh pre/post proof.
+                    // No adapter-side birth decision runs here.
                     {
                         const liveCells = new Set<string>();
                         for (const t of fresh.topology) {
@@ -2408,13 +2363,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         drainAfterFailure(flight);
                         return;
                     }
-                    // Previous accepted snapshot for born-maximized applied
-                    // evidence: the new reply contains birth rows and must
-                    // not misclassify them as later maximizes.
-                    const prevReply = state.lastReply;
+                    // Previous accepted snapshot is the accepted-reply cache
+                    // in adapter state; the core owns admitted-lifetime
+                    // tracking across generation rebinds.
                     const verdict = state.acceptReply(parsed, flight.source, flight.watermark);
-                    if (!verdict.applied) {
-                        log(`omnitiler:world:stale reason=${token(verdict.reason)} recovery=catchup`);
+                    if (!verdict.applied) {                        log(`omnitiler:world:stale reason=${token(verdict.reason)} recovery=catchup`);
                         // The filed head is never replayed. Consume exactly
                         // the flight this callback owns: the stale record
                         // otherwise wedges every later dispatch
@@ -2464,7 +2417,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             wakeFollowup();
                             return;
                         }
-                        postAcceptCapture(parsed, flight, prevReply, takeResult);
+                        postAcceptCapture(parsed, flight, takeResult);
                     });
                 },
             );

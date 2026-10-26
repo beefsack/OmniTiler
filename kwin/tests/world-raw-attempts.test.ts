@@ -333,6 +333,61 @@ describe("world raw mechanical attempts", () => {
             flow.handle.stop();
         }
     });
+    it("consumes born clear tokens on held-scope rows with no geometry writes", () => {
+        // N6 property authority: the core rides `clear_operation` on held
+        // rows while frame/member authority stays held. The clear lane
+        // keys only on the token plus live safety/homing/freshness, never
+        // on scope authority, so the maximized birth clears natively with
+        // fresh pre/post proof and the held scope authorizes no
+        // frame/member/view write.
+        const flow = startFlow();
+        try {
+            answerDiscover(flow, bootstrap("gen-1", "disc-1"));
+            accept(flow, "1", (reply) => {
+                reply["outputs"] = [
+                    { out: "out-1", view: "w1", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                ];
+                reply["windows"] = [
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "" },
+                ];
+            });
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            accept(flow, "2", (reply) => {
+                reply["outputs"] = [
+                    { out: "out-1", view: "w1", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                ];
+                reply["windows"] = [
+                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "" },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "" },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "" },
+                    { win: "win-d", out: "out-1", ws: "w1", alloc: null, frame: null, frame_auth: "hold", frame_hold: "unreadable", member_auth: "hold", member_hold: "unreadable", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "" },
+                ];
+                reply["transfers"] = [
+                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false },
+                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false },
+                ];
+            });
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
+            const inner = payload["report"] as Record<string, unknown>;
+            const clears = inner["clearAttempts"] as Array<Record<string, unknown>>;
+            const diag = `logs=${JSON.stringify(flow.logs)} wins=${JSON.stringify(inner["windows"])}`;
+            assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides from the held row, got ${JSON.stringify(clears)} ${diag}`);
+            assert.deepEqual(
+                clears[0],
+                { op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                "held scope authorizes the property clear with fresh pre/post proof",
+            );
+        } finally {
+            flow.handle.stop();
+        }
+    });
 });
 
 describe("world attempt retention", () => {

@@ -90,9 +90,9 @@ interface BornFixtureCase {
 
 // Shared R-MAX-06 normalization table (also consumed by tiler-core
 // `born_maximized` unit tests): each row pins the raw setting and the
-// normalized token. The legacy adapter clear-vs-keep half is retired with
-// the plan route; world-side admission is covered by world-born-maximized
-// tests.
+// normalized token. The adapter only carries this ingress; world-side
+// admission and the one-shot clear are core-owned (N6, covered by
+// `world_born` core tests).
 describe("born-maximized shared conformance fixture", () => {
     const fixture = JSON.parse(
         readFileSync("../test-fixtures/born-maximized.json", "utf8"),

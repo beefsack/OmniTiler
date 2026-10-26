@@ -294,6 +294,33 @@ pub(crate) struct RetainedClear {
     pub(crate) ambiguous: bool,
 }
 
+/// Retained commandless born maximize-clear: one outstanding authorized
+/// clear per born window, keyed by a stable core-minted operation identity
+/// (`op-born-<n>`), never a command sequence. The core publishes
+/// `clear_operation` desire under that identity; the adapter dispatches
+/// the native clear at most once and reports a correlated
+/// [`ClearAttempt`](crate::world_report::ClearAttempt). A correlated
+/// accepted attempt plus complete readable unmaximized facts proves the
+/// clear; only then does the binding retire (no directional continuation
+/// follows: the window already rides its admitted session row). Explicit
+/// close, complete departure, homing loss or superseding float intent prunes
+/// it. The desire withholds on safety/unreadable/gesture scopes, but may ride
+/// a geometry-convergence hold under independent birth property authority.
+/// After an attempt the operation never re-actuates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedBornClear {
+    pub(crate) operation_id: String,
+    pub(crate) window: WindowId,
+    pub(crate) home: DomainKey,
+    /// Latest exact-correlated raw clear attempt staged BEFORE any
+    /// readability or authority hold, mirroring [`RetainedClear::pending`].
+    pub(crate) pending: Option<crate::world_report::ClearAttempt>,
+    /// Latched ambiguity from a correlated attempt that neither confirms
+    /// nor proves refusal (accepted mismatch, throw, unreadable proof).
+    /// Survives acknowledgement; re-evaluated against later readable
+    /// evidence. Clears only on settlement.
+    pub(crate) ambiguous: bool,
+}
 /// Retained host-owned native creation: one outstanding core-owned
 /// authorization for the adapter to create exactly one native desktop for
 /// one logical workspace, executed at most once per `operation_id`
@@ -424,6 +451,40 @@ pub struct WorldEngine {
     /// same-window new intent, pruned when its window closes, departs, or
     /// loses homing. See [`RetainedClear`].
     pub(crate) retained_clears: Vec<RetainedClear>,
+    /// Outstanding commandless born maximize-clear authorizations, at most
+    /// one per window. Bounded by the window inventory itself; each entry
+    /// is settled commandlessly (no command consumes it), superseded by
+    /// close/departure/homing loss, and never re-actuated after an
+    /// attempt. See [`RetainedBornClear`].
+    pub(crate) retained_born: Vec<RetainedBornClear>,
+    /// Core-owned born-clear operation serial: mints `op-born-<n>`
+    /// identities (never from a command sequence). Monotonic within the
+    /// generation; never reset on adapter-incarnation rotation.
+    pub(crate) born_seq: u64,
+    /// Born windows whose one-shot clear already resolved (proven,
+    /// refused, or abandoned): never re-mint for the same lifetime.
+    /// Pruned on explicit close so id reuse starts a fresh lifetime.
+    /// Retained across adapter-incarnation rotation with the engine
+    /// sessions that prove admitted lifetimes.
+    pub(crate) born_attempted: BTreeSet<WindowId>,
+    /// First-seen fullscreen births awaiting their first exit, by lifetime.
+    /// Later fullscreen on admitted tiles never enters. Pruned like
+    /// `born_attempted`.
+    pub(crate) born_held_fullscreen: BTreeSet<WindowId>,
+    /// Floating-first sightings (R-MAX-03): lifetimes first observed
+    /// floating on an untiled scope. They keep their overlay under both
+    /// born modes, and the held exit lane never bypasses this safety.
+    /// Pruned like `born_attempted`.
+    pub(crate) born_floating_first: BTreeSet<WindowId>,
+    /// Lifetimes observed non-fullscreen in this backend generation: a
+    /// later fullscreen on one of these is a managed overlay transition,
+    /// never a birth. Pruned like `born_attempted`.
+    pub(crate) born_seen_nonfullscreen: BTreeSet<WindowId>,
+    /// Lifetimes latched keep-overlay at tiled-first evaluation
+    /// ([`born_keep_latch`](crate::window_policy::born_keep_latch)): a later
+    /// flip to tile-on-launch never reclears them. Pruned like
+    /// `born_attempted`.
+    pub(crate) born_keep_overlay: BTreeSet<WindowId>,
     /// Core-owned frame anti-fighting memory (stage 3a): per-lifetime clamp
     /// suppression plus transient retry backoff over mechanical
     /// [`FrameAttempt`](crate::world_report::FrameAttempt) facts. Bounded by
@@ -710,6 +771,13 @@ impl WorldEngine {
             retained: Vec::new(),
             retained_floats: Vec::new(),
             retained_clears: Vec::new(),
+            retained_born: Vec::new(),
+            born_seq: 0,
+            born_attempted: BTreeSet::new(),
+            born_held_fullscreen: BTreeSet::new(),
+            born_floating_first: BTreeSet::new(),
+            born_seen_nonfullscreen: BTreeSet::new(),
+            born_keep_overlay: BTreeSet::new(),
             frames: BTreeMap::new(),
             consumed_frames: BTreeMap::new(),
             learned_mins: BTreeMap::new(),
@@ -788,7 +856,12 @@ impl WorldEngine {
     /// candidate: flights, ordering, desired caches, logical tokens, command
     /// high-watermark, and workspace mapping/history. Never touches native
     /// windows, retained engine sessions, the core generation, or the
-    /// global revision.
+    /// global revision. Born lifetime state (`retained_born`,
+    /// `born_attempted`, `born_held_fullscreen`, `born_floating_first`,
+    /// `born_seen_nonfullscreen`, `born_keep_overlay`, `born_seq`) is intentionally retained:
+    /// it is keyed by native lifetimes the persisting engine sessions
+    /// still prove, so a rebind must neither re-clear admitted overlays
+    /// nor lose outstanding bindings.
     fn reset_incarnation(&mut self, adapter_incarnation: &str) {
         self.has_last = false;
         self.last_request_seq = 0;
@@ -1465,6 +1538,19 @@ impl WorldEngine {
             }
             known_before.insert(domain.key.clone(), known);
         }
+        // Honest retained tile-slot context for the born predicates: every
+        // tiled link the engine held before this report's sweep, across all
+        // sessions (a slot in an unswept domain still proves the lifetime is
+        // no birth). Computed pre-sweep like `known_before`.
+        let mut slotted_before: BTreeSet<WindowId> = BTreeSet::new();
+        for domain in &self.staged.domains {
+            let Some(session) = self.engine.session(&domain.key) else {
+                continue;
+            };
+            for link in session.snapshot().windows {
+                slotted_before.insert(link.window.clone());
+            }
+        }
         // Reconcile every readable tiled domain; hold the rest explicitly.
         // Floating domains skip convergence (untouched, never held).
         // Hold reasons are per-report staging only: cleared here so a
@@ -1544,6 +1630,21 @@ impl WorldEngine {
                 continue;
             }
             self.sweep_domain(domain, owner, correlation, &mut held_scopes);
+        }
+        // Commandless born maximize-clear minting: first-seen maximized /
+        // fullscreen births bind here (post-sweep, so `known_before` names
+        // the pre-sweep retained lifetimes) and ride this same reply's
+        // `clear_operation` desire. Runs for consumed reports too:
+        // reconciliation never mints commands but born admission is
+        // observation, never a command.
+        {
+            let mut pre_known: BTreeSet<WindowId> = BTreeSet::new();
+            for known in known_before.values() {
+                for id in known {
+                    pre_known.insert(WindowId(id.clone()));
+                }
+            }
+            self.mint_born_clears(report, &pre_known, &slotted_before);
         }
         for (key, window) in std::mem::take(&mut self.pending_forget) {
             self.engine.forget_minimized_slot(&key, &window);

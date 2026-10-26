@@ -296,7 +296,8 @@ impl WorldEngine {
                         ScopeAuthority::Hold(reason) => reason,
                         _ => HoldReason::Unreadable,
                     };
-                    Self::push_held_lifetimes(
+                    self.push_held_lifetimes(
+                        report,
                         session,
                         &key,
                         reason,
@@ -321,6 +322,13 @@ impl WorldEngine {
                         {
                             continue;
                         }
+                        // Held scopes authorize no frame/member write, but
+                        // an outstanding born clear still rides its token:
+                        // maximize-clear is a property transition proven by
+                        // the window's own birth facts, not a geometry
+                        // write, so the adapter can consume it while the
+                        // geometry hold stands.
+                        let clear_operation = self.born_desire_for(&window.window, report);
                         windows.push(WindowDesire {
                             lifetime: window.window.clone(),
                             output: window.output.clone(),
@@ -330,7 +338,7 @@ impl WorldEngine {
                             frame_authority: ScopeAuthority::Hold(reason),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
-                            clear_operation: None,
+                            clear_operation,
                             floating: false,
                             float_origin: None,
                         });
@@ -460,7 +468,8 @@ impl WorldEngine {
                     for window in &domain.windows {
                         live.remove(&window.window.0);
                     }
-                    Self::push_held_lifetimes(
+                    self.push_held_lifetimes(
+                        report,
                         session,
                         &key,
                         HoldReason::ConstraintClamp,
@@ -490,7 +499,8 @@ impl WorldEngine {
                     for window in &domain.windows {
                         live.remove(&window.window.0);
                     }
-                    Self::push_held_lifetimes(
+                    self.push_held_lifetimes(
+                        report,
                         session,
                         &key,
                         HoldReason::ConstraintClamp,
@@ -558,7 +568,9 @@ impl WorldEngine {
                 // `clear_operation` token as the exception route below.
                 // Withheld on gesture barriers, membership holds, and
                 // minimized/unreadable facts, and after the attempt is
-                // spent (never re-actuated).
+                // spent (never re-actuated). Born bindings share the
+                // lane: a born window already rides its admitted session
+                // row, so the desire rides here until proof retires it.
                 let fact_unreadable = self
                     .staged
                     .facts
@@ -573,6 +585,7 @@ impl WorldEngine {
                             retained.window == geometry.window && retained.pending.is_none()
                         })
                         .map(|retained| retained.operation_id.clone())
+                        .or_else(|| self.born_desire_for(&geometry.window, report))
                 };
                 // Core-owned frame policy (stage 3a): an exact desired match
                 // clears retained memory (completion is desired == observed,
@@ -694,7 +707,9 @@ impl WorldEngine {
                 // clear for this window. Withheld on held scopes, gesture
                 // barriers, minimized/unreadable facts, and after the
                 // attempt is spent (never re-actuated); the settlement
-                // owns every verdict over the correlated attempt.
+                // owns every verdict over the correlated attempt. Born
+                // bindings share the lane for held-fullscreen exits that
+                // still ride an exception row.
                 let fact_unreadable = self
                     .staged
                     .facts
@@ -709,6 +724,7 @@ impl WorldEngine {
                             retained.window == observed.window && retained.pending.is_none()
                         })
                         .map(|retained| retained.operation_id.clone())
+                        .or_else(|| self.born_desire_for(&observed.window, report))
                 };
                 windows.push(WindowDesire {
                     lifetime: observed.window.clone(),
@@ -933,7 +949,10 @@ impl WorldEngine {
     /// and minimized slots homed on `key`, each with narrow holds. Skips
     /// live lifetimes (they carry their own rows) and already-emitted ids,
     /// so every window keeps exactly one homing.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_held_lifetimes(
+        &self,
+        report: &WorldReport,
         session: &crate::session::Session,
         key: &DomainKey,
         reason: HoldReason,
@@ -948,6 +967,9 @@ impl WorldEngine {
             if live.contains(&link.window.0) || !emitted.insert(link.window.0.clone()) {
                 continue;
             }
+            // Like the fresh-seed held rows above: no frame/member write,
+            // but an outstanding born clear still rides its token.
+            let clear_operation = self.born_desire_for(&link.window, report);
             windows.push(WindowDesire {
                 lifetime: link.window.clone(),
                 output: link.output.clone(),
@@ -957,7 +979,7 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
-                clear_operation: None,
+                clear_operation,
                 floating: false,
                 float_origin: None,
             });
@@ -969,6 +991,7 @@ impl WorldEngine {
             if live.contains(&observed.window.0) || !emitted.insert(observed.window.0.clone()) {
                 continue;
             }
+            let clear_operation = self.born_desire_for(&observed.window, report);
             windows.push(WindowDesire {
                 lifetime: observed.window.clone(),
                 output: observed.output.clone(),
@@ -978,7 +1001,7 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
-                clear_operation: None,
+                clear_operation,
                 floating: false,
                 float_origin: None,
             });

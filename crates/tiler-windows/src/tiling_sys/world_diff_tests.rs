@@ -6849,3 +6849,206 @@ fn inflight_clearing_carries_edge_stamps_and_target_identity() {
         "resolution-time GUI sampled while traced"
     );
 }
+
+/// Born-shaped held row: the exact shape the core publishes for a born
+/// binding on a held scope (Hold/Hold authorities, no allocation, no frame
+/// write, one-shot `op-born-*` token). See
+/// `crates/tiler-core/src/world_publish.rs` held lanes.
+fn born_held_row(out: &str, ws: &str, token: &str, op: &str) -> WindowDesire {
+    WindowDesire {
+        lifetime: WindowId(token.to_owned()),
+        output: OutputId(out.to_owned()),
+        workspace: ws.to_owned(),
+        allocation: None,
+        effective_frame: None,
+        frame_authority: Auth::Hold(CoreHold::Unreadable),
+        membership_authority: Auth::Hold(CoreHold::Unreadable),
+        floating: false,
+        float_origin: None,
+        frame_operation: None,
+        clear_operation: Some(op.to_owned()),
+    }
+}
+
+#[test]
+fn born_clear_dispatches_once_with_no_geometry_write_then_spends() {
+    // Parity pin (N6): a core-minted `op-born-*` desire actuates through the
+    // identical production 1c clear lane as directional clears (same gates,
+    // same at-most-once spent phase, same mechanical attempt shape) with no
+    // frame/member write. The retained Windows preamble is untouched: this
+    // lane fires only when the preamble left maximized facts behind.
+    let (rig, fresh) = maximized_rig();
+    let mut native = FakeNative::seeded(&fresh);
+    let mut diff = diff_at(7);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .windows
+        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-1"));
+    let mut clear_out = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_out,
+        1000,
+    );
+    assert_eq!(stats.clear_writes, 1, "{stats:?}");
+    assert_eq!(stats.geometry_writes, 0, "{stats:?}");
+    assert_eq!(clear_out.len(), 1);
+    let attempt = &clear_out[0];
+    assert_eq!(attempt.operation_id, "op-born-1");
+    assert_eq!(attempt.window.0, "w1");
+    assert_eq!(attempt.setter, FrameSetter::Accepted);
+    assert_eq!(attempt.pre_maximized, Some(true));
+    assert_eq!(attempt.post_maximized, Some(false));
+    // Redelivery never re-dispatches: the spent phase holds silently, so a
+    // core retry can never double-clear behind the adapter preamble.
+    let mut clear_again = Vec::new();
+    let restats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_again,
+        1000,
+    );
+    assert!(clear_again.is_empty(), "{clear_again:?}");
+    assert_eq!(restats.clear_writes, 0);
+    assert_eq!(native.clear_calls, vec!["w1".to_owned()]);
+}
+
+#[test]
+fn born_clear_preamble_won_skips_without_second_write() {
+    // No-double pin: when the retained preamble already restored the window
+    // (live reads unmaximized while the staged baseline still shows the
+    // pre-restore maximized preimage), the born desire takes no write and
+    // reports no attempt. The core settles from the staged observation
+    // itself (external-clear abandonment), so the adapter write stays
+    // exactly-once.
+    let (rig, fresh) = maximized_rig();
+    let mut native = FakeNative::seeded(&fresh);
+    native.windows.get_mut("w1").expect("live w1").facts = Some(plain_facts());
+    let mut diff = diff_at(7);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .windows
+        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-2"));
+    let mut clear_out = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_out,
+        1000,
+    );
+    assert_eq!(stats.clear_writes, 0, "{stats:?}");
+    assert!(clear_out.is_empty(), "{clear_out:?}");
+    assert!(native.clear_calls.is_empty(), "no second native write");
+}
+
+#[test]
+fn born_clear_deferred_corners_hold_unspent_without_attempt() {
+    // No-add pin: gesture and hidden-baseline corners hold the born
+    // desire unspent with no attempt and no write, so the core lane adds
+    // no native behavior where the live window cannot prove authority
+    // (identity drift and uncontrolled scopes veto loudly instead; see the
+    // scope test below). A later readable reply retries the
+    // still-undispatched desire.
+    let (rig, fresh) = maximized_rig();
+    // Gesture barrier.
+    let mut native = FakeNative::seeded(&fresh);
+    native.gesture = true;
+    let mut diff = diff_at(7);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .windows
+        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-3"));
+    let mut clear_out = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_out,
+        1000,
+    );
+    assert_eq!(stats.clear_writes, 0, "{stats:?}");
+    assert!(clear_out.is_empty(), "{clear_out:?}");
+    assert!(native.clear_calls.is_empty());
+    // Hidden observation baseline.
+    let (rig, fresh) = maximized_rig();
+    let mut fresh = fresh;
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.hidden = true;
+        base.frame = None;
+        base.observed_frame = None;
+    }
+    let mut native = FakeNative::seeded(&fresh);
+    let mut diff = diff_at(7);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .windows
+        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-4"));
+    let mut clear_out = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_out,
+        1000,
+    );
+    assert_eq!(stats.clear_writes, 0, "{stats:?}");
+    assert!(clear_out.is_empty(), "{clear_out:?}");
+    assert!(native.clear_calls.is_empty());
+}
+
+#[test]
+fn born_clear_uncontrolled_scope_vetoes_with_refusal_like_directional() {
+    // Scope parity pin: a born desire for an uncontrolled scope vetoes with
+    // exactly one correlated refused attempt carrying the maximized
+    // preimage (spending the phase, never silent), identical to the
+    // directional clear veto. No native write fires.
+    let (rig, fresh) = maximized_rig();
+    let mut native = FakeNative::seeded(&fresh);
+    let mut diff = diff_at(7);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .windows
+        .push(born_held_row(&rig.out, "ws-elsewhere", "w1", "op-born-5"));
+    let mut clear_out = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_out,
+        1000,
+    );
+    assert_eq!(stats.clear_writes, 0, "{stats:?}");
+    assert_eq!(clear_out.len(), 1);
+    assert_eq!(clear_out[0].operation_id, "op-born-5");
+    assert_eq!(clear_out[0].setter, FrameSetter::Refused);
+    assert_eq!(clear_out[0].pre_maximized, Some(true));
+    assert!(native.clear_calls.is_empty(), "vetoes never dispatch");
+}

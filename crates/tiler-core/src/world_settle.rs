@@ -637,8 +637,11 @@ impl WorldEngine {
         // Directional maximize-clears settle first so a proven clear
         // resumes its original intent (tiled engine move or retained float
         // half) in this same pass: the sweep and publish below then apply
-        // the continuation coherently in one reply.
+        // the continuation coherently in one reply. Born clears settle
+        // next: a proven born clear retires before the sweep publishes the
+        // next reply, so the desire drops exactly when proof lands.
         self.settle_clears(report, consumed);
+        self.settle_born_clears(report);
         let mut keep: Vec<RetainedTransfer> = Vec::new();
         for mut retained in std::mem::take(&mut self.retained) {
             // Stage exact-correlated raw membership evidence before any

@@ -1,15 +1,14 @@
 #![forbid(unsafe_code)]
-//! Future in-process adapter sequencing boundary (W1, offline only).
+//! In-process adapter sequencing boundary for the runtime world owner.
 //!
-//! Test-only scaffolding for the W1 observation/ordering slice: assembles the
+//! Assembles the
 //! typed [`WorldReport`](tiler_core::world_report::WorldReport) envelope from
 //! the accepted source-first [`capture_world`](super::world_capture::capture_world)
 //! pieces and sequences it through the real [`WorldEngine`](tiler_core::world_engine::WorldEngine)
 //! with the Windows constructor profile (`fixed_send_admission` on, core
-//! maximized focus fence off). W1 and W2 stay offline until the W3 atomic
-//! runtime cutover; this module never wires into production, never touches
-//! the running [`TileLoop`](super::TileLoop) owner path, and performs no
-//! actuation, JSON transport, polling, or timers.
+//! maximized focus fence off). The runtime world owner uses this envelope
+//! for observation and command dispatch; native actuation remains outside
+//! the sequencer. No JSON transport, polling, or timers.
 //!
 //! Sequencing rules (shared
 //! [ordering/bootstrap/ack](../../../../docs/changes/archive/core-full-state-replies.md)

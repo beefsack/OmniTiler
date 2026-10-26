@@ -55,8 +55,23 @@ fn window_json(id: &str, rect: &str, native_ws: Option<&str>) -> String {
 
 /// Minimal projected inner report: one complete screen, caller-chosen
 /// windows, unknown views. Broker-owned sequencing keys are never carried.
+/// The automatic birth-clear capability defaults off here (the fail-closed
+/// wire default for adapters predating the key); the KDE-route born tests
+/// below use [`inner_report_birth`], which carries what the real KWin
+/// producer emits.
 fn inner_report(windows: &[String], complete: bool, host_owned: bool, native: &str) -> String {
-    inner_report_with_attempts(windows, complete, host_owned, native, "")
+    inner_report_with_attempts(windows, complete, host_owned, native, "", false)
+}
+
+/// KDE-producer inner report: like [`inner_report`] but with the automatic
+/// birth-clear capability opted in, matching the real KWin producer.
+fn inner_report_birth(
+    windows: &[String],
+    complete: bool,
+    host_owned: bool,
+    native: &str,
+) -> String {
+    inner_report_with_attempts(windows, complete, host_owned, native, "", true)
 }
 
 fn inner_report_with_attempts(
@@ -65,6 +80,7 @@ fn inner_report_with_attempts(
     host_owned: bool,
     native: &str,
     attempts: &str,
+    birth_clear: bool,
 ) -> String {
     let attempts_json = if attempts.is_empty() {
         String::new()
@@ -76,7 +92,7 @@ fn inner_report_with_attempts(
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}}],\
           \"windows\":[{}],\"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}}],\"closed\":[],\
-          \"hostOwned\":{host_owned},\"equalCount\":false,\"native\":[{native}],\
+          \"hostOwned\":{host_owned},\"equalCount\":false,\"birthClear\":{birth_clear},\"native\":[{native}],\
           \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
           \"defaultTiled\":true,\"focused\":\"\",\
           \"complete\":{complete},\"gesture\":false,\"switchTarget\":\"cursor-output\",\
@@ -765,7 +781,7 @@ fn foreign_epoch_attempt_stamps_refuse_above_the_dispatch_clock() {
           \"readback\":[0,0,100,100],\"dpiBefore\":null,\"dpiAfter\":null,\
           \"attemptMs\":\"18446744073709551615\",\"op\":\"\",\"pre\":null}"
         .to_owned();
-    let future_inner = inner_report_with_attempts(&[], true, false, "", &future_attempt);
+    let future_inner = inner_report_with_attempts(&[], true, false, "", &future_attempt, false);
     let refused = parse(
         &service
             .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &future_inner))
@@ -2174,4 +2190,680 @@ fn raw_intent_lanes_float_and_suppress_without_verdicts() {
     assert_eq!(row("win-plain")["floating"], true, "intent floats");
     let fixed_row = row("win-fixed");
     assert_eq!(fixed_row["floating"], false, "tile override suppresses");
+}
+
+/// N6 born-clear journey through the actual production lane: captured-shaped
+/// KWin raw rows (never real capture) -> real Rust `kde_raw` normalizer ->
+/// broker stamping/sequencing -> core `WorldEngine` -> `clear_op` desires ->
+/// simulated native actuation as raw `clearAttempts` -> core settlement.
+/// UUID-like window/desktop ids, fractional frame/client facts, native
+/// maximization enums, meaningful/unbounded client hints, and the current
+/// context shape of the existing raw corpus helpers above.
+const BORN_WIN_A: &str = "550e8400-e29b-41d4-a716-4466554400a1";
+const BORN_WIN_B: &str = "550e8400-e29b-41d4-a716-4466554400a2";
+const BORN_WIN_C: &str = "550e8400-e29b-41d4-a716-4466554400a3";
+
+/// Captured-shaped KWin raw row with fractional geometry, native overlay
+/// enums, and client size hints. Mirrors `kwin/src/world-observe.ts`
+/// `RawWindowFact` (19 keys, no projected verdicts).
+#[allow(clippy::too_many_arguments)]
+fn born_raw(
+    win: &str,
+    frame: &str,
+    client: Option<&str>,
+    min_size: Option<&str>,
+    max_size: Option<&str>,
+    desktop: Option<&str>,
+    maximize_mode: i32,
+    full_screen: bool,
+    minimized: bool,
+    normal_window: bool,
+    managed: bool,
+    deleted: bool,
+) -> String {
+    let client_json = client.unwrap_or("null");
+    let min_json = min_size.unwrap_or("null");
+    let max_json = max_size.unwrap_or("null");
+    let desktops = desktop.map_or(String::new(), |d| format!("\"{d}\""));
+    format!(
+        "{{\"win\":\"{win}\",\"out\":\"DP-1\",\
+          \"frameGeometry\":{frame},\"clientGeometry\":{client_json},\
+          \"minSize\":{min_json},\"maxSize\":{max_json},\"desktops\":[{desktops}],\
+          \"normalWindow\":{normal_window},\"managed\":{managed},\"deleted\":{deleted},\
+          \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
+          \"wantsInput\":true,\"fullScreen\":{full_screen},\"maximizeMode\":{maximize_mode},\
+          \"onAllDesktops\":false,\"minimized\":{minimized}}}"
+    )
+}
+
+fn born_native_order() -> String {
+    format!("{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\"}}")
+}
+
+/// Inject the tolerant `bornMaximized` ingress mode into a built inner
+/// report (absent backfills to tile-on-launch, like older adapters).
+fn with_born_mode(inner: &str, mode: &str) -> String {
+    inner.replace(
+        "\"refill\":\"last-remaining-workspace\",",
+        &format!("\"refill\":\"last-remaining-workspace\",\"bornMaximized\":\"{mode}\","),
+    )
+}
+
+/// Inject a raw `clearAttempts` lane (the production apply-lane record:
+/// `{op,win,setter,pre,post,attemptMs}` with a decimal-string clock stamp)
+/// into a built inner report.
+fn with_clears(inner: &str, attempts: &str) -> String {
+    inner.replace(
+        "\"views\":[",
+        &format!("\"clearAttempts\":[{attempts}],\"views\":["),
+    )
+}
+
+fn clear_attempt(op: &str, win: &str, setter: &str, pre: bool, post: Option<bool>) -> String {
+    let post_json = post.map_or("null".to_owned(), |v| v.to_string());
+    format!(
+        "{{\"op\":\"{op}\",\"win\":\"{win}\",\"setter\":\"{setter}\",\
+          \"pre\":{pre},\"post\":{post_json},\"attemptMs\":\"0\"}}"
+    )
+}
+
+/// Inject explicit `closed` ids into a built inner report (the event-gated
+/// explicit-close lane the producer carries alongside raw rows).
+fn reply_row(reply: &serde_json::Value, win: &str) -> serde_json::Value {
+    reply["windows"]
+        .as_array()
+        .expect("windows")
+        .iter()
+        .find(|w| w["win"] == win)
+        .unwrap_or_else(|| panic!("reply row {win}: {}", reply["windows"]))
+        .clone()
+}
+
+fn clear_op_of(reply: &serde_json::Value, win: &str) -> String {
+    reply_row(reply, win)["clear_op"]
+        .as_str()
+        .expect("clear_op string")
+        .to_owned()
+}
+
+/// Maximized, non-fixed birth facts: fractional full-work-area frame with a
+/// decorated client delta and real minimum/unbounded maximum hints.
+fn born_maximized_row(win: &str, desktop: &str) -> String {
+    born_raw(
+        win,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1039.5}",
+        Some("{\"x\":8.5,\"y\":30.4,\"width\":1903.6,\"height\":1001.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(desktop),
+        3,
+        false,
+        false,
+        true,
+        true,
+        false,
+    )
+}
+
+fn born_restored_row(win: &str, desktop: &str) -> String {
+    born_raw(
+        win,
+        "{\"x\":100.4,\"y\":100.6,\"width\":958.5,\"height\":500.5}",
+        Some("{\"x\":104.5,\"y\":130.4,\"width\":950.6,\"height\":462.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(desktop),
+        0,
+        false,
+        false,
+        true,
+        true,
+        false,
+    )
+}
+
+#[test]
+fn born_maximized_cohort_clears_and_settles_through_broker() {
+    // Same-desktop maximized cohort: first complete captured-shaped report
+    // binds both births through the real normalizer/broker/core lane, the
+    // reply rides both one-shot `clear_op` tokens with no geometry while
+    // held, and correlated accepted attempts plus restored facts settle both
+    // with no re-mint.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let first_inner = inner_report_birth(
+        &[
+            born_maximized_row(BORN_WIN_A, UUID_A),
+            born_maximized_row(BORN_WIN_B, UUID_A),
+        ],
+        true,
+        true,
+        &native,
+    );
+    let first = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &first_inner))
+            .expect("accepted"),
+    );
+    assert_eq!(first["ready"], true);
+    let opa = clear_op_of(&first, BORN_WIN_A);
+    let opb = clear_op_of(&first, BORN_WIN_B);
+    assert!(
+        opa.starts_with("op-born-"),
+        "commandless born id, got {opa}"
+    );
+    assert!(
+        opb.starts_with("op-born-"),
+        "commandless born id, got {opb}"
+    );
+    assert_ne!(opa, opb, "distinct one-shot tokens");
+    for win in [BORN_WIN_A, BORN_WIN_B] {
+        let row = reply_row(&first, win);
+        assert!(row["alloc"].is_null(), "{win}: no geometry while held");
+        assert_eq!(row["frame_auth"], "hold", "{win}: frame stays held");
+        assert_eq!(row["member_auth"], "hold", "{win}: membership stays held");
+        assert_eq!(row["frame_op"], "", "{win}: no frame write rides");
+        assert!(!row["clear_op"].as_str().expect("token").is_empty());
+    }
+    let ws = reply_row(&first, BORN_WIN_A)["ws"]
+        .as_str()
+        .expect("ws")
+        .to_owned();
+    let scope = first["scopes"]
+        .as_array()
+        .expect("scopes")
+        .iter()
+        .find(|s| s["scope"] == format!("DP-1/{ws}"))
+        .unwrap_or_else(|| panic!("cohort scope: {}", first["scopes"]))
+        .clone();
+    assert_eq!(scope["auth"], "hold", "cohort geometry hold stands");
+    // Simulated native actuation: both clears dispatch, then restored facts
+    // plus the correlated raw attempts ride the next capture.
+    let second_inner = with_clears(
+        &inner_report_birth(
+            &[
+                born_restored_row(BORN_WIN_A, UUID_A),
+                born_restored_row(BORN_WIN_B, UUID_A),
+            ],
+            true,
+            true,
+            &native,
+        ),
+        &format!(
+            "{},{}",
+            clear_attempt(&opa, BORN_WIN_A, "accepted", true, Some(false)),
+            clear_attempt(&opb, BORN_WIN_B, "accepted", true, Some(false)),
+        ),
+    );
+    let second = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &second_inner))
+            .expect("accepted"),
+    );
+    assert_eq!(clear_op_of(&second, BORN_WIN_A), "", "proof retires a");
+    assert_eq!(clear_op_of(&second, BORN_WIN_B), "", "proof retires b");
+    let scope = second["scopes"]
+        .as_array()
+        .expect("scopes")
+        .iter()
+        .find(|s| s["scope"] == format!("DP-1/{ws}"))
+        .expect("converged scope")
+        .clone();
+    assert_eq!(scope["auth"], "controlled", "proven frames converge");
+    for win in [BORN_WIN_A, BORN_WIN_B] {
+        assert!(
+            !reply_row(&second, win)["alloc"].is_null(),
+            "{win}: allocation resumes after the clear lands"
+        );
+    }
+    // A further unchanged report never re-mints: at-most-once holds.
+    let third = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &second_inner))
+            .expect("accepted"),
+    );
+    assert_eq!(clear_op_of(&third, BORN_WIN_A), "");
+    assert_eq!(clear_op_of(&third, BORN_WIN_B), "");
+}
+
+#[test]
+fn born_fullscreen_first_exit_clears_under_both_modes() {
+    // Fullscreen birth holds slotless with no clear; its first exit to
+    // maximized binds the held-exit lane under tile-on-launch and under
+    // keep-maximized-overlay, then an accepted attempt plus restored facts
+    // retires it.
+    for mode in ["tile-on-launch", "keep-maximized-overlay"] {
+        let (service, generation) = discovered_service();
+        let native = born_native_order();
+        let birth = born_raw(
+            BORN_WIN_C,
+            "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1079.5}",
+            Some("{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1079.5}"),
+            None,
+            None,
+            Some(UUID_A),
+            0,
+            true,
+            false,
+            true,
+            true,
+            false,
+        );
+        let birth_inner = with_born_mode(&inner_report_birth(&[birth], true, true, &native), mode);
+        let birth_reply = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &birth_inner))
+                .expect("accepted"),
+        );
+        assert_eq!(
+            clear_op_of(&birth_reply, BORN_WIN_C),
+            "",
+            "{mode}: fullscreen birth never clears"
+        );
+        let exit_inner = with_born_mode(
+            &inner_report_birth(
+                &[born_maximized_row(BORN_WIN_C, UUID_A)],
+                true,
+                true,
+                &native,
+            ),
+            mode,
+        );
+        let exit_reply = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &exit_inner))
+                .expect("accepted"),
+        );
+        let op = clear_op_of(&exit_reply, BORN_WIN_C);
+        assert!(
+            op.starts_with("op-born-"),
+            "{mode}: held exit binds, got {op}"
+        );
+        let settled_inner = with_clears(
+            &with_born_mode(
+                &inner_report_birth(
+                    &[born_restored_row(BORN_WIN_C, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+                mode,
+            ),
+            &clear_attempt(&op, BORN_WIN_C, "accepted", true, Some(false)),
+        );
+        let settled = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &settled_inner))
+                .expect("accepted"),
+        );
+        assert_eq!(
+            clear_op_of(&settled, BORN_WIN_C),
+            "",
+            "{mode}: exit retires"
+        );
+    }
+}
+
+#[test]
+fn born_fixed_birth_and_fixed_exit_float_without_clear() {
+    // Fixed-size maximized birth floats beneath its overlay with no clear;
+    // a held fullscreen birth whose exit still carries fixed hints floats
+    // automatic with no clear, consuming the hold.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let fixed_birth = born_raw(
+        BORN_WIN_A,
+        "{\"x\":0.5,\"y\":0.5,\"width\":407.6,\"height\":307.5}",
+        Some("{\"x\":4.5,\"y\":4.4,\"width\":399.6,\"height\":299.5}"),
+        Some("{\"width\":400,\"height\":300}"),
+        Some("{\"width\":400,\"height\":300}"),
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        true,
+        false,
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[fixed_birth], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    let row = reply_row(&reply, BORN_WIN_A);
+    assert_eq!(row["floating"], true, "fixed birth floats");
+    assert_eq!(
+        clear_op_of(&reply, BORN_WIN_A),
+        "",
+        "fixed birth never clears"
+    );
+    // Fullscreen birth, then a fixed exit: no clear, hold consumed.
+    let (service, generation) = discovered_service();
+    let birth = born_raw(
+        BORN_WIN_B,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1079.5}",
+        Some("{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1079.5}"),
+        None,
+        None,
+        Some(UUID_A),
+        0,
+        true,
+        false,
+        true,
+        true,
+        false,
+    );
+    service
+        .evaluate_capture(&capture(
+            ADAPTER,
+            &generation,
+            1,
+            1,
+            &inner_report_birth(&[birth], true, true, &native),
+        ))
+        .expect("accepted");
+    let fixed_exit = born_raw(
+        BORN_WIN_B,
+        "{\"x\":0.5,\"y\":0.5,\"width\":407.6,\"height\":307.5}",
+        Some("{\"x\":4.5,\"y\":4.4,\"width\":399.6,\"height\":299.5}"),
+        Some("{\"width\":400,\"height\":300}"),
+        Some("{\"width\":400,\"height\":300}"),
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        true,
+        false,
+    );
+    let exit_reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                2,
+                2,
+                &inner_report_birth(&[fixed_exit], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    let row = reply_row(&exit_reply, BORN_WIN_B);
+    assert_eq!(row["floating"], true, "fixed exit floats automatic");
+    assert_eq!(
+        clear_op_of(&exit_reply, BORN_WIN_B),
+        "",
+        "fixed exit never clears"
+    );
+}
+
+#[test]
+fn born_keep_overlay_skips_birth_but_latches_per_lifetime() {
+    // Under keep-maximized-overlay a tiled-first born maximized window keeps
+    // its overlay with no clear, and a later flip to tile-on-launch never
+    // reclears the latched lifetime.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let kept_inner = with_born_mode(
+        &inner_report_birth(
+            &[born_maximized_row(BORN_WIN_A, UUID_A)],
+            true,
+            true,
+            &native,
+        ),
+        "keep-maximized-overlay",
+    );
+    let kept = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &kept_inner))
+            .expect("accepted"),
+    );
+    assert!(
+        reply_row(&kept, BORN_WIN_A).get("win").is_some(),
+        "kept birth keeps its row"
+    );
+    assert_eq!(
+        clear_op_of(&kept, BORN_WIN_A),
+        "",
+        "keep mode never clears births"
+    );
+    let flipped = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                2,
+                2,
+                &inner_report_birth(
+                    &[born_maximized_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(
+        clear_op_of(&flipped, BORN_WIN_A),
+        "",
+        "latched lifetime never reclears after the mode flips"
+    );
+}
+
+#[test]
+fn born_async_accepted_then_later_read_settles_without_reactuation() {
+    // Setter acceptance is never synchronous completion: the binding holds
+    // while the window still reads maximized, then retires when later
+    // readable facts prove the async clear landed. The pending attempt never
+    // re-actuates: the follow-up carries no desire.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let first = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(
+                    &[born_maximized_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    let op = clear_op_of(&first, BORN_WIN_A);
+    assert!(op.starts_with("op-born-"));
+    // Accepted attempt, but the frame still reads maximized: hold, and the
+    // spent operation withholds its desire on the follow-up.
+    let second_inner = with_clears(
+        &inner_report_birth(
+            &[born_maximized_row(BORN_WIN_A, UUID_A)],
+            true,
+            true,
+            &native,
+        ),
+        &clear_attempt(&op, BORN_WIN_A, "accepted", true, Some(true)),
+    );
+    let second = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &second_inner))
+            .expect("accepted"),
+    );
+    assert_eq!(
+        clear_op_of(&second, BORN_WIN_A),
+        "",
+        "spent operation never re-actuates while maximized"
+    );
+    // Later readable restored facts retire the binding even though this
+    // capture carries no new attempt: the staged pending attempt survives.
+    let third = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                3,
+                3,
+                &inner_report_birth(
+                    &[born_restored_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(clear_op_of(&third, BORN_WIN_A), "");
+    assert!(
+        !reply_row(&third, BORN_WIN_A)["alloc"].is_null(),
+        "proven frames converge after the async clear lands"
+    );
+    // A re-maximized lifetime never re-mints: at-most-once holds.
+    let fourth = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                4,
+                4,
+                &inner_report_birth(
+                    &[born_maximized_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(
+        clear_op_of(&fourth, BORN_WIN_A),
+        "",
+        "resolved lifetimes never re-clear"
+    );
+}
+
+#[test]
+fn born_refused_attempt_retires_without_retry() {
+    // An explicit refusal with an unchanged readable maximized preimage
+    // proves refusal: the binding retires and later maximized reports never
+    // re-mint.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let first = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(
+                    &[born_maximized_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    let op = clear_op_of(&first, BORN_WIN_A);
+    assert!(op.starts_with("op-born-"));
+    let second_inner = with_clears(
+        &inner_report_birth(
+            &[born_maximized_row(BORN_WIN_A, UUID_A)],
+            true,
+            true,
+            &native,
+        ),
+        &clear_attempt(&op, BORN_WIN_A, "refused", true, Some(true)),
+    );
+    let second = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &second_inner))
+            .expect("accepted"),
+    );
+    assert_eq!(clear_op_of(&second, BORN_WIN_A), "");
+    let third = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                3,
+                3,
+                &inner_report_birth(
+                    &[born_maximized_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(clear_op_of(&third, BORN_WIN_A), "", "refused never retries");
+}
+
+#[test]
+fn born_raw_safety_boundary_drops_non_normal_and_holds_minimized() {
+    // The existing roster contract at the raw boundary: non-normal windows
+    // drop before projection, minimized facts retain with no clear. The
+    // `managed`/`deleted` lifecycle lanes map in the normalizer (deleted
+    // closes, unmanaged is absent); the dedicated lifecycle tests below
+    // pin that boundary.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let dialog = born_raw(
+        BORN_WIN_A,
+        "{\"x\":100.5,\"y\":100.5,\"width\":400.0,\"height\":300.0}",
+        Some("{\"x\":100.5,\"y\":100.5,\"width\":400.0,\"height\":300.0}"),
+        None,
+        None,
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        false,
+        true,
+        false,
+    );
+    let minimized = born_raw(
+        BORN_WIN_B,
+        "{\"x\":100.5,\"y\":100.5,\"width\":400.0,\"height\":300.0}",
+        Some("{\"x\":100.5,\"y\":100.5,\"width\":400.0,\"height\":300.0}"),
+        None,
+        None,
+        Some(UUID_B),
+        3,
+        false,
+        true,
+        true,
+        true,
+        false,
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[dialog, minimized], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    let windows = reply["windows"].as_array().expect("windows");
+    assert!(
+        windows.iter().all(|w| w["win"] != BORN_WIN_A),
+        "non-normal window drops before projection"
+    );
+    assert_eq!(
+        clear_op_of(&reply, BORN_WIN_B),
+        "",
+        "minimized proves no birth"
+    );
 }
