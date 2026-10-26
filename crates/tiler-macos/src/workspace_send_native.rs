@@ -1416,6 +1416,7 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         let prep = crate::workspace_send::prepare_trailing_send_target(
             &mut adapter,
             pins.trailing_enabled,
+            pins.require_append,
         );
         let _ = awake.stop();
         let prep = prep?;

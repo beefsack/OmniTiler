@@ -432,12 +432,12 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
     }
     // Unarmed refuses before any native effect.
     let mut unarmed = fake(vec![1, 277], Ok(false));
-    assert!(prepare_trailing_send_target(&mut unarmed, false).is_err());
+    assert!(prepare_trailing_send_target(&mut unarmed, false, false).is_err());
     assert_eq!(unarmed.creates, 0);
     // Proven-empty last reuses with no append under the post-prep revision.
     let mut reuse = fake(vec![1, 277], Ok(true));
     assert_eq!(
-        prepare_trailing_send_target(&mut reuse, true),
+        prepare_trailing_send_target(&mut reuse, true, false),
         Ok(TrailingSendPrep {
             target_sid: 277,
             created: None,
@@ -448,7 +448,7 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
     // Proven-occupied appends exactly once and adopts the exact append.
     let mut append = fake(vec![1, 277], Ok(false));
     assert_eq!(
-        prepare_trailing_send_target(&mut append, true),
+        prepare_trailing_send_target(&mut append, true, false),
         Ok(TrailingSendPrep {
             target_sid: 278,
             created: Some(278),
@@ -459,33 +459,33 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
     // Unknown emptiness (zero-area/foreign-chrome ambiguity) refuses
     // without an append.
     let mut unknown = fake(vec![1, 277], Err("unreadable".to_owned()));
-    assert!(prepare_trailing_send_target(&mut unknown, true).is_err());
+    assert!(prepare_trailing_send_target(&mut unknown, true, false).is_err());
     assert_eq!(unknown.creates, 0);
     // Reuse past Desktop-9 refuses (existing owner ordinal refusal, raised
     // before any post, never a relative route).
     let mut past_nine = fake((1..=10).collect(), Ok(true));
-    assert!(prepare_trailing_send_target(&mut past_nine, true).is_err());
+    assert!(prepare_trailing_send_target(&mut past_nine, true, false).is_err());
     assert_eq!(past_nine.creates, 0);
     // An append that would land past Desktop-9 refuses BEFORE creating an
     // unmappable Space.
     let mut append_past_nine = fake((1..=9).collect(), Ok(false));
-    assert!(prepare_trailing_send_target(&mut append_past_nine, true).is_err());
+    assert!(prepare_trailing_send_target(&mut append_past_nine, true, false).is_err());
     assert_eq!(append_past_nine.creates, 0);
     // Append at the shared bound refuses without an append.
     let mut at_max = fake((1..=32).collect(), Ok(false));
-    assert!(prepare_trailing_send_target(&mut at_max, true).is_err());
+    assert!(prepare_trailing_send_target(&mut at_max, true, false).is_err());
     assert_eq!(at_max.creates, 0);
     // Post-append drift refuses adoption (the single append already ran
     // exactly once — never replayed).
     let mut drifted = fake(vec![1, 277], Ok(false));
     drifted.drift = true;
-    assert!(prepare_trailing_send_target(&mut drifted, true).is_err());
+    assert!(prepare_trailing_send_target(&mut drifted, true, false).is_err());
     assert_eq!(drifted.creates, 1);
     // Unprovable post-preparation revision refuses (the owner fences a
     // revision, never a missing one).
     let mut no_revision = fake(vec![1, 277], Ok(true));
     no_revision.revision = None;
-    assert!(prepare_trailing_send_target(&mut no_revision, true).is_err());
+    assert!(prepare_trailing_send_target(&mut no_revision, true, false).is_err());
 }
 
 #[test]
@@ -2598,7 +2598,1096 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
     (retained, session, engine)
 }
 
-/// Joined home -> send-follow -> return recovery over the production
+/// Discriminating send-to-occupied-existing causal case: native row
+/// `[1, 277]`, both windows homed on Space 1, numbered send-2 follow
+/// accepted, subject arrival on 277, then one stable observation-only
+/// reply. The converged reply must carry the occupied target plus a
+/// logical-only trailing spare (unbound, last in ring order) and zero
+/// native creation desires: the ordinary trailing spare never mints a
+/// host-owned desire, so the adapter correctly creates no physical Space
+/// and the indicator (a native-row projection) correctly shows no third
+/// entry. A missing physical trailing desktop after this send is the
+/// selected core policy, not an adapter drop and not a missing creation
+/// seam (the desire-gated creation seam already exists for explicitly
+/// needed backing and is exercised by the select/trailing-send paths).
+#[test]
+fn send_to_occupied_existing_keeps_spare_logical_without_native_desire() {
+    let (mut retained, mut session, mut engine) = joined_home_send_arrival();
+    let w7 = repro_observed(7);
+    let w8 = repro_observed(8);
+
+    // Stable observation-only reply on the arrived topology: subject on
+    // 277, resident on 1, nothing commanded.
+    let ctx277 = repro_ctx(277);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![277]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx277.revision,
+        ),
+        &ctx277,
+    );
+    let stable = dispatch_join(&mut session, &retained, &ctx277, 4, 4, None, None);
+    assert!(validate_report(&stable));
+    assert!(stable.inventory_complete, "stable inventory is complete");
+    let reply = match engine.handle_report(&stable) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("stable observation applies, got {other:?}"),
+    };
+    assert!(
+        engine.retained_transfers().is_empty(),
+        "no transfer retained on the stable reply"
+    );
+
+    // Actual logical ring: both occupied logicals stay bound in native
+    // order, and the lifecycle appends exactly one trailing spare that is
+    // logical-only (no native binding).
+    let output = OutputId(crate::topology::output_key(1));
+    let mut rows: Vec<_> = reply
+        .workspaces
+        .iter()
+        .filter(|row| row.output == output)
+        .collect();
+    rows.sort_by_key(|row| row.order);
+    assert_eq!(rows.len(), 3, "ring holds two occupied plus one spare");
+    assert_eq!(
+        rows[0].native_binding.as_deref(),
+        Some("space-1"),
+        "first logical stays bound to Space 1"
+    );
+    assert_eq!(
+        rows[1].native_binding.as_deref(),
+        Some("space-277"),
+        "occupied target stays bound to Space 277"
+    );
+    assert_eq!(
+        rows[2].native_binding, None,
+        "trailing spare is logical-only, never a physical desktop"
+    );
+
+    // Actual native creation desires: none. The spare is empty, unviewed,
+    // untargeted and unoccupied, so `logical_needs_backing` is false and
+    // no host-owned append is authorized. The adapter therefore consumes
+    // nothing here (no desire-gated create runs; select/send keep mapping
+    // positionally over the native row and the indicator keeps projecting
+    // the two native entries).
+    assert!(
+        reply.native_creations.is_empty(),
+        "ordinary trailing spare mints no native creation desire"
+    );
+
+    // Adapter indicator consumption: the occupancy projection maps the
+    // native row only (never the core ring); the spare never renders as an
+    // occupancy segment. The separate trailing-slot projection offers the
+    // `+` action slot only while the last native Space is Occupied/Unknown,
+    // and offers nothing (reuse) while it is Empty.
+    use crate::workspace_indicator::{
+        IndicatorMode, RetainedDomainState, SpaceOccupancy, project_trailing_slot,
+        summarize_retained, trailing_segment_title,
+    };
+    // On-2 state (arrived: resident on 1, subject on 277, current 277):
+    // both native entries read Occupied from retained membership.
+    let summary = summarize_retained(
+        &[1, 277],
+        &[
+            RetainedDomainState {
+                sid: 1,
+                members: vec![(4242, 8)],
+            },
+            RetainedDomainState {
+                sid: 277,
+                members: vec![(4242, 7)],
+            },
+        ],
+        true,
+        None,
+    );
+    assert_eq!(
+        summary,
+        vec![
+            (SpaceOccupancy::Occupied, Some((4242, 8))),
+            (SpaceOccupancy::Occupied, Some((4242, 7))),
+        ],
+        "indicator projects the native row only: two occupied segments"
+    );
+    // Exact trailing-slot outputs with correct occupancy:
+    // - home (both windows on 1, 277 empty, current 1): last Empty, so no
+    //   slot - the drain reuses the proven-empty last instead of appending.
+    let home_summary = summarize_retained(
+        &[1, 277],
+        &[
+            RetainedDomainState {
+                sid: 1,
+                members: vec![(4242, 7), (4242, 8)],
+            },
+            RetainedDomainState {
+                sid: 277,
+                members: vec![],
+            },
+        ],
+        true,
+        None,
+    );
+    assert_eq!(home_summary[1].0, SpaceOccupancy::Empty);
+    assert_eq!(
+        project_trailing_slot(&[1, 277], 1, 1, IndicatorMode::All, home_summary[1].0),
+        None,
+        "empty last reuses the existing slot; no trailing segment renders"
+    );
+    // - on-2 (both Spaces occupied, current 277): slot at position 3 with
+    //   a `+` title (pressing appends); the same holds on return to 1.
+    let slot = project_trailing_slot(&[1, 277], 277, 1, IndicatorMode::All, summary[1].0)
+        .expect("occupied last offers the trailing action slot");
+    assert_eq!(slot.position, 3);
+    assert_eq!(trailing_segment_title(slot, SpaceOccupancy::Occupied), "+");
+    let back = project_trailing_slot(&[1, 277], 1, 1, IndicatorMode::All, summary[1].0)
+        .expect("return keeps the occupied-last slot offer");
+    assert_eq!(back.position, 3);
+}
+
+/// Numbered-3 against the converged spare executes through the
+/// desire-backed lane: the user pressed numbered 3 after the send-2
+/// arrival (subject 4242_7 focused on current 277). The adapter passes
+/// index 3 through and core resolves it positionally over the 3-logical
+/// ring, so the transfer targets the spare and the targeted spare mints
+/// exactly one backing desire. The numbered pinned lane still refuses
+/// the unbound target (no SID to pin), but the same claim now enters
+/// the existing desire-driven creation executor with its matched
+/// desire intact: the owner ensures the native target exactly once,
+/// binds it, and runs the single drag. The public index rides
+/// unchanged for diagnostics (never forced to 0); no desire means no
+/// creation, a mismatched desire refuses, and bound targets keep the
+/// numbered lane. No core edit: numbered 1..9 still address existing
+/// workspaces positionally while the executor backs the reply-desired
+/// spare natively.
+#[test]
+fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
+    use crate::runtime_thread::bind_send_plan;
+    use crate::workspace_send_effect::ManagedSendTarget;
+    use crate::world_command_map::send_command_implicit;
+    use tiler_core::world_report::TransferKind;
+
+    let (mut retained, mut session, _) = joined_home_send_arrival();
+    let ctx277 = repro_ctx(277);
+    let w7 = repro_observed(7);
+    let w8 = repro_observed(8);
+    // Converge the spare through the session engine (legs mirror the
+    // helper: home, send-2 follow, arrival, stable observation).
+    let ctx1 = repro_ctx(1);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![1]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx1.revision,
+        ),
+        &ctx1,
+    );
+    let first = dispatch_join(&mut session, &retained, &ctx1, 1, 1, None, None);
+    assert!(validate_report(&first));
+    assert!(matches!(
+        session.engine_mut().handle_report(&first),
+        WorldOutcome::Accepted(_)
+    ));
+    retained.observed_focus = Some(WindowId("4242_7".to_owned()));
+    let send2 = send_command_implicit(&send(2), "4242_7").expect("send-2 maps");
+    let second = dispatch_join(&mut session, &retained, &ctx277, 2, 2, Some(2), Some(send2));
+    assert!(validate_report(&second));
+    assert!(matches!(
+        session.engine_mut().handle_report(&second),
+        WorldOutcome::Accepted(_)
+    ));
+    assert_eq!(
+        session
+            .engine_mut()
+            .retained_transfers()
+            .iter()
+            .filter(|target| matches!(
+                &target.kind,
+                tiler_core::world_report::TransferKind::Window(_)
+            ))
+            .count(),
+        1,
+        "send-2 retains its window transfer (plus the follow view flight)"
+    );
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![277]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx277.revision,
+        ),
+        &ctx277,
+    );
+    let third = dispatch_join(&mut session, &retained, &ctx277, 3, 3, None, None);
+    assert!(validate_report(&third));
+    assert!(matches!(
+        session.engine_mut().handle_report(&third),
+        WorldOutcome::Accepted(_)
+    ));
+    assert!(
+        session.engine_mut().retained_transfers().is_empty(),
+        "arrival settles the send-2 transfer"
+    );
+    let fourth = dispatch_join(&mut session, &retained, &ctx277, 4, 4, None, None);
+    assert!(validate_report(&fourth));
+    let stable_reply = match session.engine_mut().handle_report(&fourth) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("stable observation applies, got {other:?}"),
+    };
+    assert!(stable_reply.native_creations.is_empty());
+    let output = OutputId(crate::topology::output_key(1));
+    let spare_id = stable_reply
+        .workspaces
+        .iter()
+        .find(|row| row.output == output && row.native_binding.is_none())
+        .expect("converged ring carries the unbound spare")
+        .id
+        .clone();
+
+    // Subject/current focus grounded: 4242_7 is homed on current 277.
+    retained.observed_focus = Some(WindowId("4242_7".to_owned()));
+    // Align the sequencer flight with the next report so the accepted
+    // reply lands in `last_reply` exactly like the production dispatch.
+    // The sequencer counter is independent of the engine request counter,
+    // so advance it through the four legs above (begin-and-clear, never
+    // a replay: claimed sequences stay spent) before opening the leg-5
+    // flight.
+    for _ in 0..4 {
+        session.sequencer().invalidate();
+        session.sequencer().try_begin_request(None);
+        session.sequencer().clear_flight();
+    }
+    session.sequencer().invalidate();
+    let ticket = session
+        .sequencer()
+        .try_begin_request(None)
+        .expect("no flight outstanding");
+    let cmd3 = send_command_implicit(&send(3), "4242_7")
+        .expect("adapter passes index 3 through; core resolves positionally");
+    let fifth = dispatch_join(
+        &mut session,
+        &retained,
+        &ctx277,
+        ticket.observation_seq,
+        ticket.request_seq,
+        Some(5),
+        Some(cmd3),
+    );
+    assert!(validate_report(&fifth));
+    let reply = match session.engine_mut().handle_report(&fifth) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("send-3 report applies, got {other:?}"),
+    };
+    match session.sequencer().accept_reply(&reply) {
+        crate::world_sequencer::ReplyVerdict::Applied(_) => {}
+        crate::world_sequencer::ReplyVerdict::Refused { reason } => {
+            panic!("send-3 reply must apply to the aligned flight, refused: {reason}")
+        }
+    }
+    // Real result: the retained window transfer names the spare, and the
+    // targeted spare mints exactly one backing desire.
+    let transfers = session.engine_mut().retained_transfers();
+    let windowed: Vec<_> = transfers
+        .iter()
+        .filter(
+            |target| matches!(&target.kind, TransferKind::Window(window) if window.0 == "4242_7"),
+        )
+        .collect();
+    assert_eq!(windowed.len(), 1, "send-3 retains its window transfer");
+    assert_eq!(
+        windowed[0].target_workspace, spare_id,
+        "positional 3 resolves to the spare"
+    );
+    let desire = reply
+        .native_creations
+        .iter()
+        .find(|desire| desire.logical_workspace == spare_id)
+        .expect("targeted spare mints a backing desire");
+    // Owner bind: the unbound target binds the desire but no SID, so the
+    // numbered lane cannot pin it - the desire-gated creation seam lives
+    // on the trailing-0 lane only.
+    let mut claim = crate::runtime_types::ClaimedSelect::tap(send(3));
+    // Production admission pins (mirror `handle_send_action`): the drain
+    // re-proves them per edge; the bind under test only resolves the plan.
+    claim.expected_sid = None;
+    claim.topology_revision = Some(ctx277.revision);
+    claim.send_subject = Some("4242_7".to_owned());
+    claim.send_generation = Some(1);
+    claim.send_source = Some(repro_key(277));
+    claim.send_source_sid = Some(277);
+    claim.operation_id = Some(windowed[0].operation_id.clone());
+    bind_send_plan(
+        &mut session,
+        &std::sync::Arc::new(ctx277.clone()),
+        &mut claim,
+        &windowed[0].operation_id,
+    );
+    assert_eq!(
+        claim.expected_sid, None,
+        "unbound spare binds no SID on the numbered lane"
+    );
+    assert_eq!(
+        claim.select_creation_operation.as_deref(),
+        Some(desire.operation_id.as_str()),
+        "the desire rides the claim but authorizes no numbered actuation"
+    );
+    let err = ManagedSendTarget::from_claim(&claim).expect_err("owner cannot bind it");
+    assert!(
+        err.contains("no target SID"),
+        "exact bind refusal, got: {err}"
+    );
+
+    // Execution entry through the production drain seam (the same
+    // [`route_send_claim_for_drain`](crate::workspace_send::route_send_claim_for_drain)
+    // plus [`send_creation_legs_for_drain`](crate::workspace_send::send_creation_legs_for_drain)
+    // branch the tile calls): the numbered-3 claim with its matched
+    // desire resolves to the creation executor with the published
+    // display legs, and the public index 3 rides unchanged for
+    // diagnostics - never forced to 0, never an invented desire or
+    // binding.
+    use crate::workspace_send::{
+        LiveSendController, SendDrainRoute, SendGates, TrailingSubmit, route_send_claim_for_drain,
+        send_creation_legs_for_drain,
+    };
+    use crate::workspace_send_effect::{SendEffectOutcome, SendFreshEvidence, TrailingSendRequest};
+    use crate::workspace_send_managed::{ManagedPostPermit, ManagedSendBackend};
+    use std::sync::Mutex;
+    use std::time::Duration;
+    assert_eq!(
+        route_send_claim_for_drain(&claim),
+        SendDrainRoute::CreationBacked,
+        "matched desire routes the creation executor"
+    );
+    let published = crate::runtime_shared::PublishedDisplayInputs {
+        displays: vec![crate::topology::DisplayGeometry {
+            cg_id: 7,
+            uuid: Some(REPRO_UUID.to_owned()),
+            cg_bounds: None,
+            visible: None,
+            scale: 2.0,
+        }],
+        separate: Some(true),
+    };
+    let creation_legs = send_creation_legs_for_drain(Some(&published))
+        .expect("single pinned display resolves legs");
+    assert_eq!(creation_legs.display_index, 0);
+    assert_eq!(creation_legs.pinned_cgid, 7);
+    assert_eq!(creation_legs.pinned_uuid, REPRO_UUID);
+    let request = TrailingSendRequest::from_claim(
+        &claim,
+        creation_legs.display_index,
+        creation_legs.pinned_cgid,
+        &creation_legs.pinned_uuid,
+        true,
+    )
+    .expect("numbered-3 with a matched desire enters the creation executor");
+    assert_eq!(request.window, "4242_7");
+    assert_eq!(request.operation_id, windowed[0].operation_id);
+    assert_eq!(
+        request.creation_operation.as_deref(),
+        Some(desire.operation_id.as_str()),
+        "the desire identity rides the request"
+    );
+    assert_eq!(
+        request.creation_logical.as_deref(),
+        Some(spare_id.as_str()),
+        "the desire names the spare logical"
+    );
+    assert_eq!(
+        request.creation_output.as_deref(),
+        Some(desire.target_output.0.as_str()),
+        "the desire names the reply output"
+    );
+
+    // No desire means no creation: a numbered claim without a desire
+    // refuses the creation executor, a mismatched desire refuses
+    // instead of backing the wrong target, stays never enter, and
+    // unpinned displays refuse before any submit. Each routes pinned
+    // (the production fallback) and a pinned submit refuses with the
+    // lane idle - no preparation runs.
+    let mut no_desire = claim.clone();
+    no_desire.select_creation_operation = None;
+    no_desire.select_creation_logical = None;
+    no_desire.select_creation_output = None;
+    assert!(
+        TrailingSendRequest::from_claim(&no_desire, 0, 7, REPRO_UUID, true).is_err(),
+        "numbered without a desire creates nothing"
+    );
+    assert_eq!(
+        route_send_claim_for_drain(&no_desire),
+        SendDrainRoute::Pinned
+    );
+    let mut mismatch_idle = LiveSendController::new();
+    assert!(
+        mismatch_idle
+            .submit(&no_desire, "display-a", 277, || -> SpareBackend {
+                panic!("refused claims spawn nothing")
+            })
+            .is_err(),
+        "pinned submit refuses the unbound target"
+    );
+    assert!(!mismatch_idle.is_busy(), "refused submit prepares nothing");
+    let mut mismatched = claim.clone();
+    mismatched.select_creation_logical = Some("ws-999".to_owned());
+    assert!(
+        TrailingSendRequest::from_claim(&mismatched, 0, 7, REPRO_UUID, true).is_err(),
+        "mismatched desire backs nothing"
+    );
+    assert_eq!(
+        route_send_claim_for_drain(&mismatched),
+        SendDrainRoute::Pinned
+    );
+    assert!(
+        mismatch_idle
+            .submit(&mismatched, "display-a", 277, || -> SpareBackend {
+                panic!("refused claims spawn nothing")
+            })
+            .is_err(),
+        "pinned submit refuses the mismatched target"
+    );
+    assert!(!mismatch_idle.is_busy(), "refused submit prepares nothing");
+    assert!(
+        mismatch_idle.shutdown().is_none(),
+        "refused lane shuts down idle"
+    );
+    let mut stay = claim.clone();
+    stay.action = InputSemanticAction::WorkspaceSend {
+        index: 3,
+        follow: false,
+    };
+    assert!(
+        TrailingSendRequest::from_claim(&stay, 0, 7, REPRO_UUID, true).is_err(),
+        "stays never enter the creation executor"
+    );
+    assert!(
+        TrailingSendRequest::from_claim(&claim, 0, 0, REPRO_UUID, true).is_err(),
+        "unpinned display refuses before any submit"
+    );
+
+    /// Scripted owner backend for the spare execution: open gates, a
+    /// single-display row already carrying the owner's exact append
+    /// (278), enabled holders, per-target fresh evidence (all-ok, or
+    /// stale-revision / swapped-focus refusals), and a logging drag
+    /// that lands the goal.
+    struct SpareBackend {
+        prep: Result<
+            crate::workspace_send_effect::TrailingPrepProof,
+            crate::workspace_send::TrailingPrepFailure,
+        >,
+        prep_counter: std::sync::Arc<Mutex<usize>>,
+        stale_revision: bool,
+        swap_focus: bool,
+        goal: u64,
+        membership: Vec<u64>,
+        current: Option<u64>,
+        chord: Option<(u32, u64)>,
+        point: Option<(f64, f64)>,
+        counts: crate::space_drag_transfer::PostCounts,
+    }
+    impl ManagedSendBackend for SpareBackend {
+        fn read_gates(&mut self) -> SendGates {
+            SendGates {
+                session_unlocked: true,
+                secure_active: false,
+                lock_screen: false,
+            }
+        }
+        fn snapshot(&mut self) -> Result<crate::workspace_select::SelectionSnapshot, String> {
+            Ok(crate::workspace_select::SelectionSnapshot {
+                display: "display-a".to_owned(),
+                spaces: vec![1, 277, 278],
+                current: 277,
+            })
+        }
+        fn display_count(&mut self) -> Result<usize, String> {
+            Ok(1)
+        }
+        fn read_holder(
+            &mut self,
+            symbolic_id: u32,
+        ) -> Result<crate::desktop_shortcuts::ShortcutEntry, String> {
+            for desktop in 1..=9u32 {
+                if crate::desktop_shortcuts::desktop_symbolic_id(desktop) == Some(symbolic_id) {
+                    return Ok(crate::desktop_shortcuts::ShortcutEntry {
+                        enabled: true,
+                        keycode: crate::desktop_shortcuts::desktop_digit_keycode(desktop)
+                            .expect("digit keycode"),
+                        modifiers: CG_CTRL,
+                    });
+                }
+            }
+            Err(format!("fake holder {symbolic_id} unresolvable"))
+        }
+        fn fresh_evidence(
+            &mut self,
+            target: &crate::workspace_send_effect::ManagedSendTarget,
+        ) -> SendFreshEvidence {
+            SendFreshEvidence {
+                managed_current: Some(true),
+                fullscreen: Some(false),
+                minimized: Some(false),
+                live_generation: Some(target.app_generation()),
+                live_revision: Some(if self.stale_revision {
+                    target.revision().wrapping_add(1)
+                } else {
+                    target.revision()
+                }),
+                live_source: Some(target.source().clone()),
+                source_current: Some(true),
+                focused_window: Some(if self.swap_focus {
+                    "4242_9".to_owned()
+                } else {
+                    target.window().to_owned()
+                }),
+                focus_agrees: Some(true),
+                geometry_ok: Some(true),
+                grab_point: Some((100.0, 200.0)),
+                ax_hit: Some(target.window().to_owned()),
+                ws_hit: Some(target.window().to_owned()),
+            }
+        }
+        fn begin_leg(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String> {
+            assert_eq!((permit.pid(), permit.wid()), (4242, 7));
+            self.goal = goal;
+            self.chord = Some((permit.keycode(), permit.flags()));
+            self.point = Some(permit.point());
+            Ok(())
+        }
+        fn post_mouse(
+            &mut self,
+            permit: ManagedPostPermit,
+            step: crate::space_drag_transfer::DragStep,
+        ) -> Result<(), String> {
+            match step {
+                crate::space_drag_transfer::DragStep::MouseMove
+                | crate::space_drag_transfer::DragStep::MouseDown
+                | crate::space_drag_transfer::DragStep::MouseDragged => {}
+                _ => return Err(format!("refusing non-grab step {step:?}")),
+            }
+            assert_eq!(Some(permit.point()), self.point);
+            assert_eq!(Some((permit.keycode(), permit.flags())), self.chord);
+            if step == crate::space_drag_transfer::DragStep::MouseDown {
+                self.counts.mouse_down += 1;
+            }
+            Ok(())
+        }
+        fn post_key_down(&mut self, permit: ManagedPostPermit) -> Result<(), String> {
+            assert_eq!(Some((permit.keycode(), permit.flags())), self.chord);
+            self.counts.key_down += 1;
+            Ok(())
+        }
+        fn release_mouse(&mut self) -> Result<(), String> {
+            self.counts.mouse_up += 1;
+            Ok(())
+        }
+        fn release_key(&mut self) -> Result<(), String> {
+            self.counts.key_up += 1;
+            self.membership = vec![self.goal];
+            self.current = Some(self.goal);
+            Ok(())
+        }
+        fn settle_grab(&mut self) {}
+        fn settle_hold(&mut self) {}
+        fn read_membership(&mut self) -> Option<Vec<u64>> {
+            Some(self.membership.clone())
+        }
+        fn read_current(&mut self) -> Option<u64> {
+            self.current
+        }
+        fn select_back(&mut self, _source_sid: u64) -> Result<(), String> {
+            Err("follow never selects back".to_owned())
+        }
+        fn read_focused(&mut self) -> Option<String> {
+            Some("4242_7".to_owned())
+        }
+        fn prepare_trailing_target(
+            &mut self,
+            _pins: &crate::workspace_send_effect::TrailingPrepPins,
+        ) -> Result<
+            crate::workspace_send_effect::TrailingPrepProof,
+            crate::workspace_send::TrailingPrepFailure,
+        > {
+            *self
+                .prep_counter
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()) += 1;
+            self.prep.clone()
+        }
+        fn effect_deadline_ms(&self) -> u64 {
+            30
+        }
+        fn effect_poll_ms(&self) -> u64 {
+            1
+        }
+        fn counts(&self) -> crate::space_drag_transfer::PostCounts {
+            self.counts
+        }
+    }
+    fn spare_backend(
+        prep: Result<
+            crate::workspace_send_effect::TrailingPrepProof,
+            crate::workspace_send::TrailingPrepFailure,
+        >,
+        counter: std::sync::Arc<Mutex<usize>>,
+        stale_revision: bool,
+        swap_focus: bool,
+    ) -> SpareBackend {
+        SpareBackend {
+            prep,
+            prep_counter: counter,
+            stale_revision,
+            swap_focus,
+            goal: 0,
+            membership: vec![277],
+            current: Some(277),
+            chord: None,
+            point: None,
+            counts: crate::space_drag_transfer::PostCounts::default(),
+        }
+    }
+    fn poll_settle(controller: &mut LiveSendController) -> crate::workspace_send::SendSettle {
+        for _ in 0..500 {
+            if let Some(settle) = controller.poll() {
+                return settle;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("owner settles the spare execution");
+    }
+    let append_prep = || crate::workspace_send_effect::TrailingPrepProof {
+        target_sid: 278,
+        created: Some(278),
+        revision: 9,
+        display_id: "display-a".to_owned(),
+        before: vec![1, 277],
+        after: vec![1, 277, 278],
+    };
+    let legs = || TrailingSubmit {
+        display_index: creation_legs.display_index,
+        pinned_cgid: creation_legs.pinned_cgid,
+        pinned_uuid: &creation_legs.pinned_uuid,
+        display: "display-a",
+        from: 277,
+        trailing_enabled: true,
+    };
+
+    // Owner execution: exactly one native ensure plus the single drag.
+    // The completion carries the owner-verified append proof with the
+    // desire's genuine creation receipt, and the lane idles after the
+    // poll (settlement never replays).
+    let prep_counter = std::sync::Arc::new(Mutex::new(0usize));
+    let submit_counter = std::sync::Arc::clone(&prep_counter);
+    let mut controller = LiveSendController::new();
+    controller
+        .submit_trailing(&claim, legs(), move || {
+            spare_backend(Ok(append_prep()), submit_counter, false, false)
+        })
+        .expect("desire-backed numbered-3 submits");
+    assert!(
+        controller.is_busy(),
+        "submitted request serializes the lane"
+    );
+    let settle = poll_settle(&mut controller);
+    assert_eq!(
+        settle.outcome,
+        SendEffectOutcome::Applied,
+        "spare execution applies"
+    );
+    assert_eq!(settle.target.target_sid(), 278);
+    assert!(settle.follow);
+    assert_eq!(
+        settle.target.operation_id(),
+        windowed[0].operation_id,
+        "settlement reports under the send operation"
+    );
+    let proof = settle.trailing.as_ref().expect("append proves");
+    assert_eq!(proof.target_sid, 278);
+    assert_eq!(proof.created, Some(278), "created SID rides for adoption");
+    let creation = proof.creation.as_ref().expect("desire stages a receipt");
+    assert_eq!(creation.operation_id, desire.operation_id);
+    assert_eq!(creation.logical, spare_id);
+    assert_eq!(creation.output, desire.target_output);
+    assert_eq!(
+        creation.setter,
+        tiler_core::world_report::FrameSetter::Accepted
+    );
+    assert_eq!(creation.order_before, vec![1, 277]);
+    assert_eq!(creation.order_after, vec![1, 277, 278]);
+    assert_eq!(creation.created, Some(278));
+    assert_eq!(
+        *prep_counter
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()),
+        1,
+        "the native ensure runs exactly once"
+    );
+    assert!(!controller.is_busy(), "polled lane idles");
+    assert!(controller.poll().is_none(), "settlement never replays");
+
+    // The numbered lane for bound targets still works after the spare
+    // execution: a bound existing-target send submits and applies on
+    // the pinned path (no desire needed, no creation).
+    let mut bound = crate::runtime_types::ClaimedSelect::tap(send(2));
+    bound.send_subject = Some("4242_7".to_owned());
+    bound.send_generation = Some(1);
+    bound.send_source = Some(repro_key(277));
+    bound.expected_sid = Some(277);
+    bound.topology_revision = Some(ctx277.revision);
+    bound.operation_id = Some("op-9".to_owned());
+    assert_eq!(
+        route_send_claim_for_drain(&bound),
+        SendDrainRoute::Pinned,
+        "bound targets keep the pinned numbered lane"
+    );
+    controller
+        .submit(&bound, "display-a", 277, || {
+            spare_backend(
+                Err(crate::workspace_send::TrailingPrepFailure {
+                    reason: "unused".to_owned(),
+                    setter: tiler_core::world_report::FrameSetter::Refused,
+                    before: None,
+                    after: None,
+                    dispatched: false,
+                }),
+                std::sync::Arc::new(Mutex::new(0usize)),
+                false,
+                false,
+            )
+        })
+        .expect("bound existing-target send still submits on the numbered lane");
+    let follow = poll_settle(&mut controller);
+    assert_eq!(follow.outcome, SendEffectOutcome::Applied);
+    assert_eq!(follow.target.target_sid(), 277);
+    assert!(
+        follow.trailing.is_none(),
+        "reuse-free bound lane proves no creation"
+    );
+
+    // Stale topology and swapped-focus priors refuse before any post:
+    // the ran append still rides its proof (creation ran), but the
+    // outcome is a proven refusal and the lane settles honestly.
+    for (label, stale_revision, swap_focus) in [
+        ("stale-revision", true, false),
+        ("swapped-focus", false, true),
+    ] {
+        let counter = std::sync::Arc::new(Mutex::new(0usize));
+        let submit_counter = std::sync::Arc::clone(&counter);
+        let mut refused = LiveSendController::new();
+        refused
+            .submit_trailing(&claim, legs(), move || {
+                spare_backend(
+                    Ok(append_prep()),
+                    submit_counter,
+                    stale_revision,
+                    swap_focus,
+                )
+            })
+            .expect("stale claim submits; the owner refuses it");
+        let settle = poll_settle(&mut refused);
+        assert_eq!(
+            settle.outcome,
+            SendEffectOutcome::RefusedProven,
+            "{label} refuses proven"
+        );
+        let proof = settle.trailing.as_ref().expect("{label} keeps its proof");
+        assert_eq!(
+            proof.created,
+            Some(278),
+            "{label}: the ran append still rides for adoption"
+        );
+        assert_eq!(
+            *counter.lock().unwrap_or_else(|poison| poison.into_inner()),
+            1,
+            "{label}: the native ensure still runs exactly once"
+        );
+        assert!(
+            refused.shutdown().is_none(),
+            "{label}: settled lane shuts down idle"
+        );
+    }
+    assert!(
+        controller.shutdown().is_none(),
+        "settled lane shuts down idle"
+    );
+}
+
+/// Drain-route matrix over the production seam
+/// ([`route_send_claim_for_drain`](crate::workspace_send::route_send_claim_for_drain)):
+/// only an unbound follow target with a matched explicit creation
+/// desire rides the creation executor; every other shape stays pinned
+/// (unbound refusals settle downstream without actuation). No native
+/// touch on any path.
+#[test]
+fn send_drain_route_selects_lane_before_any_submit() {
+    use crate::workspace_send::{SendDrainRoute, route_send_claim_for_drain};
+    fn routed(
+        index: u8,
+        follow: bool,
+        expected_sid: Option<u64>,
+        desire: Option<(&str, &str, &str)>,
+        target: Option<(&str, &str)>,
+    ) -> ClaimedSelect {
+        let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSend { index, follow });
+        claim.expected_sid = expected_sid;
+        if let Some((op, logical, output)) = desire {
+            claim.select_creation_operation = Some(op.to_owned());
+            claim.select_creation_logical = Some(logical.to_owned());
+            claim.select_creation_output = Some(output.to_owned());
+        }
+        if let Some((workspace, output)) = target {
+            claim.select_target_workspace = Some(workspace.to_owned());
+            claim.select_target_output = Some(output.to_owned());
+        }
+        claim
+    }
+    let desire = ("op-native-7", "ws-3", "macos-display-1");
+    let target = ("ws-3", "macos-display-1");
+    // Numbered with a matched desire rides the creator; anything
+    // missing or mismatched stays pinned (refuses downstream).
+    assert_eq!(
+        route_send_claim_for_drain(&routed(3, true, None, Some(desire), Some(target))),
+        SendDrainRoute::CreationBacked
+    );
+    assert_eq!(
+        route_send_claim_for_drain(&routed(3, true, None, None, Some(target))),
+        SendDrainRoute::Pinned,
+        "no desire means no creation"
+    );
+    assert_eq!(
+        route_send_claim_for_drain(&routed(
+            3,
+            true,
+            None,
+            Some(desire),
+            Some(("ws-9", "macos-display-1"))
+        )),
+        SendDrainRoute::Pinned,
+        "mismatched desire backs nothing"
+    );
+    assert_eq!(
+        route_send_claim_for_drain(&routed(3, true, Some(278), Some(desire), Some(target))),
+        SendDrainRoute::Pinned,
+        "bound targets keep the numbered lane"
+    );
+    assert_eq!(
+        route_send_claim_for_drain(&routed(255, true, None, Some(desire), Some(target))),
+        SendDrainRoute::Pinned,
+        "malformed index never enters the creator"
+    );
+    // Trailing send-0 keeps its usual behavior: a matched desire rides
+    // the creator, a bare unbound target stays pinned.
+    assert_eq!(
+        route_send_claim_for_drain(&routed(0, true, None, Some(desire), Some(target))),
+        SendDrainRoute::CreationBacked
+    );
+    assert_eq!(
+        route_send_claim_for_drain(&routed(0, true, None, None, Some(target))),
+        SendDrainRoute::Pinned
+    );
+    // Stays never enter the creator.
+    assert_eq!(
+        route_send_claim_for_drain(&routed(3, false, None, Some(desire), Some(target))),
+        SendDrainRoute::Pinned
+    );
+}
+
+/// Display-legs matrix over the production seam
+/// ([`send_creation_legs_for_drain`](crate::workspace_send::send_creation_legs_for_drain)):
+/// exactly one published display with a pinned non-empty UUID and a
+/// nonzero CG ID resolves verbatim; anything else refuses before any
+/// submit. Plain data only, no native touch.
+#[test]
+fn send_drain_trailing_legs_resolve_single_pinned_display() {
+    use crate::runtime_shared::PublishedDisplayInputs;
+    use crate::topology::DisplayGeometry;
+    use crate::workspace_send::{SendCreationLegs, send_creation_legs_for_drain};
+    fn published(displays: Vec<DisplayGeometry>) -> PublishedDisplayInputs {
+        PublishedDisplayInputs {
+            displays,
+            separate: Some(true),
+        }
+    }
+    fn display(cgid: u32, uuid: Option<&str>) -> DisplayGeometry {
+        DisplayGeometry {
+            cg_id: cgid,
+            uuid: uuid.map(str::to_owned),
+            cg_bounds: None,
+            visible: None,
+            scale: 2.0,
+        }
+    }
+    // No publication, zero displays, or two displays refuse (never a
+    // first-display guess).
+    assert!(send_creation_legs_for_drain(None).is_err());
+    assert!(send_creation_legs_for_drain(Some(&published(vec![]))).is_err());
+    assert!(
+        send_creation_legs_for_drain(Some(&published(vec![
+            display(7, Some("uuid-7")),
+            display(8, Some("uuid-8")),
+        ])))
+        .is_err()
+    );
+    // Ambiguous legs refuse: missing UUID, empty UUID, zero CG ID.
+    assert!(send_creation_legs_for_drain(Some(&published(vec![display(7, None)]))).is_err());
+    assert!(send_creation_legs_for_drain(Some(&published(vec![display(7, Some(""))]))).is_err());
+    assert!(
+        send_creation_legs_for_drain(Some(&published(vec![display(0, Some("uuid-7"))]))).is_err()
+    );
+    // Exactly one pinned display resolves verbatim.
+    assert_eq!(
+        send_creation_legs_for_drain(Some(&published(vec![display(7, Some("uuid-7"))]))),
+        Ok(SendCreationLegs {
+            display_index: 0,
+            pinned_cgid: 7,
+            pinned_uuid: "uuid-7".to_owned(),
+        })
+    );
+}
+
+/// Creator seam pins: a malformed public index never enters even with a
+/// matched desire, and a bound target stays on the pinned lane even
+/// under a desire. The real operation identity stays matched upstream
+/// by the reply plan; the seam only fences shape and bound state.
+#[test]
+fn send_creation_executor_refuses_malformed_and_bound_pins() {
+    use crate::workspace_send_effect::TrailingSendRequest;
+    fn desired(index: u8, expected_sid: Option<u64>) -> ClaimedSelect {
+        let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSend {
+            index,
+            follow: true,
+        });
+        claim.send_subject = Some("4242_7".to_owned());
+        claim.send_generation = Some(1);
+        claim.send_source = Some(repro_key(277));
+        claim.operation_id = Some("op-2".to_owned());
+        claim.expected_sid = expected_sid;
+        claim.select_creation_operation = Some("op-native-7".to_owned());
+        claim.select_creation_logical = Some("ws-3".to_owned());
+        claim.select_creation_output = Some("macos-display-1".to_owned());
+        claim.select_target_workspace = Some("ws-3".to_owned());
+        claim.select_target_output = Some("macos-display-1".to_owned());
+        claim
+    }
+    assert!(
+        TrailingSendRequest::from_claim(&desired(255, None), 0, 7, "uuid-7", true).is_err(),
+        "malformed index refuses"
+    );
+    assert!(
+        TrailingSendRequest::from_claim(&desired(3, Some(278)), 0, 7, "uuid-7", true).is_err(),
+        "bound targets refuse the creator"
+    );
+}
+
+/// Explicit backing desire requires exactly one append: a proven-empty
+/// last is not reused (the core already resolved occupancy for a
+/// different unbound logical), and an unreadable occupancy read
+/// neither blocks nor guesses - the append still runs once with the
+/// exact pre/post rows. An unreadable fresh row still refuses with no
+/// append. No-desire reuse is unchanged (see
+/// `trailing_send_prepare_reuse_append_and_ordinal_guards`).
+#[test]
+fn prepare_trailing_send_with_desire_appends_despite_empty_last() {
+    use crate::workspace_select::{DispatchError, SelectionBackend};
+    struct DesireBackend {
+        row: Option<crate::workspace_select::SelectionSnapshot>,
+        revision: Option<u64>,
+        empty: Result<bool, String>,
+        creates: usize,
+    }
+    impl SelectionBackend for DesireBackend {
+        fn display_count(&mut self) -> Result<usize, String> {
+            Ok(1)
+        }
+        fn snapshot(&mut self) -> Result<crate::workspace_select::SelectionSnapshot, String> {
+            self.row.clone().ok_or_else(|| "gone".to_owned())
+        }
+        fn revision(&mut self) -> Option<u64> {
+            self.revision
+        }
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            if output == "display-a" {
+                Ok(())
+            } else {
+                Err(format!("unexpected output {output}"))
+            }
+        }
+        fn empty(&mut self, _: u64) -> Result<bool, String> {
+            self.empty.clone()
+        }
+        fn create(
+            &mut self,
+            before: &crate::workspace_select::SelectionSnapshot,
+        ) -> Result<(), DispatchError> {
+            let row = self.row.as_mut().expect("row proven before create");
+            assert_eq!(
+                before.spaces, row.spaces,
+                "create runs against the proven pre-order"
+            );
+            let next = row.spaces.iter().max().copied().unwrap_or(0) + 1;
+            row.spaces.push(next);
+            self.creates += 1;
+            Ok(())
+        }
+        fn select(
+            &mut self,
+            _: &crate::workspace_select::SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), DispatchError> {
+            unreachable!("preparation never selects");
+        }
+    }
+    fn backend(
+        row: Option<crate::workspace_select::SelectionSnapshot>,
+        empty: Result<bool, String>,
+    ) -> DesireBackend {
+        DesireBackend {
+            row,
+            revision: Some(9),
+            empty,
+            creates: 0,
+        }
+    }
+    fn row() -> crate::workspace_select::SelectionSnapshot {
+        crate::workspace_select::SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 277,
+        }
+    }
+    // Proven-empty last with an explicit desire still appends exactly
+    // once (never an emptiness-based reuse of the wrong logical).
+    let mut emptied = backend(Some(row()), Ok(true));
+    let prep = prepare_trailing_send_target(&mut emptied, true, true)
+        .expect("explicit desire appends despite an empty last");
+    assert_eq!(prep.target_sid, 278);
+    assert_eq!(prep.created, Some(278));
+    assert_eq!(prep.revision, 9);
+    assert_eq!(emptied.creates, 1, "exactly one native append");
+    // Unreadable occupancy with an explicit desire still appends once:
+    // occupancy is no longer needed, so nothing is guessed and nothing
+    // is blocked on the unreadable read.
+    let mut unreadable = backend(Some(row()), Err("dark".to_owned()));
+    let prep = prepare_trailing_send_target(&mut unreadable, true, true)
+        .expect("explicit desire appends without consulting occupancy");
+    assert_eq!((prep.target_sid, prep.created), (278, Some(278)));
+    assert_eq!(unreadable.creates, 1);
+    // An unreadable fresh row still refuses with no append: topology
+    // and native order stay required even under a desire.
+    let mut no_row = backend(None, Ok(false));
+    assert!(prepare_trailing_send_target(&mut no_row, true, true).is_err());
+    assert_eq!(no_row.creates, 0, "no row means no append");
+}
 /// roster/oracle/builder/engine path: the first send admits and arrival
 /// settles, then a return to the source Space with a partial AX read (the
 /// moved subject omitted) carries fresh CG-alive evidence for the absent

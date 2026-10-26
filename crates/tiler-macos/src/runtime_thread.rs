@@ -4320,8 +4320,9 @@ mod trailing_join_tests {
 
             // Real native preparation through the injected backend only.
             let mut backend = FakeBackend::new(&[1, 277], 1, &[277]);
-            let prep = crate::workspace_send::prepare_trailing_send_target(&mut backend, true)
-                .expect("native append proves");
+            let prep =
+                crate::workspace_send::prepare_trailing_send_target(&mut backend, true, false)
+                    .expect("native append proves");
             assert_eq!((prep.target_sid, prep.created), (278, Some(278)));
             // Observed arrival: the mover now homes to the new trailing.
             retained.window_domains.insert(

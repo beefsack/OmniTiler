@@ -1624,7 +1624,8 @@ fn trailing_send_drain_bound_target_submits_and_settles_through_the_same_lane() 
             current: 1,
         },
     };
-    let prep = prepare_trailing_send_target(&mut prep_backend, true).expect("reuse prepares");
+    let prep =
+        prepare_trailing_send_target(&mut prep_backend, true, false).expect("reuse prepares");
     assert_eq!(prep.target_sid, 277);
     assert_eq!(prep.created, None);
     assert_eq!(prep.revision, 9);
@@ -2500,6 +2501,7 @@ fn trailing_request() -> TrailingSendRequest {
             pinned_cgid: 1,
             pinned_uuid: "uuid-a".to_owned(),
             trailing_enabled: true,
+            require_append: false,
         },
         creation_operation: None,
         creation_logical: None,

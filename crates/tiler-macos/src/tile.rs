@@ -2890,13 +2890,18 @@ mod native {
                     // no product stay reaches here yet). The reply binding
                     // (accepted transfer target plus its live native
                     // binding) authorizes the native send through a live SID
-                    // lookup at submit. Unbound targets without an explicit
-                    // creation desire refuse here before any post (missing
-                    // bindings never create); unbound targets WITH a desire
-                    // also refuse here: the desire-gated native creation
-                    // seam is unavailable pending typed truthful receipts
-                    // (prerequisite blocker, not a settled refusal). No
-                    // local reuse-or-append preparation runs on this path.
+                    // lookup at submit. The drain route below is the shared
+                    // [`route_send_claim_for_drain`](crate::workspace_send::route_send_claim_for_drain)
+                    // seam (production and tests execute the same branch):
+                    // bound targets keep the pinned numbered lane, while an
+                    // unbound target whose current correlated reply
+                    // explicitly requests backing routes through the
+                    // existing desire-driven creation executor regardless
+                    // of the original digit. No desire means no creation:
+                    // unbound targets without a matched desire refuse here
+                    // before any post (missing bindings never create). No
+                    // local reuse-or-append preparation runs on the main
+                    // thread.
                     // Follow-history attribution from this tick's fresh user
                     // row (single reads, never a poll): the display plus the
                     // source Space the send follows away from. A row that is
@@ -2919,14 +2924,53 @@ mod native {
                             crate::input_eligibility::now_ms(),
                         )
                     });
+                    let route = crate::workspace_send::route_send_claim_for_drain(&claim);
                     let submit = match row {
                         Some(row) => {
-                            let handle_clone = handle.clone();
-                            send_controller.submit(&claim, &row.display, row.current, move || {
-                                crate::workspace_send_native::LiveManagedSendBackend::new(
-                                    crate::workspace_send_native::OsSendReaders::live(handle_clone),
+                            if route == crate::workspace_send::SendDrainRoute::CreationBacked {
+                                let legs = crate::workspace_send::send_creation_legs_for_drain(
+                                    handle.published_display_inputs().as_ref(),
+                                );
+                                match legs {
+                                    Ok(legs) => {
+                                        let handle_clone = handle.clone();
+                                        let display = row.display.clone();
+                                        let from = row.current;
+                                        send_controller.submit_trailing(
+                                            &claim,
+                                            crate::workspace_send::TrailingSubmit {
+                                                display_index: legs.display_index,
+                                                pinned_cgid: legs.pinned_cgid,
+                                                pinned_uuid: &legs.pinned_uuid,
+                                                display: &display,
+                                                from,
+                                                trailing_enabled:
+                                                    crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                            },
+                                            move || {
+                                                crate::workspace_send_native::LiveManagedSendBackend::new(
+                                                    crate::workspace_send_native::OsSendReaders::live(handle_clone),
+                                                )
+                                            },
+                                        )
+                                    }
+                                    Err(reason) => Err(reason),
+                                }
+                            } else {
+                                let handle_clone = handle.clone();
+                                send_controller.submit(
+                                    &claim,
+                                    &row.display,
+                                    row.current,
+                                    move || {
+                                        crate::workspace_send_native::LiveManagedSendBackend::new(
+                                            crate::workspace_send_native::OsSendReaders::live(
+                                                handle_clone,
+                                            ),
+                                        )
+                                    },
                                 )
-                            })
+                            }
                         }
                         None => {
                             Err("product send refuses: fresh row unreadable at submit".to_owned())

@@ -220,6 +220,88 @@ pub fn trailing_send_target(
     }
 }
 
+/// Drain route for one engine-admitted send claim (pure, no native
+/// touch): bound targets keep the pinned numbered lane; an unbound
+/// follow target whose current correlated reply carries a matched
+/// explicit creation desire (all three desire legs present and naming
+/// the retained target) rides the desire-driven creation executor;
+/// everything else stays pinned (unbound refusals settle downstream
+/// without actuation — missing bindings never create). The public
+/// index rides unchanged for diagnostics (never forced to 0, never an
+/// invented desire/binding). Malformed indexes (>9), stays, bound
+/// targets, and missing/mismatched desires all stay pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendDrainRoute {
+    Pinned,
+    CreationBacked,
+}
+
+/// Pure drain-route decision shared by the production tile drain and
+/// its regression tests: production submits through the returned lane
+/// and tests execute the same branch with a scripted backend.
+#[must_use]
+pub fn route_send_claim_for_drain(claim: &ClaimedSelect) -> SendDrainRoute {
+    match &claim.action {
+        crate::runtime_types::InputSemanticAction::WorkspaceSend {
+            index,
+            follow: true,
+        } if *index <= 9 => {}
+        _ => return SendDrainRoute::Pinned,
+    }
+    if claim.expected_sid.is_some() {
+        return SendDrainRoute::Pinned;
+    }
+    match (
+        claim.select_creation_operation.as_deref(),
+        claim.select_creation_logical.as_deref(),
+        claim.select_creation_output.as_deref(),
+        claim.select_target_workspace.as_deref(),
+        claim.select_target_output.as_deref(),
+    ) {
+        (Some(_), Some(logical), Some(output), Some(target_workspace), Some(target_output))
+            if logical == target_workspace && output == target_output =>
+        {
+            SendDrainRoute::CreationBacked
+        }
+        _ => SendDrainRoute::Pinned,
+    }
+}
+
+/// Main-thread-published display legs for one creation-backed send
+/// submit (pure, plain data only): exactly one published display with
+/// a pinned non-empty UUID and a nonzero CG ID. Anything else refuses
+/// before any submit — never a first-display guess, never a guessed
+/// identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendCreationLegs {
+    pub display_index: usize,
+    pub pinned_cgid: u32,
+    pub pinned_uuid: String,
+}
+
+/// Pure display-legs resolution shared by the production tile drain
+/// and its regression tests: production submits through the resolved
+/// legs and tests execute the same branch with scripted inputs.
+pub fn send_creation_legs_for_drain(
+    published: Option<&crate::runtime_shared::PublishedDisplayInputs>,
+) -> Result<SendCreationLegs, String> {
+    let Some(published) = published else {
+        return Err("product send refuses: published display legs unpublished".to_owned());
+    };
+    if published.displays.len() != 1 {
+        return Err("product send refuses: published display legs unpublished".to_owned());
+    }
+    let display = &published.displays[0];
+    match (display.uuid.clone(), display.cg_id) {
+        (Some(uuid), cgid) if !uuid.is_empty() && cgid != 0 => Ok(SendCreationLegs {
+            display_index: 0,
+            pinned_cgid: cgid,
+            pinned_uuid: uuid,
+        }),
+        _ => Err("product send refuses: published display legs unpinned".to_owned()),
+    }
+}
+
 /// Prepared trailing send-follow target: the exact native SID the owner must
 /// drag to, the runtime-created SID when an append ran (`None` on reuse),
 /// and the fresh post-preparation topology revision the owner fences.
@@ -281,8 +363,20 @@ impl TrailingPrepFailure {
 /// [`crate::workspace_select::SelectionBackend`] trait the select drain
 /// proves through, so scripted fakes inject here and the live tile passes
 /// its native backend): reuse the proven-empty last, else exactly one
-/// append. No live effects beyond the single append; unknown emptiness
-/// refuses without touching Mission Control.
+/// append — or exactly one append unconditionally when `require_append`
+/// carries an explicit backing desire. No live effects beyond the single
+/// append; unknown emptiness refuses without touching Mission Control
+/// (on the reuse-or-append path only).
+///
+/// An explicit desire requires exactly one append even when the last
+/// proves empty: the core already resolved occupancy and requests
+/// backing for a different unbound logical target, so reusing the
+/// emptied native would retarget the wrong logical and stage no
+/// creation receipt. Occupancy is not consulted on that path (an
+/// unreadable emptiness read neither blocks nor guesses); the fresh
+/// row, order, ordinal-bound, display, revision, and exact-append
+/// adoption gates still apply unchanged, as do the truthful ambiguous
+/// receipts.
 ///
 /// Guards, in order: capability (unarmed refuses before any read), fresh
 /// row identity, emptiness proof (unknown refuses — zero-area and
@@ -310,6 +404,7 @@ impl TrailingPrepFailure {
 pub fn prepare_trailing_send_target(
     backend: &mut impl crate::workspace_select::SelectionBackend,
     trailing_enabled: bool,
+    require_append: bool,
 ) -> Result<TrailingSendPrep, TrailingPrepFailure> {
     if !trailing_enabled {
         return Err(TrailingPrepFailure::refused(
@@ -333,8 +428,22 @@ pub fn prepare_trailing_send_target(
         ));
     }
     let last = *before.spaces.last().expect("validated nonempty row");
-    let empty = backend.empty(last);
-    match trailing_send_target(&before.spaces, empty) {
+    // An explicit backing desire forces the append decision without
+    // consulting occupancy: `Ok(false)` can only resolve to `NeedAppend`
+    // or a shared-bound refusal here (never a reuse, never a guess), so
+    // the row/order/ordinal gates below run unchanged.
+    let decision = if require_append {
+        match trailing_send_target(&before.spaces, Ok(false)) {
+            Ok(TrailingSendTarget::NeedAppend) => Ok(TrailingSendTarget::NeedAppend),
+            Ok(TrailingSendTarget::Reuse(_)) => Err(
+                "trailing send refuses: explicit backing requires an append; refusing".to_owned(),
+            ),
+            Err(reason) => Err(reason),
+        }
+    } else {
+        trailing_send_target(&before.spaces, backend.empty(last))
+    };
+    match decision {
         Err(reason) => Err(TrailingPrepFailure::refused(reason, Some(before))),
         Ok(TrailingSendTarget::Reuse(sid)) => {
             if before.spaces.len() > 9 {

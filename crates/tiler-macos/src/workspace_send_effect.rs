@@ -665,8 +665,10 @@ pub struct TrailingCompletionProof {
 
 /// Owner-side trailing preparation pins: the main-thread-published
 /// plain-data display legs (never an AppKit read on the owner) plus the
-/// capability flag. The owner ensures the send-0 target natively
-/// (reuse proven-empty last, else exactly one append) and fences the
+/// capability flag, plus whether an explicit backing desire requires
+/// exactly one append. The owner ensures the send target natively
+/// (reuse proven-empty last, else exactly one append — or exactly one
+/// append unconditionally under an explicit desire) and fences the
 /// post-preparation revision per edge - an own-append revision move is
 /// carried explicitly, never bypassed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -675,6 +677,13 @@ pub struct TrailingPrepPins {
     pub pinned_cgid: u32,
     pub pinned_uuid: String,
     pub trailing_enabled: bool,
+    /// Explicit backing desire from the current correlated reply: the
+    /// core already resolved occupancy and requests backing for a
+    /// different unbound logical target, so the owner must append
+    /// exactly once even when the last proves empty (reusing the
+    /// emptied native would retarget the wrong logical). `false`
+    /// keeps the usual reuse-or-append behavior.
+    pub require_append: bool,
 }
 
 /// Owner-verified trailing target: the exact native SID plus the proof
@@ -720,9 +729,17 @@ pub struct TrailingSendRequest {
 }
 
 impl TrailingSendRequest {
-    /// Build one owner request from an engine-admitted trailing claim plus
-    /// the main-thread-published display legs. Refuses non-trailing
-    /// actions, unpinned subjects/lifetimes/sources/operations, and
+    /// Build one owner request from an engine-admitted send claim plus
+    /// the main-thread-published display legs. Accepts send-follow
+    /// shapes with a public index 0..=9: index 0 rides its usual
+    /// trailing reuse-or-append path with an optional desire, while a
+    /// numbered index 1..=9 enters only under an explicit matched
+    /// creation desire from the current correlated reply (all three
+    /// desire legs present and naming the claim's retained target) -
+    /// no desire means no creation, a mismatched desire refuses. The
+    /// creator backs unbound targets only: a bound target stays on the
+    /// pinned lane even under a desire. Refuses stays, malformed
+    /// indexes, unpinned subjects/lifetimes/sources/operations, and
     /// unpinned displays - the owner never guesses any of them.
     pub fn from_claim(
         claim: &ClaimedSelect,
@@ -731,14 +748,46 @@ impl TrailingSendRequest {
         pinned_uuid: &str,
         trailing_enabled: bool,
     ) -> Result<Self, String> {
-        match &claim.action {
+        let index = match &claim.action {
             crate::runtime_types::InputSemanticAction::WorkspaceSend {
-                index: 0,
+                index,
                 follow: true,
-            } => {}
+            } if *index <= 9 => *index,
             _ => {
                 return Err(
-                    "send target unpinned: trailing request needs send-0 follow; refusing"
+                    "send target unpinned: trailing request needs send follow; refusing".to_owned(),
+                );
+            }
+        };
+        // The creator backs unbound targets only: a bound target keeps
+        // the pinned numbered lane even when the reply also published a
+        // desire for its logical.
+        if claim.expected_sid.is_some() {
+            return Err(
+                "send target unpinned: trailing request needs unbound target; refusing".to_owned(),
+            );
+        }
+        if index != 0 {
+            // Numbered follows never create without an explicit desire:
+            // all three desire legs must ride the claim, and they must
+            // name the claim's retained target (logical/output match).
+            // A missing or mismatched desire refuses before any submit.
+            let (Some(op), Some(logical), Some(output)) = (
+                claim.select_creation_operation.as_deref(),
+                claim.select_creation_logical.as_deref(),
+                claim.select_creation_output.as_deref(),
+            ) else {
+                return Err(
+                    "send target unpinned: numbered send needs a creation desire; refusing"
+                        .to_owned(),
+                );
+            };
+            let _ = op;
+            if claim.select_target_workspace.as_deref() != Some(logical)
+                || claim.select_target_output.as_deref() != Some(output)
+            {
+                return Err(
+                    "send target unpinned: creation desire mismatches retained target; refusing"
                         .to_owned(),
                 );
             }
@@ -773,6 +822,11 @@ impl TrailingSendRequest {
                 pinned_cgid,
                 pinned_uuid: pinned_uuid.to_owned(),
                 trailing_enabled,
+                // An explicit backing desire requires exactly one append
+                // (the core already resolved occupancy for a different
+                // unbound logical); without a desire the owner keeps the
+                // usual reuse-or-append behavior.
+                require_append: claim.select_creation_operation.is_some(),
             },
             creation_operation: claim.select_creation_operation.clone(),
             creation_logical: claim.select_creation_logical.clone(),

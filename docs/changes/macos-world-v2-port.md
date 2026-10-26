@@ -1042,6 +1042,35 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   148 integration, 0 failed); strict all-target clippy PASS; workspace fmt and
   diff check PASS. No shared-source change, no live acceptance claimed.
 
+## Numbered send backing desire via the existing creation executor (2026-10-27)
+
+- Accepted core behavior: a numbered (`follow 0..=9`) transfer whose current
+  correlated reply carries an explicit creation desire still arrives with no
+  native SID for the unbound follow target. Previously the macOS adapter kept
+  that claim on the pinned numbered lane and refused (missing bindings never
+  create); the desire-gated native creation seam existed but the numbered-send
+  drain never entered it.
+- Adapter completion (macOS only, no core change): a matched correlated
+  unbound follow (`0..=9`, no `expected_sid`, all three desire legs present
+  and naming the retained target logical/output) routes through the existing
+  exact-append executor; bound targets stay pinned, and a missing/mismatched
+  desire still refuses with no native creation. The original public digit is
+  preserved for diagnostics (never forced to 0, never an invented desire).
+- Explicit creation requires exactly one append even when the prior last
+  proves empty: the core already resolved occupancy for a different unbound
+  logical, so reusing the emptied native would retarget the wrong logical and
+  stage no creation receipt. True no-desire and bound-target sends keep the
+  usual reuse-or-append behavior unchanged.
+- Third-spare note: the third logical spare exists without an eager physical
+  desktop append by the existing contract; the plus indicator appears from
+  retained occupancy. This change backs only explicitly desired sends, and is
+  not a core policy change or a new eager-spare proposal.
+- Offline regression (new): owner append-once genuine order/identity/stamp/
+  member settlement plus a later send to the already-existing target; route
+  and display-leg matrices; stale-focus, stale-topology, no-desire, and
+  empty-last refusal cases. This part is complete OFFLINE; live native proof
+  remains pending.
+
 ## Risks and open evidence
 
 - KDE delivery may change exact native binding receipts; update/inspect it before
