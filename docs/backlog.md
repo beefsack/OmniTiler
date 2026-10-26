@@ -194,14 +194,19 @@ decisions of 2026-09-24 are under
   Deferred investigations: Activities/multi-desktop, async configure. Four
   minimal port discriminator rows keep untested native outcomes TBD; Activities
   defaults tentative pending KDE evidence. v1 KDE rows below keep their
-  historical evidence; replacement belongs to this port. Status: Stages 0/1/1b/2/3
-  complete offline, including raw clear/float/transfer attempts, native
-  presentation ingress and deletion of local verdict/clamp/homing fallbacks;
-  Rust 216/216, exporter 14/14, JS 764/764, host-matched effect build and native
-  CTest 34/34 after final corrections. Stage 4 is next; renderer,
-  game-pause/unknown host facts and native acceptance remain pending. Tentative
-  adoption decisions and the oversized decorated-hint bound stay queued for
-  cross-platform review.
+  historical evidence; replacement belongs to this port. Status (2026-10-26):
+  Stages 0-3 complete offline. Stage 4: raw capture, shortcuts and N6 (neutral
+  workspace-tiling toggle, core-owned birth clear, raw deleted/unmanaged
+  mapping) landed; native gesture transport (decision B Esc fence, native
+  `{instance, serial}` identity) accepted offline, physical drag/release/Esc
+  leg pending. Stage 5 renderer is a WIP draft blocked on causal freshness,
+  next on the approved sequencing (gesture identity plus an effect-side
+  invalidation counter). User-approved and pending implementation: neutral
+  focused-fullscreen overlay suspension (shortcuts and workspace semantics
+  unchanged), N5 split of membership from immediate eligibility, execution-time
+  float-toggle geometry, execution-time output targeting for implicit
+  commands. Stages 6-8 not started. Tentative adoption decisions and the
+  oversized decorated-hint bound stay queued for cross-platform review.
   [Record](changes/kde-world-v2-port.md).
 - P2 | KDE native pager warning and quick fix (user 2026-10-26) | KDE uses
   the native Plasma workspace pager widget; OmniTiler draws no KDE pager, so
