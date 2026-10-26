@@ -15,6 +15,9 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- P2 | Windows-host scripted full row test flake | Pre-existing `scripted full
+  row` panic reproduced once in 16 runs and also on parent `68ce0b75`.
+  Diagnose and stabilize without weakening the scripted-row assertions.
 - P2 | Windows wake-attribution trace flood | User 2026-10-26: during heavy
   physical spam testing the log fills with consecutive `wake-attribution`
   lines from `wait_source:"pager"` message wakes with no hook kinds, no
@@ -95,7 +98,11 @@ decisions of 2026-09-24 are under
   replies complements it, but the native layer is essential: the 2026-10-26
   Windows starvation bugs lived in host-event servicing. Builds on the core-only
   ordered baseline (`test-fixtures/world-actions.json`, `world_acceptance`) and
-  the native acceptance connector items below.
+  the native acceptance connector items below. Shared stress definitions and
+  three simulated-host schedules are drafted and pass offline. Windows native
+  connector remains blocked on recovery and evidence-join defects; no live
+  delay results or native acceptance yet
+  ([active record](changes/platform-neutral-stress-acceptance.md)).
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every

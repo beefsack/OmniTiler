@@ -23,6 +23,9 @@ User-approved 2026-10-26 index (implementation status below):
   ([dated decisions](#kde-port-and-race-decisions-2026-10-26))
 
 Tentative index (user review pending; not approved product rules):
+- Platform-neutral stress test schema, alias/focus oracles, simulated-host
+  schedules, transport pacing and evidence separation, tentative (pending user review)
+  ([record](changes/platform-neutral-stress-acceptance.md#tentative-technical-decisions))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))
 - macOS adapter defaults, focus oracle, observation recovery, scoped input

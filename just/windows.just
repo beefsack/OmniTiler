@@ -57,6 +57,30 @@ shortcuts-stop run_dir:
 live-lib-check:
     pwsh -NoProfile -File scripts/windows-live-lib-check.ps1
 
+# Offline seam check for the fixture-only world-stress runner (no live
+# effects): parser plus required/forbidden seam assertions after any edit.
+world-stress-check:
+    pwsh -NoProfile -File scripts/windows-world-stress-check.ps1
+
+# Offline parse walk plus fault-injection mock for the world-stress runner:
+# no owner, fixture, or window effects.
+world-stress-mock:
+    pwsh -NoProfile -File scripts/windows-world-stress.ps1 -Mock
+    pwsh -NoProfile -File scripts/windows-world-stress.mock.ps1
+
+# Fixture-only native world-stress leg over the normal `tile` loop
+# (physical, medium, fixture scope only). Never runs by default. Needs an
+# explicit case or the default duo case runs:
+# `just world-stress -Case test-fixtures/world-stress-trio-churn.json`.
+# Out-of-hook cleanup: `just world-stress-stop <run_dir>`.
+world-stress *args:
+    pwsh -NoProfile -File scripts/windows-world-stress.ps1 -Live {{args}}
+
+# Out-of-hook recovery for the stress leg; works from a separate shell with
+# the exact printed RunDir.
+world-stress-stop run_dir:
+    pwsh -NoProfile -File scripts/windows-world-stress.ps1 -Stop -RunDir {{run_dir}}
+
 # Offline fault-injection mock for the reusable live-test library: all
 # live-API functions are shadowed, files stay in a fresh temp dir.
 live-lib-mock:
