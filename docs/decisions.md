@@ -44,8 +44,6 @@ Tentative index (user review pending; not approved product rules):
 - Activities defaults ([below](#port-deferred-investigations-2026-10-24))
 - KDE v2 stage sequencing and broker capture transport
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
-- Native adoption count: four native-bound workspaces plus ordinary trailing
-  lifecycle ([below](#native-adoption-2026-10-24))
 - Host-owned native-only receipts, optional current, authoritative order and
   hybrid creation correlation ([below](#native-adoption-2026-10-24)); review
   after both KDE and macOS changes land
@@ -136,6 +134,41 @@ Tentative index (user review pending; not approved product rules):
   Core pager-focused-window color does not apply on KDE. This supersedes earlier
   proposed KDE pager rendering/styling work; the backlog item is already recorded.
 - [Port scope and implementation evidence](changes/kde-world-v2-port.md#user-decisions-2026-10-26).
+
+## Accepted reviews of tentative decisions (2026-10-27)
+
+User-accepted on review; the matching tentative clauses elsewhere are no longer
+pending.
+
+- **Gesture terminal capture recovery:** a lost terminal-capture reply
+  redelivers the byte-identical envelope at the 2 s capture-timeout cadence up
+  to `TERMINAL_CAPTURE_MAX_RETRIES`, then at the 25 s host deadline until that
+  terminal settles, rotates or stops. These bound only a lost transport
+  callback and never prove finish, cancel or settlement
+  ([Ordering and Races](principles.md#ordering-and-races)); the justification
+  lives at the definition in `kwin/src/world-entry.ts`. Gesture identity
+  retention is capped at 256 entries; a seventeenth source instance rotates the
+  broker instead of evicting anti-replay evidence.
+- **Stage 5 test route:** renderer freshness and visibility logic lives in a
+  KWin-independent native unit, with KWin signal handlers as thin adapters.
+  Regressions run that unit, actual facts replies, the real broker
+  capture/projection and the real JS consumer over shared recorded payloads.
+  Only KWin signal delivery and painting are stubbed; they await physical
+  checks.
+- **Stage 5 fix details:** tests prove delivery with an asynchronous D-Bus
+  `Introspect` acknowledgement, never a settle wait. Every native invalidation
+  publishes its counter and hides or refreshes every surface, including anchor
+  remapping. Facts `{instance, invalidation}`, presentation
+  `coveredInstance`/`coveredInvalid` and preview
+  `producerInstance`/`producerSerial` are accepted KDE wire names, not
+  shared-core protocol.
+- **Native adoption count:** four occupied native desktops adopt as four
+  native-bound workspaces in native order, membership preserved and nothing
+  moved; the ordinary trailing spare follows unchanged and gains native backing
+  only when used ([native adoption](#native-adoption-2026-10-24)). The native
+  outcome stays TBD in its discriminator row.
+- **Raw KWin lifecycle mapping:** `deleted` maps to close; `managed=false`
+  (override-redirect surfaces) maps to absent.
 
 ## World command intent and birth ownership (2026-10-26)
 
