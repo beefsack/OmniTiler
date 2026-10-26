@@ -1456,6 +1456,12 @@
   acceptance. Stage 5 producing-gesture/native-invalidation freshness remains
   unaccepted and is the next renderer package; N5, game/fullscreen suspension,
   race-audit items and later stages remain parked.
+- Read-only live preflight created no windows and changed no controller, effect,
+  shortcut or configuration. The fixture protocol has no synthetic keyboard or
+  pointer-input operation; socket focus/geometry requests do not prove native
+  interactive move, release or delivered Esc. Physical fixture input remains
+  required for that leg. Controller evaluated-readiness, gesture execution and
+  complete post-mutation restoration have not been exercised by this preflight.
 
 ## Stage 5 bounded plan (2026-10-26)
 
