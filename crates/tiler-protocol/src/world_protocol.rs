@@ -1483,8 +1483,15 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
         }
         "focus-directional" => {
             check_keys(map, &["op", "win", "direction"])?;
+            // Explicit empty `win` is this command's no-focus marker (the
+            // core starts from the current workspace/output); every other
+            // form still names an opaque subject window.
+            let win = req_str(map, "win")?;
+            if !(win.is_empty() || is_opaque_id(win)) {
+                return Err(unknown_value());
+            }
             Ok(WorldCommand::FocusDirectional {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowId(win.to_owned()),
                 direction: parse_direction_token(req_str(map, "direction")?)?,
             })
         }

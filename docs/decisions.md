@@ -60,6 +60,8 @@ Tentative index (user review pending; not approved product rules):
 - Independent birth-clear property authority under geometry-convergence holds
   ([below](#world-command-intent-and-birth-ownership-2026-10-26)); tentative,
   safety holds and fresh-native settlement requirements remain binding
+- No-focus directional command encoding: explicit empty `win`, tentative
+  (pending user review) ([below](#workspaces))
 
 ## KDE port and race decisions (2026-10-26)
 
@@ -1494,18 +1496,29 @@ platform API behavior.
   REQ-MNZ-03). Empty-workspace focus across outputs remains undecided.
   Shared-core delivery retains existing tiled-session eligibility, not new
   float focus tracking. [Discriminator](spec/reference-outcomes.md#workspace-no-focus-discriminators).
-- **User 2026-10-26 (not yet implemented):** directional focus with no focused
+- **User 2026-10-26 (implemented in shared core and Windows routing):** directional focus with no focused
   window follows i3/sway/Hyprland: it starts from the current workspace/output
   and moves to the adjacent output in that direction by the existing
   cross-output selection, otherwise it is a no-op; it never picks a window on
   the current workspace. Shared core, all platforms. COSMIC outcome TBD
   (surface-level source check, else user testing); a COSMIC-specific variant
   may later become preset-selected.
+  All four directions use existing topology and destination remembered tiled
+  selection; no local-window, MRU/layout fallback or edge-nearest policy is
+  added. Existing floating-workspace and safety gates remain. Shared-core,
+  wire and Windows routing regressions pass; no-focus physical shortcuts and
+  native output crossing remain unverified. **Tentative (pending user review):**
+  explicit empty `win` on `focus-directional` means no focused window, equally
+  for in-process and JSON callers; missing/null/invalid ids and other commands
+  retain their strict validation. [Evidence and limits](changes/directional-focus-without-window.md).
 - **User 2026-10-26:** a shown workspace with windows may have no focused
   window. The tiler never forces focus back after host-caused focus loss
   (desktop/taskbar click, minimize); arrival rules above still apply on
   workspace selection. Consistent with i3/sway workspace-level focus and with
   game safety.
+  Verified without new focus-recovery code: observation-only loss regressions
+  emit no focus effect, and fixture minimize leaves native foreground off the
+  managed window. This does not claim physical desktop-click shortcut proof.
 - **User 2026-10-26:** Windows remembers an accepted asynchronous focus
   target's exact native identity and membership lifetime as in-flight, with no
   blocking completion wait, timer or timeout. Existing foreground WinEvents

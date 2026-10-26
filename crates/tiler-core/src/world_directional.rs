@@ -51,6 +51,10 @@ pub enum DirectionalOutcome {
     FocusRefusedMaximize,
     FocusFloatRetained,
     FocusFloatRefusedStale,
+    /// Direction-only focus with no focused window that resolves to no
+    /// focus change: unknown current output, no adjacent output, or no
+    /// existing destination selection. Never a current-workspace pick.
+    FocusUnfocusedRetained,
     MoveFloatRefusedStale,
     MoveFloatRefusedInvalidGeometry,
     MoveFloatRefusedConstraints,
@@ -71,6 +75,7 @@ impl DirectionalOutcome {
             Self::MoveRefusedFullscreen => "move-refused-fullscreen",
             Self::FocusRefusedMaximize => "focus-refused-maximize",
             Self::FocusFloatRetained => "focus-float-retained",
+            Self::FocusUnfocusedRetained => "focus-unfocused-retained",
             Self::FocusFloatRefusedStale => "focus-float-refused-stale",
             Self::MoveFloatRefusedStale => "move-float-refused-stale",
             Self::MoveFloatRefusedInvalidGeometry => "move-float-refused-invalid-geometry",

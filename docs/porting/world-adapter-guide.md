@@ -127,6 +127,15 @@ missing facts. Shape:
   pre-observation retained homing plus the action context
   (`action_foreground`, `action_cached`, `action_outputs`); the adapter
   never preselects.
+- No-focused-window directional focus: send `FocusDirectional` with an empty
+  window (`{"op":"focus-directional","win":"","direction":"right"}` on
+  the wire), not a remembered window or a local fallback. Encoding is tentative
+  (pending user review); behavior is User-approved 2026-10-26. Report genuinely
+  absent `focused_global` and normal action-context facts. Core crosses from
+  the current output by existing selection, otherwise no-ops; a contradictory
+  nonempty observed focus refuses. Missing/null `win` still refuses. Move/send
+  still require a subject. Observation-only host focus loss needs no recovery
+  command or focus setter. [Decision](../decisions.md#workspaces).
 - Tiling-mode actions: `ToggleWorkspaceTiling { output, workspace }` (wire
   `toggle-workspace-tiling`, `out/ws`) flips core-retained mode at execution.
   Never negate cached reply mode into `SetWorkspaceTiling`; keep explicit set

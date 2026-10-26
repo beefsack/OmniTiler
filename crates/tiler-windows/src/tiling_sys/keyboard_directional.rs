@@ -53,6 +53,17 @@ pub(super) fn dispatch_directional_intent(
     let tick = state.tick;
     let correlation = state.correlation();
     let Some(origin) = intent.origin.clone() else {
+        if matches!(intent.op, SnapOp::Focus) {
+            // No focused window: route a direction-only focus through the
+            // core from the current output instead of settling
+            // origin-vanished. Observation and fences run below; the seam
+            // never invents an origin or a subject window. Move keeps the
+            // origin-vanished settle: it has no subject to move.
+            dispatch_directional_no_focus(
+                state, me, store, dir, fulls, areas, intent, tick, log_path,
+            );
+            return;
+        }
         // Authentic interception swallows unmanaged/unadmitted/
         // shell/suspended/elevated chords with no origin; settle
         // defensively without dispatch (never acts on protected
@@ -744,6 +755,188 @@ pub(super) fn dispatch_directional_intent(
             "origin": origin.token,
             "window": from,
             "continued": continued,
+        }),
+    );
+}
+
+/// Direction-only focus with no chord origin (no focused window): fresh
+/// observation, suspension/elevation fences, then a subject-free
+/// [`tiler_core::world_report::WorldCommand::FocusDirectional`] through
+/// the production world route. The core resolves the current output from
+/// neutral report facts and crosses by the existing selection. The
+/// applied reply IS the outcome; this seam only logs it and verifies the
+/// foreground for its snap chain, never actuates twice. No origin token
+/// exists to echo here.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_directional_no_focus(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    intent: QueuedIntent,
+    tick: u64,
+    log_path: &Path,
+) {
+    let correlation = state.correlation();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    let Some(mut observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "snap",
+                "tick": tick,
+                "correlation": correlation.as_str(),
+                "op": intent.op.as_str(),
+                "direction": direction_name(intent.direction),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "observation-failed",
+            }),
+        );
+        return;
+    };
+    publish_managed(state, me, &observed, &retained);
+    ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
+    clear_maximize_at_admission(state, me, &retained);
+    // Fresh veto re-check before dispatch: validation may have taken
+    // time, and a vetoing foreground authorizes no dispatch.
+    if suspend_read(state, me, fulls).veto.block {
+        state.snap_advance = None;
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "snap",
+                "tick": tick,
+                "correlation": correlation.as_str(),
+                "op": intent.op.as_str(),
+                "direction": direction_name(intent.direction),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "suspended",
+            }),
+        );
+        return;
+    }
+    if foreground_elevated(me) {
+        state.snap_advance = None;
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "snap",
+                "tick": tick,
+                "correlation": correlation.as_str(),
+                "op": intent.op.as_str(),
+                "direction": direction_name(intent.direction),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "elevated-foreground",
+            }),
+        );
+        return;
+    }
+    // Direction-only world dispatch with no subject: the core owns
+    // topology and the refusal/selection lattice, so the adapter never
+    // branches here. The applied reply IS the outcome.
+    let direction = direction_name(intent.direction).to_owned();
+    let command = tiler_core::world_report::WorldCommand::FocusDirectional {
+        window: tiler_core::directional::WindowId(String::new()),
+        direction: direction.clone(),
+    };
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        command,
+        super::observation::sample_cursor(),
+    );
+    // World-owned directional no-focus outcome. Refusals settle
+    // atomically with no writes; a focus change actuates through the
+    // single spent common effect inside the world apply above, and this
+    // seam only verifies the foreground for its snap chain.
+    if let Some(tiler_core::world_report::CommandResult::Directional { outcome, cause, .. }) = reply
+        .as_ref()
+        .and_then(|reply| reply.command_result.clone())
+    {
+        state.snap_advance = None;
+        let mut line = serde_json::json!({
+            "event": "snap",
+            "tick": tick,
+            "correlation": correlation.as_str(),
+            "op": intent.op.as_str(),
+            "direction": direction_name(intent.direction),
+            "edge": intent.edge.as_str(),
+            "disposition": "consumed",
+            "outcome": outcome.as_str(),
+        });
+        if let Some(cause) = cause {
+            line["cause"] = serde_json::Value::from(cause);
+        }
+        log_json_at(log_path, line);
+        return;
+    }
+    // No world-owned directional result: the outcome rides the snapshot
+    // and the single spent focus effect from the world apply above. This
+    // seam verifies arrival and the foreground for its snap chain and
+    // never actuates twice.
+    let target = reply.as_ref().and_then(|reply| {
+        reply
+            .effects
+            .iter()
+            .find(|effect| {
+                effect.kind == tiler_core::world_report::EffectKind::Focus
+                    && effect.id.starts_with("fx-")
+            })
+            .map(|effect| effect.target.0.clone())
+    });
+    let Some(target) = target else {
+        // No explicit focus effect: the core planned no focus change
+        // (no-op or silent refusal).
+        state.snap_advance = None;
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "snap",
+                "tick": tick,
+                "correlation": correlation.as_str(),
+                "op": intent.op.as_str(),
+                "direction": direction_name(intent.direction),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "unchanged",
+            }),
+        );
+        return;
+    };
+    // The world apply already spent the single focus effect; verify the
+    // foreground for the snap chain, never actuate twice.
+    let outcome = if foreground_matches(state, &observed, &retained, &target) {
+        note_focus_advance(state, &observed, &retained, &target);
+        "focus-ok"
+    } else {
+        state.snap_advance = None;
+        "focus-unverified"
+    };
+    log_json_at(
+        log_path,
+        serde_json::json!({
+            "event": "snap",
+            "tick": tick,
+            "correlation": correlation.as_str(),
+            "op": intent.op.as_str(),
+            "direction": direction_name(intent.direction),
+            "edge": intent.edge.as_str(),
+            "disposition": "consumed",
+            "outcome": outcome,
         }),
     );
 }

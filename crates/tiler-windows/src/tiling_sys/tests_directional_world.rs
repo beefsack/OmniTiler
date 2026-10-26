@@ -1756,3 +1756,499 @@ fn maximized_tiled_clear_observed_live_mismatch_races_without_dispatch() {
     assert_eq!(stats.clear_holds[0].window, "w1");
     assert_eq!(stats.clear_holds[0].hold, "frame-race");
 }
+
+/// No-focused-window directional focus (User 2026-10-26): the hook route
+/// with no chord origin dispatches a subject-free FocusDirectional; the
+/// core starts at the neutral action context and crosses by the existing
+/// selection. Hermetic through the pending seams (injected observation,
+/// suspend, elevation, foreground). The only native reads left are the
+/// real foreground HWND (never matches injected members, so the global
+/// focus stays honestly empty) and the real cursor sample (single-output
+/// routes resolve through the registry fallback; two-output dispatches
+/// pass explicit cursors).
+fn nofocus_log_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("tiler-dir-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp dir");
+    dir
+}
+
+fn nofocus_me() -> crate::model::ProcessIdentity {
+    crate::model::ProcessIdentity {
+        pid: 4242,
+        process_creation: "test-creation".to_owned(),
+        user_sid: "S-1-5-test".to_owned(),
+        session_id: 1,
+        exe_path: "test.exe".to_owned(),
+    }
+}
+
+fn nofocus_areas() -> (Vec<super::MonitorArea>, Vec<Rect>) {
+    let areas = vec![
+        super::MonitorArea {
+            device: "DEV1".to_owned(),
+            work: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        },
+        super::MonitorArea {
+            device: "DEV2".to_owned(),
+            work: Rect {
+                x: 800,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x: 800,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        },
+    ];
+    let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+    (areas, fulls)
+}
+
+fn nofocus_seed_member(
+    state: &mut super::TileLoop,
+    me: &crate::model::ProcessIdentity,
+    hwnd: u64,
+    token: &str,
+    pid: u32,
+    creation: &str,
+) {
+    use super::inject_pending_tag;
+    let member = crate::native_guards::WindowKey {
+        hwnd,
+        pid,
+        creation: creation.to_owned(),
+    };
+    state.member_tokens.insert(member.clone(), token.to_owned());
+    state.member_identity.insert(
+        member.clone(),
+        crate::model::ProcessIdentity {
+            pid,
+            process_creation: creation.to_owned(),
+            user_sid: me.user_sid.clone(),
+            session_id: me.session_id,
+            exe_path: me.exe_path.clone(),
+        },
+    );
+    state.member_tags.insert(member, format!("tag-{hwnd}"));
+    inject_pending_tag(hwnd, Some(format!("tag-{hwnd}")));
+}
+
+fn nofocus_observed(
+    me: &crate::model::ProcessIdentity,
+    hwnd: u64,
+    token: &str,
+    pid: u32,
+    creation: &str,
+    x: i32,
+) -> ObservedWindow {
+    let visible = Rect {
+        x,
+        y: 10,
+        w: 200,
+        h: 200,
+    };
+    ObservedWindow {
+        hwnd,
+        token: token.to_owned(),
+        outer: visible,
+        visible,
+        insets: crate::tiling::FrameInsets::measure(visible, visible),
+        identity: ObservedTarget {
+            hwnd,
+            pid,
+            process_creation: creation.to_owned(),
+            exe_path: me.exe_path.clone(),
+            user_sid: me.user_sid.clone(),
+            session_id: me.session_id,
+            tag: format!("tag-{hwnd}"),
+        },
+        facts: plain_facts(),
+        member_tag: Some(format!("tag-{hwnd}")),
+    }
+}
+
+struct NoFocusFixture {
+    state: super::TileLoop,
+    me: crate::model::ProcessIdentity,
+    store: crate::storage::LedgerStore,
+    dir: std::path::PathBuf,
+    observed: Vec<ObservedWindow>,
+    areas: Vec<super::MonitorArea>,
+    fulls: Vec<Rect>,
+    wire1: String,
+    wire2: String,
+}
+
+/// Seed two outputs with managed windows (plus an optional second
+/// source window), converged with no foreground. Returns the fixture for
+/// direct [`super::world_tick::run_world_command`] dispatches.
+fn nofocus_seeded(name: &str, source_windows: usize, with_target: bool) -> NoFocusFixture {
+    use super::{
+        clear_pending_seams, inject_pending_elevated, inject_pending_foreground,
+        inject_pending_observe, inject_pending_suspend,
+    };
+    clear_pending_seams();
+    let dir = nofocus_log_dir(name);
+    let mut state = test_state();
+    state.log_path = dir.join("owner.log");
+    let me = nofocus_me();
+    let (areas, fulls) = nofocus_areas();
+    state.ensure_device("DEV1");
+    state.ensure_device("DEV2");
+    let wire1 = state.wire_of("DEV1").expect("wire 1");
+    let wire2 = state.wire_of("DEV2").expect("wire 2");
+    let mut members = Vec::new();
+    for (index, (hwnd, token, pid, creation, x)) in [
+        (0x6101u64, "w-m1", 9101u32, "c-6101", 10),
+        (0x6102u64, "w-m2", 9102u32, "c-6102", 300),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index < source_windows {
+            members.push((hwnd, token, pid, creation, x));
+        }
+    }
+    if with_target {
+        members.push((0x6201u64, "w-n1", 9201u32, "c-6201", 810));
+    }
+    for (hwnd, token, pid, creation, _) in &members {
+        nofocus_seed_member(&mut state, &me, *hwnd, token, *pid, creation);
+    }
+    let observed: Vec<ObservedWindow> = members
+        .iter()
+        .map(|(hwnd, token, pid, creation, x)| {
+            nofocus_observed(&me, *hwnd, token, *pid, creation, *x)
+        })
+        .collect();
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_foreground(Some(0));
+    let seed = super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("seed converges");
+    assert!(seed.ready, "seed converges");
+    NoFocusFixture {
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        areas,
+        fulls,
+        wire1,
+        wire2,
+    }
+}
+
+fn nofocus_command(direction: &str) -> WorldCommand {
+    WorldCommand::FocusDirectional {
+        window: WindowId(String::new()),
+        direction: direction.to_owned(),
+    }
+}
+
+fn nofocus_dispatch(
+    fx: &mut NoFocusFixture,
+    cursor: Option<(i32, i32)>,
+    direction: &str,
+) -> Option<tiler_core::world_report::WorldReply> {
+    super::world_tick::run_world_command(
+        &mut fx.state,
+        &fx.me,
+        &fx.store,
+        &fx.dir,
+        &fx.observed,
+        &[],
+        &fx.areas,
+        0,
+        &fx.fulls,
+        nofocus_command(direction),
+        cursor,
+    )
+}
+
+#[test]
+fn no_focus_dispatch_crosses_occupied_source_to_existing_selection() {
+    // Occupied source (two windows) with no focused window: the core
+    // crosses right from the cursor-resolved output and effects the
+    // destination's remembered selection, never a source window.
+    let mut fx = nofocus_seeded("nofocus-cross", 2, true);
+    let reply = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
+    assert!(
+        reply.command_result.is_none(),
+        "success rides the effect: {:?}",
+        reply.command_result
+    );
+    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == tiler_core::world_report::EffectKind::Focus)
+        .collect();
+    assert_eq!(focus.len(), 1, "one focus effect: {:?}", reply.effects);
+    assert_eq!(focus[0].target.0, "w-n1", "existing destination selection");
+    assert!(
+        focus[0].id.starts_with("fx-"),
+        "one-shot effect id: {}",
+        focus[0].id
+    );
+    let _ = (fx.wire1, fx.wire2);
+    super::clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&fx.dir);
+}
+
+#[test]
+fn no_focus_dispatch_empty_source_crosses() {
+    // Empty source workspace: no local subject exists, yet the adjacent
+    // output's selection is still reached.
+    let mut fx = nofocus_seeded("nofocus-empty-src", 0, true);
+    let reply = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
+    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == tiler_core::world_report::EffectKind::Focus)
+        .collect();
+    assert_eq!(
+        focus.len(),
+        1,
+        "empty source still crosses: {:?}",
+        reply.effects
+    );
+    assert_eq!(focus[0].target.0, "w-n1");
+    super::clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&fx.dir);
+}
+
+#[test]
+fn no_focus_dispatch_empty_destination_retains() {
+    // Adjacent output exists but is empty: no remembered selection, so
+    // no effect rather than an invented target.
+    let mut fx = nofocus_seeded("nofocus-empty-dst", 1, false);
+    let reply = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
+    assert!(
+        reply.effects.is_empty(),
+        "empty target: {:?}",
+        reply.effects
+    );
+    match &reply.command_result {
+        Some(CommandResult::Directional { outcome, cause, .. }) => {
+            assert_eq!(outcome.as_str(), "focus-unfocused-retained");
+            assert_eq!(cause.as_deref(), Some("no-target"));
+        }
+        other => panic!("expected retained no-op, got {other:?}"),
+    }
+    super::clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&fx.dir);
+}
+
+#[test]
+fn no_focus_keyboard_route_without_origin_reaches_core() {
+    // Production hook route with no chord origin on a single output:
+    // the intent reaches the core (no origin-vanished settle) and the
+    // core retains with no adjacent output, actuating nothing.
+    use super::{
+        clear_pending_seams, inject_pending_elevated, inject_pending_foreground,
+        inject_pending_observe, inject_pending_suspend, inject_pending_tag, keyboard_tick,
+    };
+    use crate::snapkey::{QueuedIntent, QueuedSnapEvent, SnapEdge, SnapOp};
+    clear_pending_seams();
+    let dir = nofocus_log_dir("nofocus-route");
+    let mut state = test_state();
+    state.log_path = dir.join("owner.log");
+    let me = nofocus_me();
+    let areas = vec![area()];
+    let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+    state.ensure_device("DEV1");
+    nofocus_seed_member(&mut state, &me, 0x6301, "w-1", 9301, "c-6301");
+    inject_pending_tag(0x6301, Some("tag-0x6301".to_owned()));
+    let observed = vec![nofocus_observed(&me, 0x6301, "w-1", 9301, "c-6301", 10)];
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_foreground(Some(0));
+    let seed = super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("seed converges");
+    assert!(seed.ready, "seed converges");
+    // The real cursor sample rides this tick; the single-output
+    // registry fallback keeps source resolution deterministic.
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_foreground(Some(0));
+    inject_pending_tag(0x6301, Some("tag-0x6301".to_owned()));
+    keyboard_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &fulls,
+        &areas,
+        vec![QueuedSnapEvent::Intent(QueuedIntent {
+            op: SnapOp::Focus,
+            direction: tiler_core::directional::Direction::Right,
+            edge: SnapEdge::Down,
+            origin: None,
+            consumed: true,
+            announce: true,
+            tick: std::time::Instant::now(),
+        })],
+        None,
+    );
+    assert_eq!(state.tick, 1, "production dispatch advances one tick");
+    assert!(state.snap_advance.is_none());
+    let text = std::fs::read_to_string(dir.join("owner.log")).expect("owner log");
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("log line"))
+        .collect();
+    let snaps: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["event"] == serde_json::json!("snap"))
+        .collect();
+    assert_eq!(snaps.len(), 1, "one snap settle: {lines:?}");
+    assert_eq!(snaps[0]["op"], serde_json::json!("focus"));
+    assert_eq!(snaps[0]["direction"], serde_json::json!("right"));
+    assert_eq!(
+        snaps[0]["outcome"],
+        serde_json::json!("focus-unfocused-retained"),
+        "reaches core, not origin-vanished: {lines:?}"
+    );
+    assert_eq!(snaps[0]["cause"], serde_json::json!("no-adjacent-output"));
+    clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_focus_keyboard_route_keeps_suspend_and_elevation_fences() {
+    // Suspension and elevation still fence the no-origin route before any
+    // core dispatch, exactly like the subject route.
+    use super::{
+        clear_pending_seams, inject_pending_elevated, inject_pending_foreground,
+        inject_pending_observe, inject_pending_suspend, inject_pending_tag, keyboard_tick,
+    };
+    use crate::snapkey::{QueuedIntent, QueuedSnapEvent, SnapEdge, SnapOp};
+    for (name, suspend, elevated, outcome) in [
+        ("nofocus-suspend", Some(true), Some(false), "suspended"),
+        (
+            "nofocus-elevated",
+            Some(false),
+            Some(true),
+            "elevated-foreground",
+        ),
+    ] {
+        clear_pending_seams();
+        let dir = nofocus_log_dir(name);
+        let mut state = test_state();
+        state.log_path = dir.join("owner.log");
+        let me = nofocus_me();
+        let areas = vec![area()];
+        let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+        state.ensure_device("DEV1");
+        nofocus_seed_member(&mut state, &me, 0x6401, "w-1", 9401, "c-6401");
+        inject_pending_tag(0x6401, Some("tag-0x6401".to_owned()));
+        let observed = vec![nofocus_observed(&me, 0x6401, "w-1", 9401, "c-6401", 10)];
+        let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+        inject_pending_observe(observed.clone(), Vec::new(), false);
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_foreground(Some(0));
+        super::world_tick::run_observation_tick(
+            &mut state,
+            &me,
+            &store,
+            &dir,
+            &observed,
+            &[],
+            &areas,
+            0,
+            &fulls,
+            None,
+            false,
+        )
+        .expect("seed converges");
+        inject_pending_observe(observed.clone(), Vec::new(), false);
+        inject_pending_suspend(suspend);
+        inject_pending_elevated(elevated);
+        inject_pending_foreground(Some(0));
+        inject_pending_tag(0x6401, Some("tag-0x6401".to_owned()));
+        keyboard_tick(
+            &mut state,
+            &me,
+            &store,
+            &dir,
+            &fulls,
+            &areas,
+            vec![QueuedSnapEvent::Intent(QueuedIntent {
+                op: SnapOp::Focus,
+                direction: tiler_core::directional::Direction::Right,
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: true,
+                announce: true,
+                tick: std::time::Instant::now(),
+            })],
+            None,
+        );
+        assert!(state.snap_advance.is_none());
+        let text = std::fs::read_to_string(dir.join("owner.log")).expect("owner log");
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("log line"))
+            .collect();
+        let snaps: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|line| line["event"] == serde_json::json!("snap"))
+            .collect();
+        assert_eq!(snaps.len(), 1, "one snap settle: {lines:?}");
+        assert_eq!(
+            snaps[0]["outcome"],
+            serde_json::Value::from(outcome),
+            "fence holds: {lines:?}"
+        );
+        clear_pending_seams();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

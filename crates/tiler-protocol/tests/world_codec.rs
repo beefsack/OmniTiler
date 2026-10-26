@@ -1753,3 +1753,123 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
     let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
     assert_eq!(error.kind, "unknown-field");
 }
+
+#[test]
+fn focus_directional_empty_win_decodes_as_no_focus_marker() {
+    // Explicit empty `win` is this command's no-focus marker: the key stays
+    // required and string-typed, but the empty value decodes instead of
+    // refusing. Every other windowed command still refuses it.
+    use tiler_core::world_report::WorldCommand as C;
+    let command = serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"});
+    let report = decode_request(&with_command(&command, "7")).expect("empty win decodes");
+    assert!(matches!(
+        report.command,
+        Some(C::FocusDirectional { ref window, .. }) if window.0.is_empty()
+    ));
+    assert_eq!(report.command_seq, Some(7));
+    for op in ["move-directional", "send-directional"] {
+        let extra = if op.starts_with("move") {
+            serde_json::json!({"win": "", "direction": "down", "sameAxis": "group-with-neighbor"})
+        } else {
+            serde_json::json!({"win": "", "direction": "left", "follow": true})
+        };
+        let mut map = serde_json::Map::new();
+        map.insert("op".to_owned(), serde_json::Value::String(op.to_owned()));
+        for (key, value) in extra.as_object().expect("object") {
+            map.insert(key.clone(), value.clone());
+        }
+        assert!(
+            decode_request(&with_command(&serde_json::Value::Object(map), "7")).is_err(),
+            "{op} refuses empty win"
+        );
+    }
+    // The key stays required and string-typed; blank-nonempty wins refuse.
+    let missing = serde_json::json!({"op": "focus-directional", "direction": "right"});
+    assert!(decode_request(&with_command(&missing, "7")).is_err());
+    let null = serde_json::json!({"op": "focus-directional", "win": null, "direction": "right"});
+    assert!(decode_request(&with_command(&null, "7")).is_err());
+    let number = serde_json::json!({"op": "focus-directional", "win": 7, "direction": "right"});
+    assert!(decode_request(&with_command(&number, "7")).is_err());
+    let blank = serde_json::json!({"op": "focus-directional", "win": " ", "direction": "right"});
+    assert!(decode_request(&with_command(&blank, "7")).is_err());
+}
+
+#[test]
+fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
+    // Two outputs, no focused window: the JSON no-focus marker decodes,
+    // validates, and the engine crosses to the adjacent remembered
+    // selection with one explicit focus effect, encoded like the core.
+    fn two_output_envelope(seq: &str, req: &str, command: Option<serde_json::Value>) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["screens"] = serde_json::json!([
+            {"out": "out-a", "full": [0, 0, 800, 600], "work": [0, 0, 800, 560],
+             "gap": 0, "outer": 0, "complete": true, "primary": true},
+            {"out": "out-b", "full": [800, 0, 800, 600], "work": [800, 0, 800, 560],
+             "gap": 0, "outer": 0, "complete": true, "primary": false},
+        ]);
+        value["windows"] = serde_json::json!([
+            {"win": "win-a", "out": "out-a", "rect": [10, 0, 200, 200],
+             "floating": false, "fitExcluded": false, "fullscreen": false,
+             "maximized": false, "sticky": false, "fixedAuto": false,
+             "fixedSuppress": false, "minimized": false, "observedWs": null,
+             "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null}},
+            {"win": "win-b", "out": "out-b", "rect": [810, 0, 200, 200],
+             "floating": false, "fitExcluded": false, "fullscreen": false,
+             "maximized": false, "sticky": false, "fixedAuto": false,
+             "fixedSuppress": false, "minimized": false, "observedWs": null,
+             "hints": {"minW": null, "minH": null, "maxW": null, "maxH": null}},
+        ]);
+        value["actionForeground"] = serde_json::json!("out-a");
+        value["actionOutputs"] = serde_json::json!(["out-a", "out-b"]);
+        value["views"] = serde_json::json!([]);
+        value["focused"] = serde_json::json!("");
+        value["obs"] = serde_json::Value::String(seq.to_owned());
+        value["reqSeq"] = serde_json::Value::String(seq.to_owned());
+        value["req"] = serde_json::Value::String(req.to_owned());
+        match command {
+            Some(command) => {
+                value["command"] = command;
+                value["cmdSeq"] = serde_json::Value::String("11".to_owned());
+            }
+            None => {
+                value["command"] = serde_json::Value::Null;
+                value["cmdSeq"] = serde_json::Value::Null;
+            }
+        }
+        value.to_string()
+    }
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let seed = decode_request(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
+    match engine.handle_report(&seed) {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("expected accepted seed, got {other:?}"),
+    }
+    let report = decode_request(&two_output_envelope(
+        "2",
+        "req-2",
+        Some(serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"})),
+    ))
+    .expect("no-focus command decodes");
+    let reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
+        .effects
+        .iter()
+        .filter(|effect| {
+            effect.kind == tiler_core::world_report::EffectKind::Focus
+                && effect.id.starts_with("fx-")
+        })
+        .collect();
+    assert_eq!(focus.len(), 1, "one crossing effect: {:?}", reply.effects);
+    assert_eq!(focus[0].target.0, "win-b");
+    assert!(reply.command_result.is_none());
+    let wire = encode_reply(&reply);
+    assert_eq!(
+        wire,
+        tiler_core::world_report::encode_reply_canonical(&reply),
+        "transport mirrors the core writer"
+    );
+}

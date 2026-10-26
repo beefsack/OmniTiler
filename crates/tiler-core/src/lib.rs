@@ -108,6 +108,8 @@ mod world_logical_contract_tests;
 #[cfg(test)]
 mod world_migration_refusal_tests;
 #[cfg(test)]
+mod world_no_focus_tests;
+#[cfg(test)]
 mod world_pager_presentation_tests;
 #[cfg(test)]
 mod world_restored_routing_tests;

@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply, TiledKind};
-use crate::directional::{Direction, OutputId, SameAxisMove, WindowId};
+use crate::directional::{Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::engine::Engine;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
@@ -375,6 +375,18 @@ impl WorldEngine {
                 message: MSG_DIRECTION,
             };
         };
+        // No focused window: the adapter claimed no subject, so the core
+        // starts from the current workspace/output instead of resolving a
+        // subject row. Unknown non-empty windows keep the stale refusal.
+        if window.0.is_empty() {
+            return self.focus_directional_no_focus(
+                report,
+                command_seq,
+                direction_parsed,
+                held_scopes,
+                by_id,
+            );
+        }
         let Some(source_row) = by_id.get(window) else {
             self.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatRefusedStale,
@@ -495,6 +507,118 @@ impl WorldEngine {
             float_subject: false,
         };
         self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
+    }
+
+    /// Direction-only focus with no focused window (empty window): start
+    /// from the current workspace/output (neutral action context), cross
+    /// to the strict adjacent output, and focus its existing remembered
+    /// selection. Otherwise a no-op; never selects a current-workspace
+    /// window. All four directions may cross. Read-only: the explicit
+    /// focus effect converges next report. Floating workspaces stop
+    /// navigation like the subject path; eligibility otherwise reuses the
+    /// existing selection, and held scopes refuse unchanged.
+    pub(crate) fn focus_directional_no_focus(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        direction: Direction,
+        held_scopes: &BTreeSet<DomainKey>,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+    ) -> CommandApplied {
+        // A contradictory observed focus fails closed: the adapter claimed
+        // no focused window while the report carries one.
+        if !report.focused_global.is_empty() {
+            return self.note_unfocused_retained(command_seq, "focus-present");
+        }
+        let Some(source_output) = self.resolve_action_output(report) else {
+            return self.note_unfocused_retained(command_seq, "no-source");
+        };
+        let Some(source_view) = self.effective_view(&source_output) else {
+            return self.note_unfocused_retained(command_seq, "no-source");
+        };
+        let source_key = DomainKey {
+            output: source_output.clone(),
+            workspace: WorkspaceId(source_view),
+        };
+        if held_scopes.contains(&source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        // Floating workspaces stop directional navigation like the subject
+        // path: same outcome vocabulary, no crossing.
+        if !matches!(
+            self.logical_tiling(&source_key.output.0, &source_key.workspace.0),
+            crate::world_report::TilingMode::Tiled
+        ) {
+            self.command_result = Some(CommandResult::Directional {
+                outcome:
+                    crate::world_directional::DirectionalOutcome::FocusRefusedWorkspaceFloating,
+                target: None,
+                rect: None,
+                cause: None,
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        }
+        let Some(target_output) = self.core_topology_target(&source_output, direction) else {
+            return self.note_unfocused_retained(command_seq, "no-adjacent-output");
+        };
+        let Some(source_staged) = self
+            .staged
+            .domains
+            .iter()
+            .find(|d| d.readable && d.key == source_key)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let Some(((_, _), (_, target_key), _, _)) = self.directional_pair_for_target(
+            &source_key,
+            source_staged,
+            direction,
+            &target_output,
+            held_scopes,
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let selected = self
+            .engine
+            .session(&target_key)
+            .and_then(|session| {
+                let leaf = session.remembered_leaf(&target_key)?;
+                session.focused_window_for(&leaf, &target_key)
+            })
+            .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
+            .filter(|window| by_id.get(window).is_some_and(|row| !row.floating));
+        let Some(target_window) = selected else {
+            return self.note_unfocused_retained(command_seq, "no-target");
+        };
+        self.note_command(command_seq);
+        CommandApplied::Effect(OneShotEffect::explicit_focus(
+            command_seq,
+            target_window,
+            self.state_revision + 1,
+        ))
+    }
+
+    /// Record a no-focus directional no-op under the shared directional
+    /// vocabulary without mutation or actuation.
+    fn note_unfocused_retained(&mut self, command_seq: u64, cause: &str) -> CommandApplied {
+        self.command_result = Some(CommandResult::Directional {
+            outcome: crate::world_directional::DirectionalOutcome::FocusUnfocusedRetained,
+            target: None,
+            rect: None,
+            cause: Some(cause.to_owned()),
+        });
+        self.note_command(command_seq);
+        CommandApplied::NoEffect
     }
 
     /// Direction-only move (core-owned topology): windowed selection. All

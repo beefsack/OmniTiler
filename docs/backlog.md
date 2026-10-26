@@ -83,16 +83,12 @@ decisions of 2026-09-24 are under
 - P1 | Directional focus with no focused window | All no-focus semantics
   decided User 2026-10-26 ([decision](decisions.md#workspaces),
   [Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
-  Arrival MRU/layout-first is delivered. Next: implement in shared core the
-  i3/sway/Hyprland outcome: with no focused window, directional focus starts
-  from the current workspace/output, moves to the adjacent output in that
-  direction (existing cross-output selection), otherwise no-op; never picks a
-  window on the current workspace. Record per-WM cells in the functional
-  matrix. COSMIC cell TBD: surface-level source check only, else user testing;
-  may later become a preset-selected variant. The no-forced-refocus rule needs
-  no new code; verify it holds. Windows workspace-switch focus, rapid
-  Win+arrow and rapid send-follow are user physically accepted 2026-10-26;
-  multi-output/shared/floating variants and games remain user-owned.
+  Shared core, strict JSON and Windows no-origin keyboard routing delivered;
+  per-WM matrix recorded (COSMIC TBD after surface-only check). No-forced-refocus
+  holds in core regressions and fixture minimize. Native Windows gates pass;
+  Linux CI pending. New no-focus physical shortcut/output-crossing proof remains
+  user-owned: the CLI retains its managed-origin gate and injected keys remain
+  filtered. [Evidence/limits](changes/directional-focus-without-window.md).
 - P1 | Platform-neutral spam/stress acceptance tests | User 2026-10-26, after
   the P1 above: one set of platform-agnostic test definitions (high-volume
   action sequences: sends, switches, directional focus, moves, window churn)

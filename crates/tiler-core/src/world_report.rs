@@ -928,6 +928,10 @@ pub enum WorldCommand {
     /// scopes refuse without mutation. Float subjects resolve through the
     /// world-owned float-focus lattice (candidates/target in core), never
     /// an adapter bypass.
+    ///
+    /// An empty window names no focused window: the core starts from the
+    /// current workspace/output (neutral action context) and crosses by
+    /// the existing cross-output selection, otherwise no effect.
     FocusDirectional { window: WindowId, direction: String },
     /// Direction-only move (core-owned topology): the adapter names the
     /// window, direction and same-axis mode only. Core resolves the strict
@@ -2533,7 +2537,13 @@ pub fn valid_command(command: &WorldCommand) -> bool {
         }
         WorldCommand::FocusDirectional {
             window, direction, ..
-        } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
+        } => {
+            // An empty window is the no-focused-window form (start from
+            // the current workspace/output); every other form names its
+            // subject.
+            (window.0.is_empty() || is_opaque_id(&window.0))
+                && DIRECTIONS.contains(&direction.as_str())
+        }
         WorldCommand::MoveDirectional {
             window, direction, ..
         } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
