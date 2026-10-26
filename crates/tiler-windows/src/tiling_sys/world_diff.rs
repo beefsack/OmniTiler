@@ -716,6 +716,8 @@ impl NativeOps for FakeNative {
         // when traced. `move_size` is the pre-primitive veto lane (no
         // primitive, honest `Ok(false)`); `fail_focus` is a ran-but-refused
         // primitive; `throw_focus` is a ran-and-threw primitive. The offline
+        // mirror runs no prime: `prime_inserted` stays `None` here; the
+        // production seam reports the actual outcome.
         if self.move_size.contains(token) {
             self.note_write();
             return (
@@ -723,6 +725,7 @@ impl NativeOps for FakeNative {
                 FocusCallDiag {
                     primitive_called: false,
                     native_return: None,
+                    prime_inserted: None,
                     api: None,
                     call_mono_ms: None,
                     ret_mono_ms: None,
@@ -782,6 +785,7 @@ impl NativeOps for FakeNative {
             FocusCallDiag {
                 primitive_called: true,
                 native_return,
+                prime_inserted: None,
                 api: Some(FOCUS_SETTER_API),
                 call_mono_ms: Some(call_mono_ms),
                 ret_mono_ms: Some(ret_mono_ms),
@@ -1239,6 +1243,11 @@ pub(super) fn gui_trace_label(state: &GuiFocusState) -> String {
 pub(super) struct FocusCallDiag {
     pub(super) primitive_called: bool,
     pub(super) native_return: Option<bool>,
+    /// Actual bounded-prime outcome immediately before the primitive
+    /// (`Some(inserted)`) whenever the primitive ran; `None` when the
+    /// primitive never ran (early veto) or never returned a count. Runs
+    /// after every veto, so a vetoed effect never primes; never proof.
+    pub(super) prime_inserted: Option<u8>,
     pub(super) api: Option<&'static str>,
     pub(super) call_mono_ms: Option<u64>,
     pub(super) ret_mono_ms: Option<u64>,
@@ -1249,7 +1258,10 @@ pub(super) struct FocusCallDiag {
 /// setter that ran. `SetForegroundWindow` is the synchronous activating
 /// focus call (its boolean return never proves arrival; only the
 /// read-back does, and no `GetLastError` is read: the API defines no
-/// useful last error). The nonactivating view path hides/reveals through
+/// useful last error). `prime_inserted` is the actual E8 last-input prime
+/// outcome immediately before the primitive (`Some(inserted)` whenever
+/// the primitive ran, `None` on any pre-primitive veto); it is never
+/// trusted as proof. The nonactivating view path hides/reveals through
 /// async `SetWindowPos` without pumping (hide `0x4097`, show `0x4057`, see
 /// [`crate::product_hide::sys::NA_POS_HIDE_FLAGS`]/
 /// [`crate::product_hide::sys::NA_POS_SHOW_FLAGS`]). A focus activation can
@@ -1315,6 +1327,11 @@ pub(super) struct FocusDispatchDiag {
     /// veto) or never returned a bool. Lets a user trace distinguish native
     /// acceptance from wrapper fences without re-reading gates.
     pub(super) native_return: Option<bool>,
+    /// Actual bounded-prime outcome immediately before the primitive
+    /// (`Some(inserted)`) whenever the primitive ran; `None` on any row
+    /// whose primitive never ran. Lets a native leg prove the pre-setter
+    /// prime ordering without re-reading gates.
+    pub(super) prime_inserted: Option<u8>,
     /// Full target native identity (HWND plus PID plus process creation)
     /// for the `member-admitted` join. `None` only when the target
     /// baseline was unknown.
@@ -3262,6 +3279,7 @@ pub(super) fn apply_world_reply(
                         gui_landing: None,
                         primitive_called: false,
                         native_return: None,
+                        prime_inserted: None,
                         hwnd: None,
                         pid: None,
                         creation: None,
@@ -3467,6 +3485,7 @@ pub(super) fn apply_world_reply(
                             gui_landing: None,
                             primitive_called: false,
                             native_return: None,
+                            prime_inserted: None,
                             hwnd: Some(base.key.hwnd),
                             pid: Some(base.key.pid),
                             creation: Some(base.key.creation.clone()),
@@ -3592,6 +3611,7 @@ pub(super) fn apply_world_reply(
                 gui_landing,
                 primitive_called: call_diag.primitive_called,
                 native_return: call_diag.native_return,
+                prime_inserted: call_diag.prime_inserted,
                 hwnd: Some(base.key.hwnd),
                 pid: Some(base.key.pid),
                 creation: Some(base.key.creation.clone()),

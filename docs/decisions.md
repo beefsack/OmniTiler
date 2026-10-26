@@ -15,6 +15,9 @@ Superseded excerpts moved out on 2026-10-24 live in
 current product policy.
 
 Tentative index (user review pending; not approved product rules):
+- Windows focus dispatch restores the bounded owner-thread E8 prime without
+  thread-input attachment; native and physical acceptance remain distinct
+  ([record](changes/windows-directional-focus-startup.md#fresh-trace-diagnosis-and-correction-2026-10-26))
 - Windows command rejection services owed observation-only catchup on the same
   turn, without queuing or replaying the command
   ([record](changes/windows-directional-focus-startup.md#evidence-and-decisions))

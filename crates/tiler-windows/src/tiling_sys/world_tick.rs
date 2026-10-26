@@ -689,6 +689,7 @@ fn apply_diag_value(
                 "gui_landing": row.gui_landing.clone(),
                 "primitive_called": row.primitive_called,
                 "native_return": row.native_return,
+                "prime_inserted": row.prime_inserted,
                 "hwnd": row.hwnd,
                 "pid": row.pid,
                 "creation": row.creation.clone(),
@@ -2785,6 +2786,7 @@ mod apply_diag_tests {
                 gui_landing: None,
                 primitive_called: true,
                 native_return: Some(false),
+                prime_inserted: Some(2),
                 hwnd: None,
                 pid: None,
                 creation: None,
@@ -2819,6 +2821,7 @@ mod apply_diag_tests {
                 gui_landing: None,
                 primitive_called: false,
                 native_return: None,
+                prime_inserted: None,
                 hwnd: None,
                 pid: None,
                 creation: None,
@@ -3080,6 +3083,7 @@ mod apply_diag_tests {
                 gui_landing: None,
                 primitive_called: false,
                 native_return: None,
+                prime_inserted: None,
                 hwnd: None,
                 pid: None,
                 creation: None,
@@ -3119,6 +3123,7 @@ mod apply_diag_tests {
         assert!(dispatch[0]["call_mono_ms"].is_null());
         assert!(dispatch[0]["ret_mono_ms"].is_null());
         assert!(dispatch[0]["gui_dispatch"].is_null());
+        assert!(dispatch[0]["prime_inserted"].is_null());
         // No flight ended this pass: the clearing array is empty with a
         // zero total, not an absent field.
         assert_eq!(value["inflight_events"], serde_json::json!([]));
@@ -3260,6 +3265,7 @@ mod apply_diag_tests {
                     gui_landing: None,
                     primitive_called: false,
                     native_return: None,
+                    prime_inserted: None,
                     hwnd: None,
                     pid: None,
                     creation: None,

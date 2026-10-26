@@ -1784,6 +1784,9 @@ fn cycle_prims() -> NativePrimitives {
         set_outer: s_set_outer_moving,
         foreground: || S_FG.with(|m| *m.borrow()),
         focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
+        // Offline prime stub: reports a clean pair, never input. Ordering
+        // is proven by the dedicated seam tests over `scripted()`.
+        prime: |_| 2,
         member_tag: crate::product_hide::sys::read_member_tag,
         hook_pending: || false,
         read_cursor: || None,

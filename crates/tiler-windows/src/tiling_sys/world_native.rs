@@ -140,6 +140,13 @@ pub(super) struct NativePrimitives {
     pub set_outer: fn(u64, Rect) -> bool,
     pub foreground: fn() -> u64,
     pub focus: fn(u64) -> bool,
+    /// Bounded last-input prime: one unassigned-key down/up pair through
+    /// the real input path, returning the accepted-event count (never
+    /// trusted as proof). Runs on the owner thread after every
+    /// safety/lifetime/scope/supersession veto and immediately before the
+    /// focus setter; vetoed effects never prime. No wait, retry, or input
+    /// attachment.
+    pub prime: fn(u16) -> u8,
     pub member_tag: fn(u64) -> Option<String>,
     pub hook_pending: fn() -> bool,
     /// Live cursor read in adapter units (`None` when unreadable).
@@ -238,6 +245,19 @@ fn real_foreground() -> u64 {
 
 fn real_focus(hwnd: u64) -> bool {
     crate::ffi::set_foreground_window(hwnd)
+}
+
+/// Unassigned virtual key for the bounded last-input prime (the approved
+/// E8 menu-mask mechanism, `decisions.md` focus mechanism): down/up with
+/// no scancode masquerading. The product input filter already drops
+/// injected E8 before command dispatch, so the prime never mints input.
+const FOCUS_PRIME_VK: u16 = 0xE8;
+
+/// Real bounded last-input prime: one `vk` down/up pair through
+/// `SendInput` (the OS grants foreground rights to the last input
+/// provider). Bounded single-release included; never trusted as proof.
+fn real_prime(vk: u16) -> u8 {
+    crate::ffi::prime_foreground_key(vk)
 }
 
 fn real_member_tag(hwnd: u64) -> Option<String> {
@@ -384,6 +404,7 @@ impl Default for NativePrimitives {
             set_outer: real_set_outer,
             foreground: real_foreground,
             focus: real_focus,
+            prime: real_prime,
             member_tag: real_member_tag,
             hook_pending: real_hook_pending,
             read_cursor: real_read_cursor,
@@ -1633,6 +1654,7 @@ impl NativeOps for LiveNative<'_> {
                 FocusCallDiag {
                     primitive_called: false,
                     native_return: None,
+                    prime_inserted: None,
                     api: None,
                     call_mono_ms: None,
                     ret_mono_ms: None,
@@ -1676,6 +1698,13 @@ impl NativeOps for LiveNative<'_> {
         if self.move_size_vetoed(key.hwnd) {
             return vetoed(Ok(false));
         }
+        // Bounded last-input prime immediately before the single setter:
+        // one E8 down/up pair so the owner holds last-input rights when
+        // the setter runs. After every veto above, so a vetoed effect
+        // never synthesizes input; stamps below stay strictly around the
+        // setter. No wait, retry, or queue coupling; injected E8 never
+        // dispatches a command (the product filter drops it first).
+        let prime_inserted = (self.prims.prime)(FOCUS_PRIME_VK);
         // Trace-gated pre-call GUI read: no native call while trace is off.
         let gui_before = if self.trace {
             match crate::ffi::gui_thread_focus(key.hwnd) {
@@ -1707,6 +1736,7 @@ impl NativeOps for LiveNative<'_> {
                 FocusCallDiag {
                     primitive_called: true,
                     native_return: Some(ok),
+                    prime_inserted: Some(prime_inserted),
                     api: Some(FOCUS_SETTER_API),
                     call_mono_ms: Some(call_mono_ms),
                     ret_mono_ms: Some(ret_mono_ms),
@@ -1719,6 +1749,7 @@ impl NativeOps for LiveNative<'_> {
             FocusCallDiag {
                 primitive_called: true,
                 native_return: Some(ok),
+                prime_inserted: Some(prime_inserted),
                 api: Some(FOCUS_SETTER_API),
                 call_mono_ms: Some(call_mono_ms),
                 ret_mono_ms: Some(ret_mono_ms),

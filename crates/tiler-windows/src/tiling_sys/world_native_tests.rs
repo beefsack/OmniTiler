@@ -154,6 +154,15 @@ thread_local! {
     static S_FAIL_WARP: RefCell<bool> = const { RefCell::new(false) };
     /// Accepted focus posts recorded, in order (async model: no FG flip).
     static S_FOCUS_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// Every scripted prime attempt, in VK order. The production prime
+    /// lane records here so tests prove prime-before-setter ordering.
+    static S_PRIME_CALLS: RefCell<Vec<u16>> = const { RefCell::new(Vec::new()) };
+    /// Whether the scripted prime was serviced since reset. The
+    /// accept-iff-primed focus lane reads this, so acceptance proves the
+    /// prime ran first (a setter-first order would read unprimed).
+    static S_PRIMED: RefCell<bool> = const { RefCell::new(false) };
+    /// Accepted-event count the scripted prime reports (clean pair: 2).
+    static S_PRIME_INSERTED: RefCell<u8> = const { RefCell::new(2) };
 }
 
 fn reset_script() {
@@ -180,6 +189,9 @@ fn reset_script() {
     S_WARP_CALLS.with(|m| m.borrow_mut().clear());
     S_FAIL_WARP.with(|m| *m.borrow_mut() = false);
     S_FOCUS_CALLS.with(|m| m.borrow_mut().clear());
+    S_PRIME_CALLS.with(|m| m.borrow_mut().clear());
+    S_PRIMED.with(|m| *m.borrow_mut() = false);
+    S_PRIME_INSERTED.with(|m| *m.borrow_mut() = 2);
 }
 
 fn script_claim(hwnd: u64, identity: &ProcessIdentity) -> WindowIdentity {
@@ -251,6 +263,11 @@ fn scripted() -> NativePrimitives {
         },
         foreground: || S_FG.with(|m| *m.borrow()),
         focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
+        prime: |vk| {
+            S_PRIME_CALLS.with(|m| m.borrow_mut().push(vk));
+            S_PRIMED.with(|m| *m.borrow_mut() = true);
+            S_PRIME_INSERTED.with(|m| *m.borrow())
+        },
         member_tag: |hwnd| S_TAG.with(|m| m.borrow().get(&hwnd).cloned()),
         hook_pending: || S_HOOK.with(|m| *m.borrow()),
         read_cursor: || S_CURSOR.with(|m| *m.borrow()),
@@ -1422,6 +1439,108 @@ fn focus_diag_native_return_survives_post_setter_fence() {
     assert!(!diag.primitive_called);
     assert_eq!(diag.native_return, None);
     S_MOVE_SIZE.with(|m| m.borrow_mut().remove(&key.hwnd));
+}
+
+/// Startup-shape regression: a background owner with existing targets and
+/// no prior input rights primes once (E8) immediately before the single
+/// setter. The scripted setter accepts iff the prime was serviced, so
+/// acceptance functionally proves prime-before-setter ordering (a
+/// setter-first order would read unprimed and refuse). Exactly one prime
+/// and one setter run; the trace carries the actual prime outcome with
+/// call/return stamps strictly around the setter. No attach or coupling
+/// exists anywhere on this path: `NativePrimitives` carries no attach
+/// lane, and the input filter already drops injected E8.
+#[test]
+fn focus_primes_once_before_setter_and_reports_it() {
+    let mut env = env_with(110_201);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_201, 2201, "proc-201");
+    let target = win_key(110_202, 2202, "proc-202");
+    let other = win_key(110_203, 2203, "proc-203");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    admit_member(&mut env, &other, &ws, "w3", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    script_live(&other, "w3", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        // Native stand-in for the foreground lock: the setter only
+        // accepts once the prime made this owner the last input
+        // provider. No prior E8/menu-mask ran in this fixture.
+        S_PRIMED.with(|m| *m.borrow())
+    };
+    let mut native = assemble(&mut env, prims);
+    let (outcome, diag) = native.focus_window_traced("w2");
+    assert_eq!(outcome, Ok(true));
+    assert_eq!(S_PRIME_CALLS.with(|m| m.borrow().clone()), vec![0xE8]);
+    assert_eq!(
+        S_FOCUS_CALLS.with(|m| m.borrow().clone()),
+        vec![target.hwnd]
+    );
+    assert!(diag.primitive_called);
+    assert_eq!(diag.prime_inserted, Some(2));
+    assert_eq!(diag.native_return, Some(true));
+    assert!(
+        diag.call_mono_ms
+            .is_some_and(|call| diag.ret_mono_ms.is_some_and(|ret| call <= ret))
+    );
+}
+
+/// Safety vetos never prime: a move/size-gated target reports the
+/// pre-primitive veto with no primitive detail and no prime call, while a
+/// post-setter identity recycle still reports the actual prime outcome
+/// alongside the honest raw return.
+#[test]
+fn focus_veto_runs_no_prime_and_keeps_trace_honest() {
+    let mut env = env_with(110_204);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_204, 2204, "proc-204");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(true)));
+    let mut native = assemble(&mut env, scripted());
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.prime_inserted, None);
+    assert_eq!(diag.native_return, None);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+    S_MOVE_SIZE.with(|m| m.borrow_mut().remove(&key.hwnd));
+
+    let mut env = env_with(110_205);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_205, 2205, "proc-205");
+    let target = win_key(110_206, 2206, "proc-206");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_PID.with(|m| m.borrow_mut().insert(hwnd, 9999));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    let (outcome, diag) = native.focus_window_traced("w2");
+    assert_eq!(outcome, Err(()));
+    assert!(diag.primitive_called);
+    assert_eq!(diag.prime_inserted, Some(2));
+    assert_eq!(diag.native_return, Some(true));
+    assert_eq!(S_PRIME_CALLS.with(|m| m.borrow().clone()), vec![0xE8]);
+    assert_eq!(S_FOCUS_CALLS.with(|m| m.borrow().len()), 1);
 }
 
 /// Refused setter reports an honest `Ok(false)`: nothing was posted and
