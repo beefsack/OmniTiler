@@ -9,10 +9,13 @@
 - Stages 0/1/1b/2/3 are complete offline. Stage 4 is partial: strict raw capture,
   Rust fixed-size wire classification and obsolete selector deletion are
   delivered offline; directional shortcuts and implicit workspace selection/send
-  now submit existing core commands only. Role, born, gesture and toggle policy
-  remain. All 762 current KDE JS tests pass. Native acceptance remains TBD
   and this record stays active for the whole port. Renderer, host integration
   and the documented unknown host facts remain later work.
+  now submit existing core commands only. N6 adds the neutral tiling toggle;
+  N6 birth-clear is accepted offline with neutral opt-in: KDE enables it,
+  Windows preserves its existing birth route. Deleted raw windows close and
+  unmanaged host windows are absent before core admission.
+  Role, gesture and remaining local-fixed policy remain. N6 KDE JS tests
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -34,8 +37,8 @@
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
-| 4. Shared policy only | Partial offline: required raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation policy removed; existing-core shortcuts command-only. Role normalization, born lifetime, gesture/toggle policy remain | Rust corpus and real-normalizer engine tests pass; full stage acceptance not claimed; birth-clear and neutral-toggle core requests parked |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
+| 4. Shared policy only | Partial offline: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear accepted offline. Role, local-fixed and gesture policy remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; independent active-border and pager-focused-window colors, default system accent, full-strength border/dimmer fill | Declaration/source checks and adapter tests; independent overrides; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
@@ -1090,7 +1093,7 @@
   transient/control facts without assuming Windows ownership, styles or
   visibility semantics. The minimal discriminator remains native/reference TBD.
 
-### N6. Missing world intents (core requests parked)
+### N6. Missing world intents (approved 2026-10-26; partial outcome below)
 
 - **Birth clear:** `window_policy` has stateless born/fullscreen/fixed gates,
   but world admission does not call them or issue birth-clear tokens. Options:
@@ -1107,7 +1110,9 @@
   execution; or preserve cached preselection. Recommendation: neutral toggle,
   retaining explicit set for callers that genuinely choose a mode. Windows,
   KDE, macOS, GNOME and ChromeOS must all resolve racing toggles identically
-  without adapter snapshot policy. Neither core change is implemented here.
+  without adapter snapshot policy. The user approved both core changes on
+  2026-10-26; [current outcome](#n6-core-intents-outcome-and-blocker-2026-10-26)
+  supersedes these earlier parked requests.
 - Gesture transport is not blocked on a new core API: `GestureIngress` already
   carries stable id/window/kind, start frame/cursor, live cursor, phase, Esc and
   modal-move facts; `GestureSettled` supplies the terminal outcome. Next bounded
@@ -1302,3 +1307,359 @@
   renderer, legacy forwarding and gesture ingress remain unchanged; Stage 5 is
   incomplete. Next: review preview freshness/retention semantics, implement the
   native subscriber/render cutover, then run the required gates.
+
+- **Exact next action:** agree the end-to-end native invalidation and producing-
+  gesture correlation contract, then add failing full-interleaving regressions
+  for all three rows before further renderer changes. Any shared-core extension
+  needs a separate decision. N5, cancellation evidence, game/fullscreen
+  suspension, race-audit items and native acceptance remain parked.
+
+<a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
+## N6 core-intents outcome (2026-10-26)
+
+- Final continuation decision (tentative technical, 2026-10-26): native KWin
+  `deleted` means close, never candidate; `managed=false` means application-
+  handled/non-manageable host window, absent from `WindowFact`. Preserve raw
+  booleans in capture and normalize in Rust, not a JS policy mirror. Verify
+  scripting/property semantics against local KWin `v6.7.4` sources. No core
+  controllability/liveness fact and no N5 membership/retention decision.
+- Windows keeps its existing birth route. A minimal neutral automatic-core-
+  birth opt-in is authorized to avoid preamble refusal bypass and asynchronous
+  duplicate restore. Existing unavailable `cfg(windows)` tests stay unverified.
+  Remaining work: close/absence producer-to-core pins, neutral capability plus
+  Windows non-opt-in pins, boundary review, fresh gates and accepted outcome.
+- PARKED neutrality note for later cross-platform review: visible-but-
+  uncontrollable host windows (for example integrity-protected Windows windows
+  or AX-denied macOS windows) may need a neutral controllability fact. None is
+  selected now; KWin override-redirect host mechanics do not decide that model.
+
+- Continuation decision (tentative, 2026-10-26): independently proven
+  born-maximized clear authority under `tile-on-launch` may proceed despite a
+  geometry-convergence hold. Maximize clear is a birth-authorized mode
+  transition, not geometry; host-controlled maximized frames cannot first prove
+  converged geometry. Fullscreen, protected/refused/unmanaged and all safety
+  holds still veto; game safety wins. Geometry remains held until fresh readable
+  facts arrive, and raw `ClearAttempt` plus fresh native evidence alone settle
+  clear. The cohort discriminator must pass without weakening its assertions.
+- Remaining bounded work: narrow core property authority and negative safety
+  pins; preserve Windows' existing born route or prove deferred-corner parity;
+  captured-shape raw-producer-to-core KDE birth/exit coverage; independent
+  boundary review and fresh full gates. Local-fixed classification stays for
+  admission-focus/keep-above consumers. Race-audit parked items, N5, gesture
+  cancellation and fullscreen/game suspension remain unchanged. The earlier
+  blocked evidence below is historical until superseded by final results.
+
+### Approved scope and accepted toggle
+
+- User-approved core changes: neutral execution-time workspace tiling toggle,
+  and world-owned born-maximized/fullscreen/fixed-size admission and lifetime
+  reconciliation through existing clear tokens/raw attempts. No broker birth
+  owner, synchronous completion assumption or platform-specific logical state.
+  [Durable decisions](../decisions.md#world-command-intent-and-birth-ownership-2026-10-26).
+- Accepted offline: `WorldCommand::ToggleWorkspaceTiling { output, workspace }`
+  resolves retained mode at execution and uses the existing explicit-set body.
+  Wire `toggle-workspace-tiling` accepts `op/out/ws`; a `tiled` field refuses.
+  Explicit `SetWorkspaceTiling` is unchanged. KDE shortcut/tray and Windows
+  callers no longer negate cached mode; display-only snapshot consumers remain.
+- Core pins in `world_toggle_tests.rs`:
+  `toggle_flips_tiled_to_floating_without_preselected_mode`,
+  `toggle_flips_floating_back_to_tiled`, `queued_racing_toggles_compose`,
+  `explicit_set_keeps_genuine_set_semantics`, and
+  `toggle_unknown_workspace_refuses_like_set`. Codec vocabulary,
+  typed-id and extra-key cases plus KDE stale-catchup routing pin the boundary.
+
+### Earlier birth draft, corrections and unresolved authority (historical)
+
+- **Unaccepted draft, not Stage 4 completion:** new isolated `world_born.rs`
+  owns birth retention and existing `window_policy` gates. New ingress
+  `WorldReport.born_maximized: BornMaximized`, wire `bornMaximized`, backfills
+  missing/invalid values to `tile-on-launch`; digest and size accounting include
+  it. `op-born-<serial>` tokens use `WindowDesire.clear_operation` and existing
+  `ClearAttempt` with no command or new attempt schema. Serials do not reuse ids
+  on incarnation rebind. macOS constructor changes only default the new field;
+  its live setting carriage is not delivered here.
+- Commandless accepted dispatch with unchanged/unknown facts remains pending,
+  never re-actuated; later readable unmaximized facts settle. Proven refusal
+  retires once; throw/unreadable evidence holds. Fullscreen birth exits, fixed
+  gates, per-lifetime keep-overlay and floating-first decisions remain core-side.
+  These are draft rules, not proof of native completion.
+- Review rejected inline copies of the stateless gates and unbounded
+  close-only lifetime sets. Corrections call `should_hold_born_fullscreen`,
+  `should_clear_maximize_at_admission_with_born_mode`, `born_keep_latch` and
+  `classify_born_fullscreen_exit`, using pre-sweep retained slots; authoritative
+  complete departures prune every set. Incomplete absence is not a close;
+  minimized retained slots still restore without becoming new births. No
+  manufactured `SafetyFacts` or N5 normalization is added.
+- Current focused birth tests use normalized synthetic facts, not a captured
+  raw KWin producer-to-core birth journey. Realistic captured-shape birth/exit
+  integration evidence remains required before acceptance.
+- **Blocking discriminator:** first complete report has two maximized,
+  `fit_excluded` ordinary births on one tiled workspace. Existing engine
+  overlap inference holds the sweep `Unreadable`; post-sweep birth minting then
+  refuses that same held scope. Both windows remain maximized and the hold
+  cannot resolve. `same_domain_cohort_clear_admission_parked_b1` expects two
+  bindings and fails with zero. Sequential arrival passes; using separate
+  outputs in the earlier dedup test concealed rather than solved this case.
+- PARKED options: (1) separate birth-clear admission authority from frame
+  convergence under independently proven window/home/safety facts; (2) teach
+  engine seeding to support simultaneous overlaid births; (3) accept the
+  indefinite cohort hold. Recommendation: review option 1's narrow property
+  authority, keeping geometry/membership holds intact. No blanket hold bypass,
+  seed change, adapter fallback or changed expected outcome is authorized.
+  [Minimal row](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs)
+  leaves native/reference outcomes TBD. One unaccepted implementation plus its
+  predicate/lifetime corrections remains blocked; green surrounding gates do
+  not override the red discriminator.
+- KDE draft deletes `world-born-maximized.ts`, its four lifetime sets, the
+  entry's native birth-clear decision/recapture path and 34 policy-only tests.
+  Native `world-apply.ts` clear actuation/freshness/attempt carriage stays.
+  Local `world-observe.ts::isFixedSizeWindow` is **not deleted**: its decoration
+  still feeds admission-focus gates (`world-apply.ts:2288,2316`) and automatic
+  keep-above (`world-native.ts:858,896`). Options: consume equivalent core
+  desires at those use sites or retain the copy temporarily. Recommendation:
+  delete only with core-owned focus/stack authorization and pinning tests;
+  this remaining policy boundary is not a successful N6 deletion claim.
+- Windows retains its existing admission/restart/reconcile preamble. It runs
+  before capture, usually supplying post-clear facts; keeping it avoids changing
+  its native identity/lifetime behavior without native evidence. Mode ingress
+  now reaches the world sequencer; deferred corners may use the existing raw
+  clear lane, so unchanged tests alone do not establish identical corner
+  outcomes. Windows born parity is **unaccepted**, not proven by 725 passing
+  reference tests. No preamble deletion or native Windows change is claimed.
+
+### Race-safety audit (all world commands; other changes parked)
+
+- **Tentative guidance:** prefer commands expressing intent resolved against
+  core-retained state at execution. Stable user-chosen ids and live input
+  coordinates are not automatically policy preselection. Changing any command
+  beyond the approved toggle needs a separate decision. File lines below refer
+  to this draft; `Operation` expands all inner `CoreCommand` variants.
+
+| Command | Visible caller / implementation evidence | Risk and recommendation |
+| --- | --- | --- |
+| `Focus` | `crates/tiler-macos/src/world_builder.rs:2037` test construction; `world_dispatch.rs:1383` match | No production producer found; explicit subject/direction, no cached-mode choice |
+| `Send` | `crates/tiler-windows/src/tiling_sys/dispatch.rs:811` | Target workspace sampled as output current before execution. PARKED: preserve genuine explicit target; consider neutral output-current send only if that is the user's intent |
+| `SwitchView`, `SelectWorkspace` | KDE command builders; Windows `crates/tiler-windows/src/tiling_sys/selection.rs:73` | Genuine stable workspace selection; retain explicit identity semantics |
+| `SelectNumbered`, `SelectRelative`, `SelectPrevious`, `SelectTrailing` | KDE `kwin/src/world-entry.ts:3454,3467,3472`; Windows `cli_workspace.rs:683-707`, `history.rs:155-161`, `workspace_navigation.rs:123-125`; macOS `crates/tiler-macos/src/world_command_map.rs:95-109` | Core resolves positions/history; KDE and Windows implicit routes pass `None`. Windows navigation/macOS pass `Some(output)`. PARKED: distinguish genuinely pinned output from implicit action targeting before standardizing on core resolution |
+| `SendNumbered`, `SendRelative` | KDE `kwin/src/world-entry.ts:934,3481`; Windows `sends.rs:81,87`, `workspace_send_tick.rs:126`; macOS `crates/tiler-macos/src/world_command_map.rs:158,168,291,304,313` | Core resolves ordinal/delta. KDE/Windows implicit `SendSource` safe; macOS explicit admitted source is pinned. PARKED: keep explicit claim semantics unless implicit source intent is approved |
+| `SetWorkspaceTiling` | `kwin/src/world-report.ts:466` definition, no production caller found | Invites boolean preselection if misused as toggle; keep only genuine explicit sets |
+| `ToggleWorkspaceTiling` | KDE `kwin/src/world-shortcuts.ts:321`, `world-entry.ts:3504`; Windows `crates/tiler-windows/src/tiling_sys/workspace_mode.rs:167` | Fixed: mode resolves core-side at execution; target remains explicit logical identity |
+| `MigrateWorkspace` | Enum/codec route; no adapter producer found in audit | Genuine explicit source/target; keep |
+| `FocusDirectional`, `MoveDirectional` | KDE `kwin/src/world-entry.ts:1310-1311,3344,3361`; Windows `keyboard_directional.rs:281,285` | Subject/direction only; topology/float outcome core-resolved; keep |
+| `SendDirectional`, `MigrateDirectional` | KDE `kwin/src/world-entry.ts:892,913`; Windows `workspace_send_tick.rs:280,371`, `migration.rs:157` | Core resolves target/source as documented; keep |
+| `Operation(ToggleFloat)` | KDE `kwin/src/world-native.ts:384,498`; Windows `float_toggle.rs:240,604`; macOS `crates/tiler-macos/src/world_command_map.rs:229-231` | KDE/Windows capture `float_rect` at intent time; macOS passes `None`. Highest parked snapshot risk: determine whether geometry is explicit placement intent or should resolve from execution facts; recommend `None` for genuinely implicit geometry, subject to parity review |
+| `Operation(Resize)` | KDE `kwin/src/world-shortcuts.ts:195`, `world-entry.ts:3372`; Windows `keyboard_resize.rs:214`; macOS `world_command_map.rs:190-240` | Local repeat index is input sequence, not cached layout choice; keep |
+| `Operation(PointerResize, DragDrop, DragPreview)` | KDE `kwin/src/world-drag.ts:261,309,313,363`; macOS `runtime_thread.rs:1315`; core `world_operations.rs:108-124` | Live cursor/boundary/start binding; core validates outcome. Keep; gesture-cancellation contract separately parked |
+| `Operation(ToggleOrientation, Move, Focus)` | KDE `kwin/src/world-entry.ts:3378`; Windows `dispatch.rs:528`; macOS `world_command_map.rs:190-240` | Orientation/subject/direction resolved core-side. macOS local Move/Focus pass `cross_output_transfer:false`; PARKED explicit-vs-implicit output policy audit before changing that route |
+| `Operation(SendToWorkspace, SendToOutput)` | `crates/tiler-core/src/world_operations.rs:51-68`; no direct adapter producers found | Explicit workspace target, same sampled-current risk as `Send`; retain genuine explicit semantics |
+| `Operation(MigrateWorkspace, ReleaseDomain)` | `crates/tiler-core/src/world_operations.rs:72-75,1115,1162`; no direct adapter producers found | World route intercepts/refuses unsupported forms; no new adapter preselection found |
+| `Operation(Reconcile, UpdateGaps)` | `crates/tiler-core/src/world_operations.rs:113-124,1124,1191`; no direct adapter producers found | Observation/config reconciliation, no cached action target; keep |
+
+- Bare Windows caller basenames in the table are under
+  `crates/tiler-windows/src/tiling_sys/`; bare macOS basenames are under
+  `crates/tiler-macos/src/`. KDE native sticky/maximize/fullscreen toggles remain
+  outside `WorldCommand`; their live native reads are not cached reply mode,
+  but no new neutral toggle API or race-semantics change is selected here.
+- PARKED neutrality concern: the retained Windows synchronous preamble can hide
+  admission/hold gaps that host-owned asynchronous adapters expose. Options:
+  keep separate proven native preambles, or converge on core-owned admission
+  with host-independent property authority and parity tests. Recommendation:
+  resolve the birth-clear authority contract without imposing synchronous
+  setter completion, Windows ownership/styles or logical backing on other hosts.
+  Existing N5, gesture cancellation, fullscreen/game suspension, native order,
+  sticky, Activities/configure and directional product questions remain parked.
+
+### Earlier blocked evidence (superseded by continuation below)
+
+- Latest declared-environment locked all-target builds and strict all-target
+  clippy pass for core/protocol/Windows/service. All-target tests with continued
+  execution after failure: **2,347 passed, one failed across 59 suites**:
+  core 1,313 pass plus the cohort failure; protocol 56/56; Windows 725/725;
+  service 253/253. Focused birth suite is 25 pass / one failure; toggle is 5/5.
+- Workspace fmt/whitespace and exact world acceptance 6/6 pass. Latest JS
+  typecheck/build and official suite pass 728/728, zero skips/cancels. macOS
+  all-target check and world-filtered tests pass 58/58. Earlier full macOS
+  library result remains 1,149 pass plus four known non-macOS version-read
+  failures; not a newly rerun full-library success. No dependencies changed,
+  no live tests or native acceptance; effect gates are unchanged/out of N6.
+- **Exact next action:** decide whether birth-clear admission gets narrow,
+  independently proven property authority when geometry convergence is held
+  (recommended), versus broader cohort seeding or retaining the hold. Then
+  repair the unchanged red discriminator, prove Windows born parity and delete
+  remaining local-fixed policy consumers before rerunning all gates. Keep this
+  whole-port record active; N6 birth and Stage 4 are not complete.
+
+### N6 continuation: cohort resolved, safety evidence blocked (historical)
+
+- The tentative independent-property-authority decision is implemented:
+  `born_clear_authorized` distinguishes geometry convergence from per-window
+  mode authority, and held reply rows can publish `clear_operation` while
+  frame/membership authority stays held with no allocation. The unchanged
+  `same_domain_cohort_clear_admission_parked_b1` assertions now pass. A full
+  cohort journey proves distinct tokens, raw-attempt incorporation, fresh
+  unmaximized facts, subsequent geometry convergence and no re-mint. No engine
+  overlap-seeding change or broad frame/member/focus hold bypass.
+- Known safety facts re-prove every desire: paused/gesture/unreadable/minimized,
+  fullscreen/sticky/floating/fixed, unknown host-owned membership/order conflict,
+  floating workspace and migration-gap fences. Review caught retained tokens
+  surviving sticky/floating changes; those now abandon without retry. Explicit
+  retained float intent also supersedes birth authority without confusing a
+  legitimate held-fullscreen-exit exception. Existing ToggleFloat refusal
+  semantics remain unchanged; global mode flips do not reclassify a lifetime.
+- Added captured-shaped raw-carrier journeys through production
+  `WorldService.evaluate_capture` -> `kde_raw::normalize_raw_windows` -> core:
+  same-desktop cohort, fullscreen first exit under both modes, fixed birth/exit,
+  keep-overlay lifetime latch, asynchronous accepted/unchanged then later clear,
+  refusal and non-normal/minimized cases. Data uses UUID-shaped identities,
+  fractional frame/client rectangles, maximize enum 3, bounded/unbounded hints
+  and raw attempt stamps. These are shaped fixtures, not a claimed live capture.
+  The separate JS actuator pin proves a held-row clear writes no geometry.
+- **Blocking safety discriminator:**
+  `born_raw_unmanaged_deleted_candidates_authorize_no_clear` expects zero clear
+  authority for isolated `managed=false,deleted=false` and
+  `managed=true,deleted=true` rows. Both instead mint `op-born-1`.
+  `kde_raw.rs:295-296` validates but discards these native facts; `WindowFact`
+  cannot carry them, and the current native clear gate does not recheck them.
+  The original green test asserted that unsafe mint and was rejected; its
+  replacement aggregates both no-authorization expectations and stays red.
+  The required independent safety proof is absent, so birth remains unaccepted.
+- PARKED representation choice: exclude unmanaged/deleted candidates through
+  N5 membership normalization, or carry neutral host controllability/liveness
+  facts into core and veto birth authority without changing membership.
+  Recommendation: the latter, preserving the parked membership policy and
+  core-owned birth decision; no fake unreadable rectangles, float flags or
+  broker clear-authorization lane. This needs a shared-contract decision.
+- **Windows route remains unresolved, not unchanged in outcome:** preamble
+  native implementations are untouched, but the new automatic core route can
+  bypass their allowlist/hosted-child/medium-integrity refusal gates and can
+  double an idempotent restore while a preamble clear lands asynchronously.
+  The current core coexistence therefore does not satisfy deferred-corner parity.
+  Options: a neutral core ownership/capability switch leaving admission entirely
+  on the existing route, or separately reviewed shared safety/evidence and
+  deduplication covering the native preamble. Recommendation: retain the current
+  Windows route with explicit neutral ownership rather than waive its gates.
+  No opt-out, token-prefix filter or new schema has been selected.
+- Four new Windows actuator tests cover token spending, already-clear preamble
+  wins, gesture/hidden deferral and uncontrolled-scope refusal. They live under
+  `cfg(windows)`: Linux builds/tests do **not** compile or execute them. A Windows
+  host gate is required before relying on those pins; Linux's 725 passes cannot
+  establish that parity. No Windows-native execution is claimed.
+- Local-fixed classification stays for admission-focus/keep-above as requested;
+  its consumers and future core-authorization deletion boundary above are
+  unchanged. ToggleFloat geometry, selection output preselection and explicit-
+  send current sampling remain parked, with no command semantic changes. N5,
+  gesture cancellation, fullscreen/game suspension and other parked boundaries
+  are not silently resolved by this work.
+- Latest full declared-environment locked builds and strict scoped all-target
+  clippy pass. Tests with `--no-fail-fast`: **2,375 pass / one failure across 59
+  suites** (core 1,334, protocol 56, Windows Linux subset 725, service 260 pass
+  / one raw safety failure). Core birth 46/46, including unchanged cohort and
+  migration-gap journeys. JS typecheck/build and 729/729 tests pass; acceptance
+  6/6, workspace fmt and whitespace pass. macOS all-target check and 58 world-
+  filtered tests pass, with existing dead-code warnings; full native library
+  not rerun. No dependencies or live state changed.
+- **Exact next action:** decide neutral controllability/liveness evidence versus
+  N5 candidate exclusion, then make the unchanged raw safety expectation pass.
+  Resolve explicit Windows birth ownership without changing its existing born
+  outcomes, verify its native-target pins, and rerun full gates. The whole-port
+  record stays active; N6 and Stage 4 are not complete.
+
+### N6 accepted offline outcome
+
+- N6 is complete offline. The two earlier semantic failures are resolved, not
+  waived: the original cohort assertions pass, and the raw unsafe-mint oracle
+  is replaced by the selected exact host-lifecycle contract. Independent
+  boundary review accepted the corrected source. The entire KDE port and
+  Stage 4 remain incomplete; this record stays active.
+- Final contract additions for other adapters:
+  - `ToggleWorkspaceTiling { output, workspace }`, wire
+    `toggle-workspace-tiling` with `out/ws`: flip retained mode at execution;
+    no `tiled` key. Genuine `SetWorkspaceTiling` remains unchanged.
+  - `WorldReport.birth_clear: bool`, wire `birthClear`: neutral opt-in for all
+    automatic birth-clear behavior, missing defaults false; present non-bool
+    refuses. KDE sends true; Windows and macOS send false. Off drops automatic
+    bindings and lifetime marks and publishes no automatic token; explicit
+    directional/unfloat clears remain unchanged. Digest and size budget cover it.
+  - `WorldReport.born_maximized: BornMaximized`, wire `bornMaximized`: live
+    subsequent-admission setting, missing/invalid defaults `tile-on-launch`.
+    Retained lifetime decisions do not reclassify on a settings change.
+  - `op-born-<serial>` uses existing `clear_operation` and `ClearAttempt`, no
+    new attempt fields. Serial remains monotonic through incarnation rebind;
+    generation reset is a fresh namespace. Attempts spend once; accepted plus
+    unchanged/unknown facts stay pending. Fresh readable unmaximized facts and
+    exact-correlated raw evidence settle; setter acceptance alone never does.
+- Independent mode authority allows a proven birth clear under geometry-only
+  convergence holds. Frame/membership authority stays held and allocations stay
+  absent until fresh facts permit geometry. Paused-game, fullscreen, minimized,
+  unreadable, fixed/sticky/floating, explicit float intent, unknown native home,
+  native-order conflict and migration-gap fences still veto narrowly. No new
+  engine seed policy, safety fact, N5 mapping or broker policy owner.
+- KWin host lifecycle normalization is factual, not `classify_membership`:
+  `deleted=true` joins explicit closes (deleted takes precedence), never a
+  candidate; `managed=false` is absent without a close, never a candidate.
+  Both native booleans remain in the raw capture vocabulary; Rust normalizes
+  raw rows and deduplicates native/explicit closes. Explicit close still wins
+  during incomplete inventory; unknown lifecycle booleans refuse with queue
+  retention. Actual scripting inventory excludes deleted objects, so normal
+  live close delivery remains the existing event-gated close lane; the observer
+  also handles enumerated-deleted objects using identity/lifecycle without
+  requiring usable geometry. No speculative tombstone transport or fabricated
+  readable/safe defaults.
+- Pinned local KWin `v6.7.4` evidence: `src/window.h:281-289` exposes `managed`
+  as `isClient` (KWin controls placement versus override-redirect entirely
+  handled by the application), and `deleted` as `isDeleted` (already deleted,
+  retained only for compositor animation), both constant Qt properties.
+  `src/scripting/workspace_wrapper.cpp:505-509` returns `workspace()->windows()`;
+  `src/workspace.h:205-213,354` separates live and deleted collections;
+  `src/window.cpp:507-518` implements deletion state. These facts do not decide
+  N5 retained-membership semantics. Native outcomes are not inferred from source.
+- Windows keeps admission/restart/reconcile native preamble behavior, including
+  its refusal, proof, attempted-lifetime and asynchronous corners. Production
+  `world_tick.rs:1189-1203` dispatches through the sequencer, whose report sets
+  `birth_clear=false`; there is no second automatic born lane to bypass those
+  gates or duplicate its clear. Explicit directional behavior is unchanged.
+  Five added native-target tests (four actuator pins plus sequencer opt-out)
+  are **unverified** because `tiling_sys` is `cfg(windows)` and unavailable to
+  Linux builds/tests; they are not part of the passing 725 count. Core disabled-
+  capability pins establish no automatic mint for maximized birth, fullscreen
+  birth/exit, deferred conditions or opt-out after mint, while explicit clear
+  still works. This preserves the existing route rather than claiming migration
+  or native Windows parity validation.
+- KDE deletes `world-born-maximized.ts`, its four lifetime sets, entry-side
+  native clear/recapture decision and 34 policy-only tests. Native actuation,
+  freshness/spending and raw-attempt transport stay. Raw captured-shaped service
+  journeys cover cohort/exit/fixed/async/refusal/keep-overlay plus eight exact
+  lifecycle cases; two added corpus rows bring the raw corpus to 30. Eight
+  producer lifecycle tests plus the held-clear actuator test cover both sides
+  of the boundary. Local `isFixedSizeWindow` stays solely for the already noted
+  admission-focus/keep-above consumers; no completion claim for their deletion.
+- Merge pins: `queued_racing_toggles_compose`,
+  `explicit_set_keeps_genuine_set_semantics`,
+  `same_domain_cohort_clear_admission_parked_b1`,
+  `cohort_clear_publishes_held_property_tokens`,
+  `cohort_clear_settles_and_converges_frames`,
+  `async_success_completes_on_later_unmaximized_facts`,
+  `migration_gap_defers_born_mint_until_complete_inventory`,
+  `disabled_birth_never_mints_or_publishes`,
+  `disabled_fullscreen_birth_and_exit_never_bind`,
+  `disabled_flag_off_after_mint_produces_no_desire`,
+  `disabled_explicit_directional_clear_unaffected`, and codec
+  `birth_clear_capability_decodes_tolerantly`. macOS constructor updates only
+  set false/default born mode; opting into this new behavior is separate work.
+- Final declared-environment evidence: locked all-target builds, all-target
+  tests and strict all-target clippy for core/protocol/Windows/service pass.
+  **2,399/2,399 tests across 59 suites**: core 1,339; protocol 57 (including 24
+  acceptance-checker example tests); Windows Linux subset 725; service 278.
+  Focused core born suite 51/51; original cohort assertions unchanged. JS
+  typecheck/build and full suite 737/737, zero failures/skips/cancels. Workspace
+  fmt/whitespace and exact world acceptance 6/6 pass. macOS all-target check
+  and `--lib world` 58/58 pass with existing dead-code warnings; full native
+  library not rerun. No dependency changes, live tests or native acceptance.
+- Tentative decisions retained: independent property authority, factual KWin
+  lifecycle boundary, and intent-first race guidance. PARKED cross-platform
+  neutrality concern: visible-but-uncontrollable windows (Windows elevated or
+  integrity-protected, macOS AX-denied) may need a neutral controllability fact
+  later; none selected now. N5, gesture cancellation, fullscreen/game suspension,
+  local-fixed consumer deletion and all race-audit recommendations remain parked.
+- **Exact next action for N6: none.** Continue separately scoped port work; do
+  not mark Stage 4 or native acceptance complete from N6's offline result.

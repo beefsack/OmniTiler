@@ -50,6 +50,57 @@ Tentative index (user review pending; not approved product rules):
 - Shared transient three-way classification A
   ([port record](changes/macos-world-v2-port.md#shared-transient-classification-2026-10-25));
   in-process only, Windows dialog exclusions unchanged
+- Intent-first race safety ([below](#world-command-intent-and-birth-ownership-2026-10-26));
+  audit recommendations beyond the approved tiling toggle remain parked
+- Independent birth-clear property authority under geometry-convergence holds
+  ([below](#world-command-intent-and-birth-ownership-2026-10-26)); tentative,
+  safety holds and fresh-native settlement requirements remain binding
+
+## World command intent and birth ownership (2026-10-26)
+
+- User-approved: `ToggleWorkspaceTiling { output, workspace }` flips the core's
+  retained workspace mode at execution, not a caller's cached reply mode.
+  `SetWorkspaceTiling` remains for genuine explicit choices. KDE shortcut/tray
+  and Windows toggle callers use the neutral intent; repeated queued toggles
+  compose identically across hosts. Wire: `toggle-workspace-tiling` with
+  `out/ws`, never `tiled`.
+- User-approved architecture, implemented and accepted offline: `WorldEngine`
+  integrates existing stateless born-maximized/fullscreen/fixed-size gates into
+  admission and mode/lifetime transitions. Commandless birth/exit clear uses
+  existing `clear_operation` and raw `ClearAttempt`; setter acceptance is not
+  completion. No adapter logical birth state or broker clear-authorization lane.
+  Windows born outcomes must remain identical; retaining its existing preamble
+  requires an explicit explanation rather than claiming migration.
+- **Tentative:** most core actions should express intent that core resolves
+  against retained state at execution, never adapter snapshot preselection.
+  This is guidance for review, not approval to change other commands. The
+  [audit](changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26)
+  parks geometry-bearing float toggles, implicit output/source selection and
+  explicit-send current sampling. No changes to those commands are selected.
+- **Tentative user decision 2026-10-26:** independently proven birth-clear
+  authority may proceed while geometry convergence remains held. Maximize
+  clear is a mode transition authorized by the window's own birth facts and
+  existing `window_policy` gates (born-maximized under `tile-on-launch`), not
+  a geometry write. Requiring converged geometry deadlocks because maximized
+  frames remain host-controlled until clear lands. Never bypass fullscreen,
+  protected/refused/unmanaged or other safety holds; game safety wins.
+  Geometry writes stay held until fresh readable facts arrive. Clear settles
+  only through fresh native evidence and raw `ClearAttempt`, never setter
+  acceptance. This selects narrow property authority, not broader engine
+  seeding changes or a blanket hold bypass.
+- **Tentative technical decision 2026-10-26:** report native KWin lifecycle at
+  the adapter boundary: `deleted` emits a close, never a candidate fact;
+  `managed=false` is not a manageable host window and emits no `WindowFact`.
+  Keep both raw facts in capture for Rust normalization. No core
+  controllability/liveness fields are selected. This does not resolve N5's
+  `classify_membership` / `LeaveUnmanaged` retention question.
+- Windows keeps its existing birth admission route: automatic core birth
+  reconciliation must not bypass preamble-only refusal gates or duplicate an
+  asynchronous restore. A minimal neutral opt-in capability for automatic
+  core birth-clear is implemented as `birth_clear` / wire `birthClear`, default
+  false; KDE opts in, Windows and macOS do not. Native-target tests
+  unavailable on the verification host remain explicitly unverified, not
+  passing. [Current implementation/evidence](changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26).
 
 ## KDE rapid directional input
 

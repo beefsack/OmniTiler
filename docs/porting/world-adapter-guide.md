@@ -127,6 +127,25 @@ missing facts. Shape:
   pre-observation retained homing plus the action context
   (`action_foreground`, `action_cached`, `action_outputs`); the adapter
   never preselects.
+- Tiling-mode actions: `ToggleWorkspaceTiling { output, workspace }` (wire
+  `toggle-workspace-tiling`, `out/ws`) flips core-retained mode at execution.
+  Never negate cached reply mode into `SetWorkspaceTiling`; keep explicit set
+  only for a genuine requested mode. Both target stable logical workspace ids.
+- Automatic core birth-clear is opt-in: `WorldReport.birth_clear`, wire
+  `birthClear`, missing defaults false; a present non-bool refuses. KDE opts in;
+  Windows keeps its existing native birth route and macOS does not opt in.
+  Disabled reports drop automatic bindings/marks and publish no automatic
+  token; explicit directional/unfloat clears are unaffected.
+- `WorldReport.born_maximized` (wire `bornMaximized`, missing/invalid defaults
+  `tile-on-launch`) selects subsequent-admission mode. Commandless
+  `op-born-<serial>` tokens use existing `clear_operation`/raw `ClearAttempt`.
+  Tentative independent property authority permits a proven maximize mode
+  transition while geometry convergence stays held, never bypassing safety
+  fences. Setter acceptance is not completion; fresh native facts settle.
+  [N6 is accepted offline](../changes/kde-world-v2-port.md#n6-accepted-offline-outcome),
+  not native-accepted. KWin lifecycle facts normalize before `WindowFact`:
+  deleted means close, application-handled unmanaged means absent. This does
+  not select N5 retained-membership policy or new core controllability facts.
 - Clocks: `monotonic_ms` is an arbitrary-epoch adapter millisecond
   clock (never wall-clock), one sample per report, seating retry
   backoff together with per-attempt stamps.
@@ -272,9 +291,11 @@ concerns in sections 5 and 7.
 - Timeout never mints a new numbered duplicate. A lost acknowledgement
   redelivers the same attempt stamp; the core consumes attempts
   idempotently by `attempt_ms`.
-- Core command dedup is one high-watermark; retained transfers and
-  clears use `op-<command_seq>` identities correlated to their
-  dispatching command. One-shot effects (`fx-<seq>`) mint once and are
+- Core command dedup is one high-watermark; command-driven retained transfers
+  and clears use `op-<command_seq>` identities correlated to their
+  dispatching command. Opt-in commandless birth clears instead use core-minted
+  `op-born-<serial>`, monotonic through incarnation rebinds within a generation.
+  One-shot effects (`fx-<seq>`) mint once and are
   spent before first native dispatch; repeated diffs never reapply.
   Subscribers never replay one-shot effects or terminal results.
 
@@ -305,7 +326,9 @@ constraint-clamp, minimized).
   `clear_operation`
   authorizes exactly one nonactivating maximize clear. Both clear on
   confirmation, proven refusal, supersession, close, newer intent or
-  generation reset. Never re-actuated.
+  generation reset. Never re-actuated. A birth clear may carry its independent
+  property token while frame/membership authorities remain held; this grants
+  no frame/member/focus write and never bypasses a window safety fence.
 - Workspace rows publish the stable logical id, owning output, scope,
   order, planner-owned tiling mode and removal eligibility. The adapter
   never deletes logical workspaces; `existence=false` is removal

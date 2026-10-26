@@ -9,7 +9,9 @@ The staged implementation and parked boundaries are tracked in
 complete offline, including command wake, source-view rewind settlement,
 raw attempts and native presentation ingress. Stage 4 is partial: required raw
 candidate capture and Rust fixed-size wire classification are delivered, with
-role/born/gesture/toggle policy still outstanding. Existing-core shortcuts now
+role/local-fixed/gesture policy still outstanding. N6's neutral tiling toggle
+and opt-in world-owned birth-clear are accepted offline, including simultaneous
+births and native deleted/unmanaged lifecycle normalization. Existing-core shortcuts now
 submit commands only; the native float-navigation policy is deleted. Stage 5
 replaces renderer derivation. Native acceptance remains
 outstanding; no logical receipt or offline test is native arrival proof.
@@ -131,23 +133,25 @@ JS adapter (`kwin/src/`):
   `migration-source-refill.ts` and `same-axis-move.ts`; configuration carriage
   moved into `world-settings-live.ts`, not policy. Unused trailing/displacement
   helpers in `workspace-native.ts` and the refill selector were deleted.
-  `scope-class.ts` remains the fixture-only safety filter; local fixed/born
-  and gesture/toggle policy deletion remains incomplete. `world-float-nav.ts`
+  `scope-class.ts` remains the fixture-only safety filter; local-fixed and
+  gesture policy deletion remains incomplete. N6 deletes
+  `world-born-maximized.ts` and its lifetime sets; core owns birth-clear under
+  the neutral `birthClear` capability. Native maximize/fullscreen/sticky toggles
+  remain unchanged.
+  `world-float-nav.ts`
   is deleted: directional shortcuts submit core commands, workspace selections
   carry no implicit-output preselection, and keyboard sends carry the typed
   home-then-cached-live source. Shared owners include
   `workspace_scope.rs`, `window_policy.rs`, `output_selection.rs`, `admission.rs`.
   `tray-publisher.ts` keeps native placement/anchoring/styling and
   click-to-command; pager content comes from core.
-- `world-born-maximized.ts`, `provenance-entry.ts`, `native-id.ts`,
+- `provenance-entry.ts`, `native-id.ts`,
   `native-alias.ts`: keep only native identity/binding/recovery claims;
   logical homing moves to core receipts.
 
 Native effect (`kwin/native-effect/`, `activewindowborder.*`,
-`activeborderlogic.*`, `group_highlight_ffi.h`, `drag_oracle_ffi.h`,
-`visual_policy_ffi.h`): delete the current geometry/policy derivation
-and consume core bounds from the reply presentation instead. Native
-styling (colors, anchoring, artwork) stays native. Pager/plasmoid
+Native styling (colors, anchoring, artwork) stays native. Geometry dirt,
+queued previews across gestures and focus-clear fence reset still permit
 work is future and separate.
 
 ## Host styling on KDE
@@ -161,7 +165,8 @@ work is future and separate.
   the other. The focused miniature paints a full-strength accent
   border over a dimmer accent fill of the same color; unfocused
   miniatures are unchanged. The pager active workspace cell keeps the
-  system accent with no theme switch.
+  independent highlight settings and artwork are deferred with that surface,
+  not implemented or coupled to the border by this port.
 
 Tests: `kwin/tests/world-*.test.ts` and `test-fixtures/world-wire/` now
 exercise strict v2. Canonical reply fixtures come from the Rust service;
@@ -169,6 +174,17 @@ request fixtures pin the JS producer, including populated raw attempts.
 
 ## KWin API facts the port relies on
 
+- KWin `v6.7.4:src/window.h:281-289` exposes `managed` as `isClient`:
+  KWin controls placement/other aspects, unlike override-redirect windows
+  entirely handled by the application; `deleted` as `isDeleted` means already
+  deleted, retained only for compositor animation. Both are constant Qt
+  properties exposed through scripting's Window objects. Normalize deleted to
+  explicit close and unmanaged to absent at the adapter boundary, never a
+  candidate `WindowFact`; retain raw booleans for Rust normalization. This is
+  host lifecycle, not N5 membership-policy classification. Scripting
+  `windowList()` returns `workspace()->windows()` (`workspace_wrapper.cpp:505-509`),
+  not the separate deleted collection (`workspace.h:205-213,354`); normal live
+  closes use the existing event-gated close lane, not fabricated tombstones.
 - Gesture source proof at `v6.7.4`: scripting's finish has no cancellation
   argument (`src/window.h:1512-1514`), and the effect merely re-emits it
   (`src/effect/effectwindow.cpp:83-91`). An effect input spy observes Esc before
@@ -233,6 +249,15 @@ request fixtures pin the JS producer, including populated raw attempts.
   (core presentation math is unit-agnostic); see the corrected
   `PresentationIngress` docs in
   `crates/tiler-core/src/world_report.rs`.
+  `kde_raw.rs::math_round` agree on halves toward positive infinity
+  (`-10.5 -> -10`); published integer rectangles pass through unchanged.
+  Style values are converted once into the same logical units at ingress.
+  positive insets between core inner/outer. Pinned KWin `v6.7.4`
+  `src/scene/borderoutline.h` inflates each side by that thickness and
+  `outlinedborderitem.cpp` sets geometry from that inflation, reproducing
+  core outer independently of later config-width changes. Underlay/preview
+  native item anchor. No additional DPI factor, outset or Windows frame
+  or independently observed native draw bounds; those remain unaccepted.
 - KWin size hints are client sizes: project decorated frames with
   `clientGeometry`, never with Windows invisible-border compensation.
 - Fresh native readbacks (visibility, frame, foreground joined to the
@@ -326,8 +351,15 @@ request fixtures pin the JS producer, including populated raw attempts.
   requires KWin-shaped raw candidate rows; Rust `kde_raw.rs` calls the existing
   shared fixed predicate and emits strict projected facts. There is no old
   projected-capture fallback. Native role/control normalization, richer app/rule
-  capture, born clear and neutral tiling-toggle intents remain unresolved in
+  capture remain unresolved in
   [Stage 4](../changes/kde-world-v2-port.md#stage-4-partial-outcome-and-deletion-boundary).
+  Neutral `toggle-workspace-tiling` now resolves mode in core for shortcut and
+  tray callers; explicit set remains available. The current
+  [N6 outcome](../changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26)
+  records passing toggle and automatic birth-clear evidence; remaining local-
+  fixed focus/keep-above consumers stay unchanged. KDE sends `birthClear:true`;
+  missing capability defaults false, preserving native birth ownership on
+  Windows/macOS. No new controllability/liveness facts are selected in core.
   The gesture lifecycle API already exists and is next. No shared ingress
   redesign or broker logical-policy owner is introduced.
 
@@ -340,5 +372,5 @@ request fixtures pin the JS producer, including populated raw attempts.
   even when the core setting is on.
 - The local `kwin-globals.d.ts` declares the pinned `windowAt` hit test;
   consumption remains Stage 6 work, not a claimed applied cursor route.
-- The current effect derives geometry and presentation eligibility instead of
-  consuming core bounds; delete that derivation, retaining native host styling.
+- The renderer cutover deletes native geometry/presentation policy, but its
+  from a successful native build or helper tests.
