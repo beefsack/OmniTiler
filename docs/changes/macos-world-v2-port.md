@@ -12,7 +12,8 @@
   have reviewed regressions. Presentation and native acceptance remain open.
   Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
-  by the reviewed outcomes. No live tests were performed for this record.
+  by the reviewed outcomes. Narrow current-artifact live evidence is recorded
+  below; full native acceptance is not complete.
 - Replace the retired macOS contract, not wrap it. One `WorldEngine` owns policy;
   macOS captures native facts, actuates authorized desires and renders replies.
 - Contract: [adapter guide](../porting/world-adapter-guide.md),
@@ -916,6 +917,77 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 - This is reviewed, scoped hide/reveal observation, not full native acceptance.
   Signed-fixture visual, physical-input, sticky and complete settings/lifecycle
   restoration gates remain open.
+
+## Saved-baseline native checkpoint and state stream (2026-10-26)
+
+- Supersedes the missing-baseline limits of the preceding checkpoint. Current
+  product/fixture signed builds, digests, persistent identity, deployment floor,
+  bundle-attributed preflight and fixture LaunchServices identity are saved
+  contemporaneously. Fixture-only runtime, input off; no pre-existing preimage
+  was reverted and no global accent preference was changed.
+- Independent review verified exact read-only holder status before startup,
+  after startup, away, return and teardown. All nine Desktop-N holders retain
+  their original enabled state. Complete native binding snapshots match before
+  and after. The existing preimage's saved SHA, mtime, size and permissions match
+  before and after; the first post-file check was captured after teardown, and
+  the supplemental leg also saves its matching post-file check in-leg. Startup
+  resumption leaves the measured native shortcut state unchanged.
+- Accent keys retain the same saved absence/error-status before and after.
+  Owned process inventories are empty before launch and after teardown; fixture
+  shutdown and run-directory removal are saved for the baseline leg. Native
+  desktop order/current and Mission Control state restore. Common protected
+  CG windows retain bounds/layer/visibility; only same-owner offscreen auxiliary
+  IDs churn. No whole-desktop inventory identity claim is made.
+- Home/away/return observations join exact fixture lifetimes and socket frames
+  to native AX/CG, membership, current and foreground. Away hides fixture AX
+  windows without hiding the app; independent native current names the other
+  existing Space. Three timed hidden polls retain exact frames. Return native
+  identity/frame/membership/foreground equals tiled home. Clean runtime shutdown
+  is established by outcome payload and absent owned processes, not wrapper
+  exit status.
+- A supplemental leg uses the documented fixture `subscribe`/`send --follow`
+  state stream, with driver receive timestamps, continuous through tiling,
+  native away, return and shutdown EOF. Twelve State events include four
+  geometry deltas during initial native tiling, establishing host-notification
+  coverage for both windows without any socket `set`. Away/return produce only
+  repeated geometry and focus handoffs: zero geometry deltas across the marked
+  hidden/transition interval. Native current/AX/CG and socket observations
+  corroborate the interval and exact returned geometry.
+- This narrows the write evidence to no observed geometry change, not zero AX
+  setter attempts. The tiler's initial layout does perform AX writes. No-op
+  setters and compositor changes without delivered window notifications are not
+  observable through the fixture state stream; polling alone also misses
+  between-poll changes. Absolute zero-interim-write proof remains unsupported.
+- Accepted evidence files include `holder-PRE.json`, `holder-STARTUP.json`,
+  `holder-AWAY.json`, `holder-RETURN.json`, `holder-FINAL.json`,
+  `bindings-PRE.json`/`bindings-POST.json`, `preimage-PRE-sha.txt`/
+  `preimage-POST-sha.txt`, matching stat files, `accent-PRE.log`/
+  `accent-POST.log`, `process-PRE.txt`/`process-POST.txt`, native Space/scope/CG
+  and fixture frame readbacks, `tile-outcome.json`, signing/preflight logs,
+  and supplemental `stream-events.log`, `stream-meta.txt`, `hide-interval.txt`.
+  Private raw artifacts stay outside the repository and are not published.
+- Noted variances: the indicator's destination occupancy scan changes although
+  native CG shows no destination window and only shell chrome is enumerated;
+  this is not owned residue or evidence of a product write. The supplement has
+  a redundant acknowledgement-only subscription not used for geometry proof,
+  sparser native polling and no separate run-directory absence file. The full
+  baseline leg supplies lifecycle restoration evidence. No physical-input,
+  pager-pixel, sticky, game or broad port acceptance follows from either leg.
+- Help correction gates: locked macOS build and full tests PASS (1,376: 1,228
+  library plus 148 integration), strict all-target clippy, package fmt and diff
+  whitespace PASS. The live legs change no source; both native evidence sets
+  received independent offline review.
+
+### Remaining bounded decisions and evidence
+
+| Item | Options | Recommendation / next evidence |
+| --- | --- | --- |
+| Authentic startup holder behavior with input off | Confirmed above: retain preset behavior, no gating | Help corrected and regression-tested; saved native per-holder/binding and preimage pre/post baselines match. A pre-existing preimage must not be reverted |
+| Sticky per-display scope | Repeat the existing plan with two outputs and GUI control; or leave native scope unsupported | Keep sticky unproven and repeat the two-output plan when available; do not infer scope from membership count |
+| Pager pixels and live theme appearance | User-assisted visual contrast; or a separately consented bounded capture | User-assisted visual check first; no global accent change or capture-grant reset during this checkpoint |
+| Interim hidden setter attempts | Existing native/fixture geometry-event evidence; or add bounded adapter setter-attempt diagnostics | Accept the observed geometry/restoration checkpoint, not absolute zero-write proof; direct setter-attempt tracing is needed for the stronger claim |
+| Trailing-append remembered focus | Keep fail-closed unsupported binding; or investigate receipt-bound binding, with shared settlement emission considered separately | Keep the safe drop for this cutover; prove any later adapter receipt-bound path before requesting a shared change |
+| Presentation roster gaps | Retain renderer vetoes/core fallback/live-only frames; or plumb grounded native cloak/order/retained-frame evidence | Keep current safe boundaries; expand only with a failing discriminator and grounded native data |
 
 ## Risks and open evidence
 
