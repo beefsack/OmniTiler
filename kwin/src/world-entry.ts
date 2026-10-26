@@ -1859,13 +1859,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Ack the closes that rode the accepted dispatch BEFORE the
                     // post-accept fresh capture: that capture may promote new
                     // event-gated closes that have never been reported and
-                    // must survive until their own accepted reply. The
-                    // pre-ack snapshot also prunes born-maximized lifetimes
-                    // (explicit close only, never minimized absence).
-                    const closedBeforeAck = closeTracker.snapshotClosed();
+                    // must survive until their own accepted reply.
                     try {
                         closeTracker.ack();
-                    } catch (error) {
                     } catch (error) {
                         void error;
                     }

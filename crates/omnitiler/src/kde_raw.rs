@@ -6,11 +6,20 @@
 //!
 //! Explicit non-goals (deferred pending neutrality/product decisions): the
 //! carried native role/control/ownership facts (`normalWindow` excepted,
-//! which preserves the existing candidate filter) are strictly
+//! which preserves the existing candidate filter, plus the lifecycle
+//! boundary below) are strictly
 //! validated but never mapped to verdicts here. No shared safety flags are
 //! invented and no transient/modal window is floated: ordinary normal
 //! windows keep the exact pre-cutover projection (intent, sticky, fixed),
 //! and minimized rows stay retained facts.
+//!
+//! Lifecycle boundary (no new core fields): KWin `managed` (`isClient`,
+//! false for application-handled override-redirect windows) means absent
+//! (never a candidate `WindowFact`, never a close); KWin `deleted`
+//! (`isDeleted`, already closed) means close (the id joins the explicit
+//! close lane, never a candidate `WindowFact`). Deleted takes precedence
+//! over unmanaged. Raw `managed`/`deleted` stay in the capture envelope;
+//! this normalization from actual host facts is the only mapping.
 
 use std::collections::HashSet;
 
@@ -275,6 +284,11 @@ pub fn normalize_raw_windows(
     let rows = windows_value.as_array().ok_or_else(malformed)?;
     let mut seen: HashSet<String> = HashSet::new();
     let mut projected: Vec<Value> = Vec::with_capacity(rows.len());
+    // Native lifecycle closes collected from deleted rows: deleted means
+    // gone (KWin keeps the object only for compositor animations), so the
+    // row never becomes a candidate WindowFact and instead joins the
+    // explicit close lane below. Deleted takes precedence over unmanaged.
+    let mut deleted_ids: Vec<String> = Vec::new();
 
     for row in rows {
         let map = row.as_object().ok_or_else(malformed)?;
@@ -289,11 +303,26 @@ pub fn normalize_raw_windows(
         if !seen.insert(win.clone()) {
             return Err(snapshot_invalid("duplicate-window"));
         }
+        // Native lifecycle boundary (no new core fields, no verdicts):
+        // `managed` is KWin `isClient` (false for application-handled
+        // override-redirect windows such as menus/tooltips/DnD icons) and
+        // `deleted` is KWin `isDeleted` (already closed, kept only for
+        // compositor animations). Both stay validated in the envelope, but
+        // neither maps to a membership verdict: deleted rows close (never a
+        // candidate), unmanaged rows are absent (never a candidate, never a
+        // close). Deleted takes precedence over unmanaged.
+        let managed = req_bool(map, "managed")?;
+        let deleted = req_bool(map, "deleted")?;
+        if deleted {
+            deleted_ids.push(win);
+            continue;
+        }
+        if !managed {
+            continue;
+        }
         let normal_window = req_bool(map, "normalWindow")?;
         // Strictly validated but deliberately unmapped (deferred
         // role/control/ownership decision): bindings prefixed unused.
-        let _managed = req_bool(map, "managed")?;
-        let _deleted = req_bool(map, "deleted")?;
         let _transient = req_bool(map, "transient")?;
         let _dialog = req_bool(map, "dialog")?;
         let _modal = req_bool(map, "modal")?;
@@ -381,7 +410,9 @@ pub fn normalize_raw_windows(
         // producer also retains that filter until role normalization is
         // resolved; minimized rows stay retained below. Native
         // role/control/ownership facts above are strictly validated but
-        // deliberately not mapped to verdicts here (deferred decision).
+        // deliberately not mapped to verdicts here (deferred decision);
+        // only the lifecycle boundary (deleted close, unmanaged absent)
+        // maps, decided above.
         if !normal_window {
             continue;
         }
@@ -459,6 +490,36 @@ pub fn normalize_raw_windows(
             "observedWs": null,
             "nativeWs": native_ws,
         }));
+    }
+
+    // Deleted rows join the explicit close lane (deduped against closes
+    // the producer already carried): one id is never both observed and
+    // reported closed, and duplicate closes never refuse. A non-array
+    // `closed` lane is malformed here so the strict codec never sees it.
+    if !deleted_ids.is_empty() {
+        let mut closed: Vec<String> = match inner.get("closed") {
+            None => Vec::new(),
+            Some(Value::Array(items)) => {
+                let mut ids = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::String(s) => ids.push(s.clone()),
+                        _ => return Err(malformed()),
+                    }
+                }
+                ids
+            }
+            Some(_) => return Err(malformed()),
+        };
+        for id in deleted_ids {
+            if !closed.contains(&id) {
+                closed.push(id);
+            }
+        }
+        inner.insert(
+            "closed".to_owned(),
+            Value::Array(closed.into_iter().map(Value::String).collect()),
+        );
     }
 
     inner.insert("windows".to_owned(), Value::Array(projected));
@@ -701,6 +762,7 @@ mod tests {
                     "tileIntent",
                     "raw",
                     "projected",
+                    "closed",
                     "error",
                 ]
                 .contains(&key.as_str())
@@ -728,6 +790,14 @@ mod tests {
                         Some(expected) => {
                             assert_eq!(windows.len(), 1, "{name}");
                             assert_eq!(&windows[0], expected, "{name}");
+                        }
+                    }
+                    match entry.get("closed") {
+                        Some(serde_json::Value::Null) | None => {
+                            assert!(inner.get("closed").is_none(), "{name} carries no close");
+                        }
+                        Some(expected) => {
+                            assert_eq!(&inner["closed"], expected, "{name} closes");
                         }
                     }
                     assert!(
@@ -889,5 +959,72 @@ mod tests {
             json!([{"win": "win-a", "auto": true, "suppress": false}]),
         );
         assert_eq!(normalize_raw_windows(&mut inner), Err(unknown_field()));
+    }
+
+    #[test]
+    fn deleted_rows_close_instead_of_projecting() {
+        // KWin `deleted` (already closed, kept only for animations) is
+        // gone: never a candidate WindowFact, always an explicit close.
+        let mut w = raw_win("win-gone");
+        w["deleted"] = json!(true);
+        let mut inner = base_inner(json!([w]));
+        normalize_raw_windows(&mut inner).expect("normalizes");
+        assert_eq!(inner["windows"].as_array().expect("array").len(), 0);
+        assert_eq!(inner["closed"], json!(["win-gone"]));
+    }
+
+    #[test]
+    fn unmanaged_rows_are_absent_without_close() {
+        // KWin `managed=false` (application-handled override-redirect) is
+        // absent: never a candidate WindowFact and never a membership
+        // verdict, so no close either.
+        let mut w = raw_win("win-popup");
+        w["managed"] = json!(false);
+        let mut inner = base_inner(json!([w]));
+        normalize_raw_windows(&mut inner).expect("normalizes");
+        assert_eq!(inner["windows"].as_array().expect("array").len(), 0);
+        assert!(
+            inner.get("closed").is_none(),
+            "unmanaged absence carries no close"
+        );
+    }
+
+    #[test]
+    fn deleted_takes_precedence_over_unmanaged() {
+        let mut w = raw_win("win-gone");
+        w["managed"] = json!(false);
+        w["deleted"] = json!(true);
+        let mut inner = base_inner(json!([w]));
+        normalize_raw_windows(&mut inner).expect("normalizes");
+        assert_eq!(inner["windows"].as_array().expect("array").len(), 0);
+        assert_eq!(inner["closed"], json!(["win-gone"]));
+    }
+
+    #[test]
+    fn explicit_and_native_closes_dedup() {
+        // An explicit close plus a native deleted row for the same id is
+        // one close, never a duplicate refusal.
+        let mut w = raw_win("win-gone");
+        w["deleted"] = json!(true);
+        let mut inner = base_inner(json!([w]));
+        inner.insert("closed".to_owned(), json!(["win-gone"]));
+        normalize_raw_windows(&mut inner).expect("normalizes");
+        assert_eq!(inner["windows"].as_array().expect("array").len(), 0);
+        assert_eq!(inner["closed"], json!(["win-gone"]));
+    }
+
+    #[test]
+    fn unknown_lifecycle_booleans_refuse() {
+        // Unknown lifecycle facts never fabricate: non-boolean
+        // managed/deleted refuse as values instead of guessing absent or
+        // closed.
+        let mut w = raw_win("win-a");
+        w["managed"] = json!("yes");
+        let mut inner = base_inner(json!([w]));
+        assert_eq!(normalize_raw_windows(&mut inner), Err(unknown_value()));
+        let mut w = raw_win("win-a");
+        w["deleted"] = json!(1);
+        let mut inner = base_inner(json!([w]));
+        assert_eq!(normalize_raw_windows(&mut inner), Err(unknown_value()));
     }
 }

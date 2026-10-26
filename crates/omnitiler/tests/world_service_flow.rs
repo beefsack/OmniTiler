@@ -2269,6 +2269,27 @@ fn clear_attempt(op: &str, win: &str, setter: &str, pre: bool, post: Option<bool
 
 /// Inject explicit `closed` ids into a built inner report (the event-gated
 /// explicit-close lane the producer carries alongside raw rows).
+fn with_closed(inner: &str, ids: &[&str]) -> String {
+    let list = ids
+        .iter()
+        .map(|id| format!("\"{id}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    inner.replace("\"closed\":[]", &format!("\"closed\":[{list}]"))
+}
+
+/// Assert no born-clear token rides any projected row: the lifecycle
+/// boundary authorizes no `op-born-*` desire.
+fn assert_no_born_clear(reply: &serde_json::Value, context: &str) {
+    for row in reply["windows"].as_array().expect("windows") {
+        let op = row["clear_op"].as_str().unwrap_or("");
+        assert!(
+            !op.starts_with("op-born-"),
+            "{context}: no born clear authorized, got {op}"
+        );
+    }
+}
+
 fn reply_row(reply: &serde_json::Value, win: &str) -> serde_json::Value {
     reply["windows"]
         .as_array()
@@ -2865,5 +2886,450 @@ fn born_raw_safety_boundary_drops_non_normal_and_holds_minimized() {
         clear_op_of(&reply, BORN_WIN_B),
         "",
         "minimized proves no birth"
+    );
+}
+
+#[test]
+fn born_raw_deleted_closes_without_candidate_or_clear() {
+    // Decided lifecycle boundary (no new core fields): KWin `deleted`
+    // (already closed, kept only for compositor animations) means CLOSE.
+    // The row never becomes a candidate WindowFact and mints no born
+    // clear; the close retires through the existing roster machinery.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let row = born_raw(
+        BORN_WIN_C,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1039.5}",
+        Some("{\"x\":8.5,\"y\":30.4,\"width\":1903.6,\"height\":1001.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        true,
+        true,
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[row], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(reply["ready"], true);
+    let windows = reply["windows"].as_array().expect("windows");
+    assert!(
+        windows.iter().all(|w| w["win"] != BORN_WIN_C),
+        "deleted never a candidate: {}",
+        reply["windows"]
+    );
+    assert_no_born_clear(&reply, "deleted");
+}
+
+#[test]
+fn born_raw_unmanaged_absent_without_close_or_clear() {
+    // Decided lifecycle boundary: KWin `managed=false`
+    // (application-handled override-redirect: menus, tooltips, DnD icons)
+    // means absent. The row never becomes a candidate WindowFact, mints no
+    // born clear, and reports no close: unmanaged absence is NOT a
+    // membership-policy verdict.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let row = born_raw(
+        BORN_WIN_C,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1039.5}",
+        Some("{\"x\":8.5,\"y\":30.4,\"width\":1903.6,\"height\":1001.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        false,
+        false,
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[row], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(reply["ready"], true);
+    let windows = reply["windows"].as_array().expect("windows");
+    assert!(
+        windows.iter().all(|w| w["win"] != BORN_WIN_C),
+        "unmanaged never a candidate: {}",
+        reply["windows"]
+    );
+    assert_no_born_clear(&reply, "unmanaged");
+}
+
+#[test]
+fn born_raw_deleted_takes_precedence_over_unmanaged() {
+    // A row that is both unmanaged and deleted still closes: gone wins
+    // over non-manageable.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let row = born_raw(
+        BORN_WIN_C,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1039.5}",
+        Some("{\"x\":8.5,\"y\":30.4,\"width\":1903.6,\"height\":1001.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        false,
+        true,
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[row], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(reply["ready"], true);
+    assert!(
+        reply["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .all(|w| w["win"] != BORN_WIN_C),
+        "deleted precedence closes: {}",
+        reply["windows"]
+    );
+    assert_no_born_clear(&reply, "deleted-precedence");
+}
+
+#[test]
+fn born_raw_deleted_retires_roster_slot_for_re_admission() {
+    // An admitted roster member that reports deleted leaves the roster
+    // (no candidate, no clear), and the close prunes the born lifetime so
+    // a later re-admission evaluates as a fresh lifetime that may clear
+    // again.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let first = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(
+                    &[born_restored_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(
+        clear_op_of(&first, BORN_WIN_A),
+        "",
+        "tiled admission clears nothing"
+    );
+    let tombstone = born_raw(
+        BORN_WIN_A,
+        "{\"x\":100.4,\"y\":100.6,\"width\":958.5,\"height\":500.5}",
+        Some("{\"x\":104.5,\"y\":130.4,\"width\":950.6,\"height\":462.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(UUID_A),
+        0,
+        false,
+        false,
+        true,
+        true,
+        true,
+    );
+    let second = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                2,
+                2,
+                &inner_report_birth(&[tombstone], true, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    assert!(
+        second["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .all(|w| w["win"] != BORN_WIN_A),
+        "deleted roster member leaves: {}",
+        second["windows"]
+    );
+    assert_no_born_clear(&second, "roster-close");
+    // Re-admission after the close starts a fresh lifetime: a maximized
+    // arrival binds a born clear again.
+    let third = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                3,
+                3,
+                &inner_report_birth(
+                    &[born_maximized_row(BORN_WIN_A, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert!(
+        clear_op_of(&third, BORN_WIN_A).starts_with("op-born-"),
+        "retired slot re-admits as a fresh lifetime"
+    );
+}
+
+#[test]
+fn born_raw_deleted_close_authoritative_on_partial_inventory() {
+    // A deleted row closes even when the inventory is partial: the
+    // explicit lifecycle fact never holds the scope waiting for geometry.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let row = born_raw(
+        BORN_WIN_C,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1039.5}",
+        Some("{\"x\":8.5,\"y\":30.4,\"width\":1903.6,\"height\":1001.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        true,
+        true,
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[row], false, true, &native),
+            ))
+            .expect("accepted"),
+    );
+    assert!(
+        reply["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .all(|w| w["win"] != BORN_WIN_C),
+        "partial-inventory close still applies: {}",
+        reply["windows"]
+    );
+    assert_no_born_clear(&reply, "partial-close");
+}
+
+#[test]
+fn born_raw_duplicate_explicit_and_native_close_dedups() {
+    // An explicit close plus a native deleted row for the same id is one
+    // close: the capture accepts instead of refusing a duplicate.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    let row = born_raw(
+        BORN_WIN_C,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1039.5}",
+        Some("{\"x\":8.5,\"y\":30.4,\"width\":1903.6,\"height\":1001.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        true,
+        true,
+    );
+    let inner = with_closed(
+        &inner_report_birth(&[row], true, true, &native),
+        &[BORN_WIN_C],
+    );
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+            .expect("accepted"),
+    );
+    assert!(
+        reply["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .all(|w| w["win"] != BORN_WIN_C),
+        "deduped close still applies: {}",
+        reply["windows"]
+    );
+    assert_no_born_clear(&reply, "dedup-close");
+}
+
+#[test]
+fn born_raw_lifecycle_close_keeps_queue_and_replay() {
+    // A lifecycle close drains like any fresh capture: the queued command
+    // settles, and redelivery replays byte-identically without re-draining.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+            ),
+        )
+        .expect("queued");
+    let row = born_raw(
+        BORN_WIN_C,
+        "{\"x\":0.5,\"y\":0.5,\"width\":1919.6,\"height\":1039.5}",
+        Some("{\"x\":8.5,\"y\":30.4,\"width\":1903.6,\"height\":1001.5}"),
+        Some("{\"width\":200,\"height\":120}"),
+        None,
+        Some(UUID_A),
+        3,
+        false,
+        false,
+        true,
+        true,
+        true,
+    );
+    let envelope = capture(
+        ADAPTER,
+        &generation,
+        1,
+        1,
+        &inner_report_birth(&[row], true, true, &native),
+    );
+    let first_text = service.evaluate_capture(&envelope).expect("accepted");
+    let first = parse(&first_text);
+    assert_eq!(first["rev"], "1");
+    assert_no_born_clear(&first, "drain-close");
+    assert_eq!(
+        parse(
+            &service
+                .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+                .expect("in-band")
+        )["outcome"],
+        "ready",
+        "lifecycle close drains the queue"
+    );
+    let replay = service.evaluate_capture(&envelope).expect("replay");
+    assert_eq!(replay, first_text, "redelivery replays byte-identically");
+}
+
+#[test]
+fn born_raw_unknown_lifecycle_booleans_refuse() {
+    // Unknown lifecycle facts never fabricate: a non-boolean `managed`
+    // refuses as a value, a missing `deleted` refuses as malformed, the
+    // queued command stays pending, and the next valid capture still mints
+    // the unskipped revision.
+    let (service, generation) = discovered_service();
+    let native = born_native_order();
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+            ),
+        )
+        .expect("queued");
+    let good = born_maximized_row(BORN_WIN_C, UUID_A);
+    let bad_managed = good.replace("\"managed\":true", "\"managed\":\"yes\"");
+    let refused = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &inner_report_birth(&[bad_managed], true, true, &native),
+            ))
+            .expect("in-band"),
+    );
+    assert_eq!(refused["outcome"], "rejected");
+    assert_eq!(refused["kind"], "unknown-value");
+    let bad_missing = good.replace(",\"deleted\":false", "");
+    let refused = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                2,
+                2,
+                &inner_report_birth(&[bad_missing], true, true, &native),
+            ))
+            .expect("in-band"),
+    );
+    assert_eq!(refused["outcome"], "rejected");
+    assert_eq!(refused["kind"], "malformed");
+    assert_eq!(
+        parse(
+            &service
+                .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+                .expect("in-band")
+        )["outcome"],
+        "pending",
+        "invalid lifecycle captures drain nothing"
+    );
+    let accepted = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                3,
+                3,
+                &inner_report_birth(
+                    &[born_restored_row(BORN_WIN_C, UUID_A)],
+                    true,
+                    true,
+                    &native,
+                ),
+            ))
+            .expect("accepted"),
+    );
+    assert_eq!(
+        accepted["rev"], "1",
+        "no counter consumed by lifecycle rejects"
+    );
+    assert_eq!(
+        parse(
+            &service
+                .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+                .expect("in-band")
+        )["outcome"],
+        "ready"
     );
 }

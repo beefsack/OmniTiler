@@ -244,6 +244,8 @@ export interface WorldObservation {
     // unknown); actionCached is null (the adapter retains no output cache);
     // actionOutputs is the ordered known-output registry.
     cursor: { x: number; y: number } | null;
+    // Authoritative native gesture snapshot (effect-owned lifecycle only):
+    // the raw snapshot for this capture, or null when no native gesture
     actionForeground: string | null;
     actionCached: null;
     actionOutputs: string[];
@@ -603,6 +605,9 @@ export interface ObserveEnv {
     // or null when unrecorded. Never classifies fresh admissions; the core
     // owns admission from the carried flags.
     fixedOriginOf?: (win: string, ref: object) => { readonly fixedAuto: boolean; readonly fixedSuppress: boolean } | null;
+    // Authoritative native gesture snapshot (effect-owned lifecycle
+    // only): the latest versioned snapshot the entry fetched, or null when
+    // unknown (effect absent, stale, malformed, or explicitly unavailable).
 }
 
 // FULL output rectangles for the core-owned topology authority (the
@@ -735,6 +740,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     // readable identity and frame; cleared wholesale when the inventory is
     // unreadable, exactly like the legacy projected set below.
     const rawFacts: RawWindowFact[] = [];
+    // Native lifecycle closes observed on enumerated-but-gone objects:
+    // identity plus known lifecycle facts alone emit the close (geometry
+    // of a gone object is meaningless and never holds the scope). Merged
+    // into the explicit close lane below, deduped.
+    const deletedIds: string[] = [];
     const floatIntent: string[] = [];
     const tileIntent: string[] = [];
     let windowsReadable = true;
@@ -803,6 +813,17 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             ? readProp(outputRaw as object, "name")
             : undefined;
         const membersCapped = decodeListCapped(readProp(ref, "desktops"), MAX_WINDOW_DESKTOPS);
+        // Native lifecycle first: a gone object still forces the geometry
+        // and membership reads above (pure, null-yielding when gone), but
+        // only identity plus known lifecycle facts are required to emit
+        // its close. Unknown lifecycle booleans fall through to the holds
+        // below instead of fabricating.
+        const managed = readReqBool(ref, "managed");
+        const deleted = readReqBool(ref, "deleted");
+        if (deleted === true && managed !== null) {
+            deletedIds.push(rawId);
+            continue;
+        }
         if (rect === null || !isOpaqueId(outName) || membersCapped === null) {
             windowsReadable = false;
             continue;
@@ -818,6 +839,9 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         // Raw broker-classified capture: native facts only, never verdicts.
         // Every in-scope normal candidate with readable identity/frame rides,
         // including minimized windows (retained facts, never excluded).
+        // Lifecycle (`managed`/`deleted`, hoisted above) rides every row
+        // for broker normalization; gone objects already closed above and
+        // never reach this lane.
         {
             const rawFrame = readRawRect(ref);
             const rawClient = readRawClientRect(ref);
@@ -825,8 +849,6 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             const rawMax = readRawSize(readProp(ref, "maxSize"));
             // Required native control/ownership booleans: missing or
             // non-boolean holds the fact set (never eligible defaults).
-            const managed = readReqBool(ref, "managed");
-            const deleted = readReqBool(ref, "deleted");
             const transient = readReqBool(ref, "transient");
             const dialog = readReqBool(ref, "dialog");
             const modal = readReqBool(ref, "modal");
@@ -877,16 +899,6 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 const alias = readNativeAlias(readProp, ref, "sticky");
                 onAllDesktops = typeof alias === "boolean" ? alias : null;
             }
-            if (
-                rawFrame === null || managed === null || deleted === null ||
-                transient === null || dialog === null || modal === null ||
-                wantsInput === null || minimized === null ||
-                !ownerReadable || fullScreen === null ||
-                maximizeMode === null || onAllDesktops === null
-            ) {
-                windowsReadable = false;
-                continue;
-            }
             // Native membership is mechanical and exact: any invalid or
             // disappearing desktop object/id, or any duplicate id, holds
             // the fact set instead of projecting a fabricated single home.
@@ -905,6 +917,18 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 }
                 seenDesktops.add(id as string);
                 desktopIds.push(id as string);
+            }
+            // Gone objects already closed on identity plus lifecycle above
+            // and never reach this lane; the holds below stay exact.
+            if (
+                rawFrame === null || managed === null || deleted === null ||
+                transient === null || dialog === null || modal === null ||
+                wantsInput === null || minimized === null ||
+                !ownerReadable || fullScreen === null ||
+                maximizeMode === null || onAllDesktops === null
+            ) {
+                windowsReadable = false;
+                continue;
             }
             if (!membershipReadable) {
                 windowsReadable = false;
@@ -1182,6 +1206,14 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     // Explicit closes ride top-level (v2 `closed`) and stay mirrored on
     // the first domain carrier (offline doubles read either shape).
     const closedTop: string[] = [...env.knownClosed()].filter((id) => isOpaqueId(id) && !liveById.has(id));
+    // Native lifecycle closes observed on enumerated-but-gone objects join
+    // the explicit lane here, so both the mirror below and the top-level
+    // v2 `closed` carry them exactly once.
+    for (const id of deletedIds) {
+        if (!closedTop.includes(id)) {
+            closedTop.push(id);
+        }
+    }
     if (closedTop.length > 0 && domains.length > 0) {
         (domains[0] as ObservedDomain).closed = closedTop.slice(0, MAX_CLOSED);
     }
@@ -1248,6 +1280,10 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     // with a known current per screen; without it every nativeWs reads null
     // and native rides empty (core refuses nativeWs without hostOwned).
     const hostOwned = desktopsReadable && screenEntries.every((s) => s.current !== "");
+    // Explicit closes: the event-gated tracker (absence after a
+    // removal) plus native lifecycle closes observed on enumerated-but-
+    // gone objects, deduped above. Either lane alone retires the roster
+    // member; a duplicated id rides once, never a duplicate refusal.
     const closed: string[] = [...closedTop];
     const nativeOrderFull = hostOwned
         ? (orderTruncated ? nativeOrder.slice(0, MAX_NATIVE_PER_OUTPUT) : nativeOrder)

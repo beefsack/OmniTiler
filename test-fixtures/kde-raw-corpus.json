@@ -1703,5 +1703,92 @@
       "win": "win-a"
     },
     "tileIntent": []
+  },
+  {
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "unmanaged-absent",
+    "predicate": "both-axes-fixed",
+    "projected": null,
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": false,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": false,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "managed": false,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": false,
+      "modal": false,
+      "normalWindow": true,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": false,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-x"
+    },
+    "tileIntent": []
+  },
+  {
+    "closed": [
+      "win-x"
+    ],
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "deleted-closes",
+    "predicate": "both-axes-fixed",
+    "projected": null,
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": true,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": false,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "managed": true,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": false,
+      "modal": false,
+      "normalWindow": true,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": false,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-x"
+    },
+    "tileIntent": []
   }
 ]
