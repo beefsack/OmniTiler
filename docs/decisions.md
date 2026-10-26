@@ -75,6 +75,12 @@ Tentative index (user review pending; not approved product rules):
   renderer's latest value, with preview matching the live native gesture.
   First reproduce all three full-interleaving regressions. Any shared-core
   need requires a separate decision.
+  **Implemented offline 2026-10-27:** every invalidation advance publishes its
+  source counter and refreshes every surface; stale paint stays hidden until
+  covering capture. The recorded actual-facts/broker/JS/native-endpoint route
+  passes after failing-first proof. Signal delivery and painting still require
+  physical checks. Field names remain tentative technical vocabulary, not a
+  new shared-core protocol. [Outcome](changes/kde-world-v2-port.md#stage-5-renderer-causal-freshness-accepted-offline-2026-10-27).
 - **Fullscreen suspension, option B, approved; pending implementation:** a
   neutral core rule hides borders, underlays, overlays and drop preview on the
   output whose focused surface is fullscreen. This is not game identification:

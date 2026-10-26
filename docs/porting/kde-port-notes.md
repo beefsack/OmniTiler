@@ -13,7 +13,7 @@ role/local-fixed/gesture policy still outstanding. N6's neutral tiling toggle
 and opt-in world-owned birth-clear are accepted offline, including simultaneous
 births and native deleted/unmanaged lifecycle normalization. Existing-core shortcuts now
 submit commands only; the native float-navigation policy is deleted. Stage 5
-replaces renderer derivation. Native acceptance remains
+renderer derivation removal and causal freshness are accepted offline. Native acceptance remains
 outstanding; no logical receipt or offline test is native arrival proof.
 
 KWin source is read from the local sibling clone at the documented
@@ -151,15 +151,29 @@ JS adapter (`kwin/src/`):
 
 Native effect (`kwin/native-effect/`, `activewindowborder.*`,
 `activeborderlogic.*`, `presentation_consumer.h`, `gesturefacts.*`):
-the unaccepted Stage 5 draft consumes serialized core bounds and removes
+the offline-accepted Stage 5 renderer consumes serialized core bounds and removes
 group-highlight/visual-policy FFI derivation and legacy result forwarding.
-Native styling (colors, anchoring, artwork) stays native. Geometry dirt,
-queued previews across gestures and focus-clear fence reset still permit
-stale paints; see the [blocking outcome](../changes/kde-world-v2-port.md#stage-5-unaccepted-renderer-outcome-2026-10-26).
+Native styling (colors, anchoring, artwork) stays native. Every native
+invalidation advance publishes its source counter and refreshes every surface;
+only exact covering paint can reappear. Producing gesture identity isolates
+queued previews across rapid serial changes, and focus/error hides preserve
+ordering evidence. See the [accepted offline outcome](../changes/kde-world-v2-port.md#stage-5-renderer-causal-freshness-accepted-offline-2026-10-27).
 The gesture cutover replaces the drag oracle with effect-owned identity and
 delivered-Esc capture; terminal recovery remains unaccepted. The unused Rust
 oracle FFI and its build/unsafe-inventory roots are removed. Pager/plasmoid work
 is future and separate.
+
+Stage 5 wire vocabulary is implemented but field naming remains tentative:
+effect facts `{instance,invalidation}` become raw
+`nativeInvalidWitness:{instance,counter}|null`, stripped before core decoding.
+The read-only projection carries `coveredInstance`/`coveredInvalid`; the JS
+subscriber and native endpoint both require exact live coverage. Preview
+`producerInstance`/`producerSerial` must match the live native gesture
+`{instance,serial}`. Unknown coverage and unproven preview producers cannot
+draw. Endpoint loss only hides; explicit stream replacement alone resets paint
+order. The recorded route executes the real handlers, facts endpoint, capture,
+broker, subscriber and native endpoint; KWin signals and painting still require
+physical checks.
 
 ## Host styling on KDE
 
@@ -257,7 +271,7 @@ request fixtures pin the JS producer, including populated raw attempts.
   (core presentation math is unit-agnostic); see the corrected
   `PresentationIngress` docs in
   `crates/tiler-core/src/world_report.rs`.
-- Stage 5 draft render conversion: `world-observe.ts::toInt` and Rust raw
+- Stage 5 render conversion: `world-observe.ts::toInt` and Rust raw
   `kde_raw.rs::math_round` agree on halves toward positive infinity
   (`-10.5 -> -10`); published integer rectangles pass through unchanged.
   Style values are converted once into the same logical units at ingress.
@@ -268,8 +282,8 @@ request fixtures pin the JS producer, including populated raw attempts.
   core outer independently of later config-width changes. Underlay/preview
   use core outer/rect directly; `mapFromScene` only translates into the
   native item anchor. No additional DPI factor, outset or Windows frame
-  compensation is applied. This coordinate proof does not prove freshness
-  or independently observed native draw bounds; those remain unaccepted.
+  compensation is applied. Freshness has separate accepted recorded-route
+  evidence; independently observed native draw bounds remain outstanding.
 - KWin size hints are client sizes: project decorated frames with
   `clientGeometry`, never with Windows invisible-border compensation.
 - Fresh native readbacks (visibility, frame, foreground joined to the
@@ -384,6 +398,6 @@ request fixtures pin the JS producer, including populated raw attempts.
   even when the core setting is on.
 - The local `kwin-globals.d.ts` declares the pinned `windowAt` hit test;
   consumption remains Stage 6 work, not a claimed applied cursor route.
-- The renderer cutover deletes native geometry/presentation policy, but its
-  freshness counterexamples block Stage 5 acceptance; do not infer completion
-  from a successful native build or helper tests.
+- The renderer cutover deletes native geometry/presentation policy and passes
+  the complete recorded causal-freshness route offline. This does not establish
+  physical signal delivery or painting; those checks remain outstanding.

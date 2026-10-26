@@ -985,8 +985,9 @@ void ActiveWindowBorderEffect::onWindowActivated()
 void ActiveWindowBorderEffect::onTrackedFrameChanged()
 {
     // The tracked (active) window frame moved: bump the causal witness
-    // first (observed facts, never display state), then hide the ring
-    // until fresh covering paint arrives. No live-frame comparison: a move
+    // first (observed facts, never display state), publish so the next
+    // actual facts capture covers it, then hide every surface until fresh
+    // covering paint arrives. No live-frame comparison: a move
     // that returns to its start stays hidden without a fresh paint.
     const Stage5Refresh refresh = m_stage.onTrackedFrame();
     if (!m_isOpenGL) {
@@ -1376,8 +1377,7 @@ void ActiveWindowBorderEffect::applyStageRefresh(const Stage5Refresh &refresh)
 {
     // Applies one extracted refresh set in the fixed production order
     // (anchor, border, underlay, preview). Final item states commute, so
-    // the order carries no policy; partial sets are the preserved
-    // behavior (a route refreshes only its flagged surfaces).
+    // the order carries no policy; invalidation routes flag every surface.
     if (refresh.anchor) {
         updateGroupAnchorAndGeometry();
     }
@@ -1577,9 +1577,9 @@ void ActiveWindowBorderEffect::noteFactsChord()
 
 void ActiveWindowBorderEffect::noteFactsInvalidation()
 {
-    // Explicit publish of the current counter (seed path only in
-    // practice): the extracted handler owns the bound facts source, so
-    // this stays a thin delegation. Later counter bumps never publish.
+    // Explicit publish of the current counter: the extracted handler owns
+    // the bound facts source, so this stays a thin delegation. Called at
+    // the seed bind and after every counter bump.
     m_stage.publishInvalidation();
 }
 

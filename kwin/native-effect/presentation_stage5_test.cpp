@@ -5,12 +5,9 @@
 // handlers (the same methods activewindowborder.cpp calls) driven with the
 // real PresentationRouter and the real PresentationFactsSource plus
 // fabricated host views and stubbed surfaces. Pins the current
-// event-to-counter behavior, the current publication omission
-// (deficiency-1-publication-omission: local bumps never publish, so held
-// captures stay old), and the current partial-refresh behavior
-// (deficiency-2-partial-refresh: tracked-frame, member-frame, and gesture
-// routes refresh only part of the surfaces, so stale items remain visible).
-// Both deficiencies are preserved, never fixed, by this unit.
+// event-to-counter behavior, publication on every invalidation advance, and
+// full-surface refresh (tracked-frame, member-frame, and gesture routes
+// refresh every surface so no stale item remains visible).
 //
 // The harness provides the private bus (run the binary under
 // dbus-run-session); no KWin, no live state. Payloads use the exact
@@ -154,20 +151,19 @@ int main(int argc, char **argv)
         CHECK(stub.repaints == 1);
     }
 
-    // Tracked-frame route: border scope bump, border-only refresh. The
-    // local bump is not published (deficiency-1-publication-omission), and
-    // the underlay stub keeps its last applied value while the decision
-    // already hides it (deficiency-2-partial-refresh).
+    // Tracked-frame route: border scope bump, published so the next actual
+    // facts capture covers it, and every surface refreshed. The decision
+    // already hides border and underlay; the stub follows.
     {
         const KWin::Stage5Refresh refresh = stage.onTrackedFrame();
         CHECK(router.counter == 1);
         CHECK(refresh.border);
-        CHECK(!refresh.anchor);
-        CHECK(!refresh.underlay);
-        CHECK(!refresh.preview);
+        CHECK(refresh.anchor);
+        CHECK(refresh.underlay);
+        CHECK(refresh.preview);
         CHECK(!refresh.repaint);
-        CHECK(facts.invalidation() == 0);
-        CHECK(facts.revision() == 0);
+        CHECK(facts.invalidation() == 1);
+        CHECK(facts.revision() == 1);
         CHECK(router.paint.borderFloor.set);
         CHECK(router.paint.borderFloor.counter == 0);
         CHECK(router.paint.borderFloor.instance == facts.instance());
@@ -176,7 +172,7 @@ int main(int argc, char **argv)
         CHECK(!visibility.underlay);
         stub.apply(refresh, visibility);
         CHECK(!stub.border);
-        CHECK(stub.underlay);
+        CHECK(!stub.underlay);
         CHECK(stub.repaints == 1);
     }
 
@@ -194,27 +190,26 @@ int main(int argc, char **argv)
         CHECK(stub.repaints == 2);
     }
 
-    // Member-frame route: underlay scope bump, anchor plus underlay only.
-    // Still unpublished (deficiency-1-publication-omission), and the
-    // border stub keeps its last applied value while the decision already
-    // hides it (deficiency-2-partial-refresh).
+    // Member-frame route: underlay scope bump, published so the next actual
+    // facts capture covers it, and every surface refreshed. The decision
+    // already hides border and underlay; the stub follows.
     {
         const KWin::Stage5Refresh refresh = stage.onMemberFrame();
         CHECK(router.counter == 2);
-        CHECK(!refresh.border);
+        CHECK(refresh.border);
         CHECK(refresh.anchor);
         CHECK(refresh.underlay);
-        CHECK(!refresh.preview);
+        CHECK(refresh.preview);
         CHECK(!refresh.repaint);
-        CHECK(facts.invalidation() == 0);
-        CHECK(facts.revision() == 0);
+        CHECK(facts.invalidation() == 2);
+        CHECK(facts.revision() == 2);
         CHECK(router.paint.underlayFloor.set);
         CHECK(router.paint.underlayFloor.counter == 1);
         const KWin::Stage5Visibility visibility = stage.decide(allLiveHost());
         CHECK(!visibility.border);
         CHECK(!visibility.underlay);
         stub.apply(refresh, visibility);
-        CHECK(stub.border);
+        CHECK(!stub.border);
         CHECK(!stub.underlay);
         CHECK(stub.repaints == 2);
     }
@@ -234,12 +229,12 @@ int main(int argc, char **argv)
         CHECK(!foreign.underlay);
         CHECK(!foreign.preview);
         CHECK(router.counter == 2);
-        CHECK(facts.invalidation() == 0);
+        CHECK(facts.invalidation() == 2);
     }
 
     // Gesture boundary with a proven preview: the latch drops, the witness
-    // advances with no floors, and only the preview refreshes. Still
-    // unpublished (deficiency-1-publication-omission).
+    // advances with no floors, publishes so the next actual facts capture
+    // covers it, and every surface refreshes.
     {
         const auto accept = applyStr(stage, previewPayload(inst, 2), "gesture-9", "7");
         CHECK(accept.apply == KWin::PresentationApply::Accepted);
@@ -252,27 +247,28 @@ int main(int argc, char **argv)
         CHECK(stub.preview);
         const KWin::Stage5Refresh refresh = stage.onGestureBoundary();
         CHECK(router.counter == 3);
-        CHECK(!refresh.border);
-        CHECK(!refresh.anchor);
-        CHECK(!refresh.underlay);
+        CHECK(refresh.border);
+        CHECK(refresh.anchor);
+        CHECK(refresh.underlay);
         CHECK(refresh.preview);
         CHECK(!refresh.repaint);
         CHECK(!router.paint.previewHas);
         CHECK(!router.paint.borderFloor.set);
         CHECK(!router.paint.underlayFloor.set);
-        CHECK(facts.invalidation() == 0);
-        CHECK(facts.revision() == 0);
+        CHECK(facts.invalidation() == 3);
+        CHECK(facts.revision() == 3);
         stub.apply(refresh, stage.decide(host));
         CHECK(!stub.preview);
     }
 
-    // Activation: display-only hide plus the all-scope bump, every surface
-    // refreshed (no anchor remap, no repaint flag), fences retained.
+    // Activation: display-only hide plus the all-scope bump, published so the
+    // next actual facts capture covers it, every surface refreshed (no
+    // repaint flag), fences retained.
     {
         const KWin::Stage5Refresh refresh = stage.onActivation();
         CHECK(router.counter == 4);
         CHECK(refresh.border);
-        CHECK(!refresh.anchor);
+        CHECK(refresh.anchor);
         CHECK(refresh.underlay);
         CHECK(refresh.preview);
         CHECK(!refresh.repaint);
@@ -280,8 +276,8 @@ int main(int argc, char **argv)
         CHECK(router.paint.fence.set);
         CHECK(router.paint.borderFloor.set);
         CHECK(router.paint.underlayFloor.set);
-        CHECK(facts.invalidation() == 0);
-        CHECK(facts.revision() == 0);
+        CHECK(facts.invalidation() == 4);
+        CHECK(facts.revision() == 4);
         stub.apply(refresh, stage.decide(allLiveHost()));
         CHECK(!stub.border);
         CHECK(!stub.underlay);
@@ -348,7 +344,7 @@ int main(int argc, char **argv)
         CHECK(!older.refresh.repaint);
         CHECK(router.paint.has);
         CHECK(router.paint.rev == 7);
-        CHECK(facts.invalidation() == 0);
+        CHECK(facts.invalidation() == 4);
         const std::string foreign = foundPayload("other-instance", 4, "8", "1");
         const auto foreignCover = applyStr(stage, foreign);
         CHECK(foreignCover.apply == KWin::PresentationApply::StaleIgnored);
@@ -363,12 +359,11 @@ int main(int argc, char **argv)
         CHECK(!router.paint.has);
     }
 
-    // The only publish path is the explicit one (seed bind above, and here
-    // at the end so earlier legs pin the omission): it carries the live
-    // counter and bumps the facts revision.
+    // Re-publishing the unchanged counter is a no-op in the facts source:
+    // it carries the live counter with no revision bump.
     stage.publishInvalidation();
     CHECK(facts.invalidation() == router.counter);
-    CHECK(facts.revision() == 1);
+    CHECK(facts.revision() == 4);
 
     if (failures != 0) {
         std::fprintf(stderr, "stage5 handler test: %d failure(s)\n", failures);

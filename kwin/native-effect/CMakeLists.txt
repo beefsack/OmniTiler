@@ -207,9 +207,9 @@ if(BUILD_TESTING)
     # (same counter/publication/coverage/refresh code, no forwarding
     # wrapper), driven with the real router plus the real facts source
     # over a private bus and fabricated host views with stubbed surfaces.
-    # Pins event-to-counter advances, the publication omission, and the
-    # partial-refresh behavior. The test binary must never touch a real
-    # session bus (no KWin, no live state).
+    # Pins event-to-counter advances, publication on every invalidation
+    # advance, and full-surface refresh. The test binary must never touch
+    # a real session bus (no KWin, no live state).
     add_executable(omnitiler-active-border-stage5-test
         presentation_stage5_test.cpp
         presentation_stage5.cpp
@@ -225,15 +225,13 @@ if(BUILD_TESTING)
         COMMAND ${DBUS_RUN_SESSION} ${DBUS_RUN_SESSION_ARGS} $<TARGET_FILE:omnitiler-active-border-stage5-test>)
     set_tests_properties(native-effect-stage5-handlers PROPERTIES TIMEOUT 120)
 
-    # Stage 5 publication/recovery and cross-surface refresh regressions
-    # (harness only, no runtime change): the exact production
-    # PresentationStage5 handlers with the real router plus the real facts
-    # source, fed the recorded cross-language fixture bytes
-    # (test-fixtures/stage5: real broker output over the real JS route) and
-    # asserting on the stubbed item state each production refresh actually
-    # re-evaluates. RED by design: local bumps are never published after
-    # the seed bind (D1) and frame/gesture routes refresh only part of the
-    # surfaces (D2), so the red assertions fail until the fix unit lands.
+    # Stage 5 publication/recovery and cross-surface refresh regressions:
+    # the exact production PresentationStage5 handlers with the real router
+    # plus the real facts source, fed the recorded cross-language fixture
+    # bytes (test-fixtures/stage5: real broker output over the real JS
+    # route) and asserting on the stubbed item state each production
+    # refresh actually re-evaluates. Every local bump publishes after the
+    # seed bind and every invalidation route refreshes all surfaces.
     # The fixture directory is baked in at configure time (source tree
     # locally, Nix source store in the fileset build).
     add_executable(omnitiler-active-border-stage5-recovery-test

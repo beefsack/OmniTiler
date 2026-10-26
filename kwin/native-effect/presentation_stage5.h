@@ -12,11 +12,10 @@
 // stage test drives these exact handlers with fabricated host views and
 // stubbed surfaces.
 //
-// Preserved deficiencies (pinned by the stage test, never fixed here):
-// (1) local counter bumps are never published after the seed bind, so held
-// captures stay old and repaint cannot recover; (2) tracked-frame,
-// member-frame, and gesture-boundary routes refresh only part of the
-// surfaces, so stale items remain visible.
+// Every local counter advance publishes through the bound facts source, so
+// the next actual facts capture covers it. Every invalidation route
+// refreshes all surfaces (border, anchor, underlay, preview) so no stale
+// item remains visible while the visibility decision already hides it.
 
 #include "presentation_router.h"
 #include "presentationfacts.h"
@@ -27,11 +26,10 @@ namespace KWin
 {
 
 // Per-route refresh set: which host surfaces the caller refreshes after the
-// route runs. Partial sets are the preserved behavior (see the header
-// note): tracked-frame refreshes the border only, member-frame refreshes
-// the anchor plus the underlay only, gesture boundaries refresh the
-// preview only. Activation, endpoint, and reset routes refresh every
-// surface; stale endpoint coverage refreshes nothing.
+// route runs. Every invalidation route refreshes all surfaces so stale items
+// hide immediately until fresh covering paint arrives. Activation, endpoint,
+// and reset routes refresh every surface; stale endpoint coverage refreshes
+// nothing.
 struct Stage5Refresh {
     bool border = false;
     bool anchor = false;
@@ -68,8 +66,7 @@ struct Stage5Visibility {
 // storage stays with the caller (the effect keeps its member); this class
 // owns every counter/publication/coverage/refresh transition on it. The
 // facts source stays caller-owned (the well-known D-Bus object); this
-// class only publishes through it, exactly where the retired inline body
-// did: once at the seed bind, never on later bumps.
+// class publishes through it at the seed bind and on every later bump.
 class PresentationStage5
 {
 public:
@@ -77,18 +74,18 @@ public:
 
     // Seed bind at endpoint creation: publishes the current counter once
     // under the fresh instance, then namespaces the router to it (which
-    // restarts the epoch). Later bumps never publish (deficiency 1).
+    // restarts the epoch). Later bumps publish through publishInvalidation.
     void bindFacts(PresentationFactsSource *facts);
-    // Explicit publish of the current counter (seed path only in practice).
+    // Explicit publish of the current counter (seed path plus every later
+    // invalidation advance).
     void publishInvalidation();
     QString factsInstance() const;
 
     // Counter-advance routes; each returns the surfaces the caller
-    // refreshes. Activation hides display-only then bumps every scope
-    // (full refresh). Tracked-frame bumps the border scope (border only).
-    // Member-frame bumps the underlay scope (anchor plus underlay only).
-    // Gesture boundaries drop the held preview latch and bump with no
-    // floors (preview only).
+    // refreshes. Activation hides display-only then bumps every scope.
+    // Tracked-frame, member-frame, and gesture boundaries bump their scope
+    // then refresh every surface (border, anchor, underlay, preview) so no
+    // stale item remains visible.
     Stage5Refresh onActivation();
     Stage5Refresh onTrackedFrame();
     Stage5Refresh onMemberFrame();

@@ -202,8 +202,9 @@ foreach(PRES_STAGE_FORBIDDEN "EffectWindow" "windowItem" "effects->" "#include <
     endif()
 endforeach()
 # The stage test drives the production handlers with the real router and
-# the real facts source and pins both preserved deficiencies.
-foreach(PRES_STAGE_COVERAGE "PresentationStage5" "PresentationRouter" "PresentationFactsSource" "bindFacts" "deficiency-1-publication-omission" "deficiency-2-partial-refresh" "onTrackedFrame" "onMemberFrame" "onGestureBoundary" "onActivation" "hideForEndpointLoss" "resetStream" "applyEndpoint")
+# the real facts source and pins publication on every invalidation advance
+# plus full-surface refresh.
+foreach(PRES_STAGE_COVERAGE "PresentationStage5" "PresentationRouter" "PresentationFactsSource" "bindFacts" "publishInvalidation" "onTrackedFrame" "onMemberFrame" "onGestureBoundary" "onActivation" "hideForEndpointLoss" "resetStream" "applyEndpoint")
     string(FIND "${STAGE_TEST_TEXT}" "${PRES_STAGE_COVERAGE}" PRES_STAGE_COVERAGE_POS)
     if(PRES_STAGE_COVERAGE_POS EQUAL -1)
         message(FATAL_ERROR "presentation test validation failed: '${PRES_STAGE_COVERAGE}' not covered by the stage test")

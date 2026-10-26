@@ -212,19 +212,21 @@ describe("presentation native static contract", () => {
             assert.doesNotMatch(trackedBody, /m_router\.onTrackedFrame\(/);
             const trackedStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onTrackedFrame()");
             assert.match(trackedStage, /refresh\.border = true/);
-            assert.doesNotMatch(trackedStage, /refresh\.anchor = true/);
-            assert.doesNotMatch(trackedStage, /refresh\.underlay = true/);
-            assert.doesNotMatch(trackedStage, /refresh\.preview = true/);
+            assert.match(trackedStage, /refresh\.anchor = true/);
+            assert.match(trackedStage, /refresh\.underlay = true/);
+            assert.match(trackedStage, /refresh\.preview = true/);
+            assert.match(trackedStage, /publishInvalidation\(\)/);
             const memberBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow");
             assert.match(memberBody, /m_stage\.onMemberFrame\(\)/);
             assert.match(memberBody, /applyStageRefresh\(refresh\)/);
             assert.doesNotMatch(memberBody, /m_router\.onMemberFrame\(/);
             assert.doesNotMatch(memberBody, /!m_presentation\.has/);
             const memberStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onMemberFrame()");
-            assert.doesNotMatch(memberStage, /refresh\.border = true/);
+            assert.match(memberStage, /refresh\.border = true/);
             assert.match(memberStage, /refresh\.anchor = true/);
             assert.match(memberStage, /refresh\.underlay = true/);
-            assert.doesNotMatch(memberStage, /refresh\.preview = true/);
+            assert.match(memberStage, /refresh\.preview = true/);
+            assert.match(memberStage, /publishInvalidation\(\)/);
             const visibilityBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberVisibilityChanged(EffectWindow");
             assert.match(visibilityBody, /m_router\.paint\.underlayMembers\.isEmpty\(\)/);
             assert.doesNotMatch(visibilityBody, /m_router\.paint\.underlayMembers\.contains\(/);
@@ -381,7 +383,9 @@ describe("presentation native static contract", () => {
             assert.doesNotMatch(activationBody, /clearPresentationPaint/);
             const activationStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onActivation()");
             assert.match(activationStage, /m_router->onActivation\(factsInstance\(\)\)/);
+            assert.match(activationStage, /publishInvalidation\(\)/);
             assert.match(activationStage, /refresh\.border = true/);
+            assert.match(activationStage, /refresh\.anchor = true/);
             assert.match(activationStage, /refresh\.underlay = true/);
             assert.match(activationStage, /refresh\.preview = true/);
             assert.doesNotMatch(activationStage, /refresh\.repaint = true/);
@@ -548,8 +552,7 @@ describe("presentation native static contract", () => {
         assert.match(validator, /STAGE_TEST/);
         assert.match(validator, /m_stage\.onActivation\(/);
         assert.match(validator, /m_router->onActivation\(/);
-        assert.match(validator, /deficiency-1-publication-omission/);
-        assert.match(validator, /deficiency-2-partial-refresh/);
+        assert.match(validator, /publishInvalidation/);
         assert.match(validator, /SetPresentation/);
         assert.match(validator, /ClearPresentation/);
         // The retired verdict endpoint is named only as forbidden residue;
@@ -633,10 +636,11 @@ describe("presentation native static contract", () => {
             assert.match(forgetBody, /m_stage\.onGestureBoundary\(\)/);
             assert.doesNotMatch(forgetBody, /m_router\.onGestureBoundary\(/);
             const gestureStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onGestureBoundary()");
+            assert.match(gestureStage, /publishInvalidation\(\)/);
             assert.match(gestureStage, /refresh\.preview = true/);
-            assert.doesNotMatch(gestureStage, /refresh\.border = true/);
-            assert.doesNotMatch(gestureStage, /refresh\.anchor = true/);
-            assert.doesNotMatch(gestureStage, /refresh\.underlay = true/);
+            assert.match(gestureStage, /refresh\.border = true/);
+            assert.match(gestureStage, /refresh\.anchor = true/);
+            assert.match(gestureStage, /refresh\.underlay = true/);
         }
         // No second plugin effect or factory.
         assert.doesNotMatch(effectImpl, /DragOracleEffect/);

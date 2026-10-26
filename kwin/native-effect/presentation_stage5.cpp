@@ -19,7 +19,8 @@ void PresentationStage5::bindFacts(PresentationFactsSource *facts)
     }
     // Seed order matches the retired inline body exactly: publish the
     // current counter under the fresh instance first, then namespace the
-    // router to it (which restarts the epoch). Later bumps never publish.
+    // router to it (which restarts the epoch). Later bumps publish through
+    // publishInvalidation.
     m_facts->noteInvalidation(m_router->counter);
     m_router->setSourceInstance(m_facts->instance());
 }
@@ -43,12 +44,15 @@ QString PresentationStage5::factsInstance() const
 Stage5Refresh PresentationStage5::onActivation()
 {
     // Production activation route: display-only hide preserving
-    // order/invalidation evidence, then the causal bump, then the caller
-    // refreshes every surface (the tracked window plus visibility refresh,
-    // including the drag preview, stay host-side).
+    // order/invalidation evidence, then the causal bump, then publish so
+    // the next actual facts capture covers it. The caller refreshes every
+    // surface (the tracked window plus visibility refresh, including the
+    // drag preview, stay host-side).
     m_router->onActivation(factsInstance());
+    publishInvalidation();
     Stage5Refresh refresh;
     refresh.border = true;
+    refresh.anchor = true;
     refresh.underlay = true;
     refresh.preview = true;
     return refresh;
@@ -57,12 +61,16 @@ Stage5Refresh PresentationStage5::onActivation()
 Stage5Refresh PresentationStage5::onTrackedFrame()
 {
     // The tracked (active) window frame moved: bump the causal witness
-    // first (observed facts, never display state), then the caller hides
-    // the ring until fresh covering paint arrives. Underlay and preview
-    // stay unrefreshed (deficiency 2: stale items remain visible).
+    // first (observed facts, never display state), publish so the next
+    // actual facts capture covers it, then the caller hides every surface
+    // until fresh covering paint arrives.
     m_router->onTrackedFrame(factsInstance());
+    publishInvalidation();
     Stage5Refresh refresh;
     refresh.border = true;
+    refresh.anchor = true;
+    refresh.underlay = true;
+    refresh.preview = true;
     return refresh;
 }
 
@@ -70,24 +78,31 @@ Stage5Refresh PresentationStage5::onMemberFrame()
 {
     // Any subscribed window frame change bumps the causal witness: the
     // published outer depends on every member, so relevance is observed
-    // facts, never held display state. The caller remaps the anchor and
-    // re-evaluates the underlay only (deficiency 2: the border and the
-    // preview stay unrefreshed).
+    // facts, never held display state. Publish so the next actual facts
+    // capture covers it. The caller remaps the anchor and re-evaluates
+    // every surface.
     m_router->onMemberFrame(factsInstance());
+    publishInvalidation();
     Stage5Refresh refresh;
+    refresh.border = true;
     refresh.anchor = true;
     refresh.underlay = true;
+    refresh.preview = true;
     return refresh;
 }
 
 Stage5Refresh PresentationStage5::onGestureBoundary()
 {
     // Gesture boundary: drop the held drop-preview latch (it belongs to
-    // exactly one live gesture) plus the causal bump with no floors. The
-    // caller re-evaluates the preview only (deficiency 2: the border and
-    // the underlay stay unrefreshed).
+    // exactly one live gesture) plus the causal bump with no floors, then
+    // publish so the next actual facts capture covers it. The caller
+    // re-evaluates every surface.
     m_router->onGestureBoundary(factsInstance());
+    publishInvalidation();
     Stage5Refresh refresh;
+    refresh.border = true;
+    refresh.anchor = true;
+    refresh.underlay = true;
     refresh.preview = true;
     return refresh;
 }

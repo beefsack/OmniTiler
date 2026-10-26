@@ -20,17 +20,13 @@
 // (unknown-identity Wait, immediate) equals the recorded advanced facts
 // fixture. No explicit publish bypass exists: recovery paints are the
 // recorded covering fixtures the real broker served for the published
-// witness, so post-fix the exact same tests prove the actual route.
+// witness, so the same tests prove the actual route.
 //
-// Preserved deficiencies under test (RED: these fail, never fixed here):
-// (D1-publication-omission) local counter bumps are never published after
-// the seed bind, so the only post-bump-producible facts stay stale: the
-// armed waiter never wakes (lease expiry instead) and no covering capture
-// could exist to repaint the hidden surfaces;
-// (D2-partial-refresh) tracked-frame refreshes the border only,
-// member-frame the anchor plus the underlay only, and gesture boundaries
-// the preview only, so the other currently-invalid surfaces stay visibly
-// stale while the visibility decision already hides them.
+// Production behavior under test: every local counter bump publishes, so
+// the post-bump facts equal the recorded advanced fixtures and the armed
+// waiter wakes with the advanced counter; tracked-frame, member-frame, and
+// gesture boundaries refresh every surface, so no stale item remains
+// visible while the visibility decision already hides it.
 //
 // Every leg also proves what already works (GREEN): the seed facts equal
 // the recorded bytes, fixture advanced facts equal the real class output
@@ -225,9 +221,8 @@ QString immediateSnapshot(const QString &objectPath)
 // the Wait through a same-connection Introspect barrier (D-Bus FIFO per
 // sender: the barrier reply proves the Wait was dispatched, armed when
 // identity/rev are current), fire the handler event, and await the
-// publication wake. Pre-fix the event never publishes, so the held waiter
-// expires through the bounded lease (changed:0); post-fix the event wakes
-// it with the advanced counter (changed:1). earlyReply reports whether the
+// publication wake. The event wakes it with the advanced counter
+// (changed:1). earlyReply reports whether the
 // Wait completed immediately at the barrier (must be false: the arm matched
 // the live facts). The 10 s barrier bound is a failure deadline only, never
 // an ordering oracle. No same-process introspection is consulted.
@@ -346,8 +341,7 @@ KWin::PresentationStage5::EndpointResult applyStr(
 }
 
 // Real post-event facts must equal the recorded advanced fixture after the
-// disclosed instance normalization. RED pre-fix (facts never advance past
-// the seed); GREEN once the production handlers publish their bumps.
+// disclosed instance normalization.
 void checkAdvancedFacts(const QString &reply, const QString &liveInstance, const QString &fixtureDir,
     const char *fixtureName, const char *wantedRev, const char *wantedInvalid)
 {
@@ -420,13 +414,13 @@ int main(int argc, char **argv)
     }
 
     // L1 tracked double-frame with the preview stale path: P5 displayed,
-    // first bump publishes nothing (RED), the still-newer pre-move P6
+    // first bump publishes, the still-newer pre-move P6
     // captured before the invalidation is delivered must not paint
     // (coverage, never mere revision: P6 rev/obs is newer than the P5
     // fence), the covering capture restores border+underlay, the proven A
-    // preview shows, the second bump hides every surface while the
-    // production refresh re-evaluates the border only (D2: underlay and
-    // preview stubs stay visibly stale), and the recorded witness-2 A
+    // preview shows, the second bump hides every surface and the
+    // production refresh re-evaluates every surface, and the recorded
+    // witness-2 A
     // drain (real broker bytes, producer A, coverage current) recovers all
     // three through the full endpoint refresh.
     {
@@ -452,17 +446,24 @@ int main(int argc, char **argv)
         CHECK(stub.underlay);
 
         // First tracked bump under the armed waiter: the event must publish
-        // and wake it with the advanced counter (D1: never wakes pre-fix;
-        // the hold expires through the bounded lease instead).
+        // and wake it with the advanced counter.
         {
             const QString cur = immediateSnapshot(leg.path);
             CHECK(parseSnapshot(cur).value(QStringLiteral("rev")).toString() == QStringLiteral("1"));
             bool earlyReply = true;
             const QString woken = armedBumpWait(leg.path, inst,
-                QStringLiteral("1"), [&leg]() { return leg.stage->onTrackedFrame(); }, &earlyReply);
+                QStringLiteral("1"),
+                [&leg, &stub]() {
+                    const KWin::Stage5Refresh refresh = leg.stage->onTrackedFrame();
+                    stub.apply(refresh, leg.stage->decide(allLiveHost()));
+                    return refresh;
+                },
+                &earlyReply);
             CHECK(!earlyReply);
             CHECK(leg.router.counter == 1);
             checkAdvancedFacts(woken, inst, fixtureDir, "facts-cover.json", "2", "1");
+            CHECK(!stub.border);
+            CHECK(!stub.underlay);
         }
         // In-transit pre-move P6 (rev/obs newer than the displayed P5
         // fence, same old coverage) completes after the native move, before
@@ -473,8 +474,8 @@ int main(int argc, char **argv)
             CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
             CHECK(!stale.refresh.border);
             CHECK(!stale.refresh.repaint);
-            CHECK(stub.border);
-            CHECK(stub.underlay);
+            CHECK(!stub.border);
+            CHECK(!stub.underlay);
         }
         const auto cover =
             applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
@@ -496,9 +497,8 @@ int main(int argc, char **argv)
             CHECK(stub.preview);
         }
 
-        // Second tracked bump: every surface hides in the decision, but the
-        // production refresh re-evaluates the border only (D2). The bump is
-        // never published (D1).
+        // Second tracked bump: every surface hides in the decision, and the
+        // production refresh re-evaluates every surface. The bump publishes.
         const KWin::Stage5Refresh bump = leg.stage->onTrackedFrame();
         CHECK(leg.router.counter == 2);
         checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-inv2.json", "3", "2");
@@ -508,8 +508,8 @@ int main(int argc, char **argv)
         CHECK(!hidden.preview);
         stub.apply(bump, hidden);
         CHECK(!stub.border);
-        CHECK(!stub.underlay); // D2-partial-refresh (actual: still true).
-        CHECK(!stub.preview); // D2-partial-refresh (actual: still true).
+        CHECK(!stub.underlay);
+        CHECK(!stub.preview);
 
         // The recorded witness-2 A drain (real broker bytes for the
         // published witness) recovers all three surfaces through the full
@@ -525,13 +525,12 @@ int main(int argc, char **argv)
     }
 
     // L2 member double-frame with the original geometry race and the preview
-    // stale path: P5 displayed, first member bump publishes nothing (RED),
+    // stale path: P5 displayed, first member bump publishes,
     // the still-newer pre-move P6 captured before the invalidation is
     // delivered must not paint (coverage, never mere revision), the covering
     // capture restores, the proven A preview shows, the second member bump
-    // hides every surface while the production refresh re-evaluates the
-    // anchor plus the underlay only (D2: border and preview stubs stay
-    // visibly stale), and the recorded witness-2 A drain repaints.
+    // hides every surface and the production refresh re-evaluates every
+    // surface, and the recorded witness-2 A drain repaints.
     {
         Leg leg;
         initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder2"));
@@ -580,9 +579,9 @@ int main(int argc, char **argv)
         CHECK(!hidden.underlay);
         CHECK(!hidden.preview);
         stub.apply(bump2, hidden);
-        CHECK(!stub.border); // D2-partial-refresh (actual: still true).
+        CHECK(!stub.border);
         CHECK(!stub.underlay);
-        CHECK(!stub.preview); // D2-partial-refresh (actual: still true).
+        CHECK(!stub.preview);
 
         // The later recorded drain repaints (recovery leg).
         const auto drain =
@@ -607,12 +606,12 @@ int main(int argc, char **argv)
 
     // L3 gesture boundary with the original cross-gesture race, both
     // boundaries, and the valid-B repaint: the proven A preview shows while
-    // A is live; finish-A drops the latch and bumps with no floors (RED:
-    // unpublished), so the decision hides every surface but the production
-    // refresh re-evaluates the preview only (D2). The already-sent A paint
+    // A is live; finish-A drops the latch and bumps with no floors, so the
+    // decision hides every surface and the production refresh re-evaluates
+    // every surface. The already-sent A paint
     // is rejected inside B; the recorded witness-2 A drain still applies
     // (coverage current) but its producer mismatch isolates to the preview
-    // while border/underlay repaint; start-B bumps again (RED); and the
+    // while border/underlay repaint; start-B bumps again; and the
     // recorded valid-B capture (real broker bytes, UUID producer, coverage
     // current) repaints all three.
     {
@@ -654,7 +653,7 @@ int main(int argc, char **argv)
         }
 
         // Finish A: the boundary drops the latch and bumps with no floors.
-        // Every surface is invalid now, but only the preview re-evaluates.
+        // Every surface is invalid now, and every surface re-evaluates.
         const KWin::Stage5Refresh finishA = leg.stage->onGestureBoundary();
         CHECK(leg.router.counter == 2);
         checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-inv2.json", "3", "2");
@@ -664,8 +663,8 @@ int main(int argc, char **argv)
             CHECK(!insideB.underlay);
             CHECK(!insideB.preview);
             stub.apply(finishA, insideB);
-            CHECK(!stub.border); // D2-partial-refresh (actual: still true).
-            CHECK(!stub.underlay); // D2-partial-refresh (actual: still true).
+            CHECK(!stub.border);
+            CHECK(!stub.underlay);
             CHECK(!stub.preview);
         }
 
@@ -696,7 +695,7 @@ int main(int argc, char **argv)
             CHECK(!stub.preview);
         }
 
-        // Start B: the second boundary bumps again (RED: unpublished).
+        // Start B: the second boundary bumps again.
         const KWin::Stage5Refresh startB = leg.stage->onGestureBoundary();
         CHECK(leg.router.counter == 3);
         checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-inv3.json", "4", "3");
@@ -706,8 +705,8 @@ int main(int argc, char **argv)
             CHECK(!insideB.underlay);
             CHECK(!insideB.preview);
             stub.apply(startB, insideB);
-            CHECK(!stub.border); // D2-partial-refresh (actual: still true).
-            CHECK(!stub.underlay); // D2-partial-refresh (actual: still true).
+            CHECK(!stub.border);
+            CHECK(!stub.underlay);
             CHECK(!stub.preview);
         }
 
@@ -745,8 +744,7 @@ int main(int argc, char **argv)
     // (must not resurrect), return to A through the recorded witness-2
     // covering capture (repaints), then drive the error-hide path (malformed
     // hides display-only with the fence retained; a further old A paint
-    // still cannot resurrect). Both activation bumps are never published
-    // (D1).
+    // still cannot resurrect). Both activation bumps publish.
     {
         Leg leg;
         initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder4"));
@@ -788,7 +786,7 @@ int main(int argc, char **argv)
         CHECK(leg.router.paint.fence.rev == 3);
 
         // Return to A: the second activation hides display-only again plus
-        // the all-scope bump (RED: unpublished); only the recorded
+        // the all-scope bump (published); only the recorded
         // witness-2 covering capture repaints.
         const KWin::Stage5Refresh activation2 = leg.stage->onActivation();
         CHECK(leg.router.counter == 2);
@@ -843,9 +841,9 @@ int main(int argc, char **argv)
     // already-produced A paint delivered while B is live must not show its
     // preview (coverage is still current: the serial alone isolates it),
     // while border and underlay still repaint from the accepted projection.
-    // The start-B boundary drops the latch and bumps with no floors (RED:
-    // unpublished), so the decision hides every surface but the production
-    // refresh re-evaluates the preview only (D2). The recorded serial-B
+    // The start-B boundary drops the latch and bumps with no floors, so the
+    // decision hides every surface and the production refresh re-evaluates
+    // every surface. The recorded serial-B
     // covering capture (real broker bytes for the published witness, B
     // producer, coverage current) repaints all three through the full
     // endpoint refresh.
@@ -861,7 +859,7 @@ int main(int argc, char **argv)
         CHECK(stub.border);
         CHECK(stub.underlay);
 
-        // First tracked bump publishes nothing (RED); the covering capture
+        // First tracked bump publishes; the covering capture
         // restores, and the proven A preview shows while A is live.
         const KWin::Stage5Refresh bump1 = leg.stage->onTrackedFrame();
         CHECK(leg.router.counter == 1);
@@ -899,8 +897,8 @@ int main(int argc, char **argv)
         }
 
         // Start B: the boundary drops the latch and bumps with no floors
-        // (RED: unpublished). Every surface is invalid now, but only the
-        // preview re-evaluates.
+        // (published). Every surface is invalid now, and every surface
+        // re-evaluates.
         const KWin::Stage5Refresh startB = leg.stage->onGestureBoundary();
         CHECK(leg.router.counter == 2);
         checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-inv2.json", "3", "2");
@@ -910,8 +908,8 @@ int main(int argc, char **argv)
             CHECK(!insideB.underlay);
             CHECK(!insideB.preview);
             stub.apply(startB, insideB);
-            CHECK(!stub.border); // D2-partial-refresh (actual: still true).
-            CHECK(!stub.underlay); // D2-partial-refresh (actual: still true).
+            CHECK(!stub.border);
+            CHECK(!stub.underlay);
             CHECK(!stub.preview);
         }
 

@@ -68,10 +68,18 @@ fn stage5_fixture_route_matches_recorded_projections() {
         ("envelope-p5.json", "fix-p5", "projection-p5.json"),
         ("envelope-p6.json", "fix-p6", "projection-p6.json"),
         ("envelope-cover.json", "fix-cover", "projection-cover.json"),
-        ("envelope-preview.json", "fix-preview", "projection-preview.json"),
+        (
+            "envelope-preview.json",
+            "fix-preview",
+            "projection-preview.json",
+        ),
         // Second-activation covering capture (witness effect-1/2, no
         // gesture): the focus-return recovery paint.
-        ("envelope-cover2.json", "fix-cover2", "projection-cover2.json"),
+        (
+            "envelope-cover2.json",
+            "fix-cover2",
+            "projection-cover2.json",
+        ),
         // Post-finish-A drain (witness effect-1/2, producer gesture-1):
         // coverage-current but foreign to B, isolating the producer gate.
         ("envelope-a2.json", "fix-a2", "projection-a2.json"),
@@ -108,7 +116,11 @@ fn stage5_fixture_route_same_source_serial_b() {
         ("envelope-p5.json", "fix-p5", "projection-p5.json"),
         ("envelope-p6.json", "fix-p6", "projection-p6.json"),
         ("envelope-cover.json", "fix-cover", "projection-cover.json"),
-        ("envelope-preview.json", "fix-preview", "projection-preview.json"),
+        (
+            "envelope-preview.json",
+            "fix-preview",
+            "projection-preview.json",
+        ),
         ("envelope-s2.json", "fix-s2", "projection-s2.json"),
     ] {
         let served = route_fixture(&service, &generation, envelope, req);
