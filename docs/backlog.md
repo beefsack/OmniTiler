@@ -1385,6 +1385,9 @@ decisions of 2026-09-24 are under
   Prove complete event coverage and self-feedback-safe recovery before
   replacing the timer; no best-effort substitute.
   [Probe and limits](changes/archive/windows-pager-event-coverage.md).
+- P3 | Experimental macOS pager bar colour from prominent app-icon colour |
+  User 2026-10-26: later experiment; derive the macOS pager bar colour from
+  the prominent app-icon colour. Not started.
 - P2 | Keyboard-layout support | After initial release; US keyboards only
   for MVP. Read-only investigation queued: behavior of `Meta+Shift+1..9` and
   the US shifted-symbol aliases on German, AZERTY, UK and Nordic layouts.

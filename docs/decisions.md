@@ -2563,6 +2563,10 @@ platform API behavior.
   ([event/pump boundary](research/non-native-tiler-host-interaction.md#layer-layout-authority-events-and-reconciliation-dim-1),
   [candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
+- User 2026-10-26 (games-remain-members): games remain workspace members.
+  Explicit user workspace actions (send, switch away, return) apply to them;
+  the tiler itself never tiles, resizes, focuses, overlays or intercepts input
+  for them unasked. See [Gaming Compatibility](principles.md#gaming-compatibility).
 
 ## Placement, Minimums and Startup Adoption
 
@@ -4801,6 +4805,41 @@ AX lifetimes when CG is live or unreadable. Interim app-hidden omission and the
 automatic-float echo are superseded by option B and the D2 correction/echo removal.
 Three-way classification and `None` membership edge cases remain tentative.
 See the [reviewed table](changes/macos-world-v2-port.md#decisions-and-review-status).
+
+## macOS v2 targeting, receipt and presentation decisions 2026-10-26
+
+User-confirmed 2026-10-26; implementation accepted offline in the
+[port record](changes/macos-world-v2-port.md#reviewed-targeting-and-receipt-cutover)
+and [production presentation](changes/macos-world-v2-port.md#reviewed-production-presentation),
+native acceptance still separate:
+
+- Post-arm cancellation or Mission Control exit timeout reports `Threw`, not
+  `Refused`: a native append already occurred, so an unproven later selection
+  must hold rather than claim no dispatch.
+- Topology drift after select dispatch keeps the existing
+  `Accepted`/unproven hold; the stale refusal test is corrected, not
+  production, with no replay or history advance inferred.
+- Adapter selection focus defers until verified native arrival, bound to a
+  real correlated View transfer, live reply Space binding and grounded
+  focus/foreground priors; refusal, supersession, unknown/changed foreground,
+  lifetime loss and full outbox drop the intent. No shared settlement-time
+  change.
+- Ambiguous trailing creation keeps its genuine pre-order and original stamp
+  until the first later readable full post-order on the matching display
+  completes once; no guessed empty/before-echo post-order is ever staged, and
+  native creation is never replayed.
+- The existing menu-bar indicator gains a miniature band reusing its
+  visibility, freshness and click gates instead of a second pager surface;
+  miniature-only repaints preserve click generation. This supersedes the
+  "no miniature layout" clause of the [indicator decision](#settings-tray-and-first-run).
+- Focused-miniature styling stays independent per the existing
+  [highlight record](#independent-host-highlight-colors-2026-10-24):
+  full-strength border with dimmer same-RGB fill, each defaulting to the live
+  accent with independent overrides; no shared colour fields.
+- Presentation ingress grounds hidden-workspace eligibility from retained home
+  plus fresh native current, and zoom/full-display eligibility from existing
+  geometry predicates; unknown cloak and session state keep last-moment
+  renderer vetoes. No new core facts or unknown-state semantics.
 
 ## Native adoption 2026-10-24
 

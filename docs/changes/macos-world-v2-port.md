@@ -306,13 +306,13 @@ edge cases tentative. Acceptance of an approach does not claim native evidence.
 | Confirmed 2026-10-25 | Missing AX with live/unreadable CG retains and holds | Only covering AX absence plus fresh complete CG absence proves close |
 | Tentative | Three-way shared classifier A: tile, float member, unmanaged | One neutral transient fact; Windows Dialog/OwnedDialog exclusions unchanged |
 | Tentative | Fullscreen, all-Spaces and unreadable membership use `None` | No guessed home or sticky proof; shared edge tests and native scope evidence remain pending |
-| Tentative 2026-10-26 | Post-arm cancellation/MC-exit timeout is `Threw`, not `Refused` | A native append already occurred; an unproven later selection must hold, not claim no dispatch |
-| Tentative 2026-10-26 | Topology drift after select dispatch retains the existing `Accepted`/unproven hold | Correct the stale refusal test, not production; no replay or history advance is inferred |
-| Tentative 2026-10-26 | Selection focus defers in the adapter until verified native arrival | Require correlated reply/transfer/binding and grounded focus priors; cancel on supersession or changed/unknown focus; no shared settlement-time change |
-| Tentative 2026-10-26 | Ambiguous trailing creation retains its genuine pre-order and original stamp | First later readable matching-display row completes once without a claimed identity; never echo the pre-order as an unreadable post-order |
-| Tentative 2026-10-26 | Extend the existing menu-bar indicator with a miniature band | Reuse its visibility and freshness/click gates instead of introducing another pager surface; miniature-only repaints retain the click generation |
-| Tentative 2026-10-26 | Independent focused-miniature colour/theme with full-strength border and dimmer same-RGB fill | Border and highlight each default to live accent and retain independent overrides; no shared colour fields |
-| Tentative 2026-10-26 | Normalize grounded hidden-workspace and zoom/full-display facts before core presentation | Reuse retained homing, fresh native currents and existing geometry predicates; unknown cloak and session state retain last-moment renderer vetoes |
+| Confirmed 2026-10-26 | Post-arm cancellation/MC-exit timeout is `Threw`, not `Refused` | A native append already occurred; an unproven later selection must hold, not claim no dispatch |
+| Confirmed 2026-10-26 | Topology drift after select dispatch retains the existing `Accepted`/unproven hold | Correct the stale refusal test, not production; no replay or history advance is inferred |
+| Confirmed 2026-10-26 | Selection focus defers in the adapter until verified native arrival | Require correlated reply/transfer/binding and grounded focus priors; cancel on supersession or changed/unknown focus; no shared settlement-time change |
+| Confirmed 2026-10-26 | Ambiguous trailing creation retains its genuine pre-order and original stamp | First later readable matching-display row completes once without a claimed identity; never echo the pre-order as an unreadable post-order |
+| Confirmed 2026-10-26 | Extend the existing menu-bar indicator with a miniature band | Reuse its visibility and freshness/click gates instead of introducing another pager surface; miniature-only repaints retain the click generation |
+| Confirmed 2026-10-26 | Independent focused-miniature colour/theme with full-strength border and dimmer same-RGB fill | Border and highlight each default to live accent and retain independent overrides; no shared colour fields |
+| Confirmed 2026-10-26 | Normalize grounded hidden-workspace and zoom/full-display facts before core presentation | Reuse retained homing, fresh native currents and existing geometry predicates; unknown cloak and session state retain last-moment renderer vetoes |
 | Confirmed 2026-10-26 | Retain Authentic Desktop-N holder ensure even with input off; no new gating | User decision: qualify tile help, save exact per-holder pre/post baselines on the next live leg, and never revert a pre-existing preimage |
 
 ## Stage-1 outcome (2026-10-25)
@@ -988,6 +988,32 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 | Interim hidden setter attempts | Existing native/fixture geometry-event evidence; or add bounded adapter setter-attempt diagnostics | Accept the observed geometry/restoration checkpoint, not absolute zero-write proof; direct setter-attempt tracing is needed for the stronger claim |
 | Trailing-append remembered focus | Keep fail-closed unsupported binding; or investigate receipt-bound binding, with shared settlement emission considered separately | Keep the safe drop for this cutover; prove any later adapter receipt-bound path before requesting a shared change |
 | Presentation roster gaps | Retain renderer vetoes/core fallback/live-only frames; or plumb grounded native cloak/order/retained-frame evidence | Keep current safe boundaries; expand only with a failing discriminator and grounded native data |
+
+## Current dogfood follow-up: workspace failure diagnosis and acceptance (2026-10-26)
+
+- Intent: diagnose the current dogfood workspace failure, then prove the
+  repair with fake regressions plus adapter coverage, latency before/after
+  distributions, event-triggered topology and ambiguous-create readback with
+  bounded observed-state recovery (no replay, no guessing), stable
+  presentation and stale-topology command supersession.
+- Method: reuse the shared platform-neutral stress definitions and native
+  runner with configurable delays between actions (including none), then query
+  real native state and compare against the expected final world (layout,
+  membership, focus, shown workspace, pager). Dev legs run under `just dev`;
+  the dev script prints log paths after SIGINT/stop for the post-leg evidence.
+  Presentation acceptance uses the researched host corner-radius values.
+- Acceptance: workspace actions converge to the expected final native state
+  with no wedge or silent drift; unsupported native-fullscreen game workspace
+  semantics stay investigation/options only, never acceptance criteria.
+- Diagnosis status explicitly unresolved: current logs establish only later
+  immediate `send-target-unknown` / scope-held / unchanged refusals rather
+  than a queue wedge; the missing requested ordinal and per-scope context
+  prevents causal attribution. No tentative implementation or product decision
+  is made here.
+- Retraction: the earlier Worker hypothesis of a missing creation seam is
+  withdrawn. The accepted creation seam exists
+  ([targeting and receipt cutover](#reviewed-targeting-and-receipt-cutover));
+  no missing-seam diagnosis is recorded.
 
 ## Risks and open evidence
 

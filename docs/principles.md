@@ -48,6 +48,20 @@ Project principles, approved by the user.
   unavoidable host differences, subject to game safety
   ([Gaming Compatibility](#gaming-compatibility)).
 
+## Priorities
+
+- The project exists to give i3/sway/Hyprland/COSMIC users an authentic
+  tiler on hosts that are not their home systems.
+- When goals conflict, prefer in this order (a judgement guide, not a strict
+  rule; weigh the size of each cost):
+  1. Authenticity to the Tier 1 input tilers, consistency between platforms,
+     reliability. Full authenticity on each platform yields consistency.
+  2. Jank-free behavior, performance, gaming polish.
+  3. Configurability, visual UX.
+- Game safety (Gaming Compatibility) stays absolute above this ordering.
+- Example: simplify a feature like the pager before accepting a significant
+  performance cost, but do not drop it for a negligible gain.
+
 ## Layering
 
 - The core is the single model and decision maker: it owns screens, workspaces and their per-screen mapping, windows, focus and cursor position; the policy for every action; and the resulting desired world state, including the shapes and bounds of borders, underlays and drop overlays.
@@ -128,6 +142,9 @@ Project principles, approved by the user.
   Gaming And Full-Screen Applications).
 - When a behavior choice trades consistency or reference-WM parity against
   game safety, game safety wins.
+- Games remain workspace members. Explicit user workspace actions (send,
+  switch away, return) apply to them; the tiler itself never tiles, resizes,
+  focuses, overlays or intercepts input for them unasked.
 
 ## Unsafe Code
 
