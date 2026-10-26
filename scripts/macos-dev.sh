@@ -535,13 +535,26 @@ fi
 
 # Early-failure exit after the lock exists: release the lock (only while
 # it still names our run) and remove our own pre-launch run directory, so
-# a failed launch never blocks the next one.
+# a failed launch never blocks the next one. The launch log paths print at
+# the end (when they exist yet) so the failure stays findable; exit 1 and
+# the lock/run teardown are unchanged.
+report_log_paths() {
+  if [[ -n "${OUT:-}" && -n "${ERR:-}" ]]; then
+    echo "dev: end paths:" >&2
+    echo "dev:   stdout: $OUT" >&2
+    echo "dev:   stderr: $ERR" >&2
+  fi
+}
 die() {
   lock_release_if_ours "$RUN_DIR" || true
   if [[ -d "$RUN_DIR" && ! -f "$RUN_DIR/outcome.json" && ! -f "$RUN_DIR/owner.json" ]]; then
     rm -rf -- "$RUN_DIR"
   fi
-  fail "$@"
+  # Error first, log pointers last (when the mktemp logs exist yet):
+  # pre-guard failures have no logs and print the error alone.
+  echo "error: $*" >&2
+  report_log_paths
+  exit 1
 }
 
 # ---- launch guards (skipped only under the offline mock) ---------------------
@@ -569,7 +582,7 @@ echo "dev:   stderr: $ERR"
 
 if [[ "$INTERRUPTED" -ne 0 ]]; then
   echo "dev interrupted: stopped before launch; no owner started" >&2
-  echo "dev: end paths: stdout=$OUT stderr=$ERR"
+  report_log_paths
   lock_release_if_ours "$RUN_DIR" || true
   drop_own_run_dir
   exit 130

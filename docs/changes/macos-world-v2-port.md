@@ -1118,6 +1118,25 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   change. This part is complete OFFLINE; live native proof remains
   pending.
 
+## Dev-script end log paths and parked radius research (2026-10-27)
+
+- Dev script (`scripts/macos-dev.sh`): every terminal path now prints the
+  launch log locations. `report_log_paths` emits `dev: end paths:` with the
+  stdout/stderr log pointers; `die()` prints the error first, then the
+  pointers (pre-guard failures have no logs and print the error alone); the
+  pre-launch SIGINT/stop path reuses the same helper. Lock/run teardown is
+  unchanged. Offline tests PASS (104 asserts, 0 failures in
+  `scripts/macos-dev.test.sh`); `bash -n` clean on both scripts.
+- Radius research parked with no implementation choice: the existing default
+  6 is unchanged and 9 is not blessed. Independent re-read of the JankyBorders
+  sibling clone corrects the earlier quote: the fallback is
+  `radius > 0 ? radius : 9`, not `radius > 0 ? 9 : 9`. Pins inspected:
+  `1dcf3477e1ed89eaf1a0c1ced3c6b15dcb2ff896` (per-window read) and
+  `3a9d75cd1f7f36d2f3ef303e98f9eb781f5da423`. A 9 fallback does not establish
+  a native 26 default; the per-window API is 26+ and private SLS reads are
+  permitted with SIP on. No core/config edits. Next: a bounded read-only
+  fixture measure or API probe with actual numbers; no invented version default.
+
 ## Risks and open evidence
 
 - KDE delivery may change exact native binding receipts; update/inspect it before

@@ -522,6 +522,8 @@ else
   pass
 fi
 assert_contains "$OUTPUT.D" "interrupted" "pre-launch interruption reported"
+assert_contains "$OUTPUT.D" "dev: end paths:" "pre-launch interruption prints end log paths"
+assert_contains "$OUTPUT.D" "stdout:" "pre-launch interruption prints stdout path"
 if [[ -n "$(current_run_dir)" ]]; then
   pass
 else
@@ -580,6 +582,9 @@ fi
 # ---- Part 9: nonzero terminal JSON with quiet stderr ---------------------------
 MOCK_BEHAVIOR=input-refused-quiet run_dev 1 "refusal reported, not silent"
 assert_contains "$OUTPUT" "input-refused" "terminal outcome parsed"
+assert_contains "$OUTPUT" "dev: end paths:" "dirty terminal prints end log paths"
+assert_contains "$OUTPUT" "stdout:" "dirty terminal prints stdout path"
+assert_contains "$OUTPUT" "stderr:" "dirty terminal prints stderr path"
 if [[ -z "$(current_run_dir)" ]]; then
   fail "refusal state" "lock must be retained while the exit is unconfirmed (dirty terminal)"
 else
@@ -604,6 +609,9 @@ assert_contains "$OUTPUT" "heartbeat" "operational logs stream"
 # ---- Part 11: failed launch releases the lock ----------------------------------
 MOCK_BEHAVIOR=fail-open run_dev 1 "failed launch reported"
 assert_contains "$OUTPUT" "mock open failed" "launch failure reported"
+assert_contains "$OUTPUT" "dev: end paths:" "failed launch prints end log paths"
+assert_contains "$OUTPUT" "stdout:" "failed launch prints stdout path"
+assert_contains "$OUTPUT" "stderr:" "failed launch prints stderr path"
 if [[ -n "$(current_run_dir)" ]]; then
   fail "failed launch releases" "lock must release after failed launch"
 else
