@@ -141,6 +141,9 @@ foreach(PRES_CONSUMER_WIRING "applyPresentationPaint" "clearPresentationPaint" "
         message(FATAL_ERROR "presentation wiring validation failed: '${PRES_CONSUMER_WIRING}' not found in consumer header")
     endif()
 endforeach()
+if(NOT DEFINED STAGE_HEADER OR NOT DEFINED STAGE_IMPL OR NOT DEFINED STAGE_TEST)
+    message(FATAL_ERROR "usage: cmake -DSTAGE_HEADER=<file> -DSTAGE_IMPL=<file> -DSTAGE_TEST=<file> -P validate-metadata.cmake")
+endif()
 foreach(PRES_WIRING "applyPresentation" "clearPresentation" "foregroundMatchesNow" "isLiveEligibleNow" "groupMoveLiveNow" "m_router" "onTrackedFrameChanged" "onGroupMemberFrameChanged" "onWindowActivated")
     string(FIND "${PRES_IMPL_TEXT}" "${PRES_WIRING}" PRES_WIRING_IMPL_POS)
     if(PRES_WIRING_IMPL_POS EQUAL -1)
@@ -152,14 +155,58 @@ foreach(PRES_WIRING "applyPresentation" "clearPresentation" "foregroundMatchesNo
     endif()
 endforeach()
 # Production routing delegation: every native paint-state transition runs
-# through the Qt-only router the offline gate tests (same ownership, no
-# second policy). The handler bodies delegate; they never reimplement
-# witness/floor/latch/order logic. The router header owns the transition
+# through the extracted KWin-free Stage 5 handler the offline stage test
+# drives (same ownership, no second policy). The KWin handler bodies stay
+# thin adapters delegating to the stage; they never reimplement
+# witness/floor/latch/order logic. The stage module owns the transition
+# calls on the caller's router; the router header owns the transition
 # functions; the consumer header owns strict parse plus order fencing.
-foreach(PRES_ROUTER_CALL "m_router.onActivation(" "m_router.onTrackedFrame(" "m_router.onMemberFrame(" "m_router.onGestureBoundary(" "m_router.onStreamReset(" "m_router.onDisplayHide(" "m_router.applyEndpointPaint(" "m_router.setSourceInstance(")
-    string(FIND "${PRES_IMPL_TEXT}" "${PRES_ROUTER_CALL}" PRES_ROUTER_CALL_POS)
+file(READ "${STAGE_HEADER}" STAGE_HEADER_TEXT)
+file(READ "${STAGE_IMPL}" STAGE_IMPL_TEXT)
+file(READ "${STAGE_TEST}" STAGE_TEST_TEXT)
+foreach(PRES_ROUTER_CALL "m_router->onActivation(" "m_router->onTrackedFrame(" "m_router->onMemberFrame(" "m_router->onGestureBoundary(" "m_router->onStreamReset(" "m_router->onDisplayHide(" "m_router->applyEndpointPaint(" "m_router->setSourceInstance(")
+    string(FIND "${STAGE_IMPL_TEXT}" "${PRES_ROUTER_CALL}" PRES_ROUTER_CALL_POS)
     if(PRES_ROUTER_CALL_POS EQUAL -1)
-        message(FATAL_ERROR "presentation routing validation failed: '${PRES_ROUTER_CALL}' delegation missing in implementation")
+        message(FATAL_ERROR "presentation routing validation failed: '${PRES_ROUTER_CALL}' transition missing in stage implementation")
+    endif()
+endforeach()
+foreach(PRES_STAGE_CALL "m_stage.onActivation(" "m_stage.onTrackedFrame(" "m_stage.onMemberFrame(" "m_stage.onGestureBoundary(" "m_stage.onMemberVisibility(" "m_stage.resetStream(" "m_stage.hideForEndpointLoss(" "m_stage.applyEndpoint(" "m_stage.bindFacts(" "m_stage.decide(")
+    string(FIND "${PRES_IMPL_TEXT}" "${PRES_STAGE_CALL}" PRES_STAGE_CALL_POS)
+    if(PRES_STAGE_CALL_POS EQUAL -1)
+        message(FATAL_ERROR "presentation routing validation failed: '${PRES_STAGE_CALL}' delegation missing in implementation")
+    endif()
+endforeach()
+foreach(PRES_STAGE_DEF "class PresentationStage5" "Stage5Refresh onActivation" "Stage5Refresh onTrackedFrame" "Stage5Refresh onMemberFrame" "Stage5Refresh onGestureBoundary" "Stage5Refresh onMemberVisibility" "applyEndpoint" "Stage5Refresh hideForEndpointLoss" "Stage5Refresh resetStream" "Stage5Visibility decide" "bindFacts" "publishInvalidation" "struct Stage5HostView" "struct Stage5Refresh" "struct Stage5Visibility")
+    string(FIND "${STAGE_HEADER_TEXT}" "${PRES_STAGE_DEF}" PRES_STAGE_DEF_POS)
+    if(PRES_STAGE_DEF_POS EQUAL -1)
+        message(FATAL_ERROR "presentation routing validation failed: '${PRES_STAGE_DEF}' not found in stage header")
+    endif()
+endforeach()
+foreach(PRES_STAGE_IMPL_DEF "PresentationStage5::onActivation" "PresentationStage5::onTrackedFrame" "PresentationStage5::onMemberFrame" "PresentationStage5::onGestureBoundary" "PresentationStage5::onMemberVisibility" "PresentationStage5::applyEndpoint" "PresentationStage5::hideForEndpointLoss" "PresentationStage5::resetStream" "PresentationStage5::decide" "PresentationStage5::bindFacts" "PresentationStage5::publishInvalidation")
+    string(FIND "${STAGE_IMPL_TEXT}" "${PRES_STAGE_IMPL_DEF}" PRES_STAGE_IMPL_DEF_POS)
+    if(PRES_STAGE_IMPL_DEF_POS EQUAL -1)
+        message(FATAL_ERROR "presentation routing validation failed: '${PRES_STAGE_IMPL_DEF}' not found in stage implementation")
+    endif()
+endforeach()
+# The stage module stays KWin-free (Qt-only): no window types, no live
+# scene reads, no platform includes. Host delivery arrives as injected
+# inputs only.
+foreach(PRES_STAGE_FORBIDDEN "EffectWindow" "windowItem" "effects->" "#include <effect/" "#include <window.h>" "#include <workspace.h>" "#include <input" "#include <scene/")
+    string(FIND "${STAGE_HEADER_TEXT}" "${PRES_STAGE_FORBIDDEN}" PRES_STAGE_FORBIDDEN_HDR_POS)
+    if(NOT PRES_STAGE_FORBIDDEN_HDR_POS EQUAL -1)
+        message(FATAL_ERROR "presentation layering validation failed: '${PRES_STAGE_FORBIDDEN}' must not exist in stage header (KWin-independent)")
+    endif()
+    string(FIND "${STAGE_IMPL_TEXT}" "${PRES_STAGE_FORBIDDEN}" PRES_STAGE_FORBIDDEN_IMPL_POS)
+    if(NOT PRES_STAGE_FORBIDDEN_IMPL_POS EQUAL -1)
+        message(FATAL_ERROR "presentation layering validation failed: '${PRES_STAGE_FORBIDDEN}' must not exist in stage implementation (KWin-independent)")
+    endif()
+endforeach()
+# The stage test drives the production handlers with the real router and
+# the real facts source and pins both preserved deficiencies.
+foreach(PRES_STAGE_COVERAGE "PresentationStage5" "PresentationRouter" "PresentationFactsSource" "bindFacts" "deficiency-1-publication-omission" "deficiency-2-partial-refresh" "onTrackedFrame" "onMemberFrame" "onGestureBoundary" "onActivation" "hideForEndpointLoss" "resetStream" "applyEndpoint")
+    string(FIND "${STAGE_TEST_TEXT}" "${PRES_STAGE_COVERAGE}" PRES_STAGE_COVERAGE_POS)
+    if(PRES_STAGE_COVERAGE_POS EQUAL -1)
+        message(FATAL_ERROR "presentation test validation failed: '${PRES_STAGE_COVERAGE}' not covered by the stage test")
     endif()
 endforeach()
 foreach(PRES_ROUTER_DEF "class PresentationRouter" "void onActivation" "void onTrackedFrame" "void onMemberFrame" "void onGestureBoundary" "void onStreamReset" "void onDisplayHide" "applyEndpointPaint" "setSourceInstance")
@@ -335,10 +382,10 @@ if(FORGET_END_POS EQUAL -1)
     message(FATAL_ERROR "presentation removal validation failed: forgetGestureWindow body not closed")
 endif()
 string(SUBSTRING "${FORGET_TAIL}" 0 ${FORGET_END_POS} FORGET_BODY)
-foreach(FORGET_CLEAR "m_groupMoveWindow" "m_router.onGestureBoundary" "updateDragPreview")
+foreach(FORGET_CLEAR "m_groupMoveWindow" "m_stage.onGestureBoundary" "applyStageRefresh")
     string(FIND "${FORGET_BODY}" "${FORGET_CLEAR}" FORGET_CLEAR_POS)
     if(FORGET_CLEAR_POS EQUAL -1)
-        message(FATAL_ERROR "presentation removal validation failed: '${FORGET_CLEAR}' missing in forgetGestureWindow (held preview must clear on removal via the router)")
+        message(FATAL_ERROR "presentation removal validation failed: '${FORGET_CLEAR}' missing in forgetGestureWindow (held preview must clear on removal via the stage)")
     endif()
 endforeach()
 string(FIND "${PRES_IMPL_TEXT}" "registerService" PRES_REG_POS)

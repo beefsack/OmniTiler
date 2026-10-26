@@ -300,6 +300,7 @@ const char *activeBorderDiagReason(bool hasPaint, bool foregroundMatches, bool h
 ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     : m_isOpenGL(effects->isOpenGLCompositing())
     , m_borderItem(RectF(), BorderOutline())
+    , m_stage(m_router)
     , m_groupBusName(QStringLiteral("omnitiler-active-border-endpoint"))
     , m_groupBus(QDBusConnection::connectToBus(QDBusConnection::SessionBus, m_groupBusName))
 {
@@ -307,7 +308,7 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     updateOutline();
     updateGroupUnderlayFill();
 
-    m_router.onStreamReset();
+    m_stage.resetStream();
     // Fail closed with no false endpoint expectation: the paint stays
     // unavailable/clear unless both the well-known service and object
     // register. A transient failure retries on later activation/reconfigure
@@ -315,7 +316,7 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     // effect-owned dedicated connection (cross-connection held replies).
     ensureEndpointsRegistered();
     if (!m_groupDbusAvailable) {
-        m_router.onStreamReset();
+        m_stage.resetStream();
     }
 
     // Gesture observation is independent of rendering. Keep this one shared
@@ -717,12 +718,11 @@ void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow *window)
     if (window == nullptr || window->isDeleted()) {
         return;
     }
-    m_router.onMemberFrame(factsInstance());
+    const Stage5Refresh refresh = m_stage.onMemberFrame();
     if (!m_isOpenGL) {
         return;
     }
-    updateGroupAnchorAndGeometry();
-    updateGroupVisibility();
+    applyStageRefresh(refresh);
     emitPresentationTransitionDiag();
 }
 
@@ -730,16 +730,17 @@ void ActiveWindowBorderEffect::onGroupMemberVisibilityChanged(EffectWindow *wind
 {
     // Member minimize/restore or hide/show re-anchors to the lowest-stacked
     // renderable member, preserving the underlay without timers or polling.
-    // Bare-UUID compare only against the held paint list; never logged.
+    // Bare-UUID compare only against the held paint list, decided by the
+    // extracted handler; a non-member refreshes nothing. Never logged.
     if (!m_isOpenGL || window == nullptr || m_router.paint.underlayMembers.isEmpty()) {
         return;
     }
     const QString bare = window->internalId().toString(QUuid::WithoutBraces);
-    if (!m_router.paint.underlayMembers.contains(bare)) {
+    const Stage5Refresh refresh = m_stage.onMemberVisibility(bare);
+    if (!refresh.anchor) {
         return;
     }
-    updateGroupAnchorAndGeometry();
-    updateGroupVisibility();
+    applyStageRefresh(refresh);
     emitPresentationTransitionDiag();
 }
 
@@ -811,15 +812,13 @@ void ActiveWindowBorderEffect::forgetGestureWindow(EffectWindow *window)
     // lifecycle, not the renderer move latch.
     if (m_groupMoveWindow == window) {
         m_groupMoveWindow.clear();
-        m_router.onGestureBoundary(factsInstance());
-        updateDragPreview();
+        applyStageRefresh(m_stage.onGestureBoundary());
         emitPresentationTransitionDiag();
     }
     if (m_gestureSource != nullptr) {
         const QString id = m_gestureWinIds.take(window);
         if (!id.isEmpty() && m_gestureSource->gestureAborted(id)) {
-            m_router.onGestureBoundary(factsInstance());
-            updateDragPreview();
+            applyStageRefresh(m_stage.onGestureBoundary());
             emitGestureDiag("aborted", "dropped");
         }
     } else {
@@ -849,8 +848,7 @@ void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
         const QString unsupportedId =
             QString::fromUtf8(window->internalId().toString(QUuid::WithoutBraces).toUtf8());
         if (!unsupportedId.isEmpty() && m_gestureSource->gestureAborted(unsupportedId)) {
-            m_router.onGestureBoundary(factsInstance());
-            updateDragPreview();
+            applyStageRefresh(m_stage.onGestureBoundary());
             emitGestureDiag("refused", "idle");
         }
         return;
@@ -858,8 +856,7 @@ void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
     // A new gesture drops any held drop-preview latch immediately: the
     // latch belongs to exactly one live gesture, and a late
     // previous-gesture paint must not reseed the new one.
-    m_router.onGestureBoundary(factsInstance());
-    updateDragPreview();
+    applyStageRefresh(m_stage.onGestureBoundary());
     updateGroupMoveArm(window);
     const QString id =
         QString::fromUtf8(window->internalId().toString(QUuid::WithoutBraces).toUtf8());
@@ -874,8 +871,7 @@ void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
         // same-window open lifecycle, never a terminal. A dropped older
         // lifecycle is still a gesture boundary for the witness.
         if (m_gestureSource->gestureAborted(id)) {
-            m_router.onGestureBoundary(factsInstance());
-            updateDragPreview();
+            applyStageRefresh(m_stage.onGestureBoundary());
         }
         m_gestureWinIds.remove(window);
         emitGestureDiag("refused", "idle");
@@ -925,8 +921,7 @@ void ActiveWindowBorderEffect::onGestureDragFinish(EffectWindow *window)
         }
     }
     if (boundary) {
-        m_router.onGestureBoundary(factsInstance());
-        updateDragPreview();
+        applyStageRefresh(m_stage.onGestureBoundary());
         emitPresentationTransitionDiag();
     }
 }
@@ -981,11 +976,9 @@ void ActiveWindowBorderEffect::onWindowActivated()
     // preview must hide immediately, not on the next paint). The
     // windowActivated signal delegates here directly; the offline gate
     // pins this exact body.
-    m_router.onActivation(factsInstance());
+    const Stage5Refresh refresh = m_stage.onActivation();
     setTrackedWindow(effects->activeWindow());
-    updateBorder();
-    updateGroupVisibility();
-    updateDragPreview();
+    applyStageRefresh(refresh);
     emitPresentationTransitionDiag();
 }
 
@@ -995,11 +988,11 @@ void ActiveWindowBorderEffect::onTrackedFrameChanged()
     // first (observed facts, never display state), then hide the ring
     // until fresh covering paint arrives. No live-frame comparison: a move
     // that returns to its start stays hidden without a fresh paint.
-    m_router.onTrackedFrame(factsInstance());
+    const Stage5Refresh refresh = m_stage.onTrackedFrame();
     if (!m_isOpenGL) {
         return;
     }
-    updateBorder();
+    applyStageRefresh(refresh);
     emitPresentationTransitionDiag();
 }
 
@@ -1197,12 +1190,14 @@ bool ActiveWindowBorderEffect::ensureGroupEndpointRegistered()
         // Seed the fresh source before registration/first call: the actual
         // rendered style triple, the current observed chord, and the
         // current invalidation witness. An unseeded source serves
-        // available:false (no guessed defaults). The router namespace is
-        // seeded from the same live facts object.
+        // available:false (no guessed defaults). The extracted handler
+        // binds the same live facts object: it publishes the current
+        // counter once, then namespaces the router to it.
         noteFactsStyle();
         noteFactsChord();
-        noteFactsInvalidation();
-        m_router.setSourceInstance(factsInstance());
+        if (auto *seeded = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
+            m_stage.bindFacts(seeded->facts());
+        }
     }
     bool serviceOk = false;
     bool objectOk = false;
@@ -1356,6 +1351,47 @@ bool ActiveWindowBorderEffect::isLiveEligibleNow() const
     return true;
 }
 
+Stage5HostView ActiveWindowBorderEffect::currentHostView()
+{
+    // One injected host view for the extracted Stage 5 visibility
+    // decision. Every field is a live read: endpoint, foreground match,
+    // liveness, anchor, move, plus the live open gesture identity ("0"
+    // serial names no open gesture). Geometry and identity stay opaque
+    // strings/flags; no derivation happens here.
+    Stage5HostView host;
+    host.endpointAvailable = m_groupDbusAvailable;
+    host.foregroundMatches = foregroundMatchesNow();
+    host.liveEligible = isLiveEligibleNow();
+    host.anchorOk = !m_groupAnchor.isNull() && m_groupAnchor->windowItem() != nullptr
+        && !m_router.paint.underlayMembers.isEmpty();
+    host.moveLive = groupMoveLiveNow();
+    if (m_gestureSource != nullptr) {
+        host.liveGestureInstance = m_gestureSource->instance();
+        host.liveGestureSerial = m_gestureSource->openSerial();
+    }
+    return host;
+}
+
+void ActiveWindowBorderEffect::applyStageRefresh(const Stage5Refresh &refresh)
+{
+    // Applies one extracted refresh set in the fixed production order
+    // (anchor, border, underlay, preview). Final item states commute, so
+    // the order carries no policy; partial sets are the preserved
+    // behavior (a route refreshes only its flagged surfaces).
+    if (refresh.anchor) {
+        updateGroupAnchorAndGeometry();
+    }
+    if (refresh.border) {
+        updateBorder();
+    }
+    if (refresh.underlay) {
+        updateGroupVisibility();
+    }
+    if (refresh.preview) {
+        updateDragPreview();
+    }
+}
+
 void ActiveWindowBorderEffect::updateBorder()
 {
     if (!m_isOpenGL) {
@@ -1369,25 +1405,17 @@ void ActiveWindowBorderEffect::updateBorder()
     // KWin logical units. The ring replays the published outer exactly:
     // its stroke is derived strictly from the published pair (finding C),
     // so capture-vs-live config drift cannot move the drawn edge; color
-    // and radius stay live host styling.
-    const bool hasPaint = m_router.paint.has && m_router.paint.borderVisible && m_groupDbusAvailable;
+    // and radius stay live host styling. The gate itself is decided by the
+    // extracted Stage 5 handler from one injected host view; only the
+    // item application stays here.
     EffectWindow *window = effects->activeWindow();
     const bool foregroundMatches = foregroundMatchesNow();
     const bool nativeMaximized = window ? m_maximizedWindows.contains(window) : false;
     const bool fullScreen = window ? window->isFullScreen() : false;
     const bool appletPopup = window ? window->isAppletPopup() : false;
-    const bool liveEligible = isLiveEligibleNow();
-    double stroke = 0.0;
-    bool strokeOk = false;
-    if (hasPaint) {
-        if (const auto derived = KWin::borderStrokeFromPublished(m_router.paint.borderInner, m_router.paint.borderOuter)) {
-            stroke = *derived;
-            strokeOk = true;
-        }
-    }
-    const bool fresh = KWin::presentationBorderFresh(&m_router.paint);
-    const bool current = KWin::presentationCoveredCurrent(&m_router.paint);
-    const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh && current;
+    const Stage5Visibility visibility = m_stage.decide(currentHostView());
+    const bool visible = visibility.border;
+    const bool hasPaint = m_router.paint.has && m_router.paint.borderVisible && m_groupDbusAvailable;
     // Transition diagnostic only: first evaluation plus visibility flips.
     // Never affects the border or repaint decision below.
     emitActiveBorderVisible(visible,
@@ -1400,7 +1428,13 @@ void ActiveWindowBorderEffect::updateBorder()
         // item. This is a space translation, not a geometric outset: no
         // gap, width, DPI, or device scaling is applied here. The outline
         // replays the published stroke so the drawn outer edge equals the
-        // published outer rect exactly.
+        // published outer rect exactly. Decided visible above implies the
+        // published pair derives a uniform positive stroke.
+        double stroke = 0.0;
+        if (const auto derived =
+                KWin::borderStrokeFromPublished(m_router.paint.borderInner, m_router.paint.borderOuter)) {
+            stroke = *derived;
+        }
         const QRectF innerRect(static_cast<qreal>(m_router.paint.borderInner.x()), static_cast<qreal>(m_router.paint.borderInner.y()),
             static_cast<qreal>(m_router.paint.borderInner.width()), static_cast<qreal>(m_router.paint.borderInner.height()));
         m_borderItem.setOutline(ringOutlineForWidth(stroke));
@@ -1423,18 +1457,18 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
         return;
     }
     // The exact live open native gesture identity at the endpoint: a
-    // proven preview arms only when its producer matches it. The router
-    // re-seeds the order-independent latest witness from effect authority
-    // first, so no arriving paint can establish it.
+    // proven preview arms only when its producer matches it. The extracted
+    // handler re-seeds the order-independent latest witness from effect
+    // authority first, so no arriving paint can establish it.
     QString liveGestureInstance;
     QString liveGestureSerial = QStringLiteral("0");
     if (m_gestureSource != nullptr) {
         liveGestureInstance = m_gestureSource->instance();
         liveGestureSerial = m_gestureSource->openSerial();
     }
-    const PresentationApply result =
-        m_router.applyEndpointPaint(payload, liveGestureInstance, liveGestureSerial);
-    if (result == PresentationApply::StaleIgnored) {
+    const PresentationStage5::EndpointResult result =
+        m_stage.applyEndpoint(payload, liveGestureInstance, liveGestureSerial);
+    if (result.apply == PresentationApply::StaleIgnored) {
         // Older revision, no live source, or coverage that is not exactly
         // the live source plus counter: ignored without touching the newer
         // held display.
@@ -1442,48 +1476,33 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
         syncPresentationTransitionDiag();
         return;
     }
-    if (result == PresentationApply::Malformed) {
-        // Leave m_groupAnchor for updateGroupAnchorAndGeometry so the old
-        // anchor disconnects its frame remap; the update nulls it when no
-        // paint stays.
-        updateGroupAnchorAndGeometry();
-        updateGroupVisibility();
-        updateBorder();
-        updateDragPreview();
-        if (m_isOpenGL) {
-            effects->addRepaintFull();
-        }
-        emitPresentationSetterDiag("malformed");
-        syncPresentationTransitionDiag();
-        return;
-    }
-    updateGroupAnchorAndGeometry();
-    updateGroupVisibility();
-    updateBorder();
-    updateDragPreview();
-    if (m_isOpenGL) {
+    // Leave m_groupAnchor for updateGroupAnchorAndGeometry so the old
+    // anchor disconnects its frame remap; the update nulls it when no
+    // paint stays. Accepted and malformed share the full refresh.
+    applyStageRefresh(result.refresh);
+    if (result.refresh.repaint && m_isOpenGL) {
         effects->addRepaintFull();
     }
-    emitPresentationSetterDiag("accepted");
+    if (result.apply == PresentationApply::Malformed) {
+        emitPresentationSetterDiag("malformed");
+    } else {
+        emitPresentationSetterDiag("accepted");
+    }
     syncPresentationTransitionDiag();
 }
 
 void ActiveWindowBorderEffect::clearPresentation()
 {
     // The held paint resets (generation rotation, unbind, stop, or an
-    // explicit effect-instance stream replacement). The router owns the
-    // reset; the live source truth is NOT forgotten and is re-seeded from
-    // effect authority at the next endpoint dispatch, so no arriving
-    // paint can establish it.
-    const bool hadPaint = m_router.paint.has;
-    m_router.onStreamReset();
+    // explicit effect-instance stream replacement). The extracted handler
+    // owns the reset; the live source truth is NOT forgotten and is
+    // re-seeded from effect authority at the next endpoint dispatch, so no
+    // arriving paint can establish it.
+    const Stage5Refresh refresh = m_stage.resetStream();
     // Leave m_groupAnchor for updateGroupAnchorAndGeometry so the old anchor
     // disconnects its frame remap; the update nulls it.
-    updateGroupAnchorAndGeometry();
-    updateGroupVisibility();
-    updateBorder();
-    updateDragPreview();
-    if (hadPaint && m_isOpenGL) {
+    applyStageRefresh(refresh);
+    if (refresh.repaint && m_isOpenGL) {
         effects->addRepaintFull();
         emitPresentationTransitionDiag();
     }
@@ -1496,13 +1515,9 @@ void ActiveWindowBorderEffect::hidePresentation()
     // while retaining the ordering fence, the causal witness, and the
     // geometry floors, so a stale retransmit still cannot resurrect.
     // Stream replacement still uses the resetting clear above.
-    const bool hadPaint = m_router.paint.has;
-    m_router.onDisplayHide();
-    updateGroupAnchorAndGeometry();
-    updateGroupVisibility();
-    updateBorder();
-    updateDragPreview();
-    if (hadPaint && m_isOpenGL) {
+    const Stage5Refresh refresh = m_stage.hideForEndpointLoss();
+    applyStageRefresh(refresh);
+    if (refresh.repaint && m_isOpenGL) {
         effects->addRepaintFull();
         emitPresentationTransitionDiag();
     }
@@ -1562,21 +1577,15 @@ void ActiveWindowBorderEffect::noteFactsChord()
 
 void ActiveWindowBorderEffect::noteFactsInvalidation()
 {
-    if (auto *dbusObject = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
-        if (PresentationFactsSource *facts = dbusObject->facts()) {
-            facts->noteInvalidation(m_router.counter);
-        }
-    }
+    // Explicit publish of the current counter (seed path only in
+    // practice): the extracted handler owns the bound facts source, so
+    // this stays a thin delegation. Later counter bumps never publish.
+    m_stage.publishInvalidation();
 }
 
 QString ActiveWindowBorderEffect::factsInstance() const
 {
-    if (auto *dbusObject = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
-        if (PresentationFactsSource *facts = dbusObject->facts()) {
-            return facts->instance();
-        }
-    }
-    return QString();
+    return m_stage.factsInstance();
 }
 
 void ActiveWindowBorderEffect::noteFactsStyle()
@@ -1602,12 +1611,9 @@ void ActiveWindowBorderEffect::updateGroupVisibility()
     // derivation. A missing anchor (no live member window) keeps the
     // underlay hidden. The underlay depends on ALL held members, not just
     // the anchor: any member frame change dirties it via
-    // onGroupMemberFrameChanged.
-    const bool underlayShow = m_router.paint.has && m_router.paint.underlayFound && foregroundMatchesNow() && isLiveEligibleNow()
-        && m_groupDbusAvailable && KWin::presentationUnderlayFresh(&m_router.paint)
-        && KWin::presentationCoveredCurrent(&m_router.paint);
-    const bool anchorOk = !m_groupAnchor.isNull() && m_groupAnchor->windowItem() != nullptr && !m_router.paint.underlayMembers.isEmpty();
-    const bool show = underlayShow && anchorOk;
+    // onGroupMemberFrameChanged. The gate itself is decided by the
+    // extracted Stage 5 handler; only the item application stays here.
+    const bool show = m_stage.decide(currentHostView()).underlay;
     if (show != m_groupVisible) {
         m_groupVisible = show;
         m_groupItem.setVisible(show);
@@ -1629,18 +1635,10 @@ void ActiveWindowBorderEffect::updateDragPreview()
     // is the insertion neighbor, never the mover, so no identity match is
     // performed against it: the producer match plus the subscriber's
     // generation/request/coverage fencing (and the Finish-time liveness
-    // drop above) keep stale previews from ever showing.
-    QString liveGestureInstance;
-    QString liveGestureSerial = QStringLiteral("0");
-    if (m_gestureSource != nullptr) {
-        liveGestureInstance = m_gestureSource->instance();
-        liveGestureSerial = m_gestureSource->openSerial();
-    }
-    const bool producerLive =
-        KWin::previewProducerMatchesLive(&m_router.paint, liveGestureInstance, liveGestureSerial);
-    const bool show =
-        m_router.paint.has && m_router.paint.previewHas && producerLive && groupMoveLiveNow() && m_groupDbusAvailable
-        && KWin::presentationCoveredCurrent(&m_router.paint);
+    // drop above) keep stale previews from ever showing. The gate itself
+    // is decided by the extracted Stage 5 handler; only the item
+    // application stays here.
+    const bool show = m_stage.decide(currentHostView()).preview;
     if (show != m_dragPreviewVisible) {
         m_dragPreviewVisible = show;
         if (show) {

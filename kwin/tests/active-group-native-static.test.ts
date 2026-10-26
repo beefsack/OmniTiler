@@ -10,6 +10,9 @@ const factsHeader = read("native-effect/presentationfacts.h");
 const factsImpl = read("native-effect/presentationfacts.cpp");
 const logic = read("native-effect/activeborderlogic.h");
 const consumer = read("native-effect/presentation_consumer.h");
+const stageHeader = read("native-effect/presentation_stage5.h");
+const stageImpl = read("native-effect/presentation_stage5.cpp");
+const stageTest = read("native-effect/presentation_stage5_test.cpp");
 const cmake = read("native-effect/CMakeLists.txt");
 const validator = read("native-effect/validate-metadata.cmake");
 
@@ -108,6 +111,9 @@ describe("presentation native static contract", () => {
         assert.ok(createdAt >= 0, "dedicated-connection object creation");
         assert.ok(regBody.indexOf("noteFactsStyle()", createdAt) > createdAt, "style seed after create");
         assert.ok(regBody.indexOf("noteFactsChord()", createdAt) > createdAt, "chord seed after create");
+        assert.ok(regBody.indexOf("m_stage.bindFacts(", createdAt) > createdAt, "stage bind after create");
+        assert.doesNotMatch(regBody, /noteFactsInvalidation\(\)/);
+        assert.doesNotMatch(regBody, /setSourceInstance\(/);
         // Healthy and connected returns without re-registering; a dropped
         // dedicated connection re-enters the reconnect path even while the
         // endpoint still reads available.
@@ -123,6 +129,12 @@ describe("presentation native static contract", () => {
         assert.match(effectHeader, /m_groupItem/);
         assert.match(effectHeader, /m_groupAnchor/);
         assert.match(effectHeader, /PresentationRouter m_router/);
+        assert.match(effectHeader, /PresentationStage5 m_stage/);
+        assert.match(stageHeader, /class PresentationStage5/);
+        assert.doesNotMatch(stageHeader, /EffectWindow/);
+        assert.doesNotMatch(stageImpl, /EffectWindow/);
+        assert.doesNotMatch(stageHeader, /windowItem/);
+        assert.doesNotMatch(stageImpl, /effects->/);
         assert.match(effectHeader, /m_dragPreviewRect/);
         assert.doesNotMatch(effectHeader, /m_groupMemberIds/);
         assert.doesNotMatch(effectHeader, /m_groupState/);
@@ -165,33 +177,57 @@ describe("presentation native static contract", () => {
         // The held accepted inner rect maps into the tracked window item
         // without a second outset; visibility is core paint plus live
         // foreground plus hide-only vetoes, never derived eligibility.
+        // The gate itself lives in the extracted stage (decided from one
+        // injected host view); the effect only applies it to the items.
         assert.match(effectImpl, /m_router\.paint\.borderInner/);
         assert.match(effectImpl, /m_borderItem\.setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
-        assert.match(effectImpl, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh && current;/);
+        assert.match(stageImpl, /visibility\.border = hasPaint && paint\.borderVisible && host\.endpointAvailable && host\.foregroundMatches/);
+        assert.match(stageImpl, /host\.liveEligible && strokeOk && fresh && current;/);
         // The ring replays the published outer exactly: its stroke is
         // derived strictly from the published inner/outer pair (half the
         // uniform inset), never live config width; a set geometry floor
         // hides stale shapes until a strictly covering paint arrives, and
         // every drawn surface additionally requires held coverage equal
         // to the actual latest witness.
-        assert.match(effectImpl, /borderStrokeFromPublished\(m_router\.paint\.borderInner, m_router\.paint\.borderOuter\)/);
-        assert.match(effectImpl, /presentationBorderFresh\(&m_router\.paint\)/);
-        assert.match(effectImpl, /presentationCoveredCurrent\(&m_router\.paint\)/);
+        assert.match(stageImpl, /borderStrokeFromPublished\(paint\.borderInner, paint\.borderOuter\)/);
+        assert.match(stageImpl, /presentationBorderFresh\(&paint\)/);
+        assert.match(stageImpl, /presentationUnderlayFresh\(&paint\)/);
+        assert.match(stageImpl, /presentationCoveredCurrent\(&paint\)/);
         assert.match(effectImpl, /setOutline\(ringOutlineForWidth\(stroke\)\)/);
         // Frame dirt advances the causal witness even with no held paint:
-        // member-frame signals route through the production router, never
-        // gated on held paint or member lists (observed facts, not display
-        // state).
+        // tracked/member-frame signals route through the extracted KWin-free
+        // stage (same production handlers the offline stage test drives),
+        // never gated on held paint or member lists (observed facts, not
+        // display state). The KWin handlers stay thin adapters.
         assert.match(effectImpl, /onTrackedFrameChanged/);
         assert.match(effectImpl, /onGroupMemberFrameChanged/);
+        assert.match(stageImpl, /m_router->onMemberFrame\(/);
+        assert.match(stageImpl, /m_router->onTrackedFrame\(/);
         {
             const trackedBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onTrackedFrameChanged(");
-            assert.match(trackedBody, /m_router\.onTrackedFrame\(factsInstance\(\)\)/);
-            assert.match(trackedBody, /updateBorder\(\)/);
+            assert.match(trackedBody, /m_stage\.onTrackedFrame\(\)/);
+            assert.match(trackedBody, /applyStageRefresh\(refresh\)/);
+            assert.doesNotMatch(trackedBody, /m_router\.onTrackedFrame\(/);
+            const trackedStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onTrackedFrame()");
+            assert.match(trackedStage, /refresh\.border = true/);
+            assert.doesNotMatch(trackedStage, /refresh\.anchor = true/);
+            assert.doesNotMatch(trackedStage, /refresh\.underlay = true/);
+            assert.doesNotMatch(trackedStage, /refresh\.preview = true/);
             const memberBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow");
-            assert.match(memberBody, /m_router\.onMemberFrame\(factsInstance\(\)\)/);
+            assert.match(memberBody, /m_stage\.onMemberFrame\(\)/);
+            assert.match(memberBody, /applyStageRefresh\(refresh\)/);
+            assert.doesNotMatch(memberBody, /m_router\.onMemberFrame\(/);
             assert.doesNotMatch(memberBody, /!m_presentation\.has/);
-            assert.doesNotMatch(memberBody, /m_presentation\.underlayMembers\.contains/);
+            const memberStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onMemberFrame()");
+            assert.doesNotMatch(memberStage, /refresh\.border = true/);
+            assert.match(memberStage, /refresh\.anchor = true/);
+            assert.match(memberStage, /refresh\.underlay = true/);
+            assert.doesNotMatch(memberStage, /refresh\.preview = true/);
+            const visibilityBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberVisibilityChanged(EffectWindow");
+            assert.match(visibilityBody, /m_router\.paint\.underlayMembers\.isEmpty\(\)/);
+            assert.doesNotMatch(visibilityBody, /m_router\.paint\.underlayMembers\.contains\(/);
+            assert.match(visibilityBody, /m_stage\.onMemberVisibility\(bare\)/);
+            assert.match(stageImpl, /underlayMembers\.contains\(bareId\)/);
         }
         assert.match(effectHeader, /onTrackedFrameChanged\(\);/);
         assert.match(effectHeader, /onGroupMemberFrameChanged\(EffectWindow \*window\);/);
@@ -234,7 +270,8 @@ describe("presentation native static contract", () => {
         // The producing identity instead matches the live open gesture.
         assert.doesNotMatch(effectImpl, /group_highlight_move_arm_matches/);
         assert.doesNotMatch(effectImpl, /groupMoveMatchesNow/);
-        assert.match(effectImpl, /previewProducerMatchesLive/);
+        assert.match(stageImpl, /previewProducerMatchesLive/);
+        assert.match(effectImpl, /currentHostView\(\)/);
         // End/cancel/removal clears the exact tracked move window only.
         assert.match(effectImpl, /m_groupMoveWindow == window/);
         assert.match(effectImpl, /m_groupMoveWindow\.clear\(\)/);
@@ -251,14 +288,14 @@ describe("presentation native static contract", () => {
         assert.match(armBody, /isInteractiveMove/);
         assert.match(armBody, /m_groupMoveWindow == window/);
         // The preview show gate is held paint plus producer liveness plus
-        // covered-current plus endpoint only; the rect is consumed verbatim
-        // in overlay space.
+        // covered-current plus endpoint only, decided by the extracted
+        // stage; the rect is consumed verbatim in overlay space.
         const previewBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::updateDragPreview()");
-        assert.match(previewBody, /m_router\.paint\.previewHas/);
-        assert.match(previewBody, /producerLive/);
-        assert.match(previewBody, /presentationCoveredCurrent/);
-        assert.match(previewBody, /groupMoveLiveNow/);
+        assert.match(previewBody, /m_stage\.decide\(currentHostView\(\)\)\.preview/);
         assert.match(previewBody, /m_router\.paint\.previewRect/);
+        assert.match(stageImpl, /producerLive =/);
+        assert.match(stageImpl, /previewProducerMatchesLive\(&paint, host\.liveGestureInstance, host\.liveGestureSerial\)/);
+        assert.match(stageImpl, /visibility\.preview = hasPaint && paint\.previewHas && producerLive && host\.moveLive/);
     });
 
     it("reports bounded paint setter and transition outcomes without raw identities", () => {
@@ -336,9 +373,16 @@ describe("presentation native static contract", () => {
         assert.match(effectHeader, /void onWindowActivated\(\);/);
         {
             const activationBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onWindowActivated(");
-            assert.match(activationBody, /m_router\.onActivation\(factsInstance\(\)\)/);
-            assert.match(activationBody, /updateDragPreview\(\)/);
+            assert.match(activationBody, /m_stage\.onActivation\(\)/);
+            assert.match(activationBody, /applyStageRefresh\(refresh\)/);
+            assert.doesNotMatch(activationBody, /m_router\.onActivation\(/);
             assert.doesNotMatch(activationBody, /clearPresentationPaint/);
+            const activationStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onActivation()");
+            assert.match(activationStage, /m_router->onActivation\(factsInstance\(\)\)/);
+            assert.match(activationStage, /refresh\.border = true/);
+            assert.match(activationStage, /refresh\.underlay = true/);
+            assert.match(activationStage, /refresh\.preview = true/);
+            assert.doesNotMatch(activationStage, /refresh\.repaint = true/);
         }
         assert.match(effectImpl, /clearPresentation\(\);/);
         // Registration failure fails closed with no retry. Focus clears
@@ -468,6 +512,11 @@ describe("presentation native static contract", () => {
     it("covers changed files in CMake and the source validator", () => {
         assert.match(cmake, /presentationconsumer_test\.cpp/);
         assert.match(cmake, /native-effect-presentation-consumer/);
+        assert.match(cmake, /presentation_stage5_test\.cpp/);
+        assert.match(cmake, /presentation_stage5\.h/);
+        assert.match(cmake, /presentation_stage5\.cpp/);
+        assert.match(cmake, /native-effect-stage5-handlers/);
+        assert.match(cmake, /omnitiler-active-border-stage5-test/);
         assert.match(cmake, /presentationfacts_test\.cpp/);
         assert.match(cmake, /presentation_consumer\.h/);
         assert.match(cmake, /native-effect-facts-transport/);
@@ -479,6 +528,9 @@ describe("presentation native static contract", () => {
         assert.match(cmake, /PRES_LOGIC/);
         assert.match(cmake, /PRES_TEST/);
         assert.match(cmake, /PRES_CONSUMER/);
+        assert.match(cmake, /STAGE_HEADER/);
+        assert.match(cmake, /STAGE_IMPL/);
+        assert.match(cmake, /STAGE_TEST/);
         assert.doesNotMatch(cmake, /activebordergroup_test\.cpp/);
         assert.doesNotMatch(cmake, /native-effect-group-highlight/);
         assert.doesNotMatch(cmake, /group-highlight-rs/);
@@ -489,6 +541,13 @@ describe("presentation native static contract", () => {
         assert.match(validator, /PRES_IMPL/);
         assert.match(validator, /PRES_LOGIC/);
         assert.match(validator, /PRES_CONSUMER/);
+        assert.match(validator, /STAGE_HEADER/);
+        assert.match(validator, /STAGE_IMPL/);
+        assert.match(validator, /STAGE_TEST/);
+        assert.match(validator, /m_stage\.onActivation\(/);
+        assert.match(validator, /m_router->onActivation\(/);
+        assert.match(validator, /deficiency-1-publication-omission/);
+        assert.match(validator, /deficiency-2-partial-refresh/);
         assert.match(validator, /SetPresentation/);
         assert.match(validator, /ClearPresentation/);
         // The retired verdict endpoint is named only as forbidden residue;
@@ -558,15 +617,24 @@ describe("presentation native static contract", () => {
         // through the production router's causal bump: the counter is
         // native facts lifecycle, not the renderer move latch.
         assert.match(effectImpl, /updateGroupMoveArm\(window\)/);
-        assert.match(effectImpl, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
+        assert.match(effectImpl, /m_stage\.onGestureBoundary\(\)/);
+        assert.match(stageImpl, /m_router->onGestureBoundary\(factsInstance\(\)\)/);
         {
             const startBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGestureDragStart(");
-            assert.match(startBody, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
+            assert.match(startBody, /m_stage\.onGestureBoundary\(\)/);
+            assert.doesNotMatch(startBody, /m_router\.onGestureBoundary\(/);
             const finishBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGestureDragFinish(");
-            assert.match(finishBody, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
-            assert.match(finishBody, /updateDragPreview\(\)/);
+            assert.match(finishBody, /m_stage\.onGestureBoundary\(\)/);
+            assert.match(finishBody, /applyStageRefresh\(/);
+            assert.doesNotMatch(finishBody, /m_router\.onGestureBoundary\(/);
             const forgetBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::forgetGestureWindow(");
-            assert.match(forgetBody, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
+            assert.match(forgetBody, /m_stage\.onGestureBoundary\(\)/);
+            assert.doesNotMatch(forgetBody, /m_router\.onGestureBoundary\(/);
+            const gestureStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onGestureBoundary()");
+            assert.match(gestureStage, /refresh\.preview = true/);
+            assert.doesNotMatch(gestureStage, /refresh\.border = true/);
+            assert.doesNotMatch(gestureStage, /refresh\.anchor = true/);
+            assert.doesNotMatch(gestureStage, /refresh\.underlay = true/);
         }
         // No second plugin effect or factory.
         assert.doesNotMatch(effectImpl, /DragOracleEffect/);

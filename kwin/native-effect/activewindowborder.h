@@ -4,6 +4,7 @@
 
 #include "presentation_consumer.h"
 #include "presentation_router.h"
+#include "presentation_stage5.h"
 
 #include <effect/effect.h>
 #include <effect/effectwindow.h>
@@ -125,7 +126,9 @@ private:
     // border ring replays the published outer exactly: its stroke is derived
     // strictly from the published inner/outer pair (half the uniform inset),
     // never from live config width. No eligibility, reason, or geometry
-    // derivation.
+    // derivation. Visibility gates are decided by the extracted Stage 5
+    // handler from one injected host view; these methods only apply them
+    // to the live items.
     void updateBorder();
     void updateOutline();
     void updateDragPreview();
@@ -164,6 +167,14 @@ private:
     // is not deleted/minimized/fullscreen/hidden/maximized/applet. Core
     // visibility plus the foreground match decide; this only vetoes.
     bool isLiveEligibleNow() const;
+    // One injected host view for the extracted Stage 5 visibility
+    // decision: endpoint, foreground match, liveness, anchor, move, and
+    // the live open gesture identity, all read live here.
+    Stage5HostView currentHostView();
+    // Applies one extracted refresh set: remaps the anchor, re-evaluates
+    // the gated surfaces, and repaints only. Final item states commute,
+    // so the fixed order below carries no policy.
+    void applyStageRefresh(const Stage5Refresh &refresh);
     // Live foreground match against the held paint: the active window's
     // bare-UUID identity equals the published foreground token (non-empty).
     // Stale paints never render under a new focus.
@@ -185,8 +196,16 @@ private:
     // paints, hides, resets), and the effect-owned monotonic witness the
     // facts snapshot publishes. The member id list feeds the
     // lowest-stacked anchor choice only; geometry is consumed verbatim.
-    // Never logged. Signal handlers delegate to the router directly.
+    // Never logged. Signal handlers delegate to the extracted KWin-free
+    // Stage 5 handler below (same ownership, no second policy owner, no
+    // new ordering authority).
     PresentationRouter m_router;
+    // Extracted Stage 5 invalidation/coverage/surface-visibility
+    // orchestration over m_router (Qt-only, no KWin headers): counter
+    // advances, facts publication, accepted-presentation coverage, and
+    // every surface's refresh/visibility decision. KWin handlers stay
+    // thin adapters supplying live reads and painting.
+    PresentationStage5 m_stage;
     QPointer<EffectWindow> m_groupAnchor;
     // Exact interactive-move window captured at Started (latest gesture
     // wins). The preview needs this liveness plus the held paint, so a

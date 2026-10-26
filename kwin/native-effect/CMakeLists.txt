@@ -66,6 +66,9 @@ kcoreaddons_add_plugin(omnitiler-active-border
         gesturefacts.h
         gesturefacts.cpp
         presentation_consumer.h
+        presentation_router.h
+        presentation_stage5.h
+        presentation_stage5.cpp
         presentationfacts.h
         presentationfacts.cpp
         ${config_SOURCES}
@@ -179,6 +182,35 @@ if(BUILD_TESTING)
     add_test(NAME native-effect-presentation-consumer
         COMMAND omnitiler-active-border-presentation-test)
 
+    # The private bus is provided by dbus-run-session (same package family
+    # as the Qt D-Bus client already linked; no new dependency): the
+    # session-bus tests below must never touch a real session bus (no KWin,
+    # no live state). Located before the first use so a missing binary
+    # fails the first configure instead of hiding behind a cached value.
+    find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
+    # Stage 5 handler tests (Qt-only, KWin-independent): the exact
+    # production PresentationStage5 handlers the effect delegates to
+    # (same counter/publication/coverage/refresh code, no forwarding
+    # wrapper), driven with the real router plus the real facts source
+    # over a private bus and fabricated host views with stubbed surfaces.
+    # Pins event-to-counter advances, the publication omission, and the
+    # partial-refresh behavior. The test binary must never touch a real
+    # session bus (no KWin, no live state).
+    add_executable(omnitiler-active-border-stage5-test
+        presentation_stage5_test.cpp
+        presentation_stage5.cpp
+        presentationfacts.cpp
+    )
+    target_link_libraries(omnitiler-active-border-stage5-test PRIVATE
+        Qt6::Core
+        Qt6::DBus
+        Qt6::Gui)
+    target_compile_options(omnitiler-active-border-stage5-test PRIVATE -Wall -Wextra -Werror)
+
+    add_test(NAME native-effect-stage5-handlers
+        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-stage5-test>)
+    set_tests_properties(native-effect-stage5-handlers PROPERTIES TIMEOUT 120)
+
     # Offline transport test for the versioned script facts waiter: the
     # exact production PresentationFactsSource class (no test fake) driven
     # over a real private bus in the production topology (effect-owned
@@ -187,7 +219,6 @@ if(BUILD_TESTING)
     # foreign-caller denial without displacement, malformed/oversize
     # no-mutation, instance fencing, and shutdown invalidation; a separate
     # same-connection leg pins the Qt local-loop limit explicitly.
-    find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
     add_executable(omnitiler-active-border-facts-test
         presentationfacts_test.cpp
         presentationfacts.cpp
@@ -490,6 +521,9 @@ if(BUILD_TESTING)
             -DPRES_TEST=${CMAKE_CURRENT_SOURCE_DIR}/presentationconsumer_test.cpp
             -DPRES_CONSUMER=${CMAKE_CURRENT_SOURCE_DIR}/presentation_consumer.h
             -DPRES_ROUTER=${CMAKE_CURRENT_SOURCE_DIR}/presentation_router.h
+            -DSTAGE_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/presentation_stage5.h
+            -DSTAGE_IMPL=${CMAKE_CURRENT_SOURCE_DIR}/presentation_stage5.cpp
+            -DSTAGE_TEST=${CMAKE_CURRENT_SOURCE_DIR}/presentation_stage5_test.cpp
             -DDRAG_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.h
             -DDRAG_IMPL=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.cpp
             -DEXPECTED_PLUGIN_ID=omnitiler-active-border

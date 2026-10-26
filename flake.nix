@@ -158,9 +158,10 @@
               # Hermetic full gates: offscreen platform, isolated config
               # home; the test binaries isolate the session bus themselves.
               # installCheck runs with the build directory as cwd, so invoke
-              # ctest directly. This is the 34-test suite (effect logic,
-              # presentation consumer, facts/gesture transports, KCM
-              # shortcut/config, metadata validation, unified lifecycle).
+              # ctest directly. This is the 35-test suite (effect logic,
+              # presentation consumer, stage 5 handlers, facts/gesture
+              # transports, KCM shortcut/config, metadata validation,
+              # unified lifecycle).
               export QT_QPA_PLATFORM=offscreen
               export XDG_CONFIG_HOME="$NIX_BUILD_TOP/check-home"
               mkdir -p "$XDG_CONFIG_HOME"

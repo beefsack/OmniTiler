@@ -39,6 +39,7 @@ const unifiedUi = read("native-effect/unifiedsettings.ui");
 const reconcilerHeader = read("native-effect/shortcutreconciler.h");
 const reconciler = read("native-effect/shortcutreconciler.cpp");
 const effect = read("native-effect/activewindowborder.cpp");
+const stage = read("native-effect/presentation_stage5.cpp");
 const logic = read("native-effect/activeborderlogic.h");
 
 const SCRIPT_SETTINGS = {
@@ -389,7 +390,9 @@ describe("native KCM static contract", () => {
         assert.doesNotMatch(logic, /visual_policy_ffi/);
         assert.match(effect, /m_router\.paint\.borderInner/);
         assert.match(effect, /setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
-        assert.match(effect, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh && current;/);
+        assert.match(effect, /m_stage\.decide\(currentHostView\(\)\)/);
+        assert.match(effect, /visibility\.border/);
+        assert.match(stage, /visibility\.border = hasPaint && paint\.borderVisible && host\.endpointAvailable && host\.foregroundMatches/);
         assert.match(effect, /setVisible\(visible\)/);
         assert.match(effect, /addRepaintFull\(\)/);
     });

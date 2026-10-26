@@ -1670,6 +1670,27 @@
   release, delivered Esc, rapid consecutive gestures, focus return and native
   stale-hide/fresh-repaint checks follow offline correction, with exact teardown.
 
+### Stage 5 production-handler extraction (2026-10-27)
+
+- Accepted behaviour-preserving extraction only; the causal-witness draft above
+  remains unaccepted. `presentation_stage5.{h,cpp}` now owns the production
+  counter/publication/coverage/refresh and visibility decisions. KWin adapters
+  supply live host reads and apply the returned surface refresh set.
+- Native CTest executes those exact handlers with the real router and facts
+  source, stubbing only host reads and painting. It pins both existing defects:
+  unpublished advances and partial surface refreshes. This is not yet the
+  cross-language recovery regression or native painting acceptance.
+- Host-matched effect build, native CTest **35/35**, focused JS static guards
+  **34/34** and whitespace pass. A fresh configure also proves the private-bus
+  launcher resolves before its first test registration. The Nix source fileset
+  includes the full native-effect subtree; full Nix verification follows.
+- Tentative technical route for the next unit: shared recorded wire fixtures
+  join these handlers and facts publication to real `WorldService` capture and
+  projection, then the real JS presentation consumer and native endpoint.
+  Reproduce both blockers before repairs; retain the three original race
+  sequences. Signal delivery and scene painting remain source-reviewed/offline
+  boundaries until physical checks. No new policy or shared-core change.
+
 <a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
 ## N6 core-intents outcome (2026-10-26)
 
