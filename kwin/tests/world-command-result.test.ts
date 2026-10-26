@@ -1,10 +1,14 @@
 // Production entry consumption of correlated Rust results: real
 // engine reply bytes (test-fixtures/world-wire, shared with the
-// tiler-protocol byte gate) drive the actual entry request path to native
-// renderer/actuation effects. A drag-preview result with no gesture
-// renders nothing; an active-group result highlights through the native
-// effect with the fullscreen fail-closed gate; a migration result moves
-// every member and follows the views without repeats.
+// tiler-protocol byte gate) drive the actual entry request path. Take-lane
+// terminal results never paint (requester-only, not renderer authority):
+// a drag-preview result with no gesture paints nothing and an
+// active-group result paints nothing through the take lane. Painting
+// belongs to the read-only presentation subscriber (Stage 5): the broker
+// ReadWorldPresentation projection paints accepted core shapes (border,
+// underlay, drop preview) through the native effect, with generation,
+// request, and transport fencing. A migration result moves every member
+// and follows the views without repeats.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -349,7 +353,7 @@ describe("world command result entry", () => {
         delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
 
-    it("highlights the core-derived group bounds with the fullscreen gate", () => {
+    it("paints accepted core shapes through the subscriber, never take results", () => {
         (globalThis as Record<string, unknown>)["__logs"] = [];
         const out = { name: "out" };
         const ws = { id: "ws" };
@@ -358,21 +362,71 @@ describe("world command result entry", () => {
         stageFixture("reply-group.json");
         stageTake("group");
         h.replyNext();
-        const sets = h.renders.filter((r) => r.method === "SetGroupHighlight");
-        assert.equal(sets.length, 1);
-        const first = sets[0] as { args: ReadonlyArray<unknown> };
+        // Answer every presentation read with an accepted projection
+        // carrying a found underlay, a visible border, and a drop preview.
+        // The take-lane active-group result must never paint beside it.
+        const answerPresentations = (): void => {
+            // Drain in a loop: a reply invalidated during flight is
+            // skipped, not painted (finding E), and the chained refetch
+            // surfaces as a new pending read. Bounded: refetches stop
+            // once the projection is current.
+            for (let round = 0; round < 10; round += 1) {
+                const pending = h.calls.filter((c) => c.method === "ReadWorldPresentation");
+                if (pending.length === 0) {
+                    break;
+                }
+                for (const call of pending) {
+                const req = (JSON.parse((call as { payload: string }).payload) as Record<string, unknown>)["req"];
+                (call as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+                    v: 2, outcome: "presentation", gen: "gen-1", req, rev: "12", obs: "12",
+                    scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
+                    workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
+                    outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
+                    windows: [{
+                        win: "win-a", out: "out", ws: "ws",
+                        alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
+                        frame_auth: "controlled", frame_hold: "",
+                        member_auth: "controlled", member_hold: "",
+                        floating: false, float_origin: "",
+                    }],
+                    presentation: {
+                        foreground: "win-a",
+                        border: { visible: true, reason: "", inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] },
+                        underlay: {
+                            status: "found", reason: "", baseRev: "11",
+                            homeOut: "out", homeWs: "ws", group: "grp-win-a-r0", leaf: "leaf-win-a", win: "win-a",
+                            union: [4, 4, 792, 592], outer: [0, 0, 800, 600],
+                            members: [
+                                { leaf: "leaf-win-b", win: "win-b", rect: [4, 4, 392, 592] },
+                                { leaf: "leaf-win-a", win: "win-a", rect: [404, 4, 392, 592] },
+                            ],
+                        },
+                        pager: [],
+                    },
+                    preview: { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" },
+                }));
+                }
+            }
+        };
+        answerPresentations();
+        const sets = h.renders.filter((r) => r.method === "SetPresentation");
+        assert.ok(sets.length >= 1, "accepted projection paints");
+        const first = sets[sets.length - 1] as { args: ReadonlyArray<unknown> };
         const payload = JSON.parse(first.args[0] as string) as Record<string, unknown>;
-        // Group union respects the outer gap: 800x600 inset by outer 4
-        // gives 792x592 at (4,4), never the raw client area. Members are
-        // the same pair (order follows the inset fallback seed).
-        assert.deepEqual(payload["bounds"], { x: 4, y: 4, w: 792, h: 592 });
-        assert.deepEqual([...(payload["members"] as Array<string>)].sort(), ["win-a", "win-b"]);
-        // Fallback seed under the inset (synthetic edge windows decline
-        // fit, which checks containment in the inset work area): same
-        // members, inset bounds, stable fallback group identity. The
-        // atomic serial seed admits both members at base revision 0, so
-        // the group carries r0 (per-leg seeding used r1).
-        assert.equal(payload["group"], "grp-win-a-r0");
+        assert.equal(payload["v"], 1);
+        assert.equal(payload["gen"], "gen-1");
+        assert.equal(payload["rev"], "12");
+        assert.equal(payload["foreground"], "win-a");
+        assert.deepEqual(payload["border"], { visible: 1, inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] });
+        assert.deepEqual(payload["underlay"], {
+            status: "found", win: "win-a", outer: [0, 0, 800, 600], members: ["win-b", "win-a"],
+        });
+        assert.deepEqual(payload["preview"], { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" });
+        // The staged take-lane active-group result never paints beside the
+        // subscriber: no legacy forwarding methods survive.
+        assert.ok(!h.renders.some((r) => r.method === "SetGroupHighlight"), "no legacy group forwarding");
+        assert.ok(!h.renders.some((r) => r.method === "ClearGroupHighlight"), "no legacy group clear");
+        assert.ok(!h.renders.some((r) => r.method === "SetDragTargetPreview"), "no legacy drag overlay");
         h.handle?.stop();
         delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
@@ -428,19 +482,20 @@ describe("world command result entry", () => {
         delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
 
-    it("clears the highlight on a no-group result", () => {
+    it("hides on a malformed presentation read instead of painting stale shapes", () => {
         const out = { name: "out" };
         const ws = { id: "ws" };
         const h = setup([makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)], new Map([["out", "ws"]]));
         discover(h);
         stageFixture("reply-group.json");
-        h.replyNext((accept) => {
-            (globalThis as Record<string, unknown>)["__takeResult"] = { op: "no-group", reason: "no-parent-group", rev: null };
-            void accept;
-        });
-        const clears = h.renders.filter((r) => r.method === "ClearGroupHighlight");
-        assert.ok(clears.length >= 1, "no-group clears the renderer");
-        assert.ok(!h.renders.some((r) => r.method === "SetGroupHighlight"));
+        h.replyNext();
+        // Malformed reads hide (clear) instead of painting anything stale.
+        for (const call of h.calls.filter((c) => c.method === "ReadWorldPresentation")) {
+            (call as { callback: (reply: unknown) => void }).callback("not-json");
+        }
+        const clears = h.renders.filter((r) => r.method === "ClearPresentation");
+        assert.ok(clears.length >= 1, "malformed read clears the renderer");
+        assert.ok(!h.renders.some((r) => r.method === "SetPresentation" || r.method === "SetGroupHighlight"));
         h.handle?.stop();
         delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });

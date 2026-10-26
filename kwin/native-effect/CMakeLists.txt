@@ -57,12 +57,13 @@ set(config_SOURCES)
 kconfig_add_kcfg_files(config_SOURCES activeborderconfig.kcfgc)
 
 # AR10 effect Rust: a Cargo workspace staticlib
-# (crates/tiler-kwin-effect-ffi, group highlight policy plus the slice 1
-# drag oracle) built by a plain custom command invoking Cargo. No Corrosion,
-# no new system dependency: cargo ships with the existing devenv Rust
-# toolchain. The crate reuses serde and tiler-core gates, replacing the
-# bare-rustc build and the hand-written group JSON parser. Rust keeps group
-# visibility and drag verdict policy behind the same POD C ABI.
+# (crates/tiler-kwin-effect-ffi, the ABI boundary crate) built by a plain
+# custom command invoking Cargo. No Corrosion, no new system dependency:
+# cargo ships with the existing devenv Rust toolchain. The crate is
+# retained for the guardrail-mandated ABI boundary while the retired
+# oracle verdict consumption is gone from C++. Presentation rendering is
+# derivation-free (see presentation_consumer.h, Qt only, offline-tested),
+# so no group/visual policy module remains.
 # find_program/find_package stay before all consumers so linkage never
 # relies on transitive libs. Effect-only: skipped for settings-only builds,
 # which must not find KWin/Cargo/effect dependencies.
@@ -118,15 +119,7 @@ add_custom_command(
         "${EFFECT_WORKSPACE_ROOT}/Cargo.lock"
         "${EFFECT_FFI_CRATE_DIR}/Cargo.toml"
         "${EFFECT_FFI_CRATE_DIR}/src/lib.rs"
-        "${EFFECT_FFI_CRATE_DIR}/src/group_highlight.rs"
         "${EFFECT_FFI_CRATE_DIR}/src/drag_oracle.rs"
-        "${EFFECT_FFI_CRATE_DIR}/src/visual.rs"
-        "${EFFECT_WORKSPACE_ROOT}/crates/tiler-core/Cargo.toml"
-        "${EFFECT_WORKSPACE_ROOT}/crates/tiler-core/src/lib.rs"
-        "${EFFECT_WORKSPACE_ROOT}/crates/tiler-core/src/visual.rs"
-        "${EFFECT_WORKSPACE_ROOT}/crates/tiler-core/src/ids.rs"
-        "${EFFECT_WORKSPACE_ROOT}/crates/tiler-core/src/bounds.rs"
-        "${EFFECT_WORKSPACE_ROOT}/crates/tiler-core/src/geometry.rs"
     COMMENT "Building tiler-kwin-effect-ffi staticlib with Cargo"
     VERBATIM
 )
@@ -140,8 +133,7 @@ kcoreaddons_add_plugin(omnitiler-active-border
         activewindowborder.h
         activewindowborder.cpp
         drag_oracle_ffi.h
-        group_highlight_ffi.h
-        visual_policy_ffi.h
+        presentation_consumer.h
         presentationfacts.h
         presentationfacts.cpp
         ${config_SOURCES}
@@ -248,21 +240,20 @@ if(BUILD_TESTING)
     add_test(NAME native-effect-logic
         COMMAND omnitiler-active-border-logic-test)
 
-    add_executable(omnitiler-active-border-group-test
-        activebordergroup_test.cpp
+    # Read-only presentation consumer test (Stage 5, pure renderer): the
+    # shared consumer header only (Qt, no KWin, no Rust staticlib). Pins
+    # strict shape, generation/revision fencing, out-of-order handling, no
+    # stale resurrection, underlay anchor inputs, preview publication/clear,
+    # no one-shot authority, and native styling independence.
+    add_executable(omnitiler-active-border-presentation-test
+        presentationconsumer_test.cpp
     )
-    add_dependencies(omnitiler-active-border-group-test omnitiler-effect-ffi-rs)
-    target_link_libraries(omnitiler-active-border-group-test PRIVATE
-        "${EFFECT_STATICLIB}"
-        Threads::Threads
-        ${CMAKE_DL_LIBS}
-        Qt6::Core
-        Qt6::Gui
-    )
-    target_compile_options(omnitiler-active-border-group-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(omnitiler-active-border-presentation-test PRIVATE
+        Qt6::Core)
+    target_compile_options(omnitiler-active-border-presentation-test PRIVATE -Wall -Wextra -Werror)
 
-    add_test(NAME native-effect-group-highlight
-        COMMAND omnitiler-active-border-group-test)
+    add_test(NAME native-effect-presentation-consumer
+        COMMAND omnitiler-active-border-presentation-test)
 
     # Offline transport test for the versioned script facts waiter: the
     # exact production PresentationFactsSource class (no test fake) driven
@@ -555,12 +546,11 @@ if(BUILD_TESTING)
             -DSOURCE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.cpp
             -DKCM_METADATA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/activeborderconfig_module.json
             -DKCM_SOURCE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/activeborderconfig_module.cpp
-            -DGROUP_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.h
-            -DGROUP_IMPL=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.cpp
-            -DGROUP_LOGIC=${CMAKE_CURRENT_SOURCE_DIR}/activeborderlogic.h
-            -DGROUP_TEST=${CMAKE_CURRENT_SOURCE_DIR}/activebordergroup_test.cpp
-            -DGROUP_FFI=${CMAKE_CURRENT_SOURCE_DIR}/group_highlight_ffi.h
-            -DGROUP_RUST=${EFFECT_FFI_CRATE_DIR}/src/group_highlight.rs
+            -DPRES_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.h
+            -DPRES_IMPL=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.cpp
+            -DPRES_LOGIC=${CMAKE_CURRENT_SOURCE_DIR}/activeborderlogic.h
+            -DPRES_TEST=${CMAKE_CURRENT_SOURCE_DIR}/presentationconsumer_test.cpp
+            -DPRES_CONSUMER=${CMAKE_CURRENT_SOURCE_DIR}/presentation_consumer.h
             -DDRAG_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.h
             -DDRAG_IMPL=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.cpp
             -DDRAG_FFI=${CMAKE_CURRENT_SOURCE_DIR}/drag_oracle_ffi.h
@@ -576,22 +566,14 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/validate-unified-lifecycle.cmake)
 
     # Effect Rust unit tests run through Cargo against the same workspace
-    # staticlib sources, filtered per policy so each CTest keeps its focused
-    # scope (replaces the retired rustc --test binaries).
+    # staticlib sources. The retired group/visual policy modules are deleted
+    # with their C++ consumers, so no second policy test scope remains.
     add_test(NAME native-effect-drag-oracle-rs
         COMMAND "${CARGO_PROGRAM}" test --release --locked
             ${EFFECT_CARGO_OFFLINE_ARG}
             ${EFFECT_CARGO_VENDOR_ARGS}
             --manifest-path "${EFFECT_FFI_CRATE_DIR}/Cargo.toml"
             -p tiler-kwin-effect-ffi --lib drag_oracle::
-            --target-dir "${EFFECT_CARGO_TARGET_DIR}")
-
-    add_test(NAME native-effect-group-highlight-rs
-        COMMAND "${CARGO_PROGRAM}" test --release --locked
-            ${EFFECT_CARGO_OFFLINE_ARG}
-            ${EFFECT_CARGO_VENDOR_ARGS}
-            --manifest-path "${EFFECT_FFI_CRATE_DIR}/Cargo.toml"
-            -p tiler-kwin-effect-ffi --lib group_highlight::
             --target-dir "${EFFECT_CARGO_TARGET_DIR}")
     endif()
 endif()

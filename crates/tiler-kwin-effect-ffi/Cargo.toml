@@ -9,9 +9,6 @@ name = "tiler_kwin_effect_ffi"
 crate-type = ["staticlib"]
 
 [dependencies]
-tiler-core = { path = "../tiler-core" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 [lints.rust]
 unsafe_code = "deny"

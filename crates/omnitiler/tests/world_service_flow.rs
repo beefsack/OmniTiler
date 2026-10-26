@@ -3333,3 +3333,373 @@ fn born_raw_unknown_lifecycle_booleans_refuse() {
         "ready"
     );
 }
+
+fn preview_windows() -> Vec<String> {
+    vec![
+        window_json("win-001", "[0,0,960,1040]", None),
+        window_json("win-002", "[960,0,960,1040]", None),
+    ]
+}
+
+fn preview_keys(value: &serde_json::Value) -> Vec<String> {
+    let mut keys = value
+        .as_object()
+        .expect("preview is an object")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+/// Renderer-only preview shape: paint geometry plus subject proof.
+/// Issuer correlation (`hover`, result tag) and core provenance (session
+/// revision, resolution domain) never ride alongside the snapshot.
+fn assert_trimmed_preview(preview: &serde_json::Value) {
+    assert_eq!(
+        preview_keys(preview),
+        ["rect", "sourceOut", "sourceWs", "win"]
+    );
+    assert!(preview["rect"].is_array());
+    for excluded in ["op", "hover", "rev", "domainOut", "domainWs"] {
+        assert!(
+            preview.get(excluded).is_none(),
+            "issuer/provenance field {excluded} never rides the preview"
+        );
+    }
+}
+fn drag_preview_command() -> &'static str {
+    "{\"op\":\"operation\",\"command\":{\"op\":\"drag-preview\",\
+      \"win\":\"win-001\",\"x\":155,\"y\":50,\"hover\":null,\"source\":null}}"
+}
+
+#[test]
+fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
+    // Stage 5 consumer contract: a drained drag-preview command settles its
+    // terminal result requester-only (sender-bound take, hover chaining
+    // included), while the shared read-only presentation carries only the
+    // trimmed renderer geometry beside the snapshot (never the result lane,
+    // never hover, never write tokens). The next preview-less accept clears
+    // it: the last accepted capture wins.
+    let (service, generation) = discovered_service();
+    let inner = inner_report(&preview_windows(), true, false, "");
+    service
+        .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+        .expect("admit");
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "drag-1", "1", drag_preview_command()),
+        )
+        .expect("queued");
+    let drained = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
+            .expect("preview drained"),
+    );
+    assert_eq!(drained["rev"], "2");
+    assert!(
+        drained["result"].is_null(),
+        "actuator lane keeps no terminal result"
+    );
+    let ready = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "drag-1", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(ready["outcome"], "ready");
+    assert_eq!(ready["result"]["op"], "drag-preview");
+    assert!(ready["result"]["rect"].is_array());
+    assert!(
+        ready["result"].get("hover").is_some(),
+        "issuer lane keeps hover chaining for the next preview or drop"
+    );
+    // A foreign sender cannot collect the issuer's terminal result.
+    let foreign = parse(
+        &service
+            .take_result(SENDER_B, &take_req(&generation, "drag-1", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(foreign["outcome"], "rejected");
+    assert_eq!(foreign["kind"], "unknown-command");
+    // Any same-UID subscriber reads the shared trimmed preview beside the
+    // snapshot: paint geometry plus subject proof, no result lane, no hover
+    // chain, no write tokens. Same geometry the issuer collected through
+    // take, minus issuer correlation.
+    let projection = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"sub-1\"}")
+            .expect("in-band"),
+    );
+    assert_eq!(projection["outcome"], "presentation");
+    assert_eq!(
+        projection["gen"].as_str(),
+        Some(generation.as_str()),
+        "read binds the serving generation"
+    );
+    assert!(projection.get("result").is_none());
+    assert_trimmed_preview(&projection["preview"]);
+    assert_eq!(projection["preview"]["rect"], ready["result"]["rect"]);
+    // Subject proof: the neighbor identity names a live row of the same
+    // cached snapshot, and the mover-home domain matches the issuer lane.
+    let live: Vec<&str> = projection["windows"]
+        .as_array()
+        .expect("windows")
+        .iter()
+        .filter_map(|row| row.get("win").and_then(serde_json::Value::as_str))
+        .collect();
+    assert!(
+        projection["preview"]["win"]
+            .as_str()
+            .is_some_and(|win| live.contains(&win)),
+        "preview subject names a live snapshot row"
+    );
+    assert_eq!(
+        projection["preview"]["sourceWs"],
+        ready["result"]["sourceWs"]
+    );
+    for window in projection["windows"].as_array().expect("windows") {
+        assert!(window.get("frame_op").is_none());
+        assert!(window.get("clear_op").is_none());
+    }
+    // A preview-less follow-up accept clears the shared preview (drag
+    // termination): last accepted capture wins, snapshot stays fresh.
+    let next = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &inner))
+            .expect("accepted"),
+    );
+    assert_eq!(next["rev"], "3");
+    let cleared = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"sub-2\"}")
+            .expect("in-band"),
+    );
+    assert_eq!(cleared["outcome"], "presentation");
+    assert!(cleared["preview"].is_null());
+    assert_eq!(cleared["rev"], "3");
+    // A non-preview terminal never rides the preview lane.
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                "{\"op\":\"operation\",\"command\":{\"op\":\"toggle-float\",\
+                  \"win\":\"win-001\",\"rect\":[100,100,400,300]}}",
+            ),
+        )
+        .expect("queued");
+    let toggled = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &inner))
+            .expect("drained"),
+    );
+    assert!(toggled["result"].is_null());
+    let settled = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(settled["outcome"], "ready");
+    assert_eq!(settled["result"]["op"], "toggle-float");
+    let projection = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"sub-3\"}")
+            .expect("in-band"),
+    );
+    assert!(
+        projection["preview"].is_null(),
+        "only drop previews ride the preview lane"
+    );
+}
+
+#[test]
+fn preview_survives_rejected_captures_but_fallback_clears_it() {
+    // Freshness: in-band rejections never touch the cached preview, while a
+    // failed-drain fallback accept publishes its own preview-less
+    // projection (last accepted capture wins, never a stale preview).
+    let (service, generation) = discovered_service();
+    let inner = inner_report(&preview_windows(), true, false, "");
+    service
+        .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+        .expect("admit");
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(&generation, "drag-1", "1", drag_preview_command()),
+        )
+        .expect("queued");
+    service
+        .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
+        .expect("preview drained");
+    let seeded = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"seed\"}")
+            .expect("in-band"),
+    );
+    assert_trimmed_preview(&seeded["preview"]);
+    // A malformed envelope rejects without touching the cache.
+    let malformed = parse(&service.evaluate_capture("{\"v\":2}").expect("in-band"));
+    assert_eq!(malformed["outcome"], "rejected");
+    // A remembered source with different bytes refuses as reused.
+    let reused = parse(
+        &service
+            .evaluate_capture(&capture_source(
+                ADAPTER,
+                &generation,
+                &js_source(2),
+                2,
+                2,
+                &inner_report(&preview_windows(), false, false, ""),
+            ))
+            .expect("in-band"),
+    );
+    assert_eq!(reused["outcome"], "rejected");
+    assert_eq!(reused["kind"], "source-reused");
+    let kept = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"kept\"}")
+            .expect("in-band"),
+    );
+    assert_eq!(
+        kept["preview"], seeded["preview"],
+        "rejections never touch the cached preview"
+    );
+    // A failed drain settles terminally, then the same fresh facts dispatch
+    // observation-only: the fallback accept clears the preview.
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                "{\"op\":\"select-numbered\",\"out\":null,\"index\":9}",
+            ),
+        )
+        .expect("queued");
+    let fallback = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &inner))
+            .expect("fallback accepted"),
+    );
+    assert_eq!(fallback["rev"], "3");
+    assert!(fallback["result"].is_null());
+    let failed = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(failed["outcome"], "failed");
+    let cleared = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"after-fallback\"}")
+            .expect("in-band"),
+    );
+    assert_eq!(cleared["outcome"], "presentation");
+    assert_eq!(cleared["rev"], "3");
+    assert!(
+        cleared["preview"].is_null(),
+        "fallback accept publishes no stale preview"
+    );
+}
+
+#[test]
+fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
+    // Generation fencing and reconnect seeding: rotation drops the cached
+    // preview (not-ready under the fresh generation), a stale take refuses,
+    // and the new lifetime re-seeds its own latest preview after
+    // re-discovery. The old preview never leaks across.
+    let service = WorldService::new();
+    let inner = inner_report(&preview_windows(), true, false, "");
+    let boot_a = parse(&service.discovery_body("lifetime-a", "req-0"));
+    let gen_a = boot_a["gen"].as_str().expect("gen").to_owned();
+    service
+        .evaluate_capture(&capture_source(
+            "lifetime-a",
+            &gen_a,
+            &js_source(1),
+            1,
+            1,
+            &inner,
+        ))
+        .expect("admit");
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(&gen_a, "drag-1", "1", drag_preview_command()),
+        )
+        .expect("queued");
+    service
+        .evaluate_capture(&capture_source(
+            "lifetime-a",
+            &gen_a,
+            &js_source(2),
+            2,
+            2,
+            &inner,
+        ))
+        .expect("preview drained");
+    let seeded = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"seed-a\"}")
+            .expect("in-band"),
+    );
+    assert_trimmed_preview(&seeded["preview"]);
+    assert_eq!(seeded["gen"].as_str(), Some(gen_a.as_str()));
+    let boot_b = parse(&service.discovery_body("lifetime-b", "req-1"));
+    let gen_b = boot_b["gen"].as_str().expect("gen").to_owned();
+    assert_ne!(gen_b, gen_a);
+    let not_ready = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"seed-b\"}")
+            .expect("in-band"),
+    );
+    assert_eq!(not_ready["outcome"], "rejected");
+    assert_eq!(not_ready["kind"], "not-ready");
+    assert_eq!(not_ready["gen"].as_str(), Some(gen_b.as_str()));
+    let stale_take = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&gen_a, "drag-1", "1"))
+            .expect("in-band"),
+    );
+    assert_eq!(stale_take["outcome"], "rejected");
+    assert_eq!(stale_take["kind"], "generation-mismatch");
+    // The new lifetime re-seeds from its own first preview-carrying accept.
+    service
+        .evaluate_capture(&capture_source(
+            "lifetime-b",
+            &gen_b,
+            &js_source(1),
+            1,
+            1,
+            &inner,
+        ))
+        .expect("admit");
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(&gen_b, "drag-1", "1", drag_preview_command()),
+        )
+        .expect("queued");
+    service
+        .evaluate_capture(&capture_source(
+            "lifetime-b",
+            &gen_b,
+            &js_source(2),
+            2,
+            2,
+            &inner,
+        ))
+        .expect("preview drained");
+    let reseeded = parse(
+        &service
+            .read_presentation("{\"v\":2,\"req\":\"seed-b2\"}")
+            .expect("in-band"),
+    );
+    assert_eq!(reseeded["outcome"], "presentation");
+    assert_trimmed_preview(&reseeded["preview"]);
+    assert_eq!(reseeded["gen"].as_str(), Some(gen_b.as_str()));
+}

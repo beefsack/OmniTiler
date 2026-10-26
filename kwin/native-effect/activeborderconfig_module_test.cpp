@@ -678,13 +678,18 @@ void groupUnderlayExtensionDefaultsToBorderWidth()
     }
     KWin::ActiveBorderConfig::self()->read();
     CHECK(KWin::ActiveBorderConfig::groupUnderlayExtension() == -1.0);
-    // Effect FFI policy: the default sentinel follows the current border
-    // width. Gated out of settings-only builds (no Cargo staticlib there);
-    // the full effect build keeps these gates.
+    // Stage 5 pure renderer: the default sentinel rides the style-facts
+    // ingress verbatim (noteFactsStyle) and the core resolves it into the
+    // published outer rect. No native resolution helper remains: the
+    // sentinel follows the current border width core-side (changing the
+    // border width to 5 while the extension stays at default publishes an
+    // outer resolved with 5), and an explicit 0 renders as-is.
+    // Gated out of settings-only builds (no effect target there); the full
+    // effect build keeps the config-carriage gates.
 #ifdef OMNITILER_HAVE_EFFECT_FFI
-    // Default sentinel follows the current border width: changing the
-    // border width to 5 while the extension stays at default resolves to 5.
-    CHECK(KWin::groupUnderlayEffectiveExtension(KWin::ActiveBorderConfig::groupUnderlayExtension(), 3.0) == 3.0);
+    // Default sentinel follows the current border width core-side: changing
+    // the border width to 5 while the extension stays at default keeps the
+    // raw -1 carriage (resolution happens in the published paint).
     {
         KConfigGroup group = borderGroup();
         group.writeEntry(QStringLiteral("BorderWidth"), 5.0);
@@ -693,15 +698,14 @@ void groupUnderlayExtensionDefaultsToBorderWidth()
     KWin::ActiveBorderConfig::self()->read();
     CHECK(KWin::ActiveBorderConfig::borderWidth() == 5.0);
     CHECK(KWin::ActiveBorderConfig::groupUnderlayExtension() == -1.0);
-    CHECK(KWin::groupUnderlayEffectiveExtension(KWin::ActiveBorderConfig::groupUnderlayExtension(), KWin::ActiveBorderConfig::borderWidth()) == 5.0);
-    // Explicit 0 renders as-is and does not follow the border width.
+    // Explicit 0 rides verbatim and does not follow the border width.
     {
         KConfigGroup group = borderGroup();
         group.writeEntry(QStringLiteral("GroupUnderlayExtension"), 0.0);
         group.sync();
     }
     KWin::ActiveBorderConfig::self()->read();
-    CHECK(KWin::groupUnderlayEffectiveExtension(KWin::ActiveBorderConfig::groupUnderlayExtension(), KWin::ActiveBorderConfig::borderWidth()) == 0.0);
+    CHECK(KWin::ActiveBorderConfig::groupUnderlayExtension() == 0.0);
 #endif
     {
         KConfigGroup group = borderGroup();

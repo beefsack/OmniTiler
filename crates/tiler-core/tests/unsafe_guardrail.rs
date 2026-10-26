@@ -22,11 +22,10 @@
 //! Approved `allow(unsafe_code)` roots (the only ones):
 //! - `crates/tiler-windows/src/ffi/mod.rs` (child modules inherit the allow)
 //! - `crates/tiler-macos/src/ffi.rs`
-//! - `crates/tiler-kwin-effect-ffi/src/drag_oracle.rs` (native ABI boundary)
-//! - `crates/tiler-kwin-effect-ffi/src/group_highlight.rs` (native ABI boundary)
-//! - `crates/tiler-kwin-effect-ffi/src/visual.rs` (no `unsafe` blocks, but
-//!   edition-2024 `#[unsafe(no_mangle)]` is diagnosed under `unsafe_code`
-//!   itself here, so `forbid` is infeasible and the module `allow` stands in)
+//! - `crates/tiler-kwin-effect-ffi/src/drag_oracle.rs` (native ABI boundary;
+//!   the retired group-highlight and visual-policy modules were deleted
+//!   with their native consumers in Stage 5, so no `unsafe` boundary
+//!   remains there and their allowlist roots are removed, not retained)
 //!
 //! Run: `cargo test --locked -p tiler-core --test unsafe_guardrail`
 //! (also runs inside `cargo test --workspace`). No dependencies beyond `std`.
@@ -56,8 +55,6 @@ const APPROVED_ALLOW_ROOTS: &[&str] = &[
     "crates/tiler-windows/src/ffi/mod.rs",
     "crates/tiler-macos/src/ffi.rs",
     "crates/tiler-kwin-effect-ffi/src/drag_oracle.rs",
-    "crates/tiler-kwin-effect-ffi/src/group_highlight.rs",
-    "crates/tiler-kwin-effect-ffi/src/visual.rs",
     "crates/tiler-live-fixture/src/pipe_win.rs",
 ];
 
@@ -1454,18 +1451,10 @@ mod e2e_tests {
             ),
             (
                 "crates/tiler-kwin-effect-ffi/src/lib.rs",
-                "#![deny(unsafe_code)]\npub mod drag_oracle;\npub mod group_highlight;\npub mod visual;\n",
+                "#![deny(unsafe_code)]\npub mod drag_oracle;\n",
             ),
             (
                 "crates/tiler-kwin-effect-ffi/src/drag_oracle.rs",
-                "#![allow(unsafe_code)]\n",
-            ),
-            (
-                "crates/tiler-kwin-effect-ffi/src/group_highlight.rs",
-                "#![allow(unsafe_code)]\n",
-            ),
-            (
-                "crates/tiler-kwin-effect-ffi/src/visual.rs",
                 "#![allow(unsafe_code)]\n",
             ),
             (

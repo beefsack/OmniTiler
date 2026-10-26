@@ -379,17 +379,20 @@ describe("native KCM static contract", () => {
         assert.match(effect, /ActiveBorderConfig::self\(\)->read\(\);[\s\S]*updateOutline\(\);/);
         assert.match(effect, /ActiveBorderConfig::useThemeColor\(\)/);
         assert.match(effect, /if \(useThemeColor\)[\s\S]*?KColorScheme::isColorSetSupported/);
-        assert.match(effect, /activeBorderColor\(themeColor, fallback, useThemeColor\)/);
+        // Stage 5 pure renderer: native styling stays in the effect (the
+        // active ring keeps its own border color/theme tokens, default live
+        // system accent, independently overridable from the underlay/drop
+        // colors). No shared visual FFI or border-eligibility derivation
+        // remains: the held accepted border rects paint verbatim.
+        assert.match(effect, /presentationBorderColor\(themeColor, fallback, useThemeColor\)/);
         assert.doesNotMatch(unified, /UseThemeColor/);
         assert.match(effect, /KColorScheme::isColorSetSupported\(colorConfig, KColorScheme::Selection\)/);
-        assert.match(logic, /activeBorderColor\(const QColor &themeColor, const QColor &fallbackColor, bool useThemeColor\)/);
-        assert.match(logic, /#include "visual_policy_ffi\.h"/);
-        assert.match(logic, /themeValid \? themeColor\.alpha\(\) : 0/);
-        assert.match(logic, /visual_border_use_theme\(useThemeColor \? 1 : 0, themeValid \? 1 : 0/);
-        assert.match(logic, /QRectF activeBorderInnerRect\(/);
-        assert.match(effect, /const QRectF innerRect = activeBorderInnerRect\(state\.innerRect, gap\)/);
+        assert.match(effect, /themeValid \? themeColor\.alpha\(\) : 0/);
+        assert.doesNotMatch(logic, /activeBorderColor/);
+        assert.doesNotMatch(logic, /visual_policy_ffi/);
+        assert.match(effect, /m_presentation\.borderInner/);
         assert.match(effect, /setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
-        assert.match(effect, /const bool visible = state\.visible;/);
+        assert.match(effect, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh;/);
         assert.match(effect, /setVisible\(visible\)/);
         assert.match(effect, /addRepaintFull\(\)/);
     });
@@ -453,9 +456,14 @@ describe("native KCM static contract", () => {
         assert.match(effect, /groupUnderlayColor\(\)/);
         assert.match(effect, /groupUnderlayExtension\(\)/);
         assert.match(effect, /updateGroupUnderlayFill/);
-        assert.match(effect, /groupUnderlayOuterRect/);
-        assert.match(effect, /groupUnderlayEffectiveExtension\(/);
-        assert.match(logic, /groupUnderlayEffectiveExtension/);
+        // Stage 5 pure renderer: the stored core outer rect paints
+        // verbatim. Config extension rides the style facts ingress; no
+        // native outer-rect recomputation or extension resolution remains.
+        assert.match(effect, /m_presentation\.underlayOuter/);
+        assert.doesNotMatch(effect, /groupUnderlayOuterRect/);
+        assert.doesNotMatch(effect, /groupUnderlayEffectiveExtension\(/);
+        assert.doesNotMatch(logic, /groupUnderlayOuterRect/);
+        assert.doesNotMatch(logic, /groupUnderlayEffectiveExtension/);
     });
 
     it("manages the theme override through KConfigXT without disabling the fallback color", () => {

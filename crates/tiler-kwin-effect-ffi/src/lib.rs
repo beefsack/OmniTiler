@@ -1,10 +1,14 @@
-//! KWin native-effect FFI policy: group highlight plus drag oracle plus visual policy.
+//! KWin native-effect FFI policy: drag oracle verdicts only.
 //!
 //! Cargo workspace staticlib behind a minimal POD C ABI (AR10). No Qt/KWin
 //! types cross this boundary; every exported callback catches panics before
-//! returning. Rust owns group visibility policy and drag verdict policy; C++
-//! is only the QObject/D-Bus boundary, native identity/signal observation,
-//! and outline/repaint shim.
+//! returning. Rust owns drag verdict policy; C++ is only the QObject/D-Bus
+//! boundary, native identity/signal observation, and outline/repaint shim.
+//! Presentation rendering is derivation-free (see
+//! kwin/native-effect/presentation_consumer.h, Qt only): the retired
+//! group-highlight and visual-policy modules are deleted with their C++
+//! consumers, keeping the drag oracle that the pending gesture
+//! cancellation decision still requires.
 
 #![deny(unsafe_code)]
 // Preserve the existing C signatures and explicit panic-result branches at
@@ -18,5 +22,3 @@
 )]
 
 pub mod drag_oracle;
-pub mod group_highlight;
-pub mod visual;

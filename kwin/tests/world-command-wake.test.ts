@@ -148,6 +148,16 @@ function countCalls(calls: Call[], method: string): number {
     return calls.filter((c) => c.method === method).length;
 }
 
+// The read-only presentation subscriber arms its own 25 s host-deadline
+// watchdog per read flight (Stage 5, finding A). Offline harnesses share
+// one timer pool across lanes, so wait-lane assertions skip the
+// presentation retry timer explicitly instead of counting or firing it:
+// the marker changes neither its delay nor its cadence, and the skipped
+// lane keeps its own coverage in world-presentation-subscriber.test.ts.
+function isPresentationTimer(t: FakeTimer): boolean {
+    return (t.cb as unknown as Record<string, unknown>)["presentationReadWatchdog"] === true;
+}
+
 function sweepTimers(
     flow: ReturnType<typeof startFlow>,
     pred: (delay: number) => boolean,
@@ -161,7 +171,7 @@ function sweepTimers(
             i -= 1;
             continue;
         }
-        if (pred(t.delay)) {
+        if (pred(t.delay) && !isPresentationTimer(t)) {
             flow.timers.splice(i, 1);
             i -= 1;
             fired += 1;
@@ -179,6 +189,9 @@ function runHostTimers(flow: ReturnType<typeof startFlow>): number {
     return sweepTimers(flow, (delay) => delay === 25000, 1);
 }
 
+function liveHostTimers(flow: ReturnType<typeof startFlow>): number {
+    return flow.timers.filter((t) => t.live && t.delay === 25000 && !isPresentationTimer(t)).length;
+}
 function bootstrap(gen: string, req: string): string {
     return JSON.stringify({
         v: 2, adapter: "broker-1", gen, req,
@@ -506,7 +519,7 @@ describe("external-command wait wake delivery", () => {
         rejectWaits();
         assert.equal(countCalls(flow.calls, "WaitWorldWake"), 1);
         assert.equal(
-            flow.timers.filter((t) => t.live && t.delay === 25000).length, 1,
+            liveHostTimers(flow), 1,
             "exactly one host recovery chain",
         );
         assert.equal(runHostTimers(flow), 1, "recovery rediscovers at the deadline");
@@ -538,7 +551,7 @@ describe("external-command wait wake delivery", () => {
         rejectWaits();
         assert.equal(countCalls(flow.calls, "WaitWorldWake"), 2);
         assert.equal(
-            flow.timers.filter((t) => t.live && t.delay === 25000).length, 1,
+            liveHostTimers(flow), 1,
             "still exactly one host recovery chain",
         );
         // The active producer is undisplaced: a local command still files
@@ -581,7 +594,7 @@ describe("external-command wait wake delivery", () => {
         answerSuperseded();
         assert.equal(countCalls(flow.calls, "WaitWorldWake"), 1);
         assert.equal(
-            flow.timers.filter((t) => t.live && t.delay === 25000).length, 1,
+            liveHostTimers(flow), 1,
             "stand-down keeps exactly one host recovery timer",
         );
         assert.equal(countCalls(flow.calls, "DiscoverWorld"), 1);
@@ -636,7 +649,7 @@ describe("external-command wait wake delivery", () => {
         auto.callback(acceptCapture("gen-1", JSON.parse(auto.payload) as Record<string, unknown>, "1"));
         // The armed wait threw synchronously: its orphaned watchdog is
         // cancelled exactly once and exactly one retry chain lives.
-        assert.equal(timers.filter((t) => t.live && t.delay === 25000).length, 1, "exactly one retry chain");
+        assert.equal(timers.filter((t) => t.live && t.delay === 25000 && !isPresentationTimer(t)).length, 1, "exactly one retry chain");
         const invokedAfterThrow = cancels.filter((c) => c === 1).length;
         assert.ok(invokedAfterThrow >= 1, "orphaned watchdog cancelled, not orphaned");
         assert.ok(logs.some((l) => l.startsWith("omnitiler:world:wait-transport")));
@@ -652,7 +665,7 @@ describe("external-command wait wake delivery", () => {
                 i -= 1;
                 continue;
             }
-            if (t.delay === 25000) {
+            if (t.delay === 25000 && !isPresentationTimer(t)) {
                 timers.splice(i, 1);
                 i -= 1;
                 fired += 1;
@@ -660,7 +673,7 @@ describe("external-command wait wake delivery", () => {
             }
         }
         assert.equal(fired, 1);
-        assert.equal(timers.filter((t) => t.live && t.delay === 25000).length, 1, "retry never overwrites a live chain");
+        assert.equal(timers.filter((t) => t.live && t.delay === 25000 && !isPresentationTimer(t)).length, 1, "retry never overwrites a live chain");
         assert.equal(
             cancels.filter((c) => c === 1).length, invokedAfterThrow + 1,
             "second orphaned watchdog cancelled exactly once",

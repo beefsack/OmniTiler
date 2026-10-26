@@ -373,7 +373,18 @@ export type WorldTakeReply =
     | { outcome: "failed"; gen: string; globalCmd: string; kind: string; message: string }
     | { outcome: "duplicate"; gen: string };
 // Presentation-lane replies (ReadWorldPresentation): snapshot plus
-// presentation only, no fx/results/write tokens.
+// presentation plus the renderer-only drop preview, no fx/results/write
+// tokens. `preview` is the trimmed drop-preview geometry (paint `rect`,
+// mover-home `sourceOut`/`sourceWs`, insertion-neighbor `win`) when the
+// cached reply carried a drop preview, else null. `win` is the insertion
+// neighbor, never the mover identity: the subscriber must not treat it as
+// a mover match.
+export interface WorldPreview {
+    rect: [number, number, number, number];
+    sourceOut: string;
+    sourceWs: string;
+    win: string;
+}
 export interface WorldPresentationReply {
     outcome: "presentation";
     gen: string;
@@ -385,6 +396,7 @@ export interface WorldPresentationReply {
     outputs: WorldReplyOutput[];
     windows: WorldReplyWindow[];
     presentation: WorldPresentation;
+    preview: WorldPreview | null;
 }
 // Wait-lane replies (WaitWorldWake): the long-held call completes when
 // queued work can drain. `wake` carries the advanced server epoch cursor
@@ -1177,14 +1189,40 @@ function parsePresentation(value: unknown): WorldPresentation {
 // projection shape `project_reply` plus the serving generation and the read
 // correlation bound by `project_read`: exactly
 // {v,outcome,gen,req,rev,obs,scopes,workspaces,outputs,windows,
-// presentation}. No core transport bindings (adapter/source/nativeInvalid/
-// clock), no readiness/consumed flags, no one-shot lanes (result,
-// transfers, effects, gesture/operation settlement, warp), and no retained
-// write tokens (frame_op/clear_op keys are stripped server-side; any
-// carried token refuses). Window rows share the core row shape minus the
-// tokens; every other row shares the core row parser exactly.
+// presentation,preview}. No core transport bindings (adapter/source/
+// nativeInvalid/clock), no readiness/consumed flags, no one-shot lanes
+// (result, transfers, effects, gesture/operation settlement, warp), and no
+// retained write tokens (frame_op/clear_op keys are stripped server-side;
+// any carried token refuses). Window rows share the core row shape minus
+// the tokens; every other row shares the core row parser exactly. `preview`
+// is the trimmed renderer-only drop preview (paint `rect`, mover-home
+// source, insertion-neighbor window) or null; any other shape refuses.
+function parsePreview(value: unknown): WorldPreview | null {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("presentation-preview");
+    }
+    const o = value as Record<string, unknown>;
+    if (Object.keys(o).length !== 4 || !("rect" in o && "sourceOut" in o && "sourceWs" in o && "win" in o)) {
+        throw new Error("presentation-preview-keys");
+    }
+    if (!isRect(o["rect"])) {
+        throw new Error("presentation-preview-rect");
+    }
+    if (!isOpaqueId(o["sourceOut"]) || !isOpaqueId(o["sourceWs"]) || !isOpaqueId(o["win"])) {
+        throw new Error("presentation-preview-id");
+    }
+    return {
+        rect: o["rect"] as [number, number, number, number],
+        sourceOut: o["sourceOut"] as string,
+        sourceWs: o["sourceWs"] as string,
+        win: o["win"] as string,
+    };
+}
 function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldPresentationReply | null {
-    if (!hasExactKeys(r, ["v", "outcome", "gen", "req", "rev", "obs", "scopes", "workspaces", "outputs", "windows", "presentation"])) {
+    if (!hasExactKeys(r, ["v", "outcome", "gen", "req", "rev", "obs", "scopes", "workspaces", "outputs", "windows", "presentation", "preview"])) {
         return null;
     }
     if (r["outcome"] !== "presentation" || r["gen"] !== gen) {
@@ -1212,14 +1250,26 @@ function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldP
         const stripped = (winRaw as ReadonlyArray<unknown>).map(parsePresentationWindowRow);
         const windows: WorldReplyWindow[] = stripped.map((w) => ({ ...w, frame_op: "", clear_op: "" }));
         const presentation = parsePresentation(r["presentation"]);
+        const preview = parsePreview(r["preview"]);
         return {
             outcome: "presentation", gen, req: r["req"] as string, rev, obs,
-            scopes, workspaces, outputs, windows, presentation,
+            scopes, workspaces, outputs, windows, presentation, preview,
         };
     } catch (error) {
         void error;
         return null;
     }
+}
+
+// ReadWorldPresentation request builder: the read-only presentation query
+// carries only the contract version and the caller-minted read correlation
+// (`req`). No generation (the serving generation binds server-side and the
+// reply fences it), no one-shot, write, or result lanes.
+export function buildPresentationReadRequest(req: string): string | null {
+    if (!isCorrelationId(req)) {
+        return null;
+    }
+    return JSON.stringify({ v: 2, req });
 }
 
 const RESULT_OPS = new Set(["drag-preview", "toggle-float", "active-group", "no-group", "migrate-workspace"]);
@@ -1398,6 +1448,18 @@ export function isWorldQueueReply(    value: WorldReply | WorldRejection | World
     }
     const outcome = (value as { outcome?: unknown }).outcome;
     return outcome === "queued" || (outcome === "duplicate" && (value as { client?: unknown }).client !== undefined);
+}
+
+// Narrow a parsed reply to the presentation lane (ReadWorldPresentation):
+// snapshot plus presentation plus the renderer-only drop preview. Any
+// other lane (including rejections) never satisfies this.
+export function isWorldPresentationReply(
+    value: WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null,
+): value is WorldPresentationReply {
+    if (value === null) {
+        return false;
+    }
+    return (value as { outcome?: unknown }).outcome === "presentation";
 }
 
 // Narrow a parsed reply to the wait lane (WaitWorldWake): wake, lease, or

@@ -1867,11 +1867,6 @@ dependencies = [
 [[package]]
 name = "tiler-kwin-effect-ffi"
 version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tiler-core",
-]
 
 [[package]]
 name = "tiler-live-fixture"

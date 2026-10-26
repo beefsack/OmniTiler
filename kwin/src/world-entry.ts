@@ -19,13 +19,14 @@ import { createWorldDragRoute } from "./world-drag";
 import { registerWorldShortcuts } from "./world-shortcuts";
 import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
 import {
-    GROUP_HIGHLIGHT_CLEAR_METHOD,
-    GROUP_HIGHLIGHT_INTERFACE,
-    GROUP_HIGHLIGHT_OBJECT,
-    GROUP_HIGHLIGHT_SERVICE,
-    GROUP_HIGHLIGHT_SET_METHOD,
-    formatGroupHighlightPayload,
-} from "./active-group-highlight";
+    createWorldPresentationSubscriber,
+    PRESENTATION_EFFECT_CLEAR_METHOD,
+    PRESENTATION_EFFECT_INTERFACE,
+    PRESENTATION_EFFECT_OBJECT,
+    PRESENTATION_EFFECT_SERVICE,
+    PRESENTATION_EFFECT_SET_METHOD,
+    type WorldPresentationSubscriber,
+} from "./world-presentation";
 
 // Float-intent method names mirror the Planner1 interface (same values as
 // the legacy plan adapter's intent route): one bounded read before first
@@ -210,10 +211,11 @@ export interface WorldEntryOverrides {
         service: string, path: string, iface: string, method: string,
         payload: string, callback: (reply: unknown) => void,
     ) => void;
-    // Renderer D-Bus caller for the native effect endpoints (drag-preview
-    // overlay plus active-group highlight): the effect remains the
-    // renderer, this only forwards core-derived rects/bounds. Defaults to
-    // the global callDBus like the legacy plan adapter.
+    // Renderer D-Bus caller for the native effect presentation endpoint
+    // (SetPresentation/ClearPresentation): the effect remains the
+    // renderer of accepted core shapes only, this only forwards the
+    // subscriber payload. Defaults to the global callDBus like the legacy
+    // plan adapter.
     readonly highlightCallDbus?: (
         service: string, path: string, iface: string, method: string,
         ...args: ReadonlyArray<unknown>
@@ -1008,9 +1010,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // Native effect renderer calls (never workspace policy): the drag
-    // overlay and the group highlight render core-derived geometry only.
-    // Fail-closed false/void when the bus is unavailable.
+    // Native effect renderer calls (never workspace policy): the presentation
+    // subscriber paints accepted core shapes only (border, underlay, drop
+    // preview); the effect remains the renderer with native anchoring plus
+    // immediate hide-only vetoes. Fail-closed false/void when the bus is
+    // unavailable.
     const highlightCall = (
         method: string, ...args: ReadonlyArray<unknown>
     ): boolean => {
@@ -1032,9 +1036,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 return false;
             }
             (call as (service: string, path: string, iface: string, method: string, ...rest: ReadonlyArray<unknown>) => void)(
-                GROUP_HIGHLIGHT_SERVICE,
-                GROUP_HIGHLIGHT_OBJECT,
-                GROUP_HIGHLIGHT_INTERFACE,
+                PRESENTATION_EFFECT_SERVICE,
+                PRESENTATION_EFFECT_OBJECT,
+                PRESENTATION_EFFECT_INTERFACE,
                 method,
                 ...args,
             );
@@ -1044,19 +1048,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
     };
-    const DRAG_PREVIEW_SET_METHOD = "SetDragTargetPreview";
-    const DRAG_PREVIEW_CLEAR_METHOD = "ClearDragTargetPreview";
 
     // Drag-oracle verdict route (single responsibility: Started/Finish
-    // capture, move-drop/resize routing, per-gesture preview). Owned by
+    // capture, move-drop/resize routing). Owned by
     // world-drag; driven here with observation and transport.
+    // Stage 5: renderer hooks removed (preview now via the presentation
+    // subscriber below); preview ticks are no-ops while verdict routing
+    // retains oracle liveness.
     const dragRoute = createWorldDragRoute({
         surface,
         log,
         token,
         readProp,
         observeForCommand: route.observeForCommand,
-        // Drag verdicts and preview ticks keep the fail-fast single-flight
+        // Drag verdicts keep the fail-fast single-flight
         // fence (busy refuses and releases for retry); they never queue
         // behind shortcut commands.
         submitCommand: submitCommandInner,
@@ -1065,9 +1070,40 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             detaches.push(detach);
         },
         oracleCallDbus: overrides.oracleCallDbus,
-        setPreview: (rect) => highlightCall(DRAG_PREVIEW_SET_METHOD, rect.x, rect.y, rect.w, rect.h),
-        clearPreview: () => {
-            highlightCall(DRAG_PREVIEW_CLEAR_METHOD);
+        setPreview: () => false,
+        clearPreview: () => {},
+    });
+
+    // Read-only presentation subscriber (Stage 5): event-driven consumer of
+    // the broker ReadWorldPresentation projection (same-UID read-only,
+    // separate from capture/actuation). Paints accepted core shapes only
+    // (border, underlay, drop preview) through the native effect renderer;
+    // never derives geometry or eligibility, never touches one-shot lanes.
+    // Reads trigger on generation bind/rotation (reconnect seed), on
+    // accepted captures, on wait wakes (a foreign accepted capture may
+    // have advanced the projection), and on effect resets; a lost reply
+    // retries on the shared host deadline. No polling, no self re-arm.
+    const presentationSubscriber: WorldPresentationSubscriber = createWorldPresentationSubscriber({
+        callDbus: (service, path, iface, method, payload, callback) => {
+            try {
+                (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
+                    service, path, iface, method, payload, callback,
+                );
+            } catch (error) {
+                throw error;
+            }
+        },
+        getGeneration: () => state.boundGen,
+        getGestureEpoch: () => 0,
+        isStopped: () => stopped,
+        log,
+        token,
+        scheduleOnce,
+        renderer: {
+            renderPresentation: (payload) => highlightCall(PRESENTATION_EFFECT_SET_METHOD, payload),
+            clearPresentation: () => {
+                highlightCall(PRESENTATION_EFFECT_CLEAR_METHOD);
+            },
         },
     });
 
@@ -1159,11 +1195,24 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // New generation: queued intents belong to the dead
                         // generation and drop with one diagnostic; the
                         // binding snapshot and one-shot native effects
-                        // reset with the backend that owned them.
+                        // reset with the backend that owned them. The
+                        // presentation subscriber clears its paint for the
+                        // dead generation and seeds one read for the new one
+                        // (reconnect seed, never a stale repaint).
                         dropDeadGenerationIntents();
                         logicalOfNative.clear();
                         try {
-                            highlightCall(GROUP_HIGHLIGHT_CLEAR_METHOD);
+                            presentationSubscriber.notifyGeneration(parsed.gen);
+                        } catch (error) {
+                            void error;
+                        }
+                    } else {
+                        // Same-generation rediscovery (service owner change or
+                        // rebind): force one fresh presentation read so a
+                        // restarted service with an empty cache hides instead
+                        // of holding a pre-restart paint.
+                        try {
+                            presentationSubscriber.notifyGeneration(parsed.gen);
                         } catch (error) {
                             void error;
                         }
@@ -1179,7 +1228,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // A fresh generation drops the old effect identity
                     // before the post-discovery observation: stale snapshots
                     // and replaced waiters never cross the rotation.
-                    effectSnapshot = null;
+                    setEffectSnapshot(null);
                     effectWaiterOutstanding = false;
                     effectWaiterGen = null;
                     try {
@@ -1219,8 +1268,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // Dead-generation intent drop: queued intents belong to the superseded
     // generation and drop with one diagnostic; the filed-but-unacked
     // identity and the undecided take clear with them, never reminted
-    // into the replacement namespace. Callers rediscover (or continue,
-    // for discovery itself).
+    // into the replacement namespace. The presentation paint belongs to
+    // the dead generation too: unbind the subscriber now (immediate hide,
+    // in-flight reads fenced off) so no stale paint survives into the
+    // replacement; the successful rediscovery re-seeds it. Callers
+    // rediscover (or continue, for discovery itself).
     const dropDeadGenerationIntents = (): void => {
         const dropped = pendingQueue.length;
         pendingQueue.length = 0;
@@ -1228,6 +1280,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         unackedQueue = null;
         if (dropped > 0) {
             log(`omnitiler:world:queue-dropped reason=generation-mismatch depth=${dropped}`);
+        }
+        try {
+            presentationSubscriber.notifyGeneration(null);
+        } catch (error) {
+            void error;
         }
     };
 
@@ -1407,6 +1464,31 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let effectWatchdogCancel: (() => void) | null = null;
     let effectRetryCancel: (() => void) | null = null;
 
+    // Presentation renderer reset/reseed event (finding H, Stage 5): the
+    // raw presentation-facts instance/availability is already read every
+    // generation; an instance change (effect restart) or loss (teardown)
+    // means the native paint is gone, so the subscriber forgets its painted
+    // projection (clear first, then reseed read on the ordered channel) and
+    // re-reads. The fire-and-forget renderer call succeeds vacuously while
+    // the endpoint is down and the same-projection dedupe would otherwise
+    // never resend: without this explicit event a restarted effect stays
+    // blank. Silence is handled by the subscriber watchdog deadline. No
+    // polling; the identity folds instance only (rev bumps already flow
+    // through capture invalidation).
+    let lastEffectIdentityForPresentation = "unknown";
+    const setEffectSnapshot = (next: PresentationSnapshot | null): void => {
+        effectSnapshot = next;
+        const identity = next === null ? "unknown" : `known:${next.instance}`;
+        if (identity !== lastEffectIdentityForPresentation) {
+            lastEffectIdentityForPresentation = identity;
+            try {
+                presentationSubscriber.notifyEffectReset();
+            } catch (error) {
+                void error;
+            }
+        }
+    };
+
     // Strict versioned parse of one effect facts reply: v:1 with an
     // opaque instance/rev, 0/1 chord lanes, finite style doubles, an
     // explicit changed/superseded lane pair and an availability lane.
@@ -1509,7 +1591,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             effectWaiterGen = null;
             effectWatchdogCancel = null;
             log("omnitiler:world:effect-facts-host-timeout recovery=rearm-unknown");
-            effectSnapshot = null;
+            setEffectSnapshot(null);
             state.invalidate();
             scheduleDispatch();
             armEffectWaiter();
@@ -1558,7 +1640,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // down to the single host-deadline recovery chain: no hot loop
             // on a synchronously throwing transport.
             if (effectSnapshot !== null) {
-                effectSnapshot = null;
+                setEffectSnapshot(null);
                 state.invalidate();
                 scheduleDispatch();
             }
@@ -1598,7 +1680,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // capture), one follow-up capture publishes the hide, and the
             // lane stands down to the single host-deadline recovery chain.
             log("omnitiler:world:effect-facts-malformed recovery=host-deadline-unknown");
-            effectSnapshot = null;
+            setEffectSnapshot(null);
             state.invalidate();
             scheduleDispatch();
             scheduleEffectRecovery();
@@ -1610,7 +1692,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // restart) re-binds a fresh instance; a stale one never applies
             // here because generation fencing already dropped it.
             log("omnitiler:world:effect-facts-unavailable recovery=host-deadline-unknown");
-            effectSnapshot = null;
+            setEffectSnapshot(null);
             state.invalidate();
             scheduleDispatch();
             scheduleEffectRecovery();
@@ -1624,11 +1706,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             scheduleEffectRecovery();
             return;
         }
-        effectSnapshot = {
+        setEffectSnapshot({
             instance: parsed.instance, rev: parsed.rev, chord: parsed.chord,
             borderGap: parsed.borderGap, borderWidth: parsed.borderWidth,
             underlayExtension: parsed.underlayExtension,
-        };
+        });
         armEffectWaiter();
         if (parsed.changed) {
             log(`omnitiler:world:effect-facts-changed instance=${token(parsed.instance)} rev=${token(parsed.rev)}`);
@@ -2085,44 +2167,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     } catch (error) {
                         void error;
                     }
-                    // Route the read-only active-group result to the native                    // highlight renderer (no new border policy): the effect
-                    // remains the renderer, this only forwards core-derived
-                    // bounds with the legacy fullscreen fail-closed gate.
-                    // no-group clears. Never derives topology or geometry.
+                    // Presentation invalidation (Stage 5): this accepted capture
+                    // advanced the cached projection (or a foreign command
+                    // did, drained through this capture). The read-only
+                    // subscriber re-reads the projection and paints accepted
+                    // core shapes only. Take-lane results never paint: they
+                    // are requester-only terminal outcomes, not renderer
+                    // authority. The subscriber fences generation, request,
+                    // and transport; malformed reads hide.
                     try {
-                        if (takeResult !== null && takeResult.op === "active-group") {
-                            const members = takeResult.members.map((m) => m.win);
-                            let gated = true;
-                            const seen = new Set<string>();
-                            for (const id of members) {
-                                seen.add(id);
-                            }
-                            for (const domain of fresh.domains) {
-                                for (const w of domain.windows) {
-                                    seen.delete(w.win);
-                                    if (members.includes(w.win) && w.fullscreen) {
-                                        gated = false;
-                                    }
-                                }
-                            }
-                            if (gated && seen.size === 0 && state.boundGen !== null) {
-                                const rev = Number(takeResult.rev);
-                                const payload = formatGroupHighlightPayload(
-                                    parsed.req, owner, state.boundGen, rev,
-                                    takeResult.group, takeResult.win, members,
-                                    { x: takeResult.bounds[0], y: takeResult.bounds[1], w: takeResult.bounds[2], h: takeResult.bounds[3] },
-                                );
-                                if (payload !== null) {
-                                    highlightCall(GROUP_HIGHLIGHT_SET_METHOD, payload);
-                                } else {
-                                    highlightCall(GROUP_HIGHLIGHT_CLEAR_METHOD);
-                                }
-                            } else {
-                                highlightCall(GROUP_HIGHLIGHT_CLEAR_METHOD);
-                            }
-                        } else if (takeResult !== null && takeResult.op === "no-group") {
-                            highlightCall(GROUP_HIGHLIGHT_CLEAR_METHOD);
-                        }
+                        presentationSubscriber.notifyInvalidated();
                     } catch (error) {
                         void error;
                     }
@@ -3256,12 +3310,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             cancelWaitRecovery();
             cancelDiscoverChain();
             cancelEffectRecovery();
+            // Presentation subscriber teardown: drop in-flight reads and
+            // clear the native paint so no stale shapes survive the entry.
+            try {
+                presentationSubscriber.stop();
+            } catch (error) {
+                void error;
+            }
             // Effect-facts teardown: drop the held waiter slot so a late
             // facts callback no-ops on the fence; the pending native call
             // (if any) completes into a cleared slot.
             effectWaiterOutstanding = false;
             effectWaiterGen = null;
-            effectSnapshot = null;
+            setEffectSnapshot(null);
             try {
                 effectWatchdogCancel?.();
             } catch (error) {

@@ -9,10 +9,9 @@ const effectImpl = read("native-effect/activewindowborder.cpp");
 const factsHeader = read("native-effect/presentationfacts.h");
 const factsImpl = read("native-effect/presentationfacts.cpp");
 const logic = read("native-effect/activeborderlogic.h");
+const consumer = read("native-effect/presentation_consumer.h");
 const cmake = read("native-effect/CMakeLists.txt");
 const validator = read("native-effect/validate-metadata.cmake");
-const ffi = read("native-effect/group_highlight_ffi.h");
-const rust = read("../crates/tiler-kwin-effect-ffi/src/group_highlight.rs");
 
 function countMatches(body: string, pattern: RegExp): number {
     const matches = body.match(pattern);
@@ -27,15 +26,19 @@ function extractBody(body: string, marker: string): string {
     return body.slice(start, end + 3);
 }
 
-describe("active-group native static contract", () => {
-    it("exposes setter, clear, a read-only status query, and the held facts waiter through the effect-owned endpoint", () => {
-        assert.equal(countMatches(effectImpl, /Q_SCRIPTABLE/g), 7);
-        assert.match(effectImpl, /SetGroupHighlight/);
-        assert.match(effectImpl, /ClearGroupHighlight/);
-        assert.match(effectImpl, /GetGroupHighlightStatus/);
         assert.match(effectImpl, /LastVerdict/);
-        assert.match(effectImpl, /SetDragTargetPreview/);
-        assert.match(effectImpl, /ClearDragTargetPreview/);
+describe("presentation native static contract", () => {
+    it("exposes the paint setter, paint clear, and the held facts waiter through the effect-owned endpoint", () => {
+        assert.equal(countMatches(effectImpl, /Q_SCRIPTABLE/g), 3);
+        assert.match(effectImpl, /SetPresentation/);
+        assert.match(effectImpl, /ClearPresentation/);
+        assert.doesNotMatch(effectImpl, /SetGroupHighlight/);
+        assert.doesNotMatch(effectImpl, /ClearGroupHighlight/);
+        assert.doesNotMatch(effectImpl, /GetGroupHighlightStatus/);
+        assert.doesNotMatch(effectImpl, /SetDragTargetPreview/);
+        assert.doesNotMatch(effectImpl, /ClearDragTargetPreview/);
+        assert.doesNotMatch(effectHeader, /SetGroupHighlight/);
+        assert.doesNotMatch(effectHeader, /SetDragTargetPreview/);
         // Read-only versioned presentation facts for the script route
         // (Stage 3 ingress): instance/revision identity, native chord
         // bits, actual style numbers, and a bounded held-call lease. The
@@ -114,13 +117,16 @@ describe("active-group native static contract", () => {
         assert.match(endpointsBody, /!m_groupDbusAvailable \|\| !m_groupBus\.isConnected\(\)/);
     });
 
-    it("keeps the existing active border and adds exactly one filled group underlay", () => {
+    it("keeps the existing active border and adds exactly one filled underlay plus the preview overlay", () => {
         assert.equal(countMatches(effectHeader, /OutlinedBorderItem/g), 1);
         assert.ok(countMatches(effectHeader, /ImageItem/g) >= 2);
         assert.match(effectHeader, /m_borderItem/);
         assert.match(effectHeader, /m_groupItem/);
-        assert.match(effectHeader, /m_groupMemberIds/);
         assert.match(effectHeader, /m_groupAnchor/);
+        assert.match(effectHeader, /m_presentation/);
+        assert.match(effectHeader, /m_dragPreviewRect/);
+        assert.doesNotMatch(effectHeader, /m_groupMemberIds/);
+        assert.doesNotMatch(effectHeader, /m_groupState/);
         assert.doesNotMatch(effectImpl, /m_groupItem\(RectF\(\), BorderOutline\(\)\)/);
         // No valid anchor detaches so the underlay can never draw as a
         // screen overlay; the drag preview keeps the overlay parent.
@@ -138,17 +144,18 @@ describe("active-group native static contract", () => {
         assert.match(effectImpl, /m_groupItem\.setZ\(-2\)/);
         assert.match(effectImpl, /updateGroupAnchorAndGeometry/);
         assert.match(effectImpl, /stackingOrderChanged/);
-        // The current anchor's own frame move remaps the stored scene union
+        // The current anchor's own frame move remaps the stored scene outer
         // without a fresh payload; the old anchor disconnects on change.
         assert.match(effectImpl, /windowFrameGeometryChanged/);
         assert.match(effectImpl, /disconnect\(oldAnchor, &EffectWindow::windowFrameGeometryChanged/);
         assert.match(effectImpl, /connect\(anchor, &EffectWindow::windowFrameGeometryChanged/);
-        assert.match(effectImpl, /groupUnderlayOuterRect/);
-        assert.match(logic, /groupUnderlayOuterRect/);
-        // Default extension sentinel follows the current border width;
-        // explicit 0 renders as-is.
-        assert.match(logic, /groupUnderlayEffectiveExtension/);
-        assert.match(effectImpl, /groupUnderlayEffectiveExtension\(\s*ActiveBorderConfig::groupUnderlayExtension\(\),\s*ActiveBorderConfig::borderWidth\(\)\)/);
+        // The stored core outer rect is consumed verbatim (no second
+        // outset): space translation only, via mapFromScene.
+        assert.match(effectImpl, /mapFromScene/);
+        assert.doesNotMatch(effectImpl, /groupUnderlayOuterRect/);
+        assert.doesNotMatch(effectImpl, /groupUnderlayEffectiveExtension/);
+        assert.doesNotMatch(logic, /groupUnderlayOuterRect/);
+        assert.doesNotMatch(logic, /groupUnderlayEffectiveExtension/);
         // Accepted non-group overlap paints over the lower edge.
         assert.match(effectImpl, /painted over/);
         // The active border is local to its target, below target contents and
@@ -156,105 +163,109 @@ describe("active-group native static contract", () => {
         assert.match(effectImpl, /m_borderItem\.setZ\(-1\)/);
         assert.match(effectImpl, /m_borderItem\.setParentItem\(m_trackedWindow->windowItem\(\)\)/);
         assert.match(effectImpl, /m_borderItem\.setParentItem\(effects->scene\(\)->overlayItem\(\)\)/);
-        assert.match(effectImpl, /const QRectF innerRect = activeBorderInnerRect\(state\.innerRect, gap\)/);
+        // The held accepted inner rect maps into the tracked window item
+        // without a second outset; visibility is core paint plus live
+        // foreground plus hide-only vetoes, never derived eligibility.
+        assert.match(effectImpl, /m_presentation\.borderInner/);
         assert.match(effectImpl, /m_borderItem\.setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
-        assert.match(effectImpl, /const bool visible = state\.visible;/);
+        assert.match(effectImpl, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh;/);
+        // The ring replays the published outer exactly: its stroke is
+        // derived strictly from the published inner/outer pair (half the
+        // uniform inset), never live config width, and a set geometry
+        // floor hides stale shapes until a strictly newer paint arrives.
+        assert.match(effectImpl, /borderStrokeFromPublished\(m_presentation\.borderInner, m_presentation\.borderOuter\)/);
+        assert.match(effectImpl, /presentationBorderFresh\(&m_presentation\)/);
+        assert.match(effectImpl, /setOutline\(ringOutlineForWidth\(stroke\)\)/);
+        assert.match(effectImpl, /onTrackedFrameChanged/);
+        assert.match(effectImpl, /onGroupMemberFrameChanged/);
+        assert.match(effectImpl, /markBorderGeometryDirty\(&m_presentation\)/);
+        assert.match(effectImpl, /markUnderlayGeometryDirty\(&m_presentation\)/);
+        assert.match(effectHeader, /onTrackedFrameChanged\(\);/);
+        assert.match(effectHeader, /onGroupMemberFrameChanged\(EffectWindow \*window\);/);
         assert.doesNotMatch(effectImpl, /initialOk/);
         assert.match(effectImpl, /m_borderItem\.setVisible\(visible\)/);
     });
 
-    it("gates group visibility on the passive Meta+Shift chord with unknown-before-first-signal invisible", () => {
+    it("observes the chord as raw ingress without deriving trigger gating", () => {
         assert.match(effectImpl, /mouseChanged/);
         assert.match(effectImpl, /Qt::MetaModifier/);
         assert.match(effectImpl, /Qt::ShiftModifier/);
         assert.match(effectImpl, /m_firstMouseSeen/);
         assert.match(effectImpl, /m_chordHeld/);
-        assert.match(effectImpl, /groupUnderlayChordHeld/);
-        assert.match(effectImpl, /group_highlight_is_visible/);
-        assert.match(effectImpl, /group_highlight_focus_eligible/);
-        assert.match(rust, /tiler_core::visual::group_underlay_trigger\(chord_ready, matching_move_active\)/);
-        assert.match(rust, /tiler_core::visual::group_focus_eligible\(/);
+        // The core underlay Found already encodes the trigger: native code
+        // performs no chord/eligibility/visibility derivation.
+        assert.doesNotMatch(effectImpl, /groupUnderlayChordHeld/);
+        assert.doesNotMatch(effectImpl, /group_highlight_is_visible/);
+        assert.doesNotMatch(effectImpl, /group_highlight_focus_eligible/);
+        assert.doesNotMatch(logic, /groupUnderlayChordHeld/);
+        assert.match(effectImpl, /noteFactsChord/);
         // Fullscreen/minimized/hidden/deleted hide via owned tracked signals
         // without pointer movement.
         assert.match(effectImpl, /minimizedChanged/);
         assert.match(effectImpl, /windowFullScreenChanged/);
         assert.match(effectImpl, /windowClosed/);
         assert.match(effectImpl, /updateGroupVisibility/);
+        assert.match(effectImpl, /foregroundMatchesNow/);
+        assert.match(effectImpl, /isLiveEligibleNow/);
     });
 
-    it("arms a matching focused interactive move without modifier observation", () => {
+    it("gates the preview on live gesture liveness without identity matching", () => {
         // Classification at Started via the underlying Window; resize alone
         // never arms and the chord stays independent.
         assert.match(effectImpl, /isInteractiveMove/);
         assert.match(effectImpl, /updateGroupMoveArm/);
         assert.match(effectImpl, /m_groupMoveWindow/);
-        assert.match(effectImpl, /group_highlight_move_arm_matches/);
-        assert.match(ffi, /group_highlight_move_arm_matches/);
-        assert.match(rust, /group_highlight_move_arm_matches/);
-        // The chord fold stays shared policy in logic; the trigger OR lives
-        // in the group FFI policy (should_show), with no native wrapper.
-        assert.match(logic, /groupUnderlayChordHeld/);
-        assert.doesNotMatch(logic, /groupUnderlayTrigger/);
-        // End/cancel/removal clears the exact tracked window arm only.
+        assert.match(effectImpl, /groupMoveLiveNow/);
+        // The published preview win is the insertion neighbor, never the
+        // mover: no identity match against the mover is performed anywhere.
+        assert.doesNotMatch(effectImpl, /group_highlight_move_arm_matches/);
+        assert.doesNotMatch(effectImpl, /groupMoveMatchesNow/);
+        // End/cancel/removal clears the exact tracked move window only.
         assert.match(effectImpl, /m_groupMoveWindow == window/);
         assert.match(effectImpl, /m_groupMoveWindow\.clear\(\)/);
-        // The move flag reaches visibility; the first-signal gate stays on
-        // the chord branch only.
-        assert.match(effectImpl, /matchingMove/);
-        assert.match(rust, /first_signal_seen && chord_held/);
-        // Visibility revalidates through the matcher each refresh: the body
-        // of updateGroupVisibility must route through groupMoveMatchesNow,
-        // never a bare pointer check, and that helper must call the actual
-        // Rust subject matcher against the live active window.
-        const bodyOf = (marker: string): string => {
-            const start = effectImpl.indexOf(marker);
-            assert.ok(start >= 0, marker);
-            const end = effectImpl.indexOf("\n}\n", start);
-            assert.ok(end > start, marker);
-            return effectImpl.slice(start, end + 3);
-        };
-        const visBody = bodyOf("void ActiveWindowBorderEffect::updateGroupVisibility()");
-        assert.match(visBody, /groupMoveMatchesNow/);
-        assert.doesNotMatch(visBody, /!m_groupMoveWindow\.isNull\(\)/);
-        const freshBody = bodyOf("bool ActiveWindowBorderEffect::groupMoveMatchesNow()");
-        assert.match(freshBody, /group_highlight_move_arm_matches/);
+        const freshBody = extractBody(effectImpl, "bool ActiveWindowBorderEffect::groupMoveLiveNow(");
         assert.match(freshBody, /activeWindow/);
         // Finish clears the exact arm before any oracle-state read, so move
         // cleanup never depends on verdict success or readable geometry.
-        const finishBody = bodyOf("void ActiveWindowBorderEffect::onOracleDragFinish(");
+        const finishBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onOracleDragFinish(");
         const armClear = finishBody.indexOf("m_groupMoveWindow.clear()");
         const verdict = finishBody.indexOf("drag_oracle_record");
         assert.ok(armClear >= 0 && verdict > armClear);
         // Same-window resize Started clears a stale own arm via the current
         // move classification.
-        const armBody = bodyOf("void ActiveWindowBorderEffect::updateGroupMoveArm(");
+        const armBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::updateGroupMoveArm(");
         assert.match(armBody, /isInteractiveMove/);
         assert.match(armBody, /m_groupMoveWindow == window/);
+        // The preview show gate is held paint plus liveness plus endpoint
+        // only; the rect is consumed verbatim in overlay space.
+        const previewBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::updateDragPreview()");
+        assert.match(previewBody, /m_presentation\.previewHas/);
+        assert.match(previewBody, /groupMoveLiveNow/);
+        assert.match(previewBody, /m_presentation\.previewRect/);
     });
 
-    it("reports bounded native setter and anchor outcomes without raw identities", () => {
-        assert.match(effectImpl, /group-highlight:setter outcome=%1 members=%2 anchor=%3 first=%4 chord=%5 move=%6 foc=%7 ep=%8 vis=%9/);
-        assert.match(effectImpl, /group-highlight:transition anchor=%1 members=%2 first=%3 chord=%4 move=%5 foc=%6 ep=%7 vis=%8/);
-        for (const outcome of ["accepted", "stale", "endpoint-unavailable"]) {
-            assert.match(effectImpl, new RegExp(`emitGroupSetterDiag\\("${outcome}"\\)`));
+    it("reports bounded paint setter and transition outcomes without raw identities", () => {
+        assert.match(effectImpl, /presentation:setter outcome=%1 has=%2 bvis=%3 uvis=%4 pvis=%5 members=%6 anchor=%7 fmatch=%8 move=%9 elig=%10 ep=%11/);
+        assert.match(effectImpl, /presentation:transition anchor=%1 members=%2 fmatch=%3 move=%4 elig=%5 ep=%6 vis=%7/);
+        for (const outcome of ["accepted", "stale", "malformed", "endpoint-unavailable"]) {
+            assert.match(effectImpl, new RegExp(`emitPresentationSetterDiag\\("${outcome}"\\)`));
         }
-        assert.match(effectImpl, /emitGroupSetterDiag\(code == 3 \? "focus-mismatch" : "parse-rejected"\)/);
-        for (const reason of ["selected", "no-group", "no-member-match", "all-items-hidden"]) {
-            assert.match(effectImpl, new RegExp(`"${reason}"`));
+        for (const reason of ["no-presentation", "underlay-hidden", "no-members", "selected", "no-member-match", "all-items-hidden"]) {
+            assert.ok(effectImpl.includes(`"${reason}"`), reason);
         }
-        const emitter = effectImpl.split("void ActiveWindowBorderEffect::emitGroupSetterDiag")[1]?.split("void ActiveWindowBorderEffect::updateBorder")[0];
-        assert.ok(emitter !== undefined);
-        assert.doesNotMatch(emitter, /internalId|m_groupMemberIds\.at|payloadBytes|frameGeometry/);
+        // The setter emitter carries bounded scalars only: fixed tokens and
+        // bits, no identities, payload, geometry, or revision numbers.
+        const emitter = extractBody(effectImpl, "void ActiveWindowBorderEffect::emitPresentationSetterDiag(");
+        assert.doesNotMatch(emitter, /internalId|payloadBytes|frameGeometry/);
     });
 
-    it("seeds maximize observation directly from committed mode with transitions authoritative", () => {
+    it("seeds maximize observation directly from committed mode for the hide veto only", () => {
         // Each observed window seeds m_maximizedWindows from window()->maximizeMode().
         assert.match(effectImpl, /maximizeMode\(\)/);
-        assert.match(effectImpl, /activeBorderSeedMaximized/);
-        assert.match(logic, /activeBorderSeedMaximized/);
-        assert.doesNotMatch(logic, /activeBorderInitialGate/);
-        // Any maximize axis suppresses both borders; fullscreen stays
-        // suppressed independently via live isFullScreen().
+        assert.doesNotMatch(effectImpl, /activeBorderSeedMaximized/);
+        assert.doesNotMatch(logic, /activeBorderSeedMaximized/);
+        // Any maximize axis hides the paint; fullscreen stays hidden
+        // independently via live isFullScreen().
         assert.match(effectImpl, /m_maximizedWindows\.insert\(window\)/);
         assert.match(effectImpl, /observe-seed/);
         // Native transition signals stay authoritative after the seed.
@@ -284,53 +295,73 @@ describe("active-group native static contract", () => {
         assert.doesNotMatch(effectImpl, /clearInitialGate/);
         assert.doesNotMatch(effectImpl, /isInitialConfirmedNormal/);
         assert.doesNotMatch(effectImpl, /emitActiveBorderApply/);
-        // Qt JSON reads only the already-Rust-accepted plain member list
-        // for the lowest-stacked anchor; policy stays in Rust.
-        assert.match(effectImpl, /QJsonDocument/);
-        assert.match(effectImpl, /members/);
-        assert.match(effectImpl, /m_groupMemberIds/);
-        assert.doesNotMatch(ffi, /InitialMaximizeState/);
-        assert.doesNotMatch(ffi, /initial_maximize_/);
-        assert.doesNotMatch(rust, /initial_maximize_/);
-        assert.doesNotMatch(rust, /InitialMaximize/);
-        assert.doesNotMatch(rust, /maximize_mode/);
+        // No Qt JSON in the implementation: parsing lives in the shared
+        // consumer header (offline-tested); member matching uses bare-UUID
+        // string compares against the held paint list.
+        assert.doesNotMatch(effectImpl, /QJsonDocument/);
+        assert.match(effectImpl, /m_presentation\.underlayMembers/);
     });
 
-    it("binds focus, clears on activation, and fails closed on endpoint loss", () => {
-        // Accepted payload focused_window binds to the live active internalId.
+    it("binds the paint to the live foreground, clears on activation, and fails closed on endpoint loss", () => {
+        // The held paint's foreground binds to the live active internalId;
+        // a stale paint never renders under a new focus.
         assert.match(effectImpl, /internalId/);
         assert.match(effectImpl, /WithoutBraces/);
-        assert.match(effectImpl, /group_highlight_apply/);
-        assert.match(effectHeader, /GroupHighlightState m_groupState/);
+        assert.match(effectImpl, /foregroundMatchesNow/);
+        assert.match(effectHeader, /PresentationPaint m_presentation/);
         // Focus activation clears immediately before async refresh.
         assert.match(effectImpl, /windowActivated/);
-        assert.match(effectImpl, /clearGroupHighlight/);
+        assert.match(effectImpl, /clearPresentation\(\);/);
         // Registration failure fails closed with no retry. Focus clears
         // synchronously (no async settle); the only singleShot in the
-        // effect is the facts-waiter lease, never the highlight path.
+        // effect is the facts-waiter lease, never the paint path.
         assert.match(effectHeader, /m_groupDbusAvailable/);
         assert.match(effectImpl, /m_groupDbusAvailable/);
         for (const body of [
-            extractBody(effectImpl, "void ActiveWindowBorderEffect::applyGroupHighlight("),
-            extractBody(effectImpl, "void ActiveWindowBorderEffect::clearGroupHighlight("),
+            extractBody(effectImpl, "void ActiveWindowBorderEffect::applyPresentation("),
+            extractBody(effectImpl, "void ActiveWindowBorderEffect::clearPresentation("),
         ]) {
             assert.doesNotMatch(body, /singleShot/);
         }
     });
 
-    it("parses strict bounded JSON with identity ordering and renders only supplied union bounds", () => {
-        assert.match(effectImpl, /toUtf8/);
-        assert.match(effectImpl, /group_highlight_apply/);
-        assert.match(effectImpl, /group_highlight_rect/);
-        assert.match(effectImpl, /group_highlight_status/);
-        assert.match(ffi, /GroupHighlightState/);
-        assert.match(ffi, /group_highlight_apply/);
-        assert.match(ffi, /GroupHighlightStatus/);
-        assert.match(ffi, /group_highlight_status/);
-        assert.match(rust, /fn parse_payload/);
-        assert.match(rust, /fn correlation_is_newer/);
-        assert.match(rust, /-16384/);
-        assert.match(rust, /16384/);
+    it("parses the strict paint in the shared consumer with fencing and no policy", () => {
+        assert.match(consumer, /applyPresentationPaint/);
+        assert.match(consumer, /clearPresentationPaint/);
+        assert.match(consumer, /clearPaintDisplay/);
+        assert.match(consumer, /clearPaintPreview/);
+        assert.match(consumer, /StaleIgnored/);
+        assert.match(consumer, /Malformed/);
+        assert.match(consumer, /-16384/);
+        assert.match(consumer, /16384/);
+        assert.match(consumer, /members/);
+        assert.match(consumer, /preview/);
+        assert.match(consumer, /foreground/);
+        assert.match(consumer, /"obs"/);
+        // Finding B: value-based integer checks (Qt parses every number
+        // as double, so lexical spelling is unobservable). The bounds and
+        // finiteness check strictly precedes the cast.
+        assert.match(consumer, /isJsonIntValue/);
+        assert.doesNotMatch(consumer, /isStrictInt/);
+        assert.match(consumer, /std::isfinite/);
+        // Findings F/G: order fence independent of visible state, geometry
+        // floors cleared only by strictly newer content, preview latch
+        // cleared on gesture boundaries.
+        assert.match(consumer, /PaintOrder/);
+        assert.match(consumer, /paintOrderGreater/);
+        assert.match(consumer, /markBorderGeometryDirty/);
+        assert.match(consumer, /markUnderlayGeometryDirty/);
+        assert.match(consumer, /presentationBorderFresh/);
+        assert.match(consumer, /presentationUnderlayFresh/);
+        // Finding C: the stroke derives strictly from the published pair.
+        assert.match(consumer, /borderStrokeFromPublished/);
+        // The consumer header holds Qt-only parse plus order fencing: no
+        // KWin/effect types, no styling inputs, no derivation.
+        assert.doesNotMatch(consumer, /EffectWindow/);
+        assert.doesNotMatch(consumer, /group_highlight_/);
+        assert.doesNotMatch(consumer, /visual_/);
+        assert.doesNotMatch(consumer, /color/);
+        assert.doesNotMatch(consumer, /Color/);
         for (const moved of [
             /parseGroupHighlightPayload/,
             /acceptGroupHighlightOrder/,
@@ -342,6 +373,7 @@ describe("active-group native static contract", () => {
             assert.doesNotMatch(effectHeader, moved);
             assert.doesNotMatch(effectImpl, moved);
             assert.doesNotMatch(logic, moved);
+            assert.doesNotMatch(consumer, moved);
         }
     });
 
@@ -404,41 +436,48 @@ describe("active-group native static contract", () => {
     });
 
     it("covers changed files in CMake and the source validator", () => {
-        assert.match(cmake, /activebordergroup_test\.cpp/);
-        assert.match(cmake, /native-effect-group-highlight/);
+        assert.match(cmake, /presentationconsumer_test\.cpp/);
+        assert.match(cmake, /native-effect-presentation-consumer/);
         assert.match(cmake, /presentationfacts_test\.cpp/);
+        assert.match(cmake, /presentation_consumer\.h/);
         assert.match(cmake, /native-effect-facts-transport/);
         assert.match(cmake, /presentationfacts\.h/);
         assert.match(cmake, /presentationfacts\.cpp/);
         assert.match(cmake, /OMNITILER_KWIN_PAINTSCREEN_BOOL/);
-        assert.match(cmake, /GROUP_HEADER/);
-        assert.match(cmake, /GROUP_IMPL/);
-        assert.match(cmake, /GROUP_LOGIC/);
-        assert.match(cmake, /GROUP_FFI/);
-        assert.match(cmake, /GROUP_RUST/);
+        assert.match(cmake, /PRES_HEADER/);
+        assert.match(cmake, /PRES_IMPL/);
+        assert.match(cmake, /PRES_LOGIC/);
+        assert.match(cmake, /PRES_TEST/);
+        assert.match(cmake, /PRES_CONSUMER/);
+        assert.doesNotMatch(cmake, /activebordergroup_test\.cpp/);
+        assert.doesNotMatch(cmake, /native-effect-group-highlight/);
+        assert.doesNotMatch(cmake, /group-highlight-rs/);
         assert.match(cmake, /DRAG_HEADER/);
         assert.match(cmake, /DRAG_IMPL/);
         assert.match(cmake, /DRAG_FFI/);
         assert.match(cmake, /DRAG_RUST/);
         assert.match(cmake, /validate-unified-lifecycle\.cmake/);
-        assert.match(validator, /GROUP_HEADER/);
-        assert.match(validator, /GROUP_IMPL/);
-        assert.match(validator, /GROUP_LOGIC/);
-        assert.match(validator, /SetGroupHighlight/);
-        assert.match(validator, /ClearGroupHighlight/);
         assert.match(validator, /LastVerdict/);
         assert.doesNotMatch(validator, /SetInitialMaximizeState/);
         assert.doesNotMatch(validator, /ClearInitialMaximizeState/);
-        assert.doesNotMatch(validator, /GetInitialMaximizeEpoch/);
-        assert.doesNotMatch(validator, /initial_maximize_/);
+        assert.match(validator, /PRES_HEADER/);
+        assert.match(validator, /PRES_IMPL/);
+        assert.match(validator, /PRES_LOGIC/);
+        assert.match(validator, /PRES_CONSUMER/);
+        assert.match(validator, /SetPresentation/);
+        assert.match(validator, /ClearPresentation/);
+        // forbidden data; no wiring, FFI, or Rust reference to them remains.
+        assert.match(validator, /PRES_DELETED_METHOD/);
+        assert.doesNotMatch(validator, /GROUP_FFI/);
+        assert.doesNotMatch(validator, /GROUP_RUST/);
         assert.match(validator, /mouseChanged/);
         assert.match(validator, /MetaModifier/);
         assert.match(validator, /OutlinedBorderItem/);
         assert.match(validator, /ImageItem/);
         assert.match(validator, /updateGroupAnchorAndGeometry/);
         assert.match(validator, /stackingOrderChanged/);
-        assert.match(validator, /group_highlight_focus_matches/);
-        assert.match(validator, /group_highlight_is_visible/);
+        assert.match(validator, /foregroundMatchesNow/);
+        assert.match(validator, /mapFromScene/);
         assert.match(validator, /m_groupDbusAvailable/);
     });
 
@@ -495,7 +534,6 @@ describe("active-group native static contract", () => {
         assert.match(oracleRust, /correlation/);
     });
 });
-
 describe("active-border visibility diagnostics", () => {
     function functionBody(body: string, marker: string): string {
         const start = body.indexOf(marker);
@@ -520,6 +558,8 @@ describe("active-border visibility diagnostics", () => {
         assert.match(effectHeader, /emitActiveBorderVisible\(bool visible, const char \*reason, bool appletPopup\)/);
         for (const token of [
             "eligible",
+            "no-presentation",
+            "foreground-mismatch",
             "no-window",
             "deleted",
             "minimized",
@@ -534,7 +574,7 @@ describe("active-border visibility diagnostics", () => {
         // Endpoint once after registration, seed inside subscribeMaximize,
         // visible inside updateBorder.
         const ctorEndpoint = effectImpl.indexOf("emitActiveBorderEndpoint();");
-        assert.ok(ctorEndpoint > effectImpl.indexOf("m_groupDbusAvailable = groupRegistered"));
+        assert.ok(ctorEndpoint > effectImpl.indexOf("m_groupDbusAvailable = true;"));
         const seedLog = effectImpl.indexOf("omnitiler:active-border:observe-seed");
         assert.ok(seedLog > effectImpl.indexOf("void ActiveWindowBorderEffect::subscribeMaximize("));
         const updateBorderBody = functionBody(effectImpl, "void ActiveWindowBorderEffect::updateBorder()");
