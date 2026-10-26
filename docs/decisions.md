@@ -2950,6 +2950,20 @@ platform API behavior.
   retained session. No new hook or timer is added; existing coalesced gesture
   wakes now report into core. Physical drag and game acceptance remain separate.
   [Acceptance and remaining stages](changes/archive/core-world-model-rearchitecture.md#stage-4a-accepted-outcome-2026-10-23).
+- KDE gesture transport, 2026-10-26: one native effect lifecycle owns immutable
+  identity, start facts, phases and finish; broker folds raw script cursor/hit
+  observations into existing `GestureIngress`/`GestureSettled`. No script
+  lifecycle minting, delayed-witness adoption or window/frame/age heuristics.
+  Cancellation decision B needs no KWin patch: Esc reports `Cancelled` only
+  when delivery to synchronous interactive finish is causally fenced; other
+  finishes report `Released`. Earlier shortcut/effect filters can consume Esc;
+  indistinguishable Xwayland `_NET_WM_MOVERESIZE` cancel reports `Released`.
+  COSMIC-style Esc-as-drop is a possible later fallback, not implemented.
+  Unavailable capture omits unsupported ingress, never invents a terminal;
+  cursor warp stays unsupported and is never reported applied. Transport
+  precedes Stage 5 producing-gesture/native-invalidation freshness work; its
+  identity is exposed now, enforcement belongs to that next package.
+  [Unaccepted implementation and remaining recovery failures](changes/kde-world-v2-port.md#gesture-transport-cutover-unaccepted-recovery-outcome-2026-10-26).
 - Frameless migration placement extraction, 2026-10-23: core publishes
   cross-output sessionless migration placement as an effective frame consumed
   by membership actuation, not as a tile allocation or ordinary float frame

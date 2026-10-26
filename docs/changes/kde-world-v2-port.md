@@ -1283,10 +1283,107 @@
   the other parked product questions remain unchanged; cursor warp remains
   unsupported and is never reported applied.
 
+### Gesture transport decision B and replacement plan (2026-10-26)
+
+- Selected cancellation contract: no KWin patch. An Esc observed during an
+  active native move/resize reports `Cancelled` only with causal delivery to
+  that dispatch's synchronous finish; otherwise finish reports `Released`.
+  Earlier shortcut/effect filters may consume Esc. Xwayland
+  `_NET_WM_MOVERESIZE` cancel has no distinguishable effect signal and reports
+  `Released`. COSMIC-style Esc-as-drop is a possible later fallback, not the
+  selected behavior. This supersedes the investigation's recommendation to
+  retain the old route pending complete cancellation coverage.
+- One effect-owned lifecycle mints immutable identity and freezes start facts;
+  the broker folds script cursor/hit-test observations into it. Script signals
+  neither mint a second lifecycle nor bind delayed witnesses. No window/frame/
+  age correlation. Unavailable native capture omits unsupported ingress; later
+  availability must recover without reset. Existing `GestureIngress` and
+  `GestureSettled` remain unchanged; omission is not a terminal.
+- Replacement units: prove the pinned same-dispatch Esc fence; reproduce the
+  stale witness, fast Esc, consumed Esc, availability recovery and null-preview
+  failures; implement native lifecycle capture and broker folding; retire the
+  superseded oracle only after integration proof; run scoped offline gates and
+  separately assess fixture-only native evidence. Shared core is out of scope.
 - Gesture transport precedes Stage 5 freshness. Expose its immutable identity
+  for the preview path now, but defer preview identity enforcement and the
+  native invalidation counter/covered-capture witness to that next package.
   The three Stage 5 blockers below remain unaccepted. Cursor warp remains
+  unsupported and is never reported applied. N5, game/fullscreen suspension,
+  race-audit items and later stages remain parked.
+
+### Gesture transport cutover: unaccepted recovery outcome (2026-10-26)
+
+- **Incomplete, not accepted:** the native source and broker cutover build,
+  but terminal-capture recovery has two reproduced failures. The old JS
+  verdict/drop/resize/preview route and native oracle endpoint/press capture
+  are removed; do not deploy the replacement as accepted gesture transport.
+  No live fixture leg or native gesture acceptance is claimed.
+- Native `GestureLifecycleStore` mints `{instance, serial}`: effect-instance
+  UUID plus nonzero decimal-u64 serial, immutable across phases. Frozen
+  window/kind/start frame/start cursor/modal truth accompany every phase.
+  Separate decimal `revision` fences waiter updates, not identity.
+  Service `com.omnitiler.Gesture`, object `/com/omnitiler/Gesture`, interface
+  `com.omnitiler.Gesture1`: `WaitGesture`, `LastGesture`, `AckGesture`.
+  Eight head-first terminal records await exact identity ack; overflow discards
+  the oldest evidence, never rebinds or fabricates it.
+- Delivered-Esc fence: passive `InputEventFilter` at `InteractiveMoveResize`
+  weight installs after the builtin filter, so `lower_bound` inserts it before
+  that consumer and after earlier shortcuts/effects. It returns false, never
+  calls finish, and arms only for the exact live interactive window. Builtin
+  Esc synchronously emits finish, consuming the arm as `Cancelled`; otherwise
+  finish is `Released`. No sticky spy flag or queued cancellation inference.
+  Primary proof: KWin `v6.7.4`, `src/input.h` ordered dispatch/filter weights,
+  `src/input.cpp` installation and `MoveResizeFilter::keyboardKey`,
+  `src/keyboard_input.cpp` spies-before-filters, `src/window.cpp`
+  `keyPressEvent`/`finishInteractiveMoveResize`, and
+  `src/effect/effectwindow.cpp` direct finish forwarding. Host-version headers
+  were additionally compared. Earlier-filter-consumed Esc and Xwayland cancel
+  remain decision-B gaps; COSMIC fallback is not implemented.
+- Raw `nativeGesture`, script `cursor` and advisory `cursorWindow` feed
+  `kde_gesture.rs` before strict core decode. Broker mapping alone allocates
+  existing core-u64 ids. Open phases prefer same-capture script cursor;
+  terminals retain native finish cursor. `windowAt` cannot override the mover
+  or invent a core hit-target field. Frozen-fact contradictions reject;
+  stale revisions/serials omit. Identity retention is bounded to 256 entries
+  with preserved serial floors; a seventeenth source instance rotates the
+  broker rather than evicting anti-replay evidence. Staged maps install only
+  on accepted captures. Non-null script-minted `gestureIngress` refuses.
+- Bound actuator-only `gestureAssoc:{instance,serial,coreId}|null` names actual
+  normalized ingress, survives byte-identical replay, and stays out of the
+  presentation cache. Exact `gestureSettled.id`, association and captured native
+  identity must match before ack. Ack retains settled identity through
+  host-deadline recovery. `getGestureIdentity` exposes the matching open
   native/core association for Stage 5; preview correlation and the native
+  invalidation counter remain unimplemented.
+- Focused coverage: fast Esc retains `Cancelled` before first pull; consumed
+  Esc finishes `Released`; stale witness/script START cannot mint another
+  lifecycle; unavailable source recovers without reset; accepted null preview
+  clears an open gesture's old shape. Null clearing already passed before this
+  package, not a claimed new red-to-green repair.
+
+| Blocking boundary | Reproduced sequence and result | Required correction |
+| --- | --- | --- |
+| Terminal fast-retry bound | Drop four consecutive terminal `DescribeWorld` replies without other native events. Retry callback clears its record before resend; attempt count resets to one, so two-second retries exceed the intended bound | Preserve exact envelope and accounting across sends; after bounded fast attempts recover at the host deadline without new terminal identity or duplicate commit |
+| Malformed terminal response | Return a non-string terminal response. `lastResolvedCaptureSource` is set before parsing, blocking retry; pending terminal has no recovery | Resolve replay obligation only on a valid definitive response; malformed/oversized transport data must preserve recoverable evidence |
+
+- Fresh declared-environment evidence before the two new red regressions:
+  service build/strict clippy and **307/307** tests; core/protocol strict clippy
+  and **1,396/1,396**; FFI strict clippy and **20/20**; JS typecheck/build and
+  **703/703**; host-matched effect build and **35/35** CTests; exact world
+  acceptance **6/6**. Final JS suite with discriminators: **703 passed, two
+  failed**, neither skipped. Workspace formatting and whitespace pass after
+  mechanical cleanup. No shared-core/protocol source, dependency or other-platform change
+  belongs to this package.
+- Unused Rust `drag_oracle.rs`, its header/link and Rust CTest remain. Removing
+  its unsafe root requires a mechanical shared-core guardrail-inventory update,
+  outside this package's unchanged-core scope. Native production consumption is
+  gone; retained FFI tests do not prove gesture transport acceptance.
+- **Exact next action:** correct the two retained red recovery discriminators,
+  then rerun scoped gates and boundary review. Resolve obsolete FFI-root deletion
   scope separately. Stage 5 remains unaccepted; N5, game/fullscreen suspension,
+  race audit and later stages stay parked. Fixture drag/release/Esc testing
+  follows successful offline acceptance only.
+
 ## Stage 5 bounded plan (2026-10-26)
 
 - Replace native border/underlay geometry and eligibility derivation with the
