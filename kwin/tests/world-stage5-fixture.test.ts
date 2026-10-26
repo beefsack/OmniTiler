@@ -30,9 +30,45 @@ import { createWorldPresentationSubscriber } from "../src/world-presentation";
 
 const GEN = "gen-stage5";
 const ADAPTER = "kwin-actuator-1";
+const B_INSTANCE = "9d4e6a2c-1b3f-4d8e-9f0a-2c5e7a1b3d4f";
+const B_SERIAL = "1";
 
 function fixture(name: string): string {
     return readFileSync(resolve("..", "test-fixtures", "stage5", name), "utf8");
+}
+
+// Volatile transport/correlation tokens (disclosed, shape-preserving): the
+// entry mints a per-run `source` nonce and counts `sourceSeq`/`nativeInvalid`
+// per DescribeWorld call, so the recorded bytes are compared with exactly
+// those three tokens normalized. Every causal byte (report, witness,
+// gesture lanes, windows) must match exactly.
+function normalizeEnvelopeForCompare(emitted: string, recorded: string): { actual: string; expected: string } {
+    const actualValue = JSON.parse(emitted) as Record<string, unknown>;
+    const recordedValue = JSON.parse(recorded) as Record<string, unknown>;
+    for (const token of ["source", "sourceSeq", "nativeInvalid"]) {
+        actualValue[token] = recordedValue[token];
+    }
+    return { actual: JSON.stringify(actualValue), expected: recorded };
+}
+
+function gestureBody(over: Record<string, unknown>): Record<string, unknown> {
+    return {
+        v: 1,
+        instance: "gesture-1",
+        serial: "1",
+        revision: "1",
+        phase: "updated",
+        win: "win-a",
+        kind: "move",
+        startRect: [0, 0, 200, 200],
+        startCursor: [10, 10],
+        cursor: [150, 50],
+        modalMove: 1,
+        changed: 1,
+        superseded: 0,
+        available: 1,
+        ...over,
+    };
 }
 
 // --- Part A: production entry harness (facts waiter -> DescribeWorld). ---
@@ -46,8 +82,11 @@ interface CapturedCall {
 function makeEntryHarness(): {
     calls: CapturedCall[];
     effectCalls: CapturedCall[];
+    gestureCalls: CapturedCall[];
+    answerGesture: (body: Record<string, unknown>) => void;
     runTimers: () => void;
     lastReport: () => Record<string, unknown>;
+    lastEnvelope: () => string;
     stop: () => void;
 } {
     const desk = { id: "550e8400-e29b-41d4-a716-446655440001", name: "Workspace 1" };
@@ -83,6 +122,7 @@ function makeEntryHarness(): {
     const winA = wins[0] as Record<string, unknown>;
     const calls: CapturedCall[] = [];
     const effectCalls: CapturedCall[] = [];
+    const gestureCalls: CapturedCall[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
     let rev = 0;
     const handle = startWorldAdapterEntry({
@@ -143,6 +183,17 @@ function makeEntryHarness(): {
         effectCallDbus: (_s, _p, _i, method, payload, callback) => {
             effectCalls.push({ method, payload, callback });
         },
+        gestureCallDbus: (_s, _p, _i, method, payload, callback) => {
+            gestureCalls.push({ method, payload, callback });
+            if (method === "AckGesture") {
+                callback(JSON.stringify({
+                    v: 1, instance: "gesture-1", serial: "0", revision: "9",
+                    phase: "idle", win: "", kind: "", startRect: null,
+                    startCursor: null, cursor: null, modalMove: 0,
+                    changed: 1, superseded: 0, available: 1,
+                }));
+            }
+        },
         scheduleOnce: (delay, cb) => {
             const timer = { delay, cb };
             timers.push(timer);
@@ -154,7 +205,6 @@ function makeEntryHarness(): {
             };
         },
         log: () => undefined,
-        gestureActive: () => false,
         registerShortcutFn: () => true,
         readWorkspaceModeFn: () => "per-output-local",
     });
@@ -164,6 +214,13 @@ function makeEntryHarness(): {
     return {
         calls,
         effectCalls,
+        gestureCalls,
+        answerGesture: (body: Record<string, unknown>) => {
+            const wait = [...gestureCalls].reverse().find((c) => c.method === "WaitGesture");
+            assert.ok(wait !== undefined, "a gesture waiter must be held");
+            gestureCalls.splice(gestureCalls.indexOf(wait), 1);
+            wait.callback(JSON.stringify(body));
+        },
         runTimers: () => {
             for (let i = 0; i < timers.length; i += 1) {
                 const t = timers[i] as { delay: number; cb: () => void };
@@ -178,6 +235,11 @@ function makeEntryHarness(): {
             const call = [...calls].reverse().find((c) => c.method === "DescribeWorld");
             assert.ok(call !== undefined, "a capture must have been dispatched");
             return (JSON.parse(call.payload) as { report: Record<string, unknown> }).report;
+        },
+        lastEnvelope: () => {
+            const call = [...calls].reverse().find((c) => c.method === "DescribeWorld");
+            assert.ok(call !== undefined, "a capture must have been dispatched");
+            return call.payload;
         },
         stop: () => {
             handle.stop();
@@ -247,6 +309,10 @@ describe("stage5 recorded fixtures (production JS legs)", () => {
             const report = h.lastReport();
             const witness = report["nativeInvalidWitness"] as { instance: string; counter: string };
             assert.deepEqual(witness, { instance: "effect-1", counter: "0" });
+            // The emitted envelope equals the recorded bytes after volatile
+            // token normalization only: the whole causal report joins.
+            const compared = normalizeEnvelopeForCompare(h.lastEnvelope(), fixture("envelope-p5.json"));
+            assert.equal(compared.actual, compared.expected);
             // The recorded envelope carries the same witness lane, built by
             // the same real code over the same real facts bytes.
             const recorded = JSON.parse(fixture("envelope-p5.json")) as {
@@ -261,6 +327,109 @@ describe("stage5 recorded fixtures (production JS legs)", () => {
             const projection = JSON.parse(fixture("projection-p5.json")) as Record<string, unknown>;
             assert.equal(projection["coveredInstance"], witness.instance);
             assert.equal(projection["coveredInvalid"], witness.counter);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("advanced inv1 facts build the recorded covering capture", () => {
+        const h = makeEntryHarness();
+        try {
+            h.runTimers();
+            const waiter = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(waiter !== undefined, "a facts waiter must be held");
+            waiter.callback(fixture("facts-seed.json"));
+            h.runTimers();
+            const advanced = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(advanced !== undefined, "a facts waiter must be held again");
+            advanced.callback(fixture("facts-cover.json"));
+            h.runTimers();
+            const report = h.lastReport();
+            assert.deepEqual(report["nativeInvalidWitness"], { instance: "effect-1", counter: "1" });
+            const compared = normalizeEnvelopeForCompare(h.lastEnvelope(), fixture("envelope-cover.json"));
+            assert.equal(compared.actual, compared.expected);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("inv2 facts build the recorded focus-return capture without gesture", () => {
+        const h = makeEntryHarness();
+        try {
+            h.runTimers();
+            const waiter = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(waiter !== undefined, "a facts waiter must be held");
+            waiter.callback(fixture("facts-seed.json"));
+            h.runTimers();
+            const advanced = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(advanced !== undefined, "a facts waiter must be held again");
+            advanced.callback(fixture("facts-inv2.json"));
+            h.runTimers();
+            const report = h.lastReport();
+            assert.deepEqual(report["nativeInvalidWitness"], { instance: "effect-1", counter: "2" });
+            assert.equal(report["nativeGesture"], null);
+            const compared = normalizeEnvelopeForCompare(h.lastEnvelope(), fixture("envelope-cover2.json"));
+            assert.equal(compared.actual, compared.expected);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("inv2 facts with gesture A build the recorded coverage-current drain", () => {
+        const h = makeEntryHarness();
+        try {
+            h.runTimers();
+            const waiter = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(waiter !== undefined, "a facts waiter must be held");
+            waiter.callback(fixture("facts-seed.json"));
+            h.runTimers();
+            h.answerGesture(gestureBody({}));
+            h.runTimers();
+            const advanced = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(advanced !== undefined, "a facts waiter must be held again");
+            advanced.callback(fixture("facts-inv2.json"));
+            h.runTimers();
+            const report = h.lastReport();
+            assert.deepEqual(report["nativeInvalidWitness"], { instance: "effect-1", counter: "2" });
+            const gesture = report["nativeGesture"] as { instance: string; serial: string };
+            assert.equal(gesture.instance, "gesture-1");
+            assert.equal(gesture.serial, "1");
+            const compared = normalizeEnvelopeForCompare(h.lastEnvelope(), fixture("envelope-a2.json"));
+            assert.equal(compared.actual, compared.expected);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("inv3 facts with gestures A then B build the recorded boundary captures", () => {
+        const h = makeEntryHarness();
+        try {
+            h.runTimers();
+            const waiter = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(waiter !== undefined, "a facts waiter must be held");
+            waiter.callback(fixture("facts-seed.json"));
+            h.runTimers();
+            h.answerGesture(gestureBody({}));
+            h.runTimers();
+            const advanced = [...h.effectCalls].reverse().find((c) => c.method === "WaitPresentationFacts");
+            assert.ok(advanced !== undefined, "a facts waiter must be held again");
+            advanced.callback(fixture("facts-inv3.json"));
+            h.runTimers();
+            const drained = h.lastReport();
+            assert.deepEqual(drained["nativeInvalidWitness"], { instance: "effect-1", counter: "3" });
+            const drainedGesture = drained["nativeGesture"] as { instance: string; serial: string };
+            assert.equal(drainedGesture.instance, "gesture-1");
+            const comparedA3 = normalizeEnvelopeForCompare(h.lastEnvelope(), fixture("envelope-a3.json"));
+            assert.equal(comparedA3.actual, comparedA3.expected);
+            h.answerGesture(gestureBody({ instance: B_INSTANCE, serial: B_SERIAL }));
+            h.runTimers();
+            const report = h.lastReport();
+            assert.deepEqual(report["nativeInvalidWitness"], { instance: "effect-1", counter: "3" });
+            const gesture = report["nativeGesture"] as { instance: string; serial: string };
+            assert.equal(gesture.instance, B_INSTANCE);
+            assert.equal(gesture.serial, B_SERIAL);
+            const compared = normalizeEnvelopeForCompare(h.lastEnvelope(), fixture("envelope-preview-b.json"));
+            assert.equal(compared.actual, compared.expected);
         } finally {
             h.stop();
         }
@@ -308,6 +477,78 @@ describe("stage5 recorded fixtures (production JS legs)", () => {
             };
             assert.equal(rendered.preview.producerInstance, "gesture-1");
             assert.equal(rendered.preview.producerSerial, "1");
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("recorded second-activation projection renders the recorded dispatch bytes", () => {
+        const h = makeSubscriberHarness({
+            invalidation: { instance: "effect-1", counter: "2" },
+            gesture: null,
+        });
+        try {
+            h.answerFixture("projection-cover2.json");
+            assert.equal(h.paints.length, 1);
+            assert.equal(h.paints[0], fixture("dispatch-cover2.json"));
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("recorded coverage-current A drain renders with its producing identity", () => {
+        const h = makeSubscriberHarness({
+            invalidation: { instance: "effect-1", counter: "2" },
+            gesture: { instance: "gesture-1", serial: "1", coreId: "1" },
+        });
+        try {
+            h.answerFixture("projection-a2.json");
+            assert.equal(h.paints.length, 1);
+            assert.equal(h.paints[0], fixture("dispatch-a2.json"));
+            const rendered = JSON.parse(h.paints[0] as string) as {
+                preview: { producerInstance: string; producerSerial: string };
+            };
+            assert.equal(rendered.preview.producerInstance, "gesture-1");
+            assert.equal(rendered.preview.producerSerial, "1");
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("valid B projection renders the recorded dispatch bytes for live B", () => {
+        const h = makeSubscriberHarness({
+            invalidation: { instance: "effect-1", counter: "3" },
+            gesture: { instance: B_INSTANCE, serial: B_SERIAL, coreId: "2" },
+        });
+        try {
+            h.answerFixture("projection-preview-b.json");
+            assert.equal(h.paints.length, 1);
+            assert.equal(h.paints[0], fixture("dispatch-preview-b.json"));
+            const rendered = JSON.parse(h.paints[0] as string) as {
+                preview: { producerInstance: string; producerSerial: string };
+            };
+            assert.equal(rendered.preview.producerInstance, B_INSTANCE);
+            assert.equal(rendered.preview.producerSerial, B_SERIAL);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("coverage-current A drain crossed into B strips only the preview", () => {
+        const h = makeSubscriberHarness({
+            invalidation: { instance: "effect-1", counter: "3" },
+            gesture: { instance: B_INSTANCE, serial: B_SERIAL, coreId: "2" },
+        });
+        try {
+            h.answerFixture("projection-a3.json");
+            assert.equal(h.paints.length, 1, "border/underlay still paint from the accepted projection");
+            assert.equal(h.paints[0], fixture("dispatch-a3-b.json"));
+            const rendered = JSON.parse(h.paints[0] as string) as {
+                preview: unknown;
+                border: { visible: number };
+            };
+            assert.equal(rendered.preview, null, "A preview drained inside B must hide");
+            assert.equal(rendered.border.visible, 1);
         } finally {
             h.stop();
         }

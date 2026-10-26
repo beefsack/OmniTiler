@@ -16,8 +16,10 @@
   Role and remaining local-fixed policy remain; gesture transport is accepted
   offline with physical input still pending. Stage 5 remains unaccepted: its
   causal-witness draft has disconnected native fact publication and incomplete
-  cross-surface hide routing. Current service 312, JS 720 and native CTest 34
-  pass, but do not prove that production boundary. Native acceptance remains
+  cross-surface hide routing. The last complete pre-extraction verification
+  passed service 312, JS 720 and native CTest 34, but did not prove that production
+  boundary. New recorded-route regressions remain incomplete and intentionally
+  red; see the latest 2026-10-27 outcome. Native acceptance remains
   TBD and this record stays active for the whole port. Host integration and the
   documented unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
@@ -1704,6 +1706,44 @@
   assembled facts with actual endpoint replies, assert all advanced payload
   joins, include gesture-B and focus-return recovery, reproduce failures, and
   only then repair production publication and every-surface refresh.
+
+### Stage 5 recorded-route correction: unaccepted (2026-10-27)
+
+- **Still unaccepted; no production repairs.** Real cross-connection
+  `WaitPresentationFacts` replies replace the assembled seed snapshot. Advanced
+  facts now join byte-exact capture envelopes, real broker projections, real JS
+  subscriber dispatches and the extracted native endpoint. Additional legs
+  cover preview visibility during frame changes, two gesture boundaries, a
+  valid second-gesture repaint and two activation boundaries. Volatile source,
+  generation, correlation and instance tokens are normalized explicitly.
+- The corrected candidate reproduces **36 failing native assertions** for
+  unpublished counters and stale surfaces; native CTest is **35/36**. Focused
+  broker fixture tests **2/2**, JS fixture tests **14/14**, full JS **734/734**,
+  typecheck and whitespace pass. These are incomplete-candidate evidence, not
+  complete Stage 5 acceptance. No fresh full Rust/native Nix/API verification
+  or live acceptance is claimed. An unused static-test binding was also caught
+  by typecheck and referenced in the candidate correction.
+- Independent source review rejects the current native harness:
+  - `armedBumpWait` uses a 500 ms settle interval, not a causal acknowledgement
+    that the facts waiter armed. Replace it with a proven delivery barrier;
+    timeout remains only a failure deadline, never an ordering oracle.
+  - `makeLeg` binds its stage to a local router then returns the named owning
+    value. Correctness must not depend on optional named-return elision; construct
+    a stable, noncopyable owner in place.
+  - Frame-race legs deliver P6 revision 2 after displaying revisions 3 and 4.
+    Ordinary revision rejection masks the required causal-coverage discriminator.
+    Exercise P5, native frame invalidation, then still-newer P6 before any
+    post-event presentation, with covering repaint only afterwards.
+- The two recorded-route candidates remain unsuccessful; stop implementation
+  pending a corrected, reviewed harness. Preserve their useful wire fixtures
+  and actual-endpoint legs without claiming the omitted discriminators. Next:
+  resolve those three test-boundary defects and explicitly cover rapid gestures
+  within one native source lifetime, then reproduce both production defects
+  before publication/refresh fixes. No shared-core or product-policy decision
+  has been identified; any material architecture need must be reviewed first.
+- Field names remain **tentative**, as in the causal-witness draft. Physical
+  drag/release/delivered-Esc, rapid A/B, member movement, focus return,
+  stale-hide/fresh-repaint and exact teardown checks remain outstanding.
 
 <a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
 ## N6 core-intents outcome (2026-10-26)

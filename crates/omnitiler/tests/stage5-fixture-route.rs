@@ -69,6 +69,20 @@ fn stage5_fixture_route_matches_recorded_projections() {
         ("envelope-p6.json", "fix-p6", "projection-p6.json"),
         ("envelope-cover.json", "fix-cover", "projection-cover.json"),
         ("envelope-preview.json", "fix-preview", "projection-preview.json"),
+        // Second-activation covering capture (witness effect-1/2, no
+        // gesture): the focus-return recovery paint.
+        ("envelope-cover2.json", "fix-cover2", "projection-cover2.json"),
+        // Post-finish-A drain (witness effect-1/2, producer gesture-1):
+        // coverage-current but foreign to B, isolating the producer gate.
+        ("envelope-a2.json", "fix-a2", "projection-a2.json"),
+        // Post-start-B drain (witness effect-1/3, producer gesture-1).
+        ("envelope-a3.json", "fix-a3", "projection-a3.json"),
+        // Valid-B capture (witness effect-1/3, UUID producer): the B repaint.
+        (
+            "envelope-preview-b.json",
+            "fix-preview-b",
+            "projection-preview-b.json",
+        ),
     ] {
         let served = route_fixture(&service, &generation, envelope, req);
         let recorded = read_fixture(projection);
@@ -90,6 +104,10 @@ fn stage5_fixture_witness_chain_joins() {
         ("envelope-p6.json", "projection-p6.json"),
         ("envelope-cover.json", "projection-cover.json"),
         ("envelope-preview.json", "projection-preview.json"),
+        ("envelope-cover2.json", "projection-cover2.json"),
+        ("envelope-a2.json", "projection-a2.json"),
+        ("envelope-a3.json", "projection-a3.json"),
+        ("envelope-preview-b.json", "projection-preview-b.json"),
     ] {
         let envelope_value: serde_json::Value =
             serde_json::from_str(&read_fixture(envelope)).expect("envelope is JSON");
@@ -116,4 +134,28 @@ fn stage5_fixture_witness_chain_joins() {
         serde_json::from_str(&read_fixture("projection-p5.json")).expect("projection is JSON");
     assert_eq!(p5["coveredInstance"], seed["instance"]);
     assert_eq!(p5["coveredInvalid"], seed["invalidation"]);
+    // Each advanced facts fixture names the witness its captures cover:
+    // inv1 covers the first recovery, inv2 the second-activation return and
+    // the A drains, inv3 the start-B boundary and the valid-B repaint.
+    for (facts, projection) in [
+        ("facts-cover.json", "projection-cover.json"),
+        ("facts-cover.json", "projection-preview.json"),
+        ("facts-inv2.json", "projection-cover2.json"),
+        ("facts-inv2.json", "projection-a2.json"),
+        ("facts-inv3.json", "projection-a3.json"),
+        ("facts-inv3.json", "projection-preview-b.json"),
+    ] {
+        let facts_value: serde_json::Value =
+            serde_json::from_str(&read_fixture(facts)).expect("facts are JSON");
+        let projection_value: serde_json::Value =
+            serde_json::from_str(&read_fixture(projection)).expect("projection is JSON");
+        assert_eq!(
+            projection_value["coveredInstance"], facts_value["instance"],
+            "{facts}: broker must serve the published facts instance for {projection}"
+        );
+        assert_eq!(
+            projection_value["coveredInvalid"], facts_value["invalidation"],
+            "{facts}: broker must serve the published invalidation witness for {projection}"
+        );
+    }
 }

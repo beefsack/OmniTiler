@@ -16,6 +16,8 @@ const stageTest = read("native-effect/presentation_stage5_test.cpp");
 const cmake = read("native-effect/CMakeLists.txt");
 const validator = read("native-effect/validate-metadata.cmake");
 
+assert.ok(stageTest.length > 0, "stage test pins the preserved deficiencies");
+
 function countMatches(body: string, pattern: RegExp): number {
     const matches = body.match(pattern);
     return matches === null ? 0 : matches.length;
