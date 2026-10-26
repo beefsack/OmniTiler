@@ -2697,3 +2697,27 @@ fn drag_diag_full_parses_with_amethyst_variant() {
     assert!(parse_args(&argv(&["drag-diag-full", "--stream"])).is_err());
     assert!(parse_args(&argv(&["drag-diag-full", "--bogus"])).is_err());
 }
+
+#[test]
+fn tile_help_qualifies_authentic_holder_ensure() {
+    // The tile help must not claim zero native-setting writes on every
+    // path: Authentic ensures Switch to Desktop 1..9 holders once at
+    // startup (even with --input off) while Compatible stays zero-touch.
+    let help = help_text();
+    assert!(
+        help.contains("Compatible writes no native settings"),
+        "tile help must state the Compatible zero-touch path"
+    );
+    assert!(
+        help.contains("Authentic ensures"),
+        "tile help must name the Authentic holder-ensure exception"
+    );
+    assert!(
+        help.contains("even with"),
+        "tile help must state the ensure runs even with input off"
+    );
+    assert!(
+        !help.contains("no native-setting writes on any path"),
+        "blanket no-writes claim must stay removed"
+    );
+}

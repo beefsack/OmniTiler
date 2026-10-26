@@ -312,6 +312,7 @@ edge cases tentative. Acceptance of an approach does not claim native evidence.
 | Tentative 2026-10-26 | Extend the existing menu-bar indicator with a miniature band | Reuse its visibility and freshness/click gates instead of introducing another pager surface; miniature-only repaints retain the click generation |
 | Tentative 2026-10-26 | Independent focused-miniature colour/theme with full-strength border and dimmer same-RGB fill | Border and highlight each default to live accent and retain independent overrides; no shared colour fields |
 | Tentative 2026-10-26 | Normalize grounded hidden-workspace and zoom/full-display facts before core presentation | Reuse retained homing, fresh native currents and existing geometry predicates; unknown cloak and session state retain last-moment renderer vetoes |
+| Confirmed 2026-10-26 | Retain Authentic Desktop-N holder ensure even with input off; no new gating | User decision: qualify tile help, save exact per-holder pre/post baselines on the next live leg, and never revert a pre-existing preimage |
 
 ## Stage-1 outcome (2026-10-25)
 
