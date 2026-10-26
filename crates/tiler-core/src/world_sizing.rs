@@ -318,6 +318,11 @@ pub fn presentation_estimate(presentation: &crate::world_presentation::WorldPres
     // `,"presentation":{"foreground":,"border":,"underlay":,"pager":[]}`
     // = 67 punctuation plus the foreground id.
     let mut bytes = 67 + json_string_len(&presentation.foreground);
+    // `,"suspendedOutput":S` = 19 punctuation plus the output id, only when
+    // the verdict is present (omitted otherwise, so default bytes stay exact).
+    if let Some(output) = presentation.suspended_output.as_ref() {
+        bytes += 19 + json_string_len(&output.0);
+    }
     // Border `{"visible":,"reason":,"inner":,"outer":}` = 40 punctuation
     // plus the bool, the reason token, and the two rects.
     bytes += 40
@@ -1451,6 +1456,12 @@ pub fn encode_presentation(
     use crate::world_presentation::PresentationUnderlay;
     out.push_str("{\"foreground\":");
     push_json_string(out, &presentation.foreground);
+    // Neutral focused-fullscreen suspension verdict: omitted entirely when
+    // absent so default publication bytes stay exact.
+    if let Some(output) = presentation.suspended_output.as_ref() {
+        out.push_str(",\"suspendedOutput\":");
+        push_json_string(out, &output.0);
+    }
     out.push_str(",\"border\":{");
     out.push_str("\"visible\":");
     out.push_str(if presentation.border.visible {

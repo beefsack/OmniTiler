@@ -589,6 +589,8 @@ void ActiveWindowBorderEffect::setTrackedWindow(EffectWindow *window)
         disconnect(m_trackedWindow, &EffectWindow::minimizedChanged, this, &ActiveWindowBorderEffect::updateBorder);
         disconnect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this,
             &ActiveWindowBorderEffect::updateBorder);
+        disconnect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this,
+            &ActiveWindowBorderEffect::onTrackedFullscreenChanged);
         disconnect(m_trackedWindow, &EffectWindow::minimizedChanged, this,
             &ActiveWindowBorderEffect::updateGroupVisibility);
         disconnect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this,
@@ -603,6 +605,11 @@ void ActiveWindowBorderEffect::setTrackedWindow(EffectWindow *window)
         connect(m_trackedWindow, &EffectWindow::windowFrameGeometryChanged, this, &ActiveWindowBorderEffect::onTrackedFrameChanged);
         connect(m_trackedWindow, &EffectWindow::minimizedChanged, this, &ActiveWindowBorderEffect::updateBorder);
         connect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this, &ActiveWindowBorderEffect::updateBorder);
+        // Fullscreen-mode transitions (enter or exit) invalidate across all
+        // scopes plus the preview, so no stale pre-enter/pre-exit paint
+        // applies until fresh covering paint arrives. The immediate
+        // hide-only vetoes in updateBorder/updateGroupVisibility stay.
+        connect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this, &ActiveWindowBorderEffect::onTrackedFullscreenChanged);
         // Own active tracked signals update group visibility immediately so
         // hidden transitions hide while held without waiting for pointer
         // movement. Allowed effect conventions only: no polling, timers,
@@ -990,6 +997,23 @@ void ActiveWindowBorderEffect::onTrackedFrameChanged()
     // covering paint arrives. No live-frame comparison: a move
     // that returns to its start stays hidden without a fresh paint.
     const Stage5Refresh refresh = m_stage.onTrackedFrame();
+    if (!m_isOpenGL) {
+        return;
+    }
+    applyStageRefresh(refresh);
+    emitPresentationTransitionDiag();
+}
+
+void ActiveWindowBorderEffect::onTrackedFullscreenChanged()
+{
+    // The tracked (active) window fullscreen state flipped (enter or exit):
+    // bump the causal witness across all scopes first (observed facts,
+    // never display state), publish so the next actual facts capture
+    // covers it, then refresh every surface until fresh covering paint
+    // arrives. The immediate hide-only vetoes already hide in both
+    // directions; this rejects stale pre-enter/pre-exit paints by order
+    // and coverage.
+    const Stage5Refresh refresh = m_stage.onFullscreenChanged();
     if (!m_isOpenGL) {
         return;
     }

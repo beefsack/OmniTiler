@@ -1128,6 +1128,8 @@
 
 ### Game-identity investigation (parked)
 
+- Historical investigation: the approved neutral focused-fullscreen rule below
+  supersedes the unsupported presentation-suspension choice, not game identity.
 - Windows production `native_guards::classify_foreground` consumes validity,
   desktop identity, visibility, caption style, DWM/cloak readability and full-
   monitor containment. `tiling/workspace.rs::is_borderless_fullscreen` is a
@@ -1827,6 +1829,63 @@
   exact fixture teardown and native restoration. No live mutation was performed.
   Next: perform those physical checks under the live-testing and fixture rules;
   no further offline causal-freshness repair or product decision is identified.
+
+## Focused-fullscreen presentation suspension (2026-10-27)
+
+- Implement the approved neutral output-local rule, not game identification:
+  truthful focused fullscreen facts hide presentation on that output only.
+  Membership, workspace commands, shortcuts and gesture lifecycle are unchanged.
+- Implemented tentative technical choice: reuse `WindowFact.fullscreen` and its
+  observed output; use a small construction-time core opt-in enabled by the KDE broker.
+  Leave existing Windows and macOS construction and production code untouched.
+  Publish the core's output-local suspension verdict for mechanical preview
+  consumption; omit the optional field when inactive to preserve default
+  publication bytes.
+- Bounded work: failing-first core/output/action/interleaving regressions and
+  neutral publication; KDE broker consumption and fullscreen event freshness;
+  independent contract/race review; complete scoped verification and outcome.
+  Preserve native immediate hide-only liveness vetoes. No polling or settle waits.
+- Acceptance: border, underlay, overlays and drop preview hide only on the focused
+  fullscreen output; focus departure/fullscreen exit restores with causal
+  freshness; other outputs and normal fullscreen-window actions are unaffected.
+  Disabled construction retains byte-identical Windows behavior. macOS native
+  fullscreen mapping is coordination documentation only.
+- Verification: service, core/protocol and Windows Linux build/tests/strict
+  clippy; JS typecheck/build/tests; host-matched effect build, native CTest and
+  Nix native check; exact world acceptance, formatting, whitespace and API guard.
+  Native signal delivery and painting require fixture-scoped or physical evidence.
+- Outcome accepted offline: core opt-in
+  `WorldEngine::with_focused_fullscreen_presentation_suspension()` defaults off;
+  only KDE enables it. No new window fact or report field. Optional
+  `WorldPresentation.suspended_output` / wire `suspendedOutput` publishes the
+  neutral verdict and is omitted when inactive. Global `paused` is unchanged.
+  Core hides matching foreground shapes and only that output's pager content;
+  KDE consumes the verdict to omit preview paint by resolution `domainOut`,
+  never mover-home `sourceOut`. Command/take results and gesture state remain
+  unchanged. Windows and macOS production code is untouched.
+- Regressions first reproduced missing core verdicts (five failures) and
+  missing preview suppression (one failure), then passed with the rule.
+  Ten core regressions cover output scope, focus/fullscreen ordering, restoration,
+  missing focus facts, unchanged real send/view/focus actions and default wire
+  bytes. Broker tests cover resolution versus source; the raw KWin capture route
+  covers core publication, cache replacement, queue/take and fresh preview return.
+  Native handler tests exercise entry and exit, a visible proven preview's
+  immediate hide, stale paint rejection and covering hide/restore. Signal wiring
+  is source-guarded against the pinned KWin API. Independent review's concrete
+  coverage findings are resolved; no product-intent extension was selected.
+- Final scoped evidence: service **317**, core/protocol **1,459**, Windows Linux
+  subset **725**, JS **737**, host native CTest **36/36**, Nix native check
+  **37/37**, exact world acceptance **6/6**. Builds and strict all-target clippy,
+  JS typecheck/build, host-matched effect build, workspace fmt, whitespace and
+  API guard pass. Nix's extra CTest is ECM `appstreamtest`, not a missing host
+  test. Known macOS-on-Linux exclusions are unchanged and not passing claims.
+- Native/physical checks outstanding: fixture-only fullscreen enter/exit and
+  focus leave/return on each output, all-surface stale-hide/fresh-repaint,
+  fullscreen-window send/switch hide/reveal and physical window shortcuts,
+  independent native state joins and exact teardown/restoration. The fixture
+  supports `mode: borderless_fullscreen`; no live mutation or automated input
+  was performed here. A neutral fullscreen-exit command remains a future question.
+  This completes only the approved fullscreen package; the wider port stays active.
 
 <a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
 ## N6 core-intents outcome (2026-10-26)

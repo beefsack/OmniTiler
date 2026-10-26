@@ -551,6 +551,24 @@ the adapter never selects a replacement source refill by ordinal.
   paints stale shapes. Native anchoring plus immediate hide-only vetoes
   stay renderer-side (unknown/unreadable foreground or scope frame
   hides instead of guessing).
+- Neutral fullscreen presentation suspension is a separate, default-off
+  construction opt-in:
+  `WorldEngine::with_focused_fullscreen_presentation_suspension()`.
+  KDE enables it; Windows and macOS construction remains unchanged. Current
+  `focused_global` plus the corresponding `WindowFact.fullscreen/output` selects
+  the suspended output, with no game identity or geometry inference. No matching
+  fact means no invented output verdict. Hosts keep fullscreen facts truthful:
+  KWin `fullScreen`; macOS native fullscreen when that adapter opts in later.
+  This does not reuse or broaden global `PresentationIngress.paused`.
+- `WorldPresentation.suspended_output` encodes as optional `suspendedOutput`,
+  omitted when inactive so default publication bytes stay unchanged. Core hides
+  border/underlay targeting that output and omits only its pager content. A
+  renderer drops preview paint whose `DragPreview.domain.output` matches this
+  verdict, not whose mover-home source matches; other-output previews remain
+  eligible. Command results and gesture lifecycle are unchanged. Fresh native
+  mode/focus invalidation must fence both pre-entry and pre-exit paints; an exit
+  never authorizes restoration from stale presentation. Native hide-only vetoes
+  remain. These API/wire names are tentative technical vocabulary.
 - Host styling is two independent colors on every port, never
   ring-coupled. The active-window ring keeps its own border
   color/theme tokens (default: live system accent with the `#2a82da`

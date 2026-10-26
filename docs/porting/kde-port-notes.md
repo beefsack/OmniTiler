@@ -175,6 +175,17 @@ order. The recorded route executes the real handlers, facts endpoint, capture,
 broker, subscriber and native endpoint; KWin signals and painting still require
 physical checks.
 
+Focused-fullscreen suspension is implemented offline as a neutral core opt-in.
+The existing raw `fullScreen` capture becomes `WindowFact.fullscreen`; JS keeps
+`paused=false` and derives no game or suspension policy. Core publishes optional
+`suspendedOutput` and output-local hidden shapes. The broker omits preview paint
+only when its resolution `domainOut` matches that core verdict, leaving take
+results and gesture settlement intact. Native `windowFullScreenChanged` now
+advances/publishes the same causal witness and refreshes all surfaces on both
+entry and exit. Existing native fullscreen hide-only liveness vetoes remain.
+Windows retains its adapter suspension; macOS native-fullscreen consumption is
+coordination only. See the [contract and outcome](../changes/kde-world-v2-port.md#focused-fullscreen-presentation-suspension-2026-10-27).
+
 ## Host styling on KDE
 
 - Two independent host styling colors, never ring-coupled (see the

@@ -16,7 +16,7 @@ current product policy.
 
 User-approved 2026-10-26 index (implementation status below):
 - KDE Stage 5 gesture-first causal renderer freshness
-- Neutral focused-fullscreen presentation suspension (option B; pending)
+- Neutral focused-fullscreen presentation suspension (option B; implemented offline)
 - N5 workspace membership versus immediate eligibility (option B; pending)
 - Intent-only float toggle and implicit output targeting (option A; pending)
 - Native Plasma pager only on KDE
@@ -104,7 +104,7 @@ Tentative index (user review pending; not approved product rules):
   passes after failing-first proof. Signal delivery and painting still require
   physical checks. Field names remain tentative technical vocabulary, not a
   new shared-core protocol. [Outcome](changes/kde-world-v2-port.md#stage-5-renderer-causal-freshness-accepted-offline-2026-10-27).
-- **Fullscreen suspension, option B, approved; pending implementation:** a
+- **Fullscreen suspension, option B, approved; implemented offline 2026-10-27:** a
   neutral core rule hides borders, underlays, overlays and drop preview on the
   output whose focused surface is fullscreen. This is not game identification:
   no app-name or size heuristics. Each host supplies truthful fullscreen facts
@@ -113,6 +113,14 @@ Tentative index (user review pending; not approved product rules):
   windows: workspace sends move them, switches hide them, window shortcuts act
   on them. A fullscreen-exit shortcut such as Alt+Enter needs a neutral fullscreen
   command, a separate future question.
+  KDE enables a neutral construction opt-in; existing fullscreen facts determine
+  the observed output. Core publishes optional `suspendedOutput`, hidden shapes
+  and remaining-output pager content; KDE omits matching resolution-output drop
+  previews mechanically. Fullscreen transitions invalidate every native surface
+  on entry and exit. Windows/macOS production code is unchanged; Windows retains
+  its adapter suspension. Technical names are tentative. Native painting and
+  physical shortcut acceptance remain outstanding.
+  [Contract and evidence](changes/kde-world-v2-port.md#focused-fullscreen-presentation-suspension-2026-10-27).
 - **N5, option B, approved; pending implementation:** shared classification
   separates workspace membership from immediate layout/action eligibility.
   Minimized and host-hidden windows remain members but are ineligible. Windows

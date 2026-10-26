@@ -361,7 +361,10 @@ foreach(PRES_BINDING "m_groupDbusAvailable" "internalId" "isInteractiveMove" "wi
         message(FATAL_ERROR "presentation focus/endpoint validation failed: '${PRES_BINDING}' not found")
     endif()
 endforeach()
-foreach(PRES_VIS "minimizedChanged" "windowFullScreenChanged" "updateGroupVisibility" "updateBorder" "updateDragPreview")
+foreach(PRES_VIS "minimizedChanged" "windowFullScreenChanged" "updateGroupVisibility" "updateBorder" "updateDragPreview"
+    "connect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this, &ActiveWindowBorderEffect::onTrackedFullscreenChanged)"
+    "disconnect(m_trackedWindow, &EffectWindow::windowFullScreenChanged, this,"
+    "m_stage.onFullscreenChanged()")
     string(FIND "${PRES_IMPL_TEXT}" "${PRES_VIS}" PRES_VIS_POS)
     if(PRES_VIS_POS EQUAL -1)
         message(FATAL_ERROR "presentation lifecycle validation failed: '${PRES_VIS}' not found")

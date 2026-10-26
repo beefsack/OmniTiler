@@ -91,6 +91,24 @@ Stage5Refresh PresentationStage5::onMemberFrame()
     return refresh;
 }
 
+Stage5Refresh PresentationStage5::onFullscreenChanged()
+{
+    // Fullscreen transition (enter or exit): the causal witness advances
+    // across all scopes (both floors) and publishes so the next actual
+    // facts capture covers it, then the caller refreshes every surface
+    // until fresh covering paint arrives. Pre-transition shapes must not
+    // linger in either direction. The live fullscreen veto already hides
+    // immediately; this rejects stale paints by order and coverage.
+    m_router->onFullscreenChanged(factsInstance());
+    publishInvalidation();
+    Stage5Refresh refresh;
+    refresh.border = true;
+    refresh.anchor = true;
+    refresh.underlay = true;
+    refresh.preview = true;
+    return refresh;
+}
+
 Stage5Refresh PresentationStage5::onGestureBoundary()
 {
     // Gesture boundary: drop the held drop-preview latch (it belongs to
@@ -196,6 +214,10 @@ Stage5Visibility PresentationStage5::decide(const Stage5HostView &host) const
     // styling. The underlay needs the same plus a valid anchor (the core
     // Found already encodes the trigger). The preview needs a proven
     // producer matching the live open gesture plus live move liveness.
+    // Fullscreen presentation is owned elsewhere: every fullscreen
+    // transition bumps all surfaces through onFullscreenChanged, and the
+    // core omits the suspended output's preview from the published
+    // projection. This decision adds no policy of its own.
     Stage5Visibility visibility;
     visibility.border = hasPaint && paint.borderVisible && host.endpointAvailable && host.foregroundMatches
         && host.liveEligible && strokeOk && fresh && current;

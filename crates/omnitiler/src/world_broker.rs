@@ -443,7 +443,13 @@ impl WorldBroker {
     fn fresh() -> Self {
         let generation = crate::world_service::mint_core_generation();
         let incarnation = mint_broker_incarnation();
-        let engine = WorldEngine::new(&generation).expect("minted generation is valid");
+        // The Linux service carrier opts in to neutral focused-fullscreen
+        // presentation suspension: KWin only offers truthful `fullScreen`,
+        // never game identity, so the core suspends on the focused
+        // fullscreen output only. No game/app/size heuristics.
+        let engine = WorldEngine::new(&generation)
+            .expect("minted generation is valid")
+            .with_focused_fullscreen_presentation_suspension();
         Self {
             engine,
             generation,
@@ -826,7 +832,16 @@ impl WorldBroker {
                 // The covered causal witness rides alongside for the read
                 // lane. The expanded bound reply always fits the reply
                 // cap; oversize fails closed without caching.
-                let preview_geometry = drag_preview_of(&encoded);
+                // Neutral focused-fullscreen suspension consumes the core
+                // verdict mechanically: a preview resolving on the
+                // suspended output never rides the projection, so the
+                // cache cannot retain an older preview across the
+                // suspension. Cross-output previews stay intact.
+                let preview_geometry = if preview_suspended_by_presentation(&encoded) {
+                    None
+                } else {
+                    drag_preview_of(&encoded)
+                };
                 let preview = match (&preview_geometry, &gesture_assoc) {
                     (Some(_), Some(assoc)) if !command_produced_preview => {
                         CarriedPreview::proven(preview_geometry, assoc)
@@ -2105,6 +2120,32 @@ impl CarriedPreview {
     }
 }
 
+/// Whether one accepted reply suspends its renderer-only drop preview:
+/// the core published a focused-fullscreen suspension verdict for the
+/// resolution (pointer) domain output of the `DragPreview` result.
+/// Mechanical consumption of the core-published verdict, no broker policy:
+/// the mover-home source may differ, so a cross-output preview resolving
+/// on another output stays intact.
+fn preview_suspended_by_presentation(encoded: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(encoded)
+        .ok()
+        .and_then(|value| {
+            let result = value.get("result")?;
+            if result.get("op").and_then(serde_json::Value::as_str) != Some("drag-preview") {
+                return None;
+            }
+            let domain_out = result
+                .get("domainOut")
+                .and_then(serde_json::Value::as_str)?;
+            let suspended = value
+                .get("presentation")?
+                .get("suspendedOutput")
+                .and_then(serde_json::Value::as_str)?;
+            Some(domain_out == suspended)
+        })
+        .unwrap_or(false)
+}
+
 /// Renderer-only drop preview of one accepted reply: the paint geometry
 /// plus the subject proof (`rect`, the mover-home `sourceOut`/`sourceWs`,
 /// and the insertion-neighbor `win`) when the reply carried a `DragPreview`
@@ -2565,6 +2606,68 @@ mod tests {
         assert!(drag_preview_of(&short_rect).is_none());
         let no_win = reply.replace("\"win\":\"win-a\"", "\"win\":null");
         assert!(drag_preview_of(&no_win).is_none());
+    }
+
+    #[test]
+    fn suspended_presentation_omits_only_the_matching_domain_preview() {
+        // A suspended output matching the preview's resolution (pointer)
+        // domain omits the renderer preview; the command result itself is
+        // untouched (the take lane still settles the issuer).
+        let suspended = "{\"v\":2,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+            \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
+            \"result\":{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
+            \"domainWs\":\"ws-1\",\"sourceOut\":\"out-2\",\"sourceWs\":\"ws-2\",\
+            \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"},\
+            \"operationSettled\":[],\"gestureSettled\":null,\
+            \"presentation\":{\"foreground\":\"win-g\",\"suspendedOutput\":\"out-1\",\
+            \"border\":{\"visible\":false,\"reason\":\"suspended\",\"inner\":null,\"outer\":null},\
+            \"underlay\":{\"status\":\"hidden\",\"reason\":\"suspended\",\"baseRev\":null},\"pager\":[]}}";
+        assert!(preview_suspended_by_presentation(suspended));
+        // A cross-output preview resolving on another output stays intact:
+        // only the resolution domain output gates, never the mover-home
+        // source.
+        let crossed = suspended.replace("\"domainOut\":\"out-1\"", "\"domainOut\":\"out-2\"");
+        assert!(!preview_suspended_by_presentation(&crossed));
+        // No verdict, no result, or another op never suspends.
+        let plain = suspended.replace(",\"suspendedOutput\":\"out-1\"", "");
+        assert!(!preview_suspended_by_presentation(&plain));
+        let no_result = suspended.replace(
+            "\"result\":{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
+            \"domainWs\":\"ws-1\",\"sourceOut\":\"out-2\",\"sourceWs\":\"ws-2\",\
+            \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"}",
+            "\"result\":null",
+        );
+        assert!(!preview_suspended_by_presentation(&no_result));
+        let other = suspended.replace("\"drag-preview\"", "\"toggle-float\"");
+        assert!(!preview_suspended_by_presentation(&other));
+        assert!(!preview_suspended_by_presentation("{\"v\":2}"));
+        assert!(!preview_suspended_by_presentation("not json"));
+        // The conversion over a suspended reply carries no preview, so the
+        // projection (and its cache) cannot retain an older preview across
+        // the suspension. Mirrors the production conversion sequence: the
+        // verdict gates before stripping.
+        let geometry = drag_preview_of(suspended);
+        let gated = if preview_suspended_by_presentation(suspended) {
+            None
+        } else {
+            geometry
+        };
+        assert!(gated.is_none(), "suspended resolution domain omits preview");
+        let unproven = CarriedPreview::unproven(gated);
+        let projection: serde_json::Value =
+            serde_json::from_str(&project_reply(suspended, unproven.as_ref())).expect("JSON");
+        assert!(
+            projection["preview"].is_null(),
+            "suspended presentation projects no preview"
+        );
+        // The cross-output preview survives the same conversion.
+        let cross_geometry = drag_preview_of(&crossed);
+        let cross_gated = if preview_suspended_by_presentation(&crossed) {
+            None
+        } else {
+            cross_geometry
+        };
+        assert!(cross_gated.is_some(), "other-output preview stays intact");
     }
 
     #[test]

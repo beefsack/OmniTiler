@@ -116,7 +116,11 @@ private:
     // just the anchor). Both stay hidden until a strictly newer accepted
     // paint arrives; no live-frame comparison, so same-window moves and
     // A->B->A races never resurrect stale shapes without a fresh paint.
+    // Fullscreen-mode transitions (enter or exit) bump the same witness
+    // across all scopes: pre-transition shapes must not linger in either
+    // direction (finding: native race).
     void onTrackedFrameChanged();
+    void onTrackedFullscreenChanged();
     void onGroupMemberFrameChanged(EffectWindow *window);
     // Pure-renderer paint: each shape renders the held accepted core rects
     // verbatim (KWin logical units; item anchoring translates spaces without

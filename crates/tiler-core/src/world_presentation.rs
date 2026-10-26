@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::active_group::{ActiveGroupMember, describe_active_group_with_hints};
-use crate::directional::{NodeId, WindowId};
+use crate::directional::{NodeId, OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
@@ -115,6 +115,12 @@ pub enum PresentationUnderlay {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorldPresentation {
     pub foreground: String,
+    /// Opt-in neutral focused-fullscreen suspension verdict (stage 5): the
+    /// observed output whose border/underlay/pager shapes are suspended
+    /// because the focused surface is truthfully fullscreen there. `None`
+    /// when the opt-in is off or no focused fullscreen holds. Omitted on the
+    /// wire when absent so default publication bytes stay exact.
+    pub suspended_output: Option<OutputId>,
     pub border: BorderPresentation,
     pub underlay: PresentationUnderlay,
     pub pager: Vec<PagerScreen>,
@@ -149,8 +155,31 @@ impl WorldEngine {
     /// zero-width veto used to fire. A paused (game-lane) report hides as
     /// suspended without computing.
     #[must_use]
-    pub(crate) fn presentation_border(ingress: &PresentationIngress) -> BorderPresentation {
+    pub(crate) fn presentation_border(
+        &self,
+        ingress: &PresentationIngress,
+        suspended: Option<&OutputId>,
+    ) -> BorderPresentation {
         if ingress.paused {
+            return BorderPresentation {
+                visible: false,
+                reason: Some(BorderHideReason::Suspended),
+                inner: None,
+                outer: None,
+            };
+        }
+        // Opt-in neutral focused-fullscreen suspension: hide only when the
+        // foreground's observed output is the suspended one, like the
+        // global game lane above but scoped to that output. Other outputs
+        // keep their normal shapes.
+        if let Some(output) = suspended
+            && !ingress.foreground.is_empty()
+            && self
+                .staged
+                .facts
+                .get(&WindowId(ingress.foreground.clone()))
+                .is_some_and(|fact| &fact.output == output)
+        {
             return BorderPresentation {
                 visible: false,
                 reason: Some(BorderHideReason::Suspended),
@@ -282,8 +311,25 @@ impl WorldEngine {
     pub(crate) fn presentation_underlay(
         &self,
         ingress: &PresentationIngress,
+        suspended: Option<&OutputId>,
     ) -> PresentationUnderlay {
         if ingress.paused {
+            return PresentationUnderlay::Hidden {
+                base_revision: None,
+                reason: GroupHideReason::Suspended,
+            };
+        }
+        // Opt-in neutral focused-fullscreen suspension: hide only when the
+        // foreground's observed output is the suspended one. Other outputs
+        // keep their normal shapes.
+        if let Some(output) = suspended
+            && !ingress.foreground.is_empty()
+            && self
+                .staged
+                .facts
+                .get(&WindowId(ingress.foreground.clone()))
+                .is_some_and(|fact| &fact.output == output)
+        {
             return PresentationUnderlay::Hidden {
                 base_revision: None,
                 reason: GroupHideReason::Suspended,
@@ -625,10 +671,11 @@ impl WorldEngine {
     /// per-screen ordered workspace ids with labels, current/occupied/
     /// contains-focused flags, and per-workspace ordered paint lists with
     /// retained miniature source rectangles. A paused (game-lane) report
-    /// publishes no screens, so no ordering work runs under the game. Never
-    /// admits, never mutates.
+    /// publishes no screens, so no ordering work runs under the game. A
+    /// focused-fullscreen suspension omits only the suspended output; every
+    /// other output keeps its content. Never admits, never mutates.
     #[must_use]
-    fn presentation_pager(&self, paused: bool) -> Vec<PagerScreen> {
+    fn presentation_pager(&self, paused: bool, suspended: Option<&OutputId>) -> Vec<PagerScreen> {
         if paused {
             return Vec::new();
         }
@@ -638,6 +685,11 @@ impl WorldEngine {
             .and_then(|window| self.adapter_homing(window));
         let mut screens = Vec::new();
         for output in self.logical_outputs() {
+            // Focused-fullscreen suspension omits only the suspended
+            // output; every other output keeps its content.
+            if suspended.is_some_and(|suspended| suspended.0 == output) {
+                continue;
+            }
             let ring = self.logical_ring(&output);
             let view = self.logical_view(&output);
             // Effective current workspace: the retained view when it names a
@@ -700,6 +752,31 @@ impl WorldEngine {
 }
 
 impl WorldEngine {
+    /// Neutral focused-fullscreen suspension verdict (stage 5): the observed
+    /// output whose presentation suspends, or `None`. Derives from the
+    /// current truthful report focus and fullscreen fact only (same shape
+    /// as the cursor game-pause lookup, presentation only): no timing,
+    /// geometry, or game/app/size heuristics. `None` unless the opt-in is
+    /// set, the focus names a staged fact, and that fact is fullscreen.
+    /// The fact's own observed output is the suspended output.
+    pub(crate) fn focused_fullscreen_suspended_output(
+        &self,
+        report: &WorldReport,
+    ) -> Option<OutputId> {
+        if !self.focused_fullscreen_presentation_suspension {
+            return None;
+        }
+        if report.focused_global.is_empty() {
+            return None;
+        }
+        let focused = WindowId(report.focused_global.clone());
+        let fact = self.staged.facts.get(&focused)?;
+        if !fact.fullscreen {
+            return None;
+        }
+        Some(fact.output.clone())
+    }
+
     /// Compute the uniform per-reply presentation for one accepted report:
     /// the tick-time foreground token plus the border shape, the underlay
     /// shape, and the pager content. Read-only over retained state; the
@@ -709,11 +786,13 @@ impl WorldEngine {
     #[must_use]
     pub(crate) fn presentation_for_publish(&self, report: &WorldReport) -> WorldPresentation {
         let ingress = &report.presentation;
+        let suspended = self.focused_fullscreen_suspended_output(report);
         WorldPresentation {
             foreground: ingress.foreground.clone(),
-            border: Self::presentation_border(ingress),
-            underlay: self.presentation_underlay(ingress),
-            pager: self.presentation_pager(ingress.paused),
+            suspended_output: suspended.clone(),
+            border: self.presentation_border(ingress, suspended.as_ref()),
+            underlay: self.presentation_underlay(ingress, suspended.as_ref()),
+            pager: self.presentation_pager(ingress.paused, suspended.as_ref()),
         }
     }
 }

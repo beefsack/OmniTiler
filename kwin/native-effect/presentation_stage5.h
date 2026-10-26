@@ -83,12 +83,13 @@ public:
 
     // Counter-advance routes; each returns the surfaces the caller
     // refreshes. Activation hides display-only then bumps every scope.
-    // Tracked-frame, member-frame, and gesture boundaries bump their scope
-    // then refresh every surface (border, anchor, underlay, preview) so no
-    // stale item remains visible.
+    // Tracked-frame, member-frame, fullscreen-mode, and gesture boundaries
+    // bump their scope then refresh every surface (border, anchor,
+    // underlay, preview) so no stale item remains visible.
     Stage5Refresh onActivation();
     Stage5Refresh onTrackedFrame();
     Stage5Refresh onMemberFrame();
+    Stage5Refresh onFullscreenChanged();
     Stage5Refresh onGestureBoundary();
     // Member visibility change: no bump, re-anchor plus underlay only, and
     // only when the bare id names a held paint member (empty refresh

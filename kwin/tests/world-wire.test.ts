@@ -488,6 +488,33 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(coreShaped !== null && isCoreWorldReply(coreShaped));
     });
 
+    it("presentation parses the optional focused-fullscreen suspension verdict", () => {
+        // Absent key (default publication) parses to a null verdict.
+        const plain = parseWorldReply(projectPresentation("gen-1", "req-9", "4", "7"));
+        assert.ok(plain !== null && !isWorldRejection(plain) && !isCoreWorldReply(plain) && !isWorldQueueReply(plain));
+        assert.equal((plain as { presentation?: { suspendedOutput?: unknown } }).presentation?.suspendedOutput, null);
+        // Present verdict parses verbatim.
+        const withVerdict = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        (withVerdict["presentation"] as Record<string, unknown>)["suspendedOutput"] = "out-1";
+        const parsed = parseWorldReply(JSON.stringify(withVerdict));
+        assert.ok(parsed !== null && !isWorldRejection(parsed) && !isCoreWorldReply(parsed) && !isWorldQueueReply(parsed));
+        assert.equal((parsed as { presentation?: { suspendedOutput?: unknown } }).presentation?.suspendedOutput, "out-1");
+        // Explicit null parses to a null verdict.
+        const withNull = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        (withNull["presentation"] as Record<string, unknown>)["suspendedOutput"] = null;
+        assert.ok(parseWorldReply(JSON.stringify(withNull)) !== null, "null verdict parses");
+        // Malformed verdicts and unknown fifth keys refuse.
+        for (const bad of ["", "bad id!", 7, true, [], {}]) {
+            const badReply = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+            (badReply["presentation"] as Record<string, unknown>)["suspendedOutput"] = bad;
+            assert.equal(parseWorldReply(JSON.stringify(badReply)), null, `malformed verdict refuses: ${JSON.stringify(bad)}`);
+        }
+        const extra = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        (extra["presentation"] as Record<string, unknown>)["suspendedOutput"] = "out-1";
+        (extra["presentation"] as Record<string, unknown>)["unknown"] = 1;
+        assert.equal(parseWorldReply(JSON.stringify(extra)), null, "unknown fifth key refuses");
+    });
+
     it("a timed-out queue redelivers the identical queue bytes under the same clientCmd", () => {
         const flow = startFlow();
         discoverFlow(flow);

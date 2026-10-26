@@ -101,6 +101,16 @@ std::string previewPayload(const std::string &coveredInstance, quint64 coveredIn
           "\"producerInstance\":\"gesture-9\",\"producerSerial\":\"7\"}}";
 }
 
+std::string hiddenPayload(const std::string &coveredInstance, quint64 coveredInvalid, const std::string &rev,
+    const std::string &obs)
+{
+    return "{\"v\":1,\"gen\":\"gen-1\",\"rev\":\"" + rev + "\",\"obs\":\"" + obs + "\",\"coveredInstance\":\""
+        + coveredInstance + "\",\"coveredInvalid\":\"" + std::to_string(coveredInvalid)
+        + "\",\"foreground\":\"win-2\","
+          "\"border\":{\"visible\":0,\"inner\":null,\"outer\":null},"
+          "\"underlay\":{\"status\":\"hidden\"},\"preview\":null}";
+}
+
 KWin::PresentationStage5::EndpointResult applyStr(KWin::PresentationStage5 &stage, const std::string &payload,
     const char *liveInstance = "", const char *liveSerial = "0")
 {
@@ -364,6 +374,106 @@ int main(int argc, char **argv)
     stage.publishInvalidation();
     CHECK(facts.invalidation() == router.counter);
     CHECK(facts.revision() == 4);
+
+    KWin::Stage5HostView fullscreenHost = allLiveHost();
+    fullscreenHost.liveGestureInstance = QStringLiteral("gesture-9");
+    fullscreenHost.liveGestureSerial = QStringLiteral("7");
+    const auto beforeEnter = applyStr(stage, previewPayload(inst, 4, "8", "9"), "gesture-9", "7");
+    CHECK(beforeEnter.apply == KWin::PresentationApply::Accepted);
+    stub.apply(beforeEnter.refresh, stage.decide(fullscreenHost));
+    CHECK(stub.preview);
+
+    // Fullscreen-mode transition ENTER: all-scope bump published so the
+    // next actual facts capture covers it, every surface refreshed (no
+    // repaint flag), and both floors set so no stale pre-enter paint
+    // applies. A pre-transition covering paint is stale-ignored and
+    // refreshes nothing; a covering ENTER payload with hidden shapes stays
+    // hidden after it applies.
+    {
+        const KWin::Stage5Refresh refresh = stage.onFullscreenChanged();
+        CHECK(router.counter == 5);
+        CHECK(refresh.border);
+        CHECK(refresh.anchor);
+        CHECK(refresh.underlay);
+        CHECK(refresh.preview);
+        CHECK(!refresh.repaint);
+        CHECK(router.paint.borderFloor.set);
+        CHECK(router.paint.borderFloor.counter == 4);
+        CHECK(router.paint.underlayFloor.set);
+        CHECK(router.paint.underlayFloor.counter == 4);
+        CHECK(facts.invalidation() == 5);
+        CHECK(facts.revision() == 5);
+        stub.apply(refresh, stage.decide(fullscreenHost));
+        CHECK(!stub.border);
+        CHECK(!stub.underlay);
+        CHECK(!stub.preview);
+        // Pre-transition coverage (equal to the dirt point) is stale:
+        // display, order, and floors preserved, nothing refreshed.
+        const auto stale = applyStr(stage, foundPayload(inst, 4, "9", "9"));
+        CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
+        CHECK(!stale.refresh.border);
+        CHECK(!stale.refresh.anchor);
+        CHECK(!stale.refresh.underlay);
+        CHECK(!stale.refresh.preview);
+        CHECK(!stale.refresh.repaint);
+        CHECK(router.paint.borderFloor.set);
+        CHECK(router.paint.underlayFloor.set);
+        // Covering ENTER paint carries hidden shapes: it applies and clears
+        // the floors, and the held display remains hidden.
+        const auto covering = applyStr(stage, hiddenPayload(inst, 5, "9", "3"));
+        CHECK(covering.apply == KWin::PresentationApply::Accepted);
+        CHECK(!router.paint.borderFloor.set);
+        CHECK(!router.paint.underlayFloor.set);
+        stub.apply(covering.refresh, stage.decide(allLiveHost()));
+        CHECK(!stub.border);
+        CHECK(!stub.underlay);
+        CHECK(!stub.preview);
+    }
+
+    // Fullscreen-mode transition EXIT: the same all-scope bump in the
+    // other direction. The ENTER covering paint is now stale-ignored, and
+    // a covering EXIT paint with visible shapes restores the display.
+    {
+        const KWin::Stage5Refresh refresh = stage.onFullscreenChanged();
+        CHECK(router.counter == 6);
+        CHECK(refresh.border);
+        CHECK(refresh.anchor);
+        CHECK(refresh.underlay);
+        CHECK(refresh.preview);
+        CHECK(!refresh.repaint);
+        CHECK(router.paint.borderFloor.set);
+        CHECK(router.paint.borderFloor.counter == 5);
+        CHECK(router.paint.underlayFloor.set);
+        CHECK(router.paint.underlayFloor.counter == 5);
+        CHECK(facts.invalidation() == 6);
+        CHECK(facts.revision() == 6);
+        stub.apply(refresh, stage.decide(allLiveHost()));
+        CHECK(!stub.border);
+        CHECK(!stub.underlay);
+        CHECK(!stub.preview);
+        // The ENTER covering paint is now stale: nothing refreshed, held
+        // hidden display preserved.
+        const auto stale = applyStr(stage, hiddenPayload(inst, 5, "9", "4"));
+        CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
+        CHECK(!stale.refresh.border);
+        CHECK(!stale.refresh.anchor);
+        CHECK(!stale.refresh.underlay);
+        CHECK(!stale.refresh.preview);
+        CHECK(!stale.refresh.repaint);
+        // Covering EXIT paint carries visible shapes: it applies, clears
+        // the floors, and restores the display.
+        const auto covering = applyStr(stage, foundPayload(inst, 6, "9", "4"));
+        CHECK(covering.apply == KWin::PresentationApply::Accepted);
+        CHECK(!router.paint.borderFloor.set);
+        CHECK(!router.paint.underlayFloor.set);
+        stub.apply(covering.refresh, stage.decide(allLiveHost()));
+        CHECK(stub.border);
+        CHECK(stub.underlay);
+        const auto preview = applyStr(stage, previewPayload(inst, 6, "9", "5"), "gesture-9", "7");
+        CHECK(preview.apply == KWin::PresentationApply::Accepted);
+        stub.apply(preview.refresh, stage.decide(fullscreenHost));
+        CHECK(stub.preview);
+    }
 
     if (failures != 0) {
         std::fprintf(stderr, "stage5 handler test: %d failure(s)\n", failures);

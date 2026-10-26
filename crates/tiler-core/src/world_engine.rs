@@ -706,11 +706,21 @@ pub struct WorldEngine {
     /// lifetime from the latest accepted report (`None` when none or
     /// unmanaged). Presentation-only; the content gates it on retained homing.
     pub(crate) presentation_focused: Option<WindowId>,
+    /// Opt-in neutral focused-fullscreen presentation suspension (stage 5):
+    /// when set, a focused surface that is truthfully fullscreen on its
+    /// observed output suspends published border/underlay/pager shapes on
+    /// that output only. KWin only offers truthful `fullScreen`, never game
+    /// identity, so this names the observation (focused fullscreen), never a
+    /// platform or product. Off by default; the Linux service carrier opts
+    /// in explicitly. Never mapping, membership, or command semantics.
+    pub(crate) focused_fullscreen_presentation_suspension: bool,
 }
 
 /// Platform opt-ins for [`WorldEngine`] construction: the only Engine
 /// policy carried at world construction time. `fixed_size_admission` is
 /// always on and is not configurable here; nothing else may be injected.
+/// Presentation-only carrier opt-ins ride explicit [`WorldEngine`] builder
+/// methods instead, never this struct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorldEngineConfig {
     /// Deferred sends for automatic fixed-size floats (Windows workspace
@@ -819,7 +829,20 @@ impl WorldEngine {
             presentation_tile: BTreeMap::new(),
             presentation_order: Vec::new(),
             presentation_focused: None,
+            focused_fullscreen_presentation_suspension: false,
         })
+    }
+
+    /// Opt in to neutral focused-fullscreen presentation suspension (stage 5).
+    /// KWin only offers truthful `fullScreen`, never game identity: when the
+    /// focused surface is fullscreen on its observed output, published
+    /// presentation suspends on that output only. No game/app/size
+    /// heuristics; no hotkey/input suppression; normal fullscreen window
+    /// actions, membership, and shortcuts are unchanged.
+    #[must_use]
+    pub fn with_focused_fullscreen_presentation_suspension(mut self) -> Self {
+        self.focused_fullscreen_presentation_suspension = true;
+        self
     }
 
     /// Bootstrap reply for discovery: generation/capabilities with

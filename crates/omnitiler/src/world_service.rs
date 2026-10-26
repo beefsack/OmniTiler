@@ -1278,4 +1278,281 @@ mod tests {
         assert_eq!(new["outcome"], "wake");
         assert_eq!(new["cursor"], "1");
     }
+
+    // Fullscreen suspension through the actual capture route: real raw
+    // KWin facts (fullScreen truthfully carried) into the core-published
+    // verdict and the preview-cache replacement, plus queued
+    // command-produced take outcomes. No hand-built core replies: every
+    // verdict and preview below comes from WorldService capture dispatch,
+    // command drain, take settlement, and presentation reads.
+    const WIN_A: &str = "0aa8f1c2-3b4d-4e5f-8a9b-0c1d2e3f4a5b";
+    const WIN_B: &str = "1bb8f1c2-3b4d-4e5f-8a9b-0c1d2e3f4a5c";
+    const WIN_C: &str = "2cc8f1c2-3b4d-4e5f-8a9b-0c1d2e3f4a5d";
+    const WIN_D: &str = "3dd8f1c2-3b4d-4e5f-8a9b-0c1d2e3f4a5e";
+
+    fn raw_win(win: &str, out: &str, x: i32, fullscreen: bool) -> serde_json::Value {
+        serde_json::json!({
+            "win": win, "out": out,
+            "frameGeometry": {"x": x, "y": 0, "width": 40, "height": 90},
+            "clientGeometry": {"x": x, "y": 0, "width": 40, "height": 90},
+            "minSize": null, "maxSize": null,
+            "desktops": ["ws-1"],
+            "normalWindow": true, "managed": true, "deleted": false,
+            "transient": false, "transientFor": null,
+            "dialog": false, "modal": false, "wantsInput": true,
+            "fullScreen": fullscreen, "maximizeMode": 0,
+            "onAllDesktops": false, "minimized": false,
+        })
+    }
+
+    fn suspension_inner(
+        fullscreen_a: bool,
+        focused: &str,
+        gesture: Option<(&str, &str, &str)>,
+    ) -> String {
+        let fullscreen = if fullscreen_a { "true" } else { "false" };
+        let frame = if focused.is_empty() {
+            "null".to_owned()
+        } else {
+            "[0,0,40,90]".to_owned()
+        };
+        let (gesture_lane, native_gesture, cursor_window, cursor) = match gesture {
+            Some((serial, rev, phase)) => (
+                "true",
+                format!(
+                    "{{\"v\":1,\"instance\":\"effect-1\",\"serial\":\"{serial}\",\
+                      \"revision\":\"{rev}\",\"phase\":\"{phase}\",\"win\":\"{WIN_A}\",\"kind\":\"move\",\
+                      \"startRect\":[0,0,40,90],\"startCursor\":null,\"cursor\":[150,50],\
+                      \"modalMove\":1,\"changed\":1,\"superseded\":0,\"available\":1}}"
+                ),
+                format!("\"{WIN_A}\""),
+                "[150,50]".to_owned(),
+            ),
+            None => (
+                "false",
+                "null".to_owned(),
+                "null".to_owned(),
+                "null".to_owned(),
+            ),
+        };
+        format!(
+            "{{\"v\":2,\"mode\":\"per-output-local\",\
+              \"screens\":[{{\"out\":\"out-a\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
+              \"gap\":0,\"outer\":0,\"complete\":true,\"primary\":true}},\
+              {{\"out\":\"out-b\",\"full\":[800,0,800,600],\"work\":[800,0,800,560],\
+              \"gap\":0,\"outer\":0,\"complete\":true,\"primary\":false}}],\
+              \"windows\":[{win_a},{win_b},{win_c},{win_d}],\
+              \"views\":[],\"closed\":[],\"hostOwned\":false,\"equalCount\":false,\"native\":[],\
+              \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
+              \"defaultTiled\":true,\"focused\":\"{focused}\",\"complete\":true,\"gesture\":{gesture_lane},\
+              \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\
+              \"cursor\":{cursor},\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[],\
+              \"focusFollowsCursor\":false,\"cursorWarp\":false,\
+              \"presentation\":{{\"foreground\":\"{focused}\",\"minimized\":false,\"maximized\":false,\
+              \"fullscreen\":{fullscreen},\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
+              \"frame\":{frame},\"borderEnabled\":true,\"underlayEnabled\":true,\
+              \"borderGap\":2,\"borderWidth\":4,\"underlayExtension\":3,\
+              \"chordHeld\":true,\"moveWindow\":\"\",\"paused\":false,\
+              \"pagerOrder\":[\"{WIN_A}\",\"{WIN_B}\",\"{WIN_C}\",\"{WIN_D}\"],\
+              \"pagerFrames\":[{{\"win\":\"{WIN_A}\",\"live\":[0,0,40,90],\"float\":null,\"tile\":null}},\
+              {{\"win\":\"{WIN_B}\",\"live\":[100,0,40,90],\"float\":null,\"tile\":null}},\
+              {{\"win\":\"{WIN_C}\",\"live\":[800,0,40,90],\"float\":null,\"tile\":null}},\
+              {{\"win\":\"{WIN_D}\",\"live\":[900,0,40,90],\"float\":null,\"tile\":null}}]}},\
+              \"gestureIngress\":null,\"floatIntent\":[],\"tileIntent\":[],\
+              \"nativeGesture\":{native_gesture},\
+              \"cursorWindow\":{cursor_window},\"nativeInvalidWitness\":null}}",
+            win_a = raw_win(WIN_A, "out-a", 0, fullscreen_a),
+            win_b = raw_win(WIN_B, "out-a", 100, false),
+            win_c = raw_win(WIN_C, "out-b", 800, false),
+            win_d = raw_win(WIN_D, "out-b", 900, false),
+        )
+    }
+
+    fn suspension_capture(
+        service: &WorldService,
+        generation: &str,
+        source: &str,
+        seq: u64,
+        fullscreen_a: bool,
+        focused: &str,
+        gesture: Option<(&str, &str, &str)>,
+    ) -> serde_json::Value {
+        let envelope = format!(
+            "{{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+              \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
+              \"report\":{}}}",
+            suspension_inner(fullscreen_a, focused, gesture),
+        );
+        let reply = service
+            .evaluate_capture(&envelope)
+            .expect("in-band capture");
+        serde_json::from_str(&reply).expect("valid JSON")
+    }
+
+    fn suspension_read(service: &WorldService, req: &str) -> serde_json::Value {
+        let body = service
+            .read_presentation(&format!("{{\"v\":2,\"req\":\"{req}\"}}"))
+            .expect("read");
+        serde_json::from_str(&body).expect("valid JSON")
+    }
+
+    fn suspension_queue_drag(
+        service: &WorldService,
+        generation: &str,
+        client_cmd: &str,
+        mover: &str,
+        x: i32,
+        y: i32,
+    ) -> serde_json::Value {
+        let request = format!(
+            "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+              \"clientCmd\":\"{client_cmd}\",\
+              \"command\":{{\"op\":\"operation\",\"command\":{{\"op\":\"drag-preview\",\
+              \"win\":\"{mover}\",\"x\":{x},\"y\":{y},\"hover\":null,\"source\":null}}}}}}"
+        );
+        let filed = service
+            .queue_command(":1.42", &request)
+            .expect("in-band queue");
+        serde_json::from_str(&filed).expect("valid JSON")
+    }
+
+    fn suspension_take(
+        service: &WorldService,
+        generation: &str,
+        client_cmd: &str,
+    ) -> serde_json::Value {
+        let request = format!(
+            "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+              \"clientCmd\":\"{client_cmd}\"}}"
+        );
+        let settled = service
+            .take_result(":1.42", &request)
+            .expect("in-band take");
+        serde_json::from_str(&settled).expect("valid JSON")
+    }
+
+    #[test]
+    fn focused_fullscreen_suspends_cached_preview_through_capture_route() {
+        // End-to-end through the real capture route (raw KWin facts,
+        // gesture lane, queue/take lanes, presentation reads): a proven
+        // live preview caches, suspends to null on focused fullscreen,
+        // and restores on exit, while command-produced previews settle
+        // the take lane unchanged. Cross-output resolution gating rides
+        // the broker unit (`suspended_presentation_omits_only_the_matching_domain_preview`):
+        // the engine focus-gates drags to the focused tiled window, so no
+        // command or gesture can produce an out-of-suspension preview
+        // while the verdict holds (pre-existing behavior, independent of
+        // suspension).
+        let service = WorldService::new();
+        let (generation, _) = discovered_generation(&service);
+        // Admission baseline first (mirrors the core rig): the open
+        // gesture binds implicitly only against retained homing, and the
+        // managed focus latches behind the focused newcomer.
+        let admitted = suspension_capture(&service, &generation, "cap-0", 1, false, "", None);
+        assert_eq!(admitted["ready"], true, "admission capture accepted");
+        // Baseline: an open live move gesture publishes a proven preview
+        // through the real raw-capture route (real fullScreen facts,
+        // real gesture lane, real command inputs throughout).
+        let first = suspension_capture(
+            &service,
+            &generation,
+            "cap-1",
+            2,
+            false,
+            WIN_A,
+            Some(("1", "1", "updated")),
+        );
+        assert_eq!(first["ready"], true, "baseline capture accepted");
+        let proj = suspension_read(&service, "read-1");
+        assert_eq!(proj["outcome"], "presentation");
+        assert!(
+            proj["preview"].is_object(),
+            "proven preview cached, got {}",
+            proj["preview"]
+        );
+        assert_eq!(proj["preview"]["producerInstance"], "effect-1");
+        assert_eq!(proj["preview"]["producerSerial"], "1");
+        assert!(
+            proj["presentation"]["suspendedOutput"].is_null(),
+            "no verdict without fullscreen"
+        );
+        // A queued drag-preview command drains once the gesture terminal
+        // clears the session: the take settles ready with the
+        // command-produced preview, which rides the projection unproven.
+        // (Draining against the open session resolves to no change, so the
+        // cancel clears first; both lanes stay mechanical through the
+        // actual route. The queued pointer targets the sibling edge in
+        // engine-slot coordinates, the topology the engine resolves.)
+        let filed = suspension_queue_drag(&service, &generation, "1", WIN_A, 398, 280);
+        assert_eq!(filed["outcome"], "queued");
+        let drained = suspension_capture(
+            &service,
+            &generation,
+            "cap-2",
+            3,
+            false,
+            WIN_A,
+            Some(("1", "2", "cancelled")),
+        );
+        assert_eq!(drained["ready"], true, "command drain accepted");
+        let take = suspension_take(&service, &generation, "1");
+        assert_eq!(take["outcome"], "ready");
+        assert_eq!(take["result"]["op"], "drag-preview");
+        assert_eq!(take["result"]["domainOut"], "out-a");
+        let proj = suspension_read(&service, "read-2");
+        assert!(
+            proj["preview"].is_object(),
+            "command-produced preview cached, got {}",
+            proj["preview"]
+        );
+        assert!(proj["preview"]["rect"].is_array());
+        assert!(
+            proj["preview"]["producerInstance"].is_null(),
+            "command-produced preview stays unproven"
+        );
+        // Focused fullscreen on the same output: the verdict publishes and
+        // the cached preview is replaced with null (no stale retention).
+        let suspended = suspension_capture(&service, &generation, "cap-3", 4, true, WIN_A, None);
+        assert_eq!(suspended["ready"], true, "fullscreen capture accepted");
+        let proj = suspension_read(&service, "read-3");
+        assert!(proj["preview"].is_null(), "suspended output omits preview");
+        assert_eq!(proj["presentation"]["suspendedOutput"], "out-a");
+        // The suspension holds across captures: a further suspended
+        // capture keeps the verdict and the null preview.
+        let still = suspension_capture(&service, &generation, "cap-4", 5, true, WIN_A, None);
+        assert_eq!(still["ready"], true, "suspended capture accepted");
+        let proj = suspension_read(&service, "read-4");
+        assert!(
+            proj["preview"].is_null(),
+            "suspension holds across captures"
+        );
+        assert_eq!(proj["presentation"]["suspendedOutput"], "out-a");
+        // Fullscreen exit: the verdict clears and the live gesture preview
+        // restores, proven again.
+        let exited = suspension_capture(
+            &service,
+            &generation,
+            "cap-5",
+            6,
+            false,
+            WIN_A,
+            Some(("2", "1", "updated")),
+        );
+        assert_eq!(exited["ready"], true, "exit capture accepted");
+        let proj = suspension_read(&service, "read-5");
+        assert!(
+            proj["preview"].is_object(),
+            "exit restores the live preview, got {}",
+            proj["preview"]
+        );
+        assert_eq!(proj["preview"]["producerInstance"], "effect-1");
+        assert_eq!(
+            proj["preview"]["producerSerial"], "2",
+            "fresh gesture serial proves the new binding"
+        );
+        assert!(
+            proj["presentation"]["suspendedOutput"].is_null(),
+            "verdict clears on exit"
+        );
+    }
 }

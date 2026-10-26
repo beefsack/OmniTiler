@@ -116,6 +116,17 @@ public:
         invalidate(InvalidationScope::Underlay, inst);
     }
 
+    // Fullscreen-mode invalidation route: the tracked window's fullscreen
+    // state flipped (enter or exit). No geometry moved, but every held
+    // shape was computed pre-transition, so the causal witness advances
+    // across all scopes (both floors) and no stale pre-enter/pre-exit
+    // paint applies. No latch clear: a gesture may span the transition
+    // and the producer match still gates the preview.
+    void onFullscreenChanged(const QString &inst)
+    {
+        invalidate(InvalidationScope::All, inst);
+    }
+
     // Production gesture-boundary route: drop the held drop-preview latch
     // (it belongs to exactly one live gesture) plus the causal bump with
     // no floors. Cancellation/terminal semantics are untouched (no

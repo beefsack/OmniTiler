@@ -310,6 +310,11 @@ export interface WorldPresentationPagerOutput {
 }
 export interface WorldPresentation {
     foreground: string;
+    // Neutral focused-fullscreen suspension verdict (stage 5): the observed
+    // output whose shapes are suspended, or null when no focused
+    // fullscreen holds. Omitted on the wire when absent; the parser fills
+    // null. Optional so fixtures predating the verdict keep compiling.
+    suspendedOutput?: string | null;
     border: WorldPresentationBorder;
     underlay: WorldPresentationUnderlay;
     pager: WorldPresentationPagerOutput[];
@@ -1210,13 +1215,23 @@ function parsePresentation(value: unknown): WorldPresentation {
         return { out: e["out"] as string, workspaces };
     });
     if (
-        Object.keys(o).length !== 4 || Object.keys(b).length !== 4 ||
-        !["foreground", "border", "underlay", "pager"].every((k) => k in o)
+        (Object.keys(o).length !== 4 && Object.keys(o).length !== 5) ||
+        Object.keys(b).length !== 4 ||
+        !["foreground", "border", "underlay", "pager"].every((k) => k in o) ||
+        (Object.keys(o).length === 5 && !("suspendedOutput" in o))
     ) {
         throw new Error("presentation-keys");
     }
+    const suspendedRaw = o["suspendedOutput"];
+    if (
+        suspendedRaw !== undefined && suspendedRaw !== null &&
+        (typeof suspendedRaw !== "string" || !isOpaqueId(suspendedRaw as string))
+    ) {
+        throw new Error("presentation-suspended");
+    }
     return {
         foreground: o["foreground"] as string,
+        suspendedOutput: (suspendedRaw as string | null | undefined) ?? null,
         border: {
             visible: b["visible"] as boolean, reason: b["reason"] as WorldPresentationBorder["reason"],
             inner: (b["inner"] as [number, number, number, number] | null) ?? null,
