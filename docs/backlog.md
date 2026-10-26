@@ -197,9 +197,9 @@ decisions of 2026-09-24 are under
   workspace-tiling toggle, core-owned birth clear, raw deleted/unmanaged
   mapping) landed; native gesture transport (decision B Esc fence, native
   `{instance, serial}` identity) accepted offline, physical drag/release/Esc
-  leg pending. Stage 5 renderer is a WIP draft blocked on causal freshness,
-  next on the approved sequencing (gesture identity plus an effect-side
-  invalidation counter). User-approved and pending implementation: neutral
+  leg pending. Stage 5 renderer causal freshness (gesture identity plus an
+  effect-side invalidation counter) accepted offline 2026-10-27; KWin signal
+  delivery and painting await physical fixture checks. User-approved and pending implementation: neutral
   focused-fullscreen overlay suspension (shortcuts and workspace semantics
   unchanged), N5 split of membership from immediate eligibility, execution-time
   float-toggle geometry, execution-time output targeting for implicit
