@@ -152,6 +152,8 @@ thread_local! {
     static S_WARP_CALLS: RefCell<Vec<(i32, i32)>> = const { RefCell::new(Vec::new()) };
     /// Scripted warp refusals for the offline lane.
     static S_FAIL_WARP: RefCell<bool> = const { RefCell::new(false) };
+    /// Accepted focus posts recorded, in order (async model: no FG flip).
+    static S_FOCUS_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
 fn reset_script() {
@@ -177,6 +179,7 @@ fn reset_script() {
     S_CURSOR.with(|m| *m.borrow_mut() = None);
     S_WARP_CALLS.with(|m| m.borrow_mut().clear());
     S_FAIL_WARP.with(|m| *m.borrow_mut() = false);
+    S_FOCUS_CALLS.with(|m| m.borrow_mut().clear());
 }
 
 fn script_claim(hwnd: u64, identity: &ProcessIdentity) -> WindowIdentity {
@@ -271,7 +274,7 @@ fn scripted() -> NativePrimitives {
                     .unwrap_or(Err(AdmitOutcome::Refused))
             })
         },
-        hide_claim: |_store, _me, claim, _dir| {
+        hide_claim: |_store, _me, claim, _dir, _sink| {
             S_HIDE.with(|m| {
                 m.borrow()
                     .get(&claim.hwnd)
@@ -279,7 +282,7 @@ fn scripted() -> NativePrimitives {
                     .unwrap_or(Err("refused: scripted".to_owned()))
             })
         },
-        reveal_claim: |_store, _me, claim, _min| {
+        reveal_claim: |_store, _me, claim, _min, _sink| {
             S_REVEAL.with(|m| {
                 m.borrow()
                     .get(&claim.hwnd)
@@ -287,7 +290,7 @@ fn scripted() -> NativePrimitives {
                     .unwrap_or(Err("refused: scripted".to_owned()))
             })
         },
-        hide_claim_na: |_store, _me, claim, _dir| {
+        hide_claim_na: |_store, _me, claim, _dir, _sink| {
             S_HIDE.with(|m| {
                 m.borrow()
                     .get(&claim.hwnd)
@@ -295,7 +298,7 @@ fn scripted() -> NativePrimitives {
                     .unwrap_or(Err("refused: scripted".to_owned()))
             })
         },
-        reveal_claim_na: |_store, _me, claim, _min| {
+        reveal_claim_na: |_store, _me, claim, _min, _sink| {
             S_REVEAL.with(|m| {
                 m.borrow()
                     .get(&claim.hwnd)
@@ -1276,7 +1279,7 @@ fn switch_view_nonactivating_uses_na_claim_lanes() {
     S_VISIBLE.with(|m| m.borrow_mut().insert(leaving.hwnd));
     env.state.applied_views.insert(out.clone(), ws1.clone());
     let mut prims = scripted();
-    prims.hide_claim = |_, _, _, _| Err("refused: pumped".to_owned());
+    prims.hide_claim = |_, _, _, _, _| Err("refused: pumped".to_owned());
     prims.hide_claim_na = s_hide_conceal;
     let mut native = assemble_with_views(&mut env, prims, Some((out.clone(), ws2.clone())));
     assert_eq!(native.switch_view(&out, &ws2), Ok(false));
@@ -1305,6 +1308,345 @@ fn focus_window_refuses_during_move_size() {
     S_FOCUS_OK.with(|m| m.borrow_mut().insert(key.hwnd, true));
     let mut native = assemble(&mut env, scripted());
     assert_eq!(native.focus_window("w1"), Ok(true));
+}
+
+/// Async activation without any barrier: the accepted setter only posts
+/// (no foreground flip), so the immediate proof honestly stays unproven
+/// with exactly one setter call. No blocking, timeout, or retry: the
+/// diff-level in-flight tracking owns any later landing, and only a fresh
+/// independent foreground read proves arrival.
+#[test]
+fn focus_window_accepted_posts_without_landing_or_wait() {
+    let mut env = env_with(110_032);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_032, 2132, "proc-52");
+    let target = win_key(110_033, 2133, "proc-53");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    // Accepted setter posts only: records without flipping foreground.
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    assert_eq!(native.focus_window("w2"), Ok(true));
+    assert_eq!(
+        S_FOCUS_CALLS.with(|m| m.borrow().clone()),
+        vec![target.hwnd]
+    );
+    assert!(!native.is_foreground("w2"));
+    assert!(native.is_foreground("w1"));
+}
+
+/// Post-setter identity drift stays ambiguous: a same-HWND recycle across
+/// the setter call reads `Err`, never accepted on the stale identity.
+#[test]
+fn focus_window_post_setter_recycle_is_ambiguous() {
+    let mut env = env_with(110_051);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_051, 2151, "proc-71");
+    let target = win_key(110_052, 2152, "proc-72");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_PID.with(|m| m.borrow_mut().insert(hwnd, 9999));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    assert_eq!(native.focus_window("w2"), Err(()));
+    assert_eq!(S_FOCUS_CALLS.with(|m| m.borrow().len()), 1);
+    assert!(!native.is_foreground("w2"));
+}
+
+/// Raw primitive return stays visible past post-setter fences: an accepted
+/// primitive followed by same-HWND identity drift reports wrapper `Err`
+/// with `native_return: Some(true)`, so the trace distinguishes native
+/// acceptance from the wrapper fence. An early veto reports
+/// `native_return: None`.
+#[test]
+fn focus_diag_native_return_survives_post_setter_fence() {
+    let mut env = env_with(110_111);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_111, 2211, "proc-91");
+    let target = win_key(110_112, 2212, "proc-92");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_PID.with(|m| m.borrow_mut().insert(hwnd, 9999));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    let (outcome, diag) = native.focus_window_traced("w2");
+    assert_eq!(outcome, Err(()));
+    assert!(diag.primitive_called);
+    assert_eq!(diag.native_return, Some(true));
+    assert!(
+        diag.call_mono_ms
+            .is_some_and(|call| diag.ret_mono_ms.is_some_and(|ret| call <= ret))
+    );
+    // Early veto never runs the primitive: no raw return exists.
+    let mut env = env_with(110_113);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_113, 2213, "proc-93");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(true)));
+    let mut native = assemble(&mut env, scripted());
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.native_return, None);
+    S_MOVE_SIZE.with(|m| m.borrow_mut().remove(&key.hwnd));
+}
+
+/// Refused setter reports an honest `Ok(false)`: nothing was posted and
+/// the immediate proof stays false.
+#[test]
+fn focus_window_refused_setter_reports_refusal() {
+    let mut env = env_with(110_034);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_034, 2134, "proc-54");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(key.hwnd, false));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    assert_eq!(native.focus_window("w1"), Ok(false));
+    assert!(!native.is_foreground("w1"));
+}
+
+/// Accepted but unlanded: the async request may still land later, so the
+/// accepted setter reports `Ok(true)` while the independent proof
+/// honestly stays false. No convergence is claimed and nothing waits.
+#[test]
+fn focus_window_hung_target_keeps_accepted_without_proof() {
+    let mut env = env_with(110_035);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_035, 2135, "proc-55");
+    let target = win_key(110_036, 2136, "proc-56");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    assert_eq!(native.focus_window("w2"), Ok(true));
+    assert!(!native.is_foreground("w2"));
+    assert!(native.is_foreground("w1"));
+}
+
+/// Competitor holds foreground: the accepted setter reports `Ok(true)`
+/// with an honest unproven proof. Exactly one setter ran: no refire.
+#[test]
+fn focus_window_competitor_holds_foreground_without_refire() {
+    let mut env = env_with(110_039);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_039, 2139, "proc-59");
+    let target = win_key(110_040, 2140, "proc-60");
+    let foreign_hwnd = 119_999;
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    // Observable non-fullscreen competitor: the write gate reads a genuine
+    // foreground holder (not an unknown veto), so the accepted setter
+    // reports `Ok(true)` with an honest unproven proof.
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            foreign_hwnd,
+            observed_for(
+                &win_key(foreign_hwnd, 2199, "proc-99"),
+                "foreign",
+                rect(0, 0, 800, 600),
+                plain_facts(),
+            ),
+        )
+    });
+    S_VISIBLE.with(|m| m.borrow_mut().insert(foreign_hwnd));
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = foreign_hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    assert_eq!(native.focus_window("w2"), Ok(true));
+    assert_eq!(S_FOCUS_CALLS.with(|m| m.borrow().len()), 1);
+    assert!(!native.is_foreground("w2"));
+}
+
+/// Late landing without any barrier: the accepted setter stays unproven,
+/// the async activation lands later, and a later pass proves arrival by
+/// fresh read only. Nothing refires: exactly one setter ran across both
+/// passes and no causality is claimed from the first pass's setter.
+#[test]
+fn focus_window_late_landing_after_unproven_never_replays() {
+    let mut env = env_with(110_045);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_045, 2145, "proc-65");
+    let target = win_key(110_046, 2146, "proc-66");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let entry_p1 = S_FG.with(|m| *m.borrow());
+    {
+        let mut native = assemble(&mut env, prims);
+        assert_eq!(native.focus_window("w2"), Ok(true));
+        assert!(!native.is_foreground("w2"));
+    }
+    // The async request lands later with no further setter.
+    S_FG.with(|m| *m.borrow_mut() = target.hwnd);
+    {
+        let mut native = assemble(&mut env, prims);
+        let entry_p2 = S_FG.with(|m| *m.borrow());
+        assert_ne!(entry_p1, entry_p2);
+        assert_eq!(entry_p2, target.hwnd);
+        assert!(native.is_foreground("w2"));
+        assert!(!native.is_foreground("w1"));
+    }
+    assert_eq!(S_FOCUS_CALLS.with(|m| m.borrow().len()), 1);
+}
+
+/// Same-pid creation drift across the setter call: the HWND is recycled by
+/// a new process before the proof read. The full post-setter identity
+/// fences fail ambiguous (`Err`) instead of crediting the setter.
+#[test]
+fn focus_window_same_pid_creation_drift_is_ambiguous() {
+    let mut env = env_with(110_047);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_047, 2147, "proc-67");
+    let target = win_key(110_048, 2148, "proc-68");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_IDENT.with(|m| {
+            if let Some(ident) = m.borrow_mut().get_mut(&hwnd) {
+                ident.process_creation = "proc-99".to_owned();
+            }
+        });
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    assert_eq!(native.focus_window("w2"), Err(()));
+    assert!(!native.is_foreground("w2"));
+}
+
+/// Membership-tag swap across the setter call: the HWND keeps its pid but
+/// the live tag no longer matches the stored lifetime. The post-setter
+/// lifetime fence fails ambiguous (`Err`) instead of crediting the
+/// setter.
+#[test]
+fn focus_window_member_tag_drift_is_ambiguous() {
+    let mut env = env_with(110_049);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_049, 2149, "proc-69");
+    let target = win_key(110_050, 2150, "proc-70");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_TAG.with(|m| m.borrow_mut().insert(hwnd, "member-tag-9".to_owned()));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    assert_eq!(native.focus_window("w2"), Err(()));
+    assert!(!native.is_foreground("w2"));
+}
+
+/// Drained foreground-edge resolution: a readable HWND reports its exact
+/// live identity (HWND plus PID plus creation), a null HWND reports none,
+/// and an unreadable HWND fails closed. Identity only, never causality.
+#[test]
+fn foreground_identity_of_known_unknown_and_null() {
+    use super::super::world_diff::ForegroundState;
+    let mut env = env_with(110_060);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_060, 2160, "proc-80");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    match native.foreground_identity_of(key.hwnd) {
+        ForegroundState::Known(identity) => {
+            assert_eq!(identity.hwnd, key.hwnd);
+            assert_eq!(identity.pid, key.pid);
+            assert_eq!(identity.creation, key.creation);
+        }
+        other => panic!("readable HWND must report its identity: {other:?}"),
+    }
+    assert_eq!(native.foreground_identity_of(0), ForegroundState::None);
+    assert_eq!(
+        native.foreground_identity_of(999_999),
+        ForegroundState::Unknown
+    );
 }
 
 /// A stale prior hidden claim never authorizes the hidden lane: without
@@ -2084,6 +2426,7 @@ fn s_hide_conceal(
     me: &ProcessIdentity,
     claim: &WindowIdentity,
     dir: &Path,
+    _sink: Option<&mut crate::product_hide::sys::VisibilityPostTrace>,
 ) -> Result<WindowIdentity, String> {
     let result = S_HIDE.with(|m| {
         m.borrow()
@@ -2103,6 +2446,7 @@ fn s_reveal_show(
     me: &ProcessIdentity,
     claim: &WindowIdentity,
     minimized: bool,
+    _sink: Option<&mut crate::product_hide::sys::VisibilityPostTrace>,
 ) -> Result<Revealed, String> {
     let result = S_REVEAL.with(|m| {
         m.borrow()

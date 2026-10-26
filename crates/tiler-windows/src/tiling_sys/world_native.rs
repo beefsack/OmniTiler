@@ -31,9 +31,11 @@
 //!   intended frame once through the fresh insets (invalidated placement,
 //!   never a clamp). A recycled HWND
 //!   (pid/creation drift across the call) is ambiguous, never success.
-//! - Focus is one verified `SetForegroundWindow` with an exact foreground
-//!   readback only (no pumped settle: a miss holds and converges next
-//!   tick, never a foreign wait on this path).
+//! - Focus is one `SetForegroundWindow`; the async activation may land
+//!   after the setter returns, so only a fresh independent foreground
+//!   read proves arrival. Event-driven in-flight tracking in the diff
+//!   tells the product's own prior landing apart from a genuine foreign
+//!   competitor on a later switch; no barrier, timer, retry, or replay.
 //! - The core is the sole logical authority. No native workspace property
 //!   is written or read as policy: views and membership live in the core,
 //!   and the adapter retains only proven applied homes/views plus output
@@ -60,6 +62,26 @@
 //! so the core retains pending flights instead of settling on a guess.
 
 use super::world_diff::{FreshWindow, NativeOps};
+use crate::product_hide::sys::{VisibilityPostDiag, VisibilityPostTrace};
+
+/// Trace-only native hide-claim lane: the world actuator's post sink arms
+/// the executed-post record; `None` runs the identical native effect
+/// untraced.
+pub(super) type HideClaimFn = fn(
+    &LedgerStore,
+    &ProcessIdentity,
+    &WindowIdentity,
+    &Path,
+    Option<&mut VisibilityPostTrace>,
+) -> Result<WindowIdentity, String>;
+/// Trace-only native reveal-claim lane (see [`HideClaimFn`]).
+pub(super) type RevealClaimFn = fn(
+    &LedgerStore,
+    &ProcessIdentity,
+    &WindowIdentity,
+    bool,
+    Option<&mut VisibilityPostTrace>,
+) -> Result<Revealed, String>;
 use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
@@ -140,24 +162,14 @@ pub(super) struct NativePrimitives {
         &str,
         bool,
     ) -> Result<WindowIdentity, AdmitOutcome>,
-    pub hide_claim: fn(
-        &LedgerStore,
-        &ProcessIdentity,
-        &WindowIdentity,
-        &Path,
-    ) -> Result<WindowIdentity, String>,
-    pub reveal_claim:
-        fn(&LedgerStore, &ProcessIdentity, &WindowIdentity, bool) -> Result<Revealed, String>,
+    pub hide_claim: HideClaimFn,
+    pub reveal_claim: RevealClaimFn,
     /// Pump-free nonactivating hide/reveal for remembered-focus pure views.
-    /// No-effect and no-memory switches never take these lanes.
-    pub hide_claim_na: fn(
-        &LedgerStore,
-        &ProcessIdentity,
-        &WindowIdentity,
-        &Path,
-    ) -> Result<WindowIdentity, String>,
-    pub reveal_claim_na:
-        fn(&LedgerStore, &ProcessIdentity, &WindowIdentity, bool) -> Result<Revealed, String>,
+    /// No-effect and no-memory switches never take these lanes. The sink
+    /// carries the actual executed post record when the caller arms trace;
+    /// `None` keeps the untraced behavior exactly.
+    pub hide_claim_na: HideClaimFn,
+    pub reveal_claim_na: RevealClaimFn,
     /// Live move/size modal-loop probe for one HWND's thread.
     /// `None` when unreadable (fail closed).
     pub move_size: fn(u64) -> Option<bool>,
@@ -295,9 +307,18 @@ fn real_hide_claim(
     owner: &ProcessIdentity,
     claim: &WindowIdentity,
     dir: &Path,
+    sink: Option<&mut crate::product_hide::sys::VisibilityPostTrace>,
 ) -> Result<WindowIdentity, String> {
-    crate::product_hide::sys::hide_managed_claim(store, owner, claim, dir)
-        .map_err(|e| e.to_string())
+    use crate::product_hide::sys::VisibilityMode;
+    crate::product_hide::sys::hide_managed_claim_with_mode_traced(
+        store,
+        owner,
+        claim,
+        dir,
+        VisibilityMode::PumpedShowAsync,
+        sink,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn real_reveal_claim(
@@ -305,9 +326,18 @@ fn real_reveal_claim(
     owner: &ProcessIdentity,
     claim: &WindowIdentity,
     minimized: bool,
+    sink: Option<&mut crate::product_hide::sys::VisibilityPostTrace>,
 ) -> Result<Revealed, String> {
-    match crate::product_hide::sys::reveal_product_claim_to(store, owner, claim, minimized)
-        .map_err(|e| e.to_string())?
+    use crate::product_hide::sys::VisibilityMode;
+    match crate::product_hide::sys::reveal_product_claim_to_with_mode_traced(
+        store,
+        owner,
+        claim,
+        minimized,
+        VisibilityMode::PumpedShowAsync,
+        sink,
+    )
+    .map_err(|e| e.to_string())?
     {
         crate::product_hide::ProductTeardown::Retired => Ok(Revealed::Retired),
         _ => Ok(Revealed::Shown),
@@ -319,9 +349,12 @@ fn real_hide_claim_nonactivating(
     owner: &ProcessIdentity,
     claim: &WindowIdentity,
     dir: &Path,
+    sink: Option<&mut crate::product_hide::sys::VisibilityPostTrace>,
 ) -> Result<WindowIdentity, String> {
-    crate::product_hide::sys::hide_managed_claim_nonactivating(store, owner, claim, dir)
-        .map_err(|e| e.to_string())
+    crate::product_hide::sys::hide_managed_claim_nonactivating_traced(
+        store, owner, claim, dir, sink,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn real_reveal_claim_nonactivating(
@@ -329,9 +362,10 @@ fn real_reveal_claim_nonactivating(
     owner: &ProcessIdentity,
     claim: &WindowIdentity,
     minimized: bool,
+    sink: Option<&mut crate::product_hide::sys::VisibilityPostTrace>,
 ) -> Result<Revealed, String> {
-    match crate::product_hide::sys::reveal_product_claim_to_nonactivating(
-        store, owner, claim, minimized,
+    match crate::product_hide::sys::reveal_product_claim_to_nonactivating_traced(
+        store, owner, claim, minimized, sink,
     )
     .map_err(|e| e.to_string())?
     {
@@ -431,6 +465,17 @@ pub(super) struct LiveNative<'a> {
     pub active: &'a HashSet<u64>,
     pub token_key: HashMap<String, WindowKey>,
     pub prims: NativePrimitives,
+    /// Diagnostics trace switch (see `NativeOps::set_diagnostics_trace`):
+    /// armed by the owner before each apply. Gates the pre-call GUI read
+    /// and `gui_focus_of` (no native `GetGUIThreadInfo` while false), and
+    /// the visibility-post sink below (no post record while false).
+    /// Never a behavior input: vetos and fences ignore it.
+    trace: bool,
+    /// Trace-only executed visibility posts this pass (actual host API at
+    /// the native post site, not the configured lane). Drained by
+    /// [`NativeOps::take_visibility_posts`] into the pass stats with an
+    /// honest omitted count. Empty unless trace is armed.
+    vis_posts: VisibilityPostTrace,
 }
 
 impl<'a> LiveNative<'a> {
@@ -497,6 +542,8 @@ impl<'a> LiveNative<'a> {
             active,
             token_key,
             prims,
+            trace: false,
+            vis_posts: VisibilityPostTrace::default(),
             desired_frames,
             areas,
         }
@@ -888,7 +935,16 @@ impl<'a> LiveNative<'a> {
         } else {
             self.prims.hide_claim
         };
-        let committed = hide(self.store, self.me, &claim, self.dir).map_err(|message| {
+        // Trace-armed sink only: unarmed passes `None` so the native post
+        // records nothing and skips the clock. Early vetos above return
+        // before any post, so no record is ever inferred.
+        let (store, me, dir, hide_fn) = (self.store, self.me, self.dir, hide);
+        let sink: Option<&mut VisibilityPostTrace> = if self.trace {
+            Some(&mut self.vis_posts)
+        } else {
+            None
+        };
+        let committed = hide_fn(store, me, &claim, dir, sink).map_err(|message| {
             if message.starts_with("absent:") {
                 AdmitOutcome::OriginVanished
             } else if message.starts_with("uncertain:") {
@@ -950,7 +1006,14 @@ impl<'a> LiveNative<'a> {
         } else {
             self.prims.reveal_claim
         };
-        match reveal(self.store, self.me, &record.claim, iconic) {
+        let (store, me, reveal_fn) = (self.store, self.me, reveal);
+        let sink: Option<&mut VisibilityPostTrace> = if self.trace {
+            Some(&mut self.vis_posts)
+        } else {
+            None
+        };
+        let outcome = reveal_fn(store, me, &record.claim, iconic, sink);
+        match outcome {
             Ok(_) => {
                 self.hidden_claims.remove(key);
                 Ok(())
@@ -1540,41 +1603,128 @@ impl NativeOps for LiveNative<'_> {
     }
 
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
-        let key = self.key_of(token).ok_or(())?;
+        self.focus_window_traced(token).0
+    }
+
+    fn take_visibility_posts(&mut self) -> (Vec<VisibilityPostDiag>, usize) {
+        self.vis_posts.take()
+    }
+
+    fn set_diagnostics_trace(&mut self, trace: bool) {
+        self.trace = trace;
+    }
+
+    fn diagnostics_trace(&self) -> bool {
+        self.trace
+    }
+
+    fn focus_window_traced(
+        &mut self,
+        token: &str,
+    ) -> (Result<bool, ()>, super::world_diff::FocusCallDiag) {
+        use super::world_diff::{FOCUS_SETTER_API, FocusCallDiag, GuiFocusState};
+        // Pre-primitive vetos report no primitive detail: the adapter
+        // dispatched, the native setter never ran. Behavior (outcome)
+        // matches the previous `focus_window` exactly; only the record is
+        // new.
+        let vetoed = |outcome: Result<bool, ()>| {
+            (
+                outcome,
+                FocusCallDiag {
+                    primitive_called: false,
+                    native_return: None,
+                    api: None,
+                    call_mono_ms: None,
+                    ret_mono_ms: None,
+                    gui_before: None,
+                },
+            )
+        };
+        let Some(key) = self.key_of(token) else {
+            return vetoed(Err(()));
+        };
         if (self.prims.hook_pending)() {
-            return Err(());
+            return vetoed(Err(()));
         }
-        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
-        let w = (self.prims.observe)(key.hwnd, self.me, self.fulls, &mut self.tokens)
-            .map_err(|_| ())?;
+        let Some(expected) = self.member_identity.get(&key).cloned() else {
+            return vetoed(Err(()));
+        };
+        let decoded = (self.prims.observe)(key.hwnd, self.me, self.fulls, &mut self.tokens);
+        let Ok(w) = decoded else {
+            return vetoed(Err(()));
+        };
         if w.hwnd != key.hwnd
             || w.identity.pid != key.pid
             || w.identity.process_creation != key.creation
         {
-            return Err(());
+            return vetoed(Err(()));
         }
         if !crate::tiling::scope_allows(self.scope, &w.identity.exe_path) {
-            return Ok(false);
+            return vetoed(Ok(false));
         }
         if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
-            return Err(());
+            return vetoed(Err(()));
         }
         // Focus carries the overlay exemption (maximized/fullscreen members
         // focus, like the legacy actuation); everything else still refuses.
         if crate::tiling::classify_focus(&w.facts).is_err() {
-            return Ok(false);
+            return vetoed(Ok(false));
         }
         if self.focus_write_vetoed(key.hwnd) {
-            return Ok(false);
+            return vetoed(Ok(false));
         }
         if self.move_size_vetoed(key.hwnd) {
-            return Ok(false);
+            return vetoed(Ok(false));
         }
+        // Trace-gated pre-call GUI read: no native call while trace is off.
+        let gui_before = if self.trace {
+            match crate::ffi::gui_thread_focus(key.hwnd) {
+                Some(focus) => Some(GuiFocusState::Known {
+                    thread: focus.thread,
+                    active: focus.active,
+                    focus: focus.focus,
+                }),
+                None => Some(GuiFocusState::Unknown),
+            }
+        } else {
+            None
+        };
+        // Stamps strictly around the primitive, never the preflight above.
+        let call_mono_ms = super::trace::log_mono_ms();
         let ok = (self.prims.focus)(key.hwnd);
-        if (self.prims.window_pid)(key.hwnd) != key.pid {
-            return Err(());
+        let ret_mono_ms = super::trace::log_mono_ms();
+        // Full post-setter fences, not just the pid: a same-HWND recycle
+        // or a swapped membership tag across the call must read ambiguous
+        // (`Err`), never accepted on a stale identity. The async
+        // activation itself may still land later; only the fresh
+        // independent foreground read proves arrival.
+        if (self.prims.window_pid)(key.hwnd) != key.pid
+            || !self.identity_ok(&key, &expected)
+            || !self.lifetime_ok(&key)
+        {
+            return (
+                Err(()),
+                FocusCallDiag {
+                    primitive_called: true,
+                    native_return: Some(ok),
+                    api: Some(FOCUS_SETTER_API),
+                    call_mono_ms: Some(call_mono_ms),
+                    ret_mono_ms: Some(ret_mono_ms),
+                    gui_before,
+                },
+            );
         }
-        Ok(ok)
+        (
+            Ok(ok),
+            FocusCallDiag {
+                primitive_called: true,
+                native_return: Some(ok),
+                api: Some(FOCUS_SETTER_API),
+                call_mono_ms: Some(call_mono_ms),
+                ret_mono_ms: Some(ret_mono_ms),
+                gui_before,
+            },
+        )
     }
 
     fn poll_external_invalidation(&mut self) -> bool {
@@ -1603,6 +1753,44 @@ impl NativeOps for LiveNative<'_> {
             pid,
             creation: ident.process_creation,
         })
+    }
+
+    fn foreground_identity_of(&mut self, hwnd: u64) -> super::world_diff::ForegroundState {
+        use super::world_diff::{ForegroundIdentity, ForegroundState};
+        if hwnd == 0 {
+            return ForegroundState::None;
+        }
+        let pid = (self.prims.window_pid)(hwnd);
+        if pid == 0 {
+            return ForegroundState::Unknown;
+        }
+        let ident = match (self.prims.process_identity)(hwnd) {
+            Some(ident) => ident,
+            None => return ForegroundState::Unknown,
+        };
+        if ident.pid != pid {
+            return ForegroundState::Unknown;
+        }
+        ForegroundState::Known(ForegroundIdentity {
+            hwnd,
+            pid,
+            creation: ident.process_creation,
+        })
+    }
+
+    fn gui_focus_of(&mut self, hwnd: u64) -> super::world_diff::GuiFocusState {
+        use super::world_diff::GuiFocusState;
+        if !self.trace {
+            return GuiFocusState::Unknown;
+        }
+        match crate::ffi::gui_thread_focus(hwnd) {
+            Some(focus) => GuiFocusState::Known {
+                thread: focus.thread,
+                active: focus.active,
+                focus: focus.focus,
+            },
+            None => GuiFocusState::Unknown,
+        }
     }
 
     fn read_cursor(&mut self) -> Option<(i32, i32)> {

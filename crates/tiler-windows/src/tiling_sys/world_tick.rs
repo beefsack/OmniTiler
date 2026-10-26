@@ -246,6 +246,21 @@ fn should_log_apply(
     if !stats.focus_dispatch.is_empty() {
         return true;
     }
+    // In-flight clearing/landing rows are first-class evidence: a pass
+    // that only cleared a remembered flight (landing, supersession,
+    // lifetime end) must emit its clearing row, not stay quiet.
+    if !stats.inflight_events.is_empty()
+        || stats.inflight_total > 0
+        || stats.foreground_meta_omitted > 0
+    {
+        return true;
+    }
+    // Executed visibility posts are first-class evidence too: a pass
+    // whose only trace is an executed hide/reveal post (or its omission
+    // past the row cap) must emit its rows, not stay quiet.
+    if !stats.visibility_posts.is_empty() || stats.visibility_total > 0 {
+        return true;
+    }
     if stats.stopped_mid_apply || stats.partial {
         return true;
     }
@@ -665,6 +680,67 @@ fn apply_diag_value(
                 "setter": row.setter,
                 "foreground": row.foreground,
                 "hold": row.hold,
+                "fg_baseline": row.fg_baseline.clone(),
+                "fg_live": row.fg_live.clone(),
+                "api": row.api,
+                "call_mono_ms": row.call_mono_ms,
+                "ret_mono_ms": row.ret_mono_ms,
+                "gui_dispatch": row.gui_dispatch.clone(),
+                "gui_landing": row.gui_landing.clone(),
+                "primitive_called": row.primitive_called,
+                "native_return": row.native_return,
+                "hwnd": row.hwnd,
+                "pid": row.pid,
+                "creation": row.creation.clone(),
+            })
+        })
+        .collect();
+    // Trace-only in-flight clearing/landing rows for this pass: why each
+    // remembered flight ended, with the clearing edge's delivery/owner
+    // stamps when an edge cleared it. Bounded with an honest omitted
+    // count derived from the unbounded `inflight_total`, never the
+    // truncated stored rows.
+    let inflight_rows: Vec<serde_json::Value> = stats
+        .inflight_events
+        .iter()
+        .take(MAX_APPLY_DIAG_FOCUS)
+        .map(|row| {
+            serde_json::json!({
+                "token": row.token.clone(),
+                "effect": row.effect.clone(),
+                "cause": row.cause,
+                "edge_event_ms": row.edge_event_ms,
+                "edge_queued_mono_ms": row.edge_queued_mono_ms,
+                "edge_drain_mono_ms": row.edge_drain_mono_ms,
+                "resolve_mono_ms": row.resolve_mono_ms,
+                "gui": row.gui.clone(),
+                "hwnd": row.hwnd,
+                "pid": row.pid,
+                "creation": row.creation.clone(),
+            })
+        })
+        .collect();
+    // Trace-only executed visibility posts for this pass: the actual host
+    // API that ran per hide/reveal post, with the activation-affecting
+    // parameter (async `SetWindowPos` flag word or `ShowWindowAsync`
+    // command) and the post verdict. Call-to-return alone never proves
+    // arrival; the visibility proof rides the views/members rows.
+    // Bounded with an honest omitted count derived from the unbounded
+    // `visibility_total`, never the truncated stored rows.
+    let visibility_rows: Vec<serde_json::Value> = stats
+        .visibility_posts
+        .iter()
+        .take(MAX_APPLY_DIAG_FOCUS)
+        .map(|row| {
+            serde_json::json!({
+                "hwnd": row.hwnd,
+                "hide": row.hide,
+                "api": row.api,
+                "flags": row.flags,
+                "cmd": row.cmd,
+                "posted": row.posted,
+                "call_mono_ms": row.call_mono_ms,
+                "ret_mono_ms": row.ret_mono_ms,
             })
         })
         .collect();
@@ -754,6 +830,15 @@ fn apply_diag_value(
             .effects
             .len()
             .saturating_sub(focus_dispatch.len()),
+        "inflight_events": inflight_rows,
+        "inflight_events_omitted": stats
+            .inflight_total
+            .saturating_sub(stats.inflight_events.len().min(MAX_APPLY_DIAG_FOCUS)),
+        "foreground_meta_omitted": stats.foreground_meta_omitted,
+        "visibility_posts": visibility_rows,
+        "visibility_posts_omitted": stats
+            .visibility_total
+            .saturating_sub(stats.visibility_posts.len().min(MAX_APPLY_DIAG_FOCUS)),
         "fresh_route": fresh_route,
     });
     out["desired_windows"] = serde_json::Value::Array(desired_windows);
@@ -1335,6 +1420,7 @@ pub(super) fn run_observation_tick(
         active,
         NativePrimitives::default(),
     );
+    native.set_diagnostics_trace(trace);
     world.sync_diff_gate();
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
@@ -1453,8 +1539,12 @@ pub(super) fn run_observation_tick(
 
 /// Route one explicit [`WorldCommand`] through the single owner: dispatch
 /// with the command, deliver, apply, and acknowledge like the observation
-/// path. While observation-only catch-up is pending the caller runs the
-/// catch-up first and resubmits: the command is never queued or replayed.
+/// path. The command is never queued or replayed: while observation-only
+/// catch-up is pending the dispatch refuses and the caller resubmits after,
+/// and a core rejection drops the command. Either fence services the owed
+/// observation-only catch-up synchronously on this turn's tick products
+/// before returning, so the next command never strands behind an idle wait
+/// for an unrelated wake.
 // Ten inputs are the disjoint production command products; bundling would
 // hide the borrow split the runtime relies on.
 #[allow(clippy::too_many_arguments)]
@@ -1614,6 +1704,30 @@ pub(super) fn run_world_command(
                         "reason": reason,
                     }),
                 );
+                if matches!(
+                    dispatch,
+                    super::world_sequencer::DispatchError::CatchupRequired
+                ) {
+                    // Owed catch-up serviced synchronously on this turn's
+                    // tick products: the fence stays (the refused command
+                    // never queues or replays) but the next command must
+                    // not strand behind an idle wait for an unrelated
+                    // wake. Unserviceable fences (busy flight, exhausted
+                    // counters) keep today's behavior.
+                    run_observation_tick(
+                        state,
+                        me,
+                        store,
+                        dir,
+                        observed,
+                        retained,
+                        areas,
+                        foreground_hwnd,
+                        fulls,
+                        cursor,
+                        false,
+                    );
+                }
                 return None;
             }
         }
@@ -1643,6 +1757,23 @@ pub(super) fn run_world_command(
                 }),
             );
             world.note_rejected_or_lost(&report.request_id);
+            // The rejection just armed observation-only catch-up; service
+            // it synchronously on this turn's tick products instead of
+            // stranding the next command behind an unrelated wake. The
+            // rejected command stays dropped (never queued, never replayed).
+            run_observation_tick(
+                state,
+                me,
+                store,
+                dir,
+                observed,
+                retained,
+                areas,
+                foreground_hwnd,
+                fulls,
+                cursor,
+                false,
+            );
             return None;
         }
     };
@@ -1763,6 +1894,7 @@ pub(super) fn run_world_command(
         active,
         NativePrimitives::default(),
     );
+    native.set_diagnostics_trace(trace);
     world.sync_diff_gate();
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
@@ -2221,8 +2353,13 @@ mod apply_diag_tests {
             stopped_mid_apply: false,
             partial: false,
             focus_dispatch: Vec::new(),
+            inflight_events: Vec::new(),
+            inflight_total: 0,
+            foreground_meta_omitted: 0,
             clear_holds: Vec::new(),
             clear_holds_total: 0,
+            visibility_posts: Vec::new(),
+            visibility_total: 0,
         }
     }
 
@@ -2639,6 +2776,18 @@ mod apply_diag_tests {
                 setter: "refused",
                 foreground: false,
                 hold: Some("foreground-unproven"),
+                fg_baseline: None,
+                fg_live: None,
+                api: Some(super::super::world_diff::FOCUS_SETTER_API),
+                call_mono_ms: Some(7),
+                ret_mono_ms: Some(9),
+                gui_dispatch: Some("unknown".to_owned()),
+                gui_landing: None,
+                primitive_called: true,
+                native_return: Some(false),
+                hwnd: None,
+                pid: None,
+                creation: None,
             }],
             ..Default::default()
         };
@@ -2661,6 +2810,18 @@ mod apply_diag_tests {
                 setter: "skipped",
                 foreground: false,
                 hold: Some("view-not-shown"),
+                fg_baseline: None,
+                fg_live: None,
+                api: None,
+                call_mono_ms: None,
+                ret_mono_ms: None,
+                gui_dispatch: None,
+                gui_landing: None,
+                primitive_called: false,
+                native_return: None,
+                hwnd: None,
+                pid: None,
+                creation: None,
             }],
             ..Default::default()
         };
@@ -2726,6 +2887,169 @@ mod apply_diag_tests {
     }
 
     #[test]
+    fn inflight_clearing_logs_quiet_observation() {
+        // A pass that only cleared a remembered flight (landing,
+        // supersession, or lifetime end) carries first-class evidence: the
+        // observation tick emits its clearing row instead of staying quiet.
+        use super::super::world_diff::InFlightEventDiag;
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
+        let idle_reply = reply_shell();
+        let mut landed = super::super::world_diff::ApplyStats::default();
+        landed.note_inflight(InFlightEventDiag {
+            token: "w1".to_owned(),
+            effect: "fx-1".to_owned(),
+            cause: "landed-own",
+            edge_event_ms: Some(31),
+            edge_queued_mono_ms: Some(11),
+            edge_drain_mono_ms: Some(13),
+            resolve_mono_ms: 21,
+            gui: Some("thread:7:active:1001:focus:1001".to_owned()),
+            hwnd: Some(1001),
+            pid: Some(2001),
+            creation: Some("proc-1".to_owned()),
+        });
+        assert!(should_log_apply(
+            "observation",
+            &landed,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            &idle_reply,
+        ));
+        // Omitted-count-only evidence logs too: the fold itself is new.
+        let folded = super::super::world_diff::ApplyStats {
+            foreground_meta_omitted: 2,
+            ..Default::default()
+        };
+        assert!(should_log_apply(
+            "observation",
+            &folded,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            &idle_reply,
+        ));
+    }
+
+    #[test]
+    fn visibility_posts_log_quiet_observation() {
+        // A pass whose only evidence is executed visibility posts (or
+        // their omission past the row cap) emits its rows instead of
+        // staying quiet. Rows name the executed host API and the
+        // activation-affecting parameter, never intended-mode labels.
+        use crate::product_hide::sys::{NA_POS_HIDE_FLAGS, VIEW_POST_API_POS, VisibilityPostDiag};
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
+        let idle_reply = reply_shell();
+        let mut posted = super::super::world_diff::ApplyStats::default();
+        posted.note_visibility_post(VisibilityPostDiag {
+            hwnd: 1001,
+            hide: true,
+            api: VIEW_POST_API_POS,
+            flags: Some(NA_POS_HIDE_FLAGS),
+            cmd: None,
+            posted: true,
+            call_mono_ms: 11,
+            ret_mono_ms: 13,
+        });
+        assert!(should_log_apply(
+            "observation",
+            &posted,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            &idle_reply,
+        ));
+        let value = apply_diag_value(
+            9,
+            &idle_reply,
+            "accepted",
+            "observation",
+            &posted,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+        );
+        let rows = value["visibility_posts"]
+            .as_array()
+            .expect("visibility rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["hwnd"], serde_json::json!(1001));
+        assert_eq!(rows[0]["hide"], serde_json::json!(true));
+        assert_eq!(rows[0]["api"], serde_json::json!(VIEW_POST_API_POS));
+        assert_eq!(rows[0]["flags"], serde_json::json!(NA_POS_HIDE_FLAGS));
+        assert_eq!(rows[0]["posted"], serde_json::json!(true));
+        assert_eq!(value["visibility_posts_omitted"], serde_json::json!(0));
+        // Omitted-count-only evidence logs too.
+        let folded = super::super::world_diff::ApplyStats {
+            visibility_total: 9,
+            ..Default::default()
+        };
+        assert!(should_log_apply(
+            "observation",
+            &folded,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            &idle_reply,
+        ));
+        // Over-cap source storage stays honest in world-apply: the capped
+        // rows render with the unbounded total behind the omitted count.
+        use super::super::world_diff::MAX_VISIBILITY_DIAG;
+        let mut capped = super::super::world_diff::ApplyStats::default();
+        for n in 0..(MAX_VISIBILITY_DIAG + 3) {
+            capped.note_visibility_post(VisibilityPostDiag {
+                hwnd: 2000 + n as u64,
+                hide: true,
+                api: VIEW_POST_API_POS,
+                flags: Some(NA_POS_HIDE_FLAGS),
+                cmd: None,
+                posted: true,
+                call_mono_ms: 11,
+                ret_mono_ms: 13,
+            });
+        }
+        let capped_value = apply_diag_value(
+            10,
+            &idle_reply,
+            "accepted",
+            "observation",
+            &capped,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+        );
+        assert_eq!(
+            capped_value["visibility_posts"]
+                .as_array()
+                .expect("capped visibility rows")
+                .len(),
+            MAX_VISIBILITY_DIAG
+        );
+        assert_eq!(
+            capped_value["visibility_posts_omitted"],
+            serde_json::json!(3)
+        );
+    }
+
+    #[test]
     fn diag_held_focus_dispatch_carries_hold_reason() {
         // The held observation oracle: a minted-but-held FFC effect rides
         // with its individual hold reason, so the live leg can attribute a
@@ -2747,6 +3071,18 @@ mod apply_diag_tests {
                 setter: "skipped",
                 foreground: false,
                 hold: Some("view-not-shown"),
+                fg_baseline: None,
+                fg_live: None,
+                api: None,
+                call_mono_ms: None,
+                ret_mono_ms: None,
+                gui_dispatch: None,
+                gui_landing: None,
+                primitive_called: false,
+                native_return: None,
+                hwnd: None,
+                pid: None,
+                creation: None,
             }],
             ..Default::default()
         };
@@ -2775,6 +3111,21 @@ mod apply_diag_tests {
         assert_eq!(dispatch[0]["setter"], serde_json::json!("skipped"));
         assert_eq!(dispatch[0]["foreground"], serde_json::json!(false));
         assert_eq!(dispatch[0]["hold"], serde_json::json!("view-not-shown"));
+        assert!(dispatch[0]["fg_baseline"].is_null());
+        assert!(dispatch[0]["fg_live"].is_null());
+        // Skipped setters carry no call window, API, or dispatch-time GUI
+        // read: nulls, never fabricated zeros.
+        assert!(dispatch[0]["api"].is_null());
+        assert!(dispatch[0]["call_mono_ms"].is_null());
+        assert!(dispatch[0]["ret_mono_ms"].is_null());
+        assert!(dispatch[0]["gui_dispatch"].is_null());
+        // No flight ended this pass: the clearing array is empty with a
+        // zero total, not an absent field.
+        assert_eq!(value["inflight_events"], serde_json::json!([]));
+        assert_eq!(value["inflight_events_omitted"], serde_json::json!(0));
+        // No foreground-edge metadata folded this pass either: the sidecar
+        // omission rides the same diag, zero when nothing folded.
+        assert_eq!(value["foreground_meta_omitted"], serde_json::json!(0));
     }
 
     #[test]
@@ -2900,6 +3251,18 @@ mod apply_diag_tests {
                     setter: if n == 0 { "accepted" } else { "skipped" },
                     foreground: n == 0,
                     hold: if n == 0 { None } else { Some("view-not-shown") },
+                    fg_baseline: None,
+                    fg_live: None,
+                    api: None,
+                    call_mono_ms: None,
+                    ret_mono_ms: None,
+                    gui_dispatch: None,
+                    gui_landing: None,
+                    primitive_called: false,
+                    native_return: None,
+                    hwnd: None,
+                    pid: None,
+                    creation: None,
                 })
                 .collect(),
             ..Default::default()

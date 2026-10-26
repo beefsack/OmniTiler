@@ -914,7 +914,7 @@ mod pending_seams;
 
 mod minmax;
 
-mod trace;
+pub(crate) mod trace;
 
 mod owner_work;
 

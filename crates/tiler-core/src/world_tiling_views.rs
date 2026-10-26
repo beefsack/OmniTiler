@@ -134,12 +134,14 @@ impl WorldEngine {
     /// history entry.
     ///
     /// R-WS-09: returning to a workspace restores its remembered focus
-    /// (REQ-WS-09). When the view actually changes, emit one explicit
-    /// at-most-once focus effect to the target domain's remembered leaf
-    /// window when it exists and stages eligible. Valid no-focus states
-    /// (R-CLOSE-03/REQ-MNZ-03: empty workspaces, minimized-only survivors)
-    /// naturally yield no remembered window and stay `NoEffect`: no focus
-    /// is invented and no fallback is added here.
+    /// (REQ-WS-09); with no remembered focus it falls back to the
+    /// most-recently-used eligible member, else the first member in
+    /// deterministic layout order (tentative, pending user review). When
+    /// the view actually changes, emit one explicit at-most-once focus
+    /// effect to the resolved window when it stages eligible. Valid
+    /// no-focus states (R-CLOSE-03/REQ-MNZ-03: empty workspaces,
+    /// minimized-only survivors) naturally resolve to no candidate and
+    /// stay `NoEffect`: no focus is invented.
     pub(crate) fn retain_view(
         &mut self,
         report: &WorldReport,
@@ -208,10 +210,13 @@ impl WorldEngine {
         ))
     }
 
-    /// Remembered R-WS-09 focus candidate for one view target: the target
-    /// domain's remembered leaf window when it stages eligible. `None`
-    /// preserves every valid no-focus state and every gate without
-    /// inventing a fallback.
+    /// Remembered R-WS-09 focus candidate for one view target: the first
+    /// eligible window over the target domain's view-return candidates
+    /// (remembered, else MRU recency order, else layout order). Ineligible
+    /// top candidates (sticky, floating, unexplained fit-excluded, or
+    /// unstaged rows) fall through to the next linked member. `None`
+    /// preserves every valid no-focus state and every gate (including
+    /// held scopes) without inventing a fallback.
     pub(crate) fn remembered_view_focus(
         &self,
         target: &DomainKey,
@@ -229,25 +234,31 @@ impl WorldEngine {
             return None;
         }
         let session = self.engine.session(target)?;
-        let leaf = session.remembered_leaf(target)?;
-        let window = session.focused_window_for(&leaf, target)?;
-        let row = by_id.get(&window)?;
-        // No automatic permission for unexplained fit-excluded rows
-        // (game/overlay without a floating, fullscreen, or maximized
-        // origin), mirroring the send path. Overlays stay focusable;
-        // sticky never rides a view return.
-        if row.sticky {
-            return None;
+        for leaf in session.view_return_candidates(target) {
+            let Some(window) = session.focused_window_for(&leaf, target) else {
+                continue;
+            };
+            let Some(row) = by_id.get(&window) else {
+                continue;
+            };
+            // No automatic permission for unexplained fit-excluded rows
+            // (game/overlay without a floating, fullscreen, or maximized
+            // origin), mirroring the send path. Overlays stay focusable;
+            // sticky never rides a view return.
+            if row.sticky {
+                continue;
+            }
+            if row.fit_excluded && !row.floating && !row.fullscreen && !row.maximized {
+                continue;
+            }
+            // Floating rows never resolve through a linked leaf, but
+            // belt-and-suspenders keeps the view return on tiled members.
+            if row.floating {
+                continue;
+            }
+            return Some(window);
         }
-        if row.fit_excluded && !row.floating && !row.fullscreen && !row.maximized {
-            return None;
-        }
-        // Floating rows never resolve through the tiled remembered leaf,
-        // but belt-and-suspenders keeps the view return on tiled members.
-        if row.floating {
-            return None;
-        }
-        Some(window)
+        None
     }
 
     /// Scoped selection ring for one output: the retained logical ring.

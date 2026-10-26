@@ -517,3 +517,81 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
     assert_eq!(focus, Some(NodeId("leaf-win-b2".to_owned())));
     assert_eq!(plan.desired_geometry.len(), 3);
 }
+
+/// First layout leaf window for one domain, in deterministic child order
+/// (tentative no-history tie-break for view returns).
+fn first_leaf_window(session: &Session, key: &DomainKey) -> Option<WindowId> {
+    let mut node = session.tree_for(key)?;
+    loop {
+        match node {
+            Node::Leaf { id } => {
+                return session
+                    .snapshot()
+                    .windows
+                    .iter()
+                    .find(|link| &link.leaf == id)
+                    .map(|link| link.window.clone());
+            }
+            Node::Group { children, .. } => {
+                node = children.first()?;
+            }
+        }
+    }
+}
+
+#[test]
+fn view_return_candidates_prefers_remembered_then_mru_then_first() {
+    // Shared-core view-return chain: a fresh converge with no observed
+    // focus records no remembered leaf while the MRU stack seeds in
+    // admission order, so the first candidate is the MRU top (win-b), not
+    // the first layout leaf (win-a). A remembered leaf wins over a newer
+    // MRU top, ineligible top candidates fall through per candidate at
+    // the call site, and an empty domain resolves to no candidate.
+    fn first_candidate(session: &Session, key: &DomainKey) -> Option<NodeId> {
+        session.view_return_candidates(key).into_iter().next()
+    }
+    let mut session = single_domain_session();
+    let key = domain_key("out-1", "ws-1");
+    let obs = complete_observation(
+        &session,
+        vec![
+            tiled_observed("win-a", "out-1", "ws-1"),
+            tiled_observed("win-b", "out-1", "ws-1"),
+        ],
+    );
+    session.converge_observation(&obs, None).expect("converge");
+    assert_eq!(session.focus(), (None, None));
+    assert_eq!(
+        first_leaf_window(&session, &key)
+            .as_ref()
+            .map(|w| w.0.as_str()),
+        Some("win-a")
+    );
+    assert_eq!(
+        first_candidate(&session, &key),
+        Some(NodeId("leaf-win-b".to_owned())),
+        "MRU top wins with no remembered leaf"
+    );
+    // Ordinary activation advances the MRU stack only; the remembered
+    // leaf still wins the return.
+    assert!(session.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
+    assert!(session.remember_focus(&key, &WindowId("win-a".to_owned())));
+    assert!(session.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
+    assert_eq!(
+        first_candidate(&session, &key),
+        Some(NodeId("leaf-win-a".to_owned())),
+        "remembered leaf beats the newer MRU top"
+    );
+    // Candidate order documents the fall-through: remembered first, then
+    // MRU recency, then layout order, deduplicated.
+    assert_eq!(
+        session.view_return_candidates(&key),
+        vec![
+            NodeId("leaf-win-a".to_owned()),
+            NodeId("leaf-win-b".to_owned())
+        ]
+    );
+    // Empty domain: no candidate, never invented focus.
+    let empty = single_domain_session();
+    assert_eq!(first_candidate(&empty, &key), None);
+}

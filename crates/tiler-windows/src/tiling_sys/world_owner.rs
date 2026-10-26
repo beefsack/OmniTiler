@@ -120,6 +120,24 @@ impl WorldOwner {
         self.diff.gate.note_applied(reply);
     }
 
+    #[allow(dead_code)]
+    pub(super) fn push_foreground_events(&mut self, hwnds: Vec<u64>) {
+        self.diff.push_foreground_events(hwnds);
+    }
+
+    /// Record one drained foreground pass with delivery/owner timestamps
+    /// for the in-flight focus join. Production only; offline tests keep
+    /// the HWND-only entry above. `omitted` carries the drain's own
+    /// detail-cap excess so the sidecar omission stays exact.
+    pub(super) fn push_foreground_drain(
+        &mut self,
+        hwnds: Vec<u64>,
+        meta: Vec<super::observe::ForegroundEdgeMeta>,
+        omitted: usize,
+    ) {
+        self.diff.push_foreground_drain_traced(hwnds, meta, omitted);
+    }
+
     /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
     /// ffc-enabled)` differs from the last emitted `world-apply` row.
     /// Pure comparison over already-captured values: no native reads.

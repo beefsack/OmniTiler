@@ -432,6 +432,40 @@ pub fn set_window_pos_detailed(
     (ok, err)
 }
 
+/// GUI-thread focus snapshot for one window's thread: the owning thread
+/// plus its currently active and keyboard-focus windows. Read-only and
+/// fail-closed (`None` when the thread or its info is unreadable). No
+/// titles, paths, or content: numeric identities only, for trace joins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuiThreadFocus {
+    pub thread: u32,
+    pub active: u64,
+    pub focus: u64,
+}
+
+/// Best-effort [`GuiThreadFocus`] for the thread owning `hwnd`.
+pub fn gui_thread_focus(hwnd: u64) -> Option<GuiThreadFocus> {
+    if hwnd == 0 {
+        return None;
+    }
+    let tid = window_thread_id(hwnd);
+    if tid == 0 {
+        return None;
+    }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GUITHREADINFO, GetGUIThreadInfo};
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+    let ok = unsafe { GetGUIThreadInfo(tid, &mut info) };
+    if ok == 0 {
+        return None;
+    }
+    Some(GuiThreadFocus {
+        thread: tid,
+        active: info.hwndActive as usize as u64,
+        focus: info.hwndFocus as usize as u64,
+    })
+}
+
 /// Move/size modal-loop probe for one window's thread: `Some(true)` while
 /// that thread runs a move/size modal loop, `Some(false)` when it does
 /// not, `None` when unreadable (fail closed). Read-only.

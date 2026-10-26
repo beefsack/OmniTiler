@@ -82,6 +82,11 @@ pub(super) struct WakeEdge {
     pub id_object: i32,
     pub thread: u32,
     pub time: u32,
+    /// Callback-time monotonic stamp (same `mono_ms` basis as log rows):
+    /// when the out-of-context hook callback queued this edge. Primitive
+    /// metadata only: the callback never logs. Joins the deferred-vs-delayed
+    /// question at the drain, never a causal claim on its own.
+    pub queued_mono_ms: u64,
     pub delivery: DeliverySnapshot,
 }
 
@@ -105,6 +110,7 @@ impl WakeEdge {
             id_object: OBJID_WINDOW,
             thread: 0,
             time: 0,
+            queued_mono_ms: 0,
             delivery: DeliverySnapshot::Unknown,
         }
     }
@@ -118,6 +124,7 @@ impl WakeEdge {
             id_object: OBJID_WINDOW,
             thread: 7,
             time: 9,
+            queued_mono_ms: 0,
             delivery,
         }
     }
@@ -313,6 +320,9 @@ impl crate::ffi::WinEventSink for LoopEventSink {
                 id_object: ev.id_object,
                 thread: ev.thread,
                 time: ev.time,
+                // Delivery timestamp only: same monotonic basis as the log
+                // rows, captured without logging (the callback never logs).
+                queued_mono_ms: super::trace::log_mono_ms(),
                 delivery,
             }));
         }
@@ -389,6 +399,33 @@ pub(super) fn hook_cause_summary() -> Vec<(&'static str, u64)> {
 /// Max trace-only pending-edge rows per diagnostic emission: compact and
 /// bounded; the remainder folds into an honest omitted count.
 pub(super) const MAX_PENDING_EDGE_ROWS: usize = 8;
+
+/// One drained `EVENT_SYSTEM_FOREGROUND` edge with its delivery/owner
+/// timestamps for the in-flight focus join. `event_ms` is the WinEvent
+/// delivery time (system event-time basis, wraps); `queued_mono_ms` is the
+/// hook-callback queue time and `drain_mono_ms` the owner-drain time (both
+/// the shared log `mono_ms` basis). Detection, delivery, and observation
+/// stay distinct fields: no causal claim is encoded here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ForegroundEdgeMeta {
+    pub hwnd: u64,
+    pub event_ms: u32,
+    pub thread: u32,
+    pub queued_mono_ms: u64,
+    pub drain_mono_ms: u64,
+    /// Delivery-time read from the hook callback (pid plus membership
+    /// tag as observed at delivery): the drain-time join below validates
+    /// it against current member state exactly like the pending preview.
+    pub delivery: DeliverySnapshot,
+}
+
+/// Max drained foreground edges retained for the flight join per pass: the
+/// generic pending preview above stays capped at eight rows, so correlated
+/// foreground edges ride this separate bound instead of being lost to it.
+/// Excess folds into an honest omitted count, never a silent drop.
+pub(super) const MAX_FOREGROUND_TRACE_EDGES: usize = 32;
+/// Max correlated foreground rows rendered on one wake-attribution line.
+pub(super) const MAX_FOREGROUND_TRACE_ROWS: usize = 8;
 
 /// One current member candidate for delivery-join validation: the live
 /// `(hwnd, pid)` plus the stored visible-membership tag and the opaque

@@ -15,6 +15,11 @@ Superseded excerpts moved out on 2026-10-24 live in
 current product policy.
 
 Tentative index (user review pending; not approved product rules):
+- Windows command rejection services owed observation-only catchup on the same
+  turn, without queuing or replaying the command
+  ([record](changes/windows-directional-focus-startup.md#evidence-and-decisions))
+- Workspace no-history arrival uses layout child order
+  ([below](#workspaces), [record](changes/archive/workspace-arrival-focus-convergence.md))
 - Windows nonactivating remembered-focus view application, live foreground/
   gesture proof and same-pass hidden foreground facts
   ([change record](changes/archive/windows-workspace-focus-restore.md#alternative-native-mechanism-2026-10-25))
@@ -1391,6 +1396,33 @@ platform API behavior.
   foreground, independent of missing/stale snap origin, restores maximized
   windows on workspace return. Fullscreen/game variants remain pending
   ([record](changes/windows-single-output-dogfood.md)).
+- **User 2026-10-26:** selecting/showing an occupied workspace with no valid
+  remembered focus chooses its most recently used eligible member; if none
+  has focus history, choose the first eligible member. No setting. This follows
+  i3/sway per-workspace focus order and COSMIC MRU/first-mapped reasoning;
+  Hyprland's cursor/candidate fallback is deliberately rejected because the
+  window under the pointer is not known until the workspace appears.
+  **Tentative, pending user review:** deterministic layout child order defines
+  "first". Candidate eligibility and fullscreen/game gates remain unchanged;
+  empty/minimized-only workspaces retain no focused client (R-CLOSE-03,
+  REQ-MNZ-03). Directional focus from no focus, general no-active-window states,
+  and empty-workspace focus across outputs remain undecided. Shared-core
+  delivery retains existing tiled-session eligibility, not new float focus
+  tracking. [Discriminator](spec/reference-outcomes.md#workspace-no-focus-discriminators).
+- **User 2026-10-26:** Windows remembers an accepted asynchronous focus
+  target's exact native identity and membership lifetime as in-flight, with no
+  blocking completion wait, timer or timeout. Existing foreground WinEvents
+  clear it on landing or another readable foreground's supersession; target
+  lifetime end, a newer accepted setter and generation reset also clear or
+  replace it. During a later nonactivating switch, a foreground change to
+  exactly that still-in-flight identity is our prior landing, not supersession;
+  every other change still vetoes. A simultaneous user click on that same
+  in-flight window is indistinguishable and accepted as ours. Unreadable
+  identity never proves a landing. Core chooses the target; fullscreen/game,
+  lifetime and at-most-once gates remain, with no retry or replay. Replaces
+  the tentative queue-completion approach; fixture rapid bursts, native
+  foreground/visibility, pager and genuine supersession verified
+  ([evidence and limits](changes/archive/workspace-arrival-focus-convergence.md)).
 - R-WS-02: returning B inserts after remembered target anchor A; no before/after setting (User 2026-10-10, 0.1 triage D18).
 - Shared model:
   - Each managed workspace owns a session-local tiled/floating flag. Startup

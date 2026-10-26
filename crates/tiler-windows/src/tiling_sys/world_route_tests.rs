@@ -1108,3 +1108,176 @@ fn busy_command_reports_unverified_not_cached_reply() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn rejected_command_catchup_never_strands_the_next_command() {
+    use tiler_core::directional::WindowId;
+    use tiler_core::world_report::{EffectKind, WorldCommand, WorldReply};
+    // Production-shaped catchup-starvation probe through the real
+    // owner/command/scheduling path: three tiled windows bootstrap, valid
+    // Left and Up from the bottom-right origin dispatch, an edge Right
+    // core-rejects (arming observation-only catch-up), then Left and Up
+    // from that same origin must dispatch with no unrelated WinEvent
+    // between them. The rejected command is never queued or replayed.
+    // Host-shaped identity: 16-hex-digit FILETIME creation stamps, and one
+    // owner-loop tick per command turn like `dispatch_directional_intent`.
+    // Fake handles never actually take focus, so every command names the
+    // same origin foreground.
+    fn observed_at(hwnd: u64, token: &str, creation: &str, x: i32) -> ObservedWindow {
+        let visible = Rect {
+            x,
+            y: 100,
+            w: 200,
+            h: 200,
+        };
+        let outer = Rect {
+            x: x - 8,
+            y: 92,
+            w: 216,
+            h: 216,
+        };
+        ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer,
+            visible,
+            insets: crate::tiling::FrameInsets::measure(outer, visible),
+            identity: ObservedTarget {
+                hwnd,
+                pid: 200 + hwnd as u32,
+                process_creation: creation.to_owned(),
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                tag: format!("tag-{token}"),
+            },
+            facts: plain_facts(),
+            member_tag: Some(format!("tag-{token}")),
+        }
+    }
+    /// Exactly one fresh `fx-` focus effect with the expected target;
+    /// returns its id for the uniqueness proof below.
+    fn fresh_focus(reply: &WorldReply, want: &str) -> String {
+        let mut hits = reply
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == EffectKind::Focus && effect.id.starts_with("fx-"));
+        let hit = hits.next().expect("one fresh focus effect");
+        assert!(
+            hits.next().is_none(),
+            "exactly one fx- focus effect, got {:?}",
+            reply.effects
+        );
+        assert_eq!(
+            hit.target,
+            WindowId(want.to_owned()),
+            "correct focus target"
+        );
+        hit.id.clone()
+    }
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    for (hwnd, token, creation) in [
+        (101, "w1", "01dc9a1b2c3d4e01"),
+        (102, "w2", "01dc9a1b2c3d4e02"),
+        (103, "w3", "01dc9a1b2c3d4e03"),
+    ] {
+        let key = crate::native_guards::WindowKey {
+            hwnd,
+            pid: 200 + hwnd as u32,
+            creation: creation.to_owned(),
+        };
+        state.member_tokens.insert(key.clone(), token.to_owned());
+        state
+            .member_tags
+            .insert(key.clone(), format!("tag-{token}"));
+        state.member_identity.insert(
+            key,
+            crate::model::ProcessIdentity {
+                pid: 200 + hwnd as u32,
+                process_creation: creation.to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+            },
+        );
+    }
+    let observed = vec![
+        observed_at(101, "w1", "01dc9a1b2c3d4e01", 0),
+        observed_at(102, "w2", "01dc9a1b2c3d4e02", 270),
+        observed_at(103, "w3", "01dc9a1b2c3d4e03", 540),
+    ];
+    let (dir, store, areas, fulls) = route_dirs("catchup-starve");
+    let me = route_me();
+    state.tick += 1;
+    super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        101,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("seed converges");
+    let focus = |window: &str, direction: &str| WorldCommand::FocusDirectional {
+        window: WindowId(window.to_owned()),
+        direction: direction.to_owned(),
+    };
+    let command = |state: &mut super::TileLoop, window: &str, direction: &str| {
+        // One owner-loop turn per command, like `dispatch_directional_intent`.
+        state.tick += 1;
+        super::world_tick::run_world_command(
+            state,
+            &me,
+            &store,
+            &dir,
+            &observed,
+            &[],
+            &areas,
+            101,
+            &fulls,
+            focus(window, direction),
+            None,
+        )
+    };
+    // Valid Left and Up from the bottom-right origin: w1 reaches w2 to the
+    // left and w3 above (core layout tiles w2 full-height left, w3 top-right).
+    let left_id = fresh_focus(
+        &command(&mut state, "w1", "left").expect("left dispatches"),
+        "w2",
+    );
+    let up_id = fresh_focus(
+        &command(&mut state, "w1", "up").expect("up dispatches"),
+        "w3",
+    );
+    // No neighbor: w1 focuses right off the edge. The core rejects
+    // unchanged, which arms observation-only catch-up.
+    assert!(
+        command(&mut state, "w1", "right").is_none(),
+        "edge right must core-reject"
+    );
+    // Same origin, no unrelated WinEvent between: the owed catch-up must
+    // have run, so both dispatch again with their own fresh effects.
+    let left_again_id = fresh_focus(
+        &command(&mut state, "w1", "left").expect("owed catch-up serves left"),
+        "w2",
+    );
+    let up_again_id = fresh_focus(
+        &command(&mut state, "w1", "up").expect("owed catch-up serves up"),
+        "w3",
+    );
+    let mut ids = vec![left_id, up_id, left_again_id, up_again_id];
+    ids.sort();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        4,
+        "unique fresh effect per valid command, never a replay"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

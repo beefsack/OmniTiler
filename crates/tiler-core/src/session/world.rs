@@ -1025,6 +1025,53 @@ impl super::Session {
             .then_some(leaf)
     }
 
+    /// View-return focus candidates for selecting/showing `target`
+    /// (R-WS-09), most-preferred first: the remembered last-active leaf
+    /// while still linked there, then the domain-scoped MRU stack in
+    /// recency order, then every linked leaf in deterministic layout
+    /// (child) order. Each stage only names leaves with a window link
+    /// homed in the domain; view-level eligibility (sticky, floating,
+    /// unexplained fit-excluded rows) applies per candidate at the call
+    /// site, so an ineligible top candidate falls through to the next
+    /// eligible member. Empty when no linked leaf exists, preserving
+    /// every valid no-focus state.
+    pub(crate) fn view_return_candidates(&self, target: &DomainKey) -> Vec<NodeId> {
+        let mut out: Vec<NodeId> = Vec::new();
+        if let Some(leaf) = self.remembered_leaf(target)
+            && !out.contains(&leaf)
+        {
+            out.push(leaf);
+        }
+        if let Some(stack) = self.focus_stack.get(target) {
+            for leaf in stack.iter().rev() {
+                if out.contains(leaf) {
+                    continue;
+                }
+                if self.focus_resolves(
+                    &Some(target.clone()),
+                    &Some(leaf.clone()),
+                    &self.trees,
+                    &self.windows,
+                ) {
+                    out.push(leaf.clone());
+                }
+            }
+        }
+        if let Some(tree) = self.trees.get(target).cloned().flatten() {
+            for leaf in super::collect_leaves(&tree) {
+                if out.contains(&leaf) {
+                    continue;
+                }
+                if self.windows.values().any(|l| {
+                    l.leaf == leaf && l.output == target.output && l.workspace == target.workspace
+                }) {
+                    out.push(leaf);
+                }
+            }
+        }
+        out
+    }
+
     pub(super) fn focus_stack_fallback(
         &self,
         domain: &DomainKey,

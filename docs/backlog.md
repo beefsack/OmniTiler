@@ -15,6 +15,20 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- P0 | Windows physical workspace-switch focus defect | User dogfood 2026-10-26:
+  Physical Win+arrow now confirmed fixed; workspace-switch focus still fails.
+  All thirteen selects in the subsequent trace emit the expected core target
+  and dispatch accepted native setters, each immediately foreground-unproven.
+  Later fresh foreground samples match, but cannot attribute arrival or prove
+  keyboard focus; event previews truncate. Next: bounded effect-joined native
+  landing/supersession diagnostics, then discriminating regression and fix.
+  Earlier two initial setter refusals remain unexplained, not claimed fixed.
+  [Record](changes/windows-directional-focus-startup.md).
+- P2 | Pager shows stale source layout after send-follow | User dogfood
+  2026-10-26: after sending a window away with follow, the source workspace's
+  pager cell keeps the pre-send split until revisited. User wants to explore
+  retiling the source workspace on departure so its pager cell is correct.
+  Later; not started.
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies (now owned by the KDE v2 port item
   below); (3) KDE Settings core-catalog
@@ -66,11 +80,12 @@ decisions of 2026-09-24 are under
   to another output's window? Capture Tier 1 outcomes in the
   [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
   then decide with the user. Related to cursor-first targeting above.
-- P1 | No-focus workspace semantics | User 2026-10-25 questions: arrival on
-  a workspace with no remembered focus (focus a window?), directional focus with
+- P1 | No-focus workspace semantics | Arrival without remembered focus decided
+  User 2026-10-26 (per-workspace MRU, then layout-first; Hyprland cursor
+  fallback a deliberate deviation) and delivered in core
+  ([decision](decisions.md#workspaces)). Still undecided: directional focus with
   no focused window, and whether no active window is allowed while windows are
-  shown. Undecided; decide with the user from the
-  [Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators).
+  shown ([Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
   Windows occupied-switch focus restore delivered fixture-verified 2026-10-25
   ([record](changes/archive/windows-workspace-focus-restore.md)); user-owned
   physical checks remain: chords with ordinary apps, multi-output/shared/floating

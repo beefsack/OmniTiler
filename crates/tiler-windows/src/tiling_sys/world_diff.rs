@@ -410,7 +410,55 @@ pub(super) trait NativeOps {
     fn foreground_state(&mut self) -> ForegroundState {
         ForegroundState::Unknown
     }
+    /// Resolve one drained `EVENT_SYSTEM_FOREGROUND` HWND to its live
+    /// foreground identity (`Known` = readable HWND plus PID plus process
+    /// creation; `None` for a null HWND; `Unknown` when unreadable, fail
+    /// closed). Identity only, never causality: the caller matches it
+    /// against the remembered in-flight target plus lifetime proof, and
+    /// delivery-time snapshots never substitute for these live reads (a
+    /// bare pid or tag alone never proves the full identity).
+    fn foreground_identity_of(&mut self, hwnd: u64) -> ForegroundState {
+        let _ = hwnd;
+        ForegroundState::Unknown
+    }
+    /// Target GUI-thread focus at one moment: the owning thread plus its
+    /// currently active and keyboard-focus windows. Read-only diagnostic
+    /// input, never a gate: `Unknown` when unreadable (fail closed, stated
+    /// as unknown, never guessed). The default reports unknown; the
+    /// production seam reads `GetGUIThreadInfo`, offline fakes script it.
+    fn gui_focus_of(&mut self, hwnd: u64) -> GuiFocusState {
+        let _ = hwnd;
+        GuiFocusState::Unknown
+    }
+    /// Trace-only switch for diagnostics reads: when false (default) the
+    /// seam performs no diagnostic native reads (`gui_focus_of` reports
+    /// `Unknown` without touching the OS). The owner sets this from its
+    /// trace flag before each apply; offline fakes set it per test.
+    fn set_diagnostics_trace(&mut self, _trace: bool) {}
+    /// Whether diagnostics reads are armed (see [`Self::set_diagnostics_trace`]).
+    fn diagnostics_trace(&self) -> bool {
+        false
+    }
+    /// Adapter-dispatched focus attempt plus the actual per-native-call
+    /// record: `primitive_called` tells whether the native setter ran,
+    /// with its call/return stamps strictly around the primitive and the
+    /// trace-gated pre-call GUI read. The default runs the plain setter
+    /// and reports no primitive detail; the production seam overrides.
+    fn focus_window_traced(&mut self, token: &str) -> (Result<bool, ()>, FocusCallDiag) {
+        let outcome = self.focus_window(token);
+        (outcome, FocusCallDiag::default())
+    }
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
+    /// Trace-only executed visibility posts collected this pass (actual
+    /// host API at the native hide/reveal post site, one row per executed
+    /// post). Drained once per apply into the pass stats with an honest
+    /// omitted count. The default reports none; the production seam drains
+    /// its armed accumulator. Never a policy input.
+    fn take_visibility_posts(
+        &mut self,
+    ) -> (Vec<crate::product_hide::sys::VisibilityPostDiag>, usize) {
+        (Vec::new(), 0)
+    }
     /// Live cursor position in adapter units (same space as screen FULL
     /// rects and fact frames), `None` when unreadable. Read-only; the
     /// warp path below skips its write when already at the target.
@@ -473,6 +521,16 @@ pub(super) struct FakeNative {
     pub(super) pending_invalidation: bool,
     pub(super) frame_writes: usize,
     pub(super) membership_writes: usize,
+    /// Scripted target GUI-thread focus per HWND (`None` = unreadable).
+    /// Absent HWNDs read `Unknown`, like the production fail-closed path.
+    pub(super) gui_state: HashMap<u64, GuiFocusState>,
+    /// Diagnostics trace switch (see `NativeOps::set_diagnostics_trace`):
+    /// `gui_focus_of` performs no scripted read and counts nothing while
+    /// false. Tests arm per case.
+    pub(super) trace: bool,
+    /// Count of actual GUI reads performed (trace-armed only): proves
+    /// trace-off passes issue no diagnostics reads.
+    pub(super) gui_calls: usize,
     /// Scripted live DPI per window (`None` = unreadable, never guessed).
     pub(super) dpi: HashMap<String, u32>,
     /// Windows whose DPI changes across the write (deterministic stand-in
@@ -614,21 +672,125 @@ impl NativeOps for FakeNative {
         }
         ForegroundState::Known(synthetic_foreign_identity(token))
     }
-    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
-        if self.throw_focus.contains(token) {
-            return Err(());
+    /// Offline resolution of one drained foreground HWND: managed HWNDs
+    /// report their exact stored identity; anything else reports a
+    /// synthetic foreign identity (never equal to a managed in-flight, and
+    /// never trusted for HWND-plus-pid-plus-creation equality on its own
+    /// beyond that mismatch). Mirrors the production live reads.
+    fn foreground_identity_of(&mut self, hwnd: u64) -> ForegroundState {
+        if hwnd == 0 {
+            return ForegroundState::None;
         }
+        if let Some(window) = self.windows.values().find(|w| w.key.hwnd == hwnd) {
+            return ForegroundState::Known(ForegroundIdentity {
+                hwnd: window.key.hwnd,
+                pid: window.key.pid,
+                creation: window.key.creation.clone(),
+            });
+        }
+        ForegroundState::Known(ForegroundIdentity {
+            hwnd,
+            pid: u32::MAX,
+            creation: format!("foreign-{hwnd}"),
+        })
+    }
+    fn gui_focus_of(&mut self, hwnd: u64) -> GuiFocusState {
+        if !self.trace {
+            return GuiFocusState::Unknown;
+        }
+        self.gui_calls = self.gui_calls.saturating_add(1);
+        self.gui_state
+            .get(&hwnd)
+            .copied()
+            .unwrap_or(GuiFocusState::Unknown)
+    }
+    fn set_diagnostics_trace(&mut self, trace: bool) {
+        self.trace = trace;
+    }
+    fn diagnostics_trace(&self) -> bool {
+        self.trace
+    }
+    fn focus_window_traced(&mut self, token: &str) -> (Result<bool, ()>, FocusCallDiag) {
+        // Offline mirror of the production record: stamps strictly around
+        // the primitive lane, `gui_before` sampled immediately before it
+        // when traced. `move_size` is the pre-primitive veto lane (no
+        // primitive, honest `Ok(false)`); `fail_focus` is a ran-but-refused
+        // primitive; `throw_focus` is a ran-and-threw primitive. The offline
         if self.move_size.contains(token) {
             self.note_write();
-            return Ok(false);
+            return (
+                Ok(false),
+                FocusCallDiag {
+                    primitive_called: false,
+                    native_return: None,
+                    api: None,
+                    call_mono_ms: None,
+                    ret_mono_ms: None,
+                    gui_before: None,
+                },
+            );
         }
-        if self.fail_focus.contains(token) {
+        let gui_before = if self.trace {
+            let hwnd = self.windows.get(token).map(|w| w.key.hwnd).unwrap_or(0);
+            self.gui_calls = self.gui_calls.saturating_add(1);
+            Some(
+                self.gui_state
+                    .get(&hwnd)
+                    .copied()
+                    .unwrap_or(GuiFocusState::Unknown),
+            )
+        } else {
+            None
+        };
+        let call_mono_ms = super::trace::log_mono_ms();
+        let (outcome, native_return) = if self.throw_focus.contains(token) {
+            (Err(()), None)
+        } else if self.fail_focus.contains(token) {
             self.note_write();
-            return Ok(false);
-        }
-        self.foreground = Some(token.to_owned());
-        self.note_write();
-        Ok(true)
+            (Ok(false), Some(false))
+        } else {
+            self.foreground = Some(token.to_owned());
+            self.note_write();
+            // Simulate the OS activation the primitive caused: the
+            // dispatch-time read above keeps the pre value while the
+            // read-back landing read below observes the post value.
+            if let Some(window) = self.windows.get(token) {
+                let hwnd = window.key.hwnd;
+                let thread = self
+                    .gui_state
+                    .get(&hwnd)
+                    .copied()
+                    .map(|state| match state {
+                        GuiFocusState::Known { thread, .. } => thread,
+                        GuiFocusState::Unknown => 0,
+                    })
+                    .unwrap_or(0);
+                self.gui_state.insert(
+                    hwnd,
+                    GuiFocusState::Known {
+                        thread,
+                        active: hwnd,
+                        focus: hwnd,
+                    },
+                );
+            }
+            (Ok(true), Some(true))
+        };
+        let ret_mono_ms = super::trace::log_mono_ms();
+        (
+            outcome,
+            FocusCallDiag {
+                primitive_called: true,
+                native_return,
+                api: Some(FOCUS_SETTER_API),
+                call_mono_ms: Some(call_mono_ms),
+                ret_mono_ms: Some(ret_mono_ms),
+                gui_before,
+            },
+        )
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.focus_window_traced(token).0
     }
     fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
         // Every setter attempt records, including throws: the attempt row
@@ -789,6 +951,32 @@ impl EffectTracker {
     }
 }
 
+/// Event-driven in-flight focus target: the exact full native identity
+/// (HWND plus PID plus process creation) plus the visible-membership
+/// lifetime tag of the last accepted focus setter whose async activation
+/// may still land. Set only on an accepted setter that does not prove
+/// immediately, cleared on its landing, on any other foreground
+/// supersession, on target lifetime end, on a newer accepted setter, and
+/// on generation reset. Minimal transport state, never a policy input:
+/// the core alone decides the target and every existing fullscreen,
+/// game, lifetime, and at-most-once gate stays unchanged. A simultaneous
+/// same-window user click landing on the same identity is accepted as an
+/// indistinguishable tradeoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct InFlightFocus {
+    pub(super) token: String,
+    pub(super) key: WindowKey,
+    pub(super) tag: String,
+    /// Originating one-shot effect whose accepted setter armed this flight:
+    /// joins the dispatch row (`focus_dispatch[].id`) to the later landing
+    /// or clearing row (`inflight_events[].effect`).
+    pub(super) effect: String,
+    /// Shared monotonic stamp of the arming setter's return (same `mono_ms`
+    /// basis as the log rows): joins dispatch to landing without claiming
+    /// the setter call itself took, or caused, the later arrival.
+    pub(super) set_mono_ms: u64,
+}
+
 /// One offline diff unit: freshness gate plus the at-most-once tables
 /// behind [`apply_world_reply`]. Frame anti-fighting lives in the core
 /// (attempt rows out, suppression in the next desire); this side keeps no
@@ -801,6 +989,32 @@ impl EffectTracker {
 pub(super) struct HostDiff {
     pub(super) gate: DiffGate,
     pub(super) effects: EffectTracker,
+    pub(super) in_flight: Option<InFlightFocus>,
+    /// Drained `EVENT_SYSTEM_FOREGROUND` HWNDs awaiting resolution at the
+    /// next apply entry, in delivery order. The owner loop drains hook
+    /// callbacks before every apply and no message pump runs between that
+    /// drain and the focus setter, so every entry here strictly predates
+    /// the pass's setter: a stale queued edge can never be processed
+    /// against a newer in-flight. Consumed (taken) at each apply entry,
+    /// cleared on generation reset and on every accepted focus setter.
+    pub(super) pending_foreground: Vec<u64>,
+    /// Trace-only delivery/owner timestamps parallel to
+    /// `pending_foreground`, in the same delivery order (joined by index,
+    /// tolerating a shorter sidecar). Capped at
+    /// [`MAX_PENDING_FOREGROUND_META`]; excess folds into
+    /// `pending_foreground_omitted`. Diagnostic only: resolution matches on
+    /// live identity plus lifetime, never on these stamps.
+    pub(super) pending_foreground_meta: Vec<super::observe::ForegroundEdgeMeta>,
+    /// Drained foreground edges whose metadata exceeded the sidecar cap:
+    /// honest omission, never a silent loss (the production
+    /// `pending_foreground` HWNDs above still resolve).
+    pub(super) pending_foreground_omitted: u64,
+    /// Trace-only in-flight clearing rows recorded where no [`ApplyStats`]
+    /// is in scope (generation reset): drained into the next pass's stats
+    /// at apply entry. Bounded with honest omission folded into the pass
+    /// total there.
+    pub(super) inflight_stash: Vec<InFlightEventDiag>,
+    pub(super) inflight_stash_omitted: u64,
 }
 
 impl HostDiff {
@@ -814,7 +1028,74 @@ impl HostDiff {
                 has_accepted: false,
             },
             effects: EffectTracker::default(),
+            in_flight: None,
+            pending_foreground: Vec::new(),
+            pending_foreground_meta: Vec::new(),
+            pending_foreground_omitted: 0,
+            inflight_stash: Vec::new(),
+            inflight_stash_omitted: 0,
         }
+    }
+
+    /// Stash drained foreground HWNDs for the next apply entry, in delivery
+    /// order. Called by the owner loop right after the hook-edge drain,
+    /// before observation and apply run.
+    #[allow(dead_code)]
+    pub(super) fn push_foreground_events(&mut self, hwnds: Vec<u64>) {
+        self.pending_foreground.extend(hwnds);
+    }
+
+    /// Stash drained foreground edges with their delivery/owner timestamps
+    /// for the next apply entry, in delivery order. The production drain
+    /// calls this with the full pass detail; offline tests keep the
+    /// HWND-only entry above. Metadata caps at
+    /// [`MAX_PENDING_FOREGROUND_META`] with the excess counted, never
+    /// silently dropped from the production queue. The sidecar stays
+    /// prefix-aligned: once a gap opens (a drain without detail, a full
+    /// sidecar, or an HWND mismatch) later detail never joins an earlier
+    /// production HWND by index; the gap counts as honest omission and
+    /// missing metadata reads as unknown at resolution, never a wrong
+    /// stamp.
+    #[allow(dead_code)]
+    pub(super) fn push_foreground_drain(
+        &mut self,
+        hwnds: Vec<u64>,
+        meta: Vec<super::observe::ForegroundEdgeMeta>,
+    ) {
+        self.push_foreground_drain_traced(hwnds, meta, 0);
+    }
+
+    /// Traced drain entry carrying the upstream [`EdgeDrain`] detail-cap
+    /// omission for the same pass (production only; tests use `0`). The
+    /// production queue extends exactly as before; only the diagnostic
+    /// prefix attaches. `upstream_omitted` never double-counts: the
+    /// per-drain gap already covers it, so the increment takes the max.
+    pub(super) fn push_foreground_drain_traced(
+        &mut self,
+        hwnds: Vec<u64>,
+        meta: Vec<super::observe::ForegroundEdgeMeta>,
+        upstream_omitted: usize,
+    ) {
+        let hwnd_len = hwnds.len();
+        let base_fg = self.pending_foreground.len();
+        let base_meta = self.pending_foreground_meta.len();
+        self.pending_foreground.extend(hwnds);
+        let mut attached = 0usize;
+        if base_fg == base_meta {
+            let room = MAX_PENDING_FOREGROUND_META.saturating_sub(base_meta);
+            for m in meta.iter().take(room) {
+                if self.pending_foreground[base_fg + attached] != m.hwnd {
+                    break;
+                }
+                self.pending_foreground_meta.push(m.clone());
+                attached += 1;
+            }
+        }
+        let gap_missing = hwnd_len.saturating_sub(meta.len()).max(upstream_omitted);
+        let cap_missing = meta.len().saturating_sub(attached);
+        self.pending_foreground_omitted = self
+            .pending_foreground_omitted
+            .saturating_add(gap_missing.saturating_add(cap_missing) as u64);
     }
 
     /// Generation reset: new core namespace clears operation-scoped tables
@@ -824,6 +1105,32 @@ impl HostDiff {
     pub(super) fn reset_generation(&mut self, generation: &str) {
         self.gate.reset_generation(generation);
         self.effects.clear_generation();
+        if let Some(flight) = self.in_flight.take() {
+            // No ApplyStats in scope here: stash the clearing cause for the
+            // next pass's stats so the reset never loses the flight's end.
+            // No `ops` here, so no GUI read: `gui` stays `None`.
+            let row = InFlightEventDiag {
+                token: flight.token,
+                effect: flight.effect,
+                cause: "reset-generation",
+                edge_event_ms: None,
+                edge_queued_mono_ms: None,
+                edge_drain_mono_ms: None,
+                resolve_mono_ms: super::trace::log_mono_ms(),
+                gui: None,
+                hwnd: Some(flight.key.hwnd),
+                pid: Some(flight.key.pid),
+                creation: Some(flight.key.creation),
+            };
+            if self.inflight_stash.len() < MAX_INFLIGHT_DIAG {
+                self.inflight_stash.push(row);
+            } else {
+                self.inflight_stash_omitted = self.inflight_stash_omitted.saturating_add(1);
+            }
+        }
+        self.pending_foreground.clear();
+        self.pending_foreground_meta.clear();
+        self.pending_foreground_omitted = 0;
     }
 
     /// Bound every table against the current reply and baseline: spent and
@@ -872,6 +1179,85 @@ impl HostDiff {
     }
 }
 
+/// Guarded trace label for one foreground state: `none` (verifiably no
+/// foreground), `unknown` (unreadable, fail closed), else the raw
+/// `hwnd:pid:creation` triple. Titles, exe paths, and content never ride
+/// the trace; the triple joins to `member-admitted` rows (same fields) to
+/// identify whether a `foreground-changed` veto saw a managed member or
+/// a foreign window. Managed identity alone never proves causality.
+pub(super) fn fg_trace_label(state: &ForegroundState) -> String {
+    match state {
+        ForegroundState::None => "none".to_owned(),
+        ForegroundState::Unknown => "unknown".to_owned(),
+        ForegroundState::Known(identity) => format!(
+            "hwnd:{}:pid:{}:creation:{}",
+            identity.hwnd, identity.pid, identity.creation
+        ),
+    }
+}
+
+/// GUI-thread focus for one window's owning thread: the thread plus its
+/// currently active and keyboard-focus windows. Numeric identities only:
+/// no titles, exe paths, or content ever ride the trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiFocusState {
+    Unknown,
+    Known {
+        thread: u32,
+        active: u64,
+        focus: u64,
+    },
+}
+
+/// Guarded trace label for one [`GuiFocusState`]: `unknown` when unreadable,
+/// else the raw `thread:active:focus` triple joining to `member-admitted`
+/// rows. Readability alone never proves which window the user sees.
+pub(super) fn gui_trace_label(state: &GuiFocusState) -> String {
+    match state {
+        GuiFocusState::Unknown => "unknown".to_owned(),
+        GuiFocusState::Known {
+            thread,
+            active,
+            focus,
+        } => format!("thread:{thread}:active:{active}:focus:{focus}"),
+    }
+}
+
+/// Per-native-call focus record: what the adapter dispatched versus what
+/// the native setter actually did. `primitive_called` is true only when the
+/// `SetForegroundWindow` primitive ran; `api` is `Some` only then, `None`
+/// on any pre-primitive veto. `native_return` is the raw primitive bool
+/// (`Some(ok)`) whenever the primitive returned one, even when a later
+/// post-setter fence turns the wrapper outcome into `Err`; `None` when the
+/// primitive never ran (early veto) or never returned a bool (throwing
+/// seam). `call_mono_ms`/`ret_mono_ms` strictly bracket
+/// the primitive on the shared log `mono_ms` basis, never the surrounding
+/// preflight. `gui_before` is the trace-gated target GUI-thread read
+/// immediately before the call (`None` when trace is off: suppressed, never
+/// `Unknown`-fabricated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct FocusCallDiag {
+    pub(super) primitive_called: bool,
+    pub(super) native_return: Option<bool>,
+    pub(super) api: Option<&'static str>,
+    pub(super) call_mono_ms: Option<u64>,
+    pub(super) ret_mono_ms: Option<u64>,
+    pub(super) gui_before: Option<GuiFocusState>,
+}
+
+/// Trace-only native API vocabulary for focus dispatch rows: the exact
+/// setter that ran. `SetForegroundWindow` is the synchronous activating
+/// focus call (its boolean return never proves arrival; only the
+/// read-back does, and no `GetLastError` is read: the API defines no
+/// useful last error). The nonactivating view path hides/reveals through
+/// async `SetWindowPos` without pumping (hide `0x4097`, show `0x4057`, see
+/// [`crate::product_hide::sys::NA_POS_HIDE_FLAGS`]/
+/// [`crate::product_hide::sys::NA_POS_SHOW_FLAGS`]). A focus activation can
+/// land later or never; a visibility post is nonactivating, not a focus
+/// setter. Effect rows that dispatched no setter carry `api: None`;
+/// executed visibility calls ride `visibility_posts`, never the veto row.
+pub(super) const FOCUS_SETTER_API: &str = "SetForegroundWindow";
+
 /// Trace-only per-effect focus dispatch record (stage 4b FFC oracle).
 /// One row per `reply.effects` entry in order, bounded by
 /// [`MAX_FOCUS_DIAG`]: `dispatched` tells whether the native focus setter
@@ -880,8 +1266,13 @@ impl HostDiff {
 /// foreground proof read right after dispatch (always present, even when
 /// false, so dispatched-but-unproven is distinguishable from no setter);
 /// `hold` names the individual hold when the effect did not prove
-/// (`None` only on proven foreground arrival). Pure trace state, never a
-/// policy input: the core consumes no effect outcomes.
+/// (`None` only on proven foreground arrival). `fg_baseline`/`fg_live` ride
+/// only the `foreground-changed` veto rows: the entry baseline versus the
+/// post-switch live read that vetoed, as [`fg_trace_label`] strings, so a
+/// later join against `member-admitted` rows identifies managed versus
+/// foreign windows without attributing causality from membership alone.
+/// Pure trace state, never a policy input: the core consumes no effect
+/// outcomes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct FocusDispatchDiag {
     pub(super) id: String,
@@ -891,6 +1282,86 @@ pub(super) struct FocusDispatchDiag {
     pub(super) setter: &'static str,
     pub(super) foreground: bool,
     pub(super) hold: Option<&'static str>,
+    pub(super) fg_baseline: Option<String>,
+    pub(super) fg_live: Option<String>,
+    /// Exact native setter that ran (`SetForegroundWindow` for focus
+    /// effects, the async nonactivating `SetWindowPos` path for the
+    /// `foreground-changed` veto rows); `None` when no setter ran.
+    pub(super) api: Option<&'static str>,
+    /// Setter call/return stamps strictly around the native primitive (see
+    /// [`FocusCallDiag`]): the actual native call window, not the
+    /// post-apply emission time and not the surrounding preflight. `None`
+    /// when the primitive never ran. Call-to-return alone never proves
+    /// arrival.
+    pub(super) call_mono_ms: Option<u64>,
+    pub(super) ret_mono_ms: Option<u64>,
+    /// Target GUI-thread active/focus read immediately before the primitive
+    /// (see [`gui_trace_label`]); `None` when the primitive never ran or
+    /// trace is off (suppressed). A dispatch-time read only, never proof
+    /// of where focus later landed.
+    pub(super) gui_dispatch: Option<String>,
+    /// Target GUI-thread active/focus read at the immediate read-back when
+    /// the setter proved foreground on this pass (`None` otherwise: no
+    /// landing, trace off, or veto). Sampled at `ret_mono_ms`, never at
+    /// edge time.
+    pub(super) gui_landing: Option<String>,
+    /// Whether the native setter primitive actually ran for this row
+    /// (adapter dispatched vs primitive executed). Pre-primitive vetos
+    /// report `dispatched: true` with `primitive_called: false`.
+    pub(super) primitive_called: bool,
+    /// Raw `SetForegroundWindow` return for this row (`Some(ok)`) whenever
+    /// the primitive ran, even when a post-setter fence turns the wrapper
+    /// `setter` into `threw`; `None` when the primitive never ran (early
+    /// veto) or never returned a bool. Lets a user trace distinguish native
+    /// acceptance from wrapper fences without re-reading gates.
+    pub(super) native_return: Option<bool>,
+    /// Full target native identity (HWND plus PID plus process creation)
+    /// for the `member-admitted` join. `None` only when the target
+    /// baseline was unknown.
+    pub(super) hwnd: Option<u64>,
+    pub(super) pid: Option<u32>,
+    pub(super) creation: Option<String>,
+}
+
+/// Trace-only in-flight clearing/landing record: why one remembered focus
+/// flight ended. `cause` is one of `landed-own` (exact full-identity plus
+/// lifetime match on a drained edge), `superseded-foreign` (another
+/// readable foreground), `superseded-new-setter` (a newer accepted setter
+/// replaced it), `consumed-na-own-landing` / `superseded-na-guard` (the
+/// nonactivating-view guard consumed or cleared it), `lifetime-end` (target
+/// departed or recycled before any edge), or `reset-generation` (namespace
+/// reset). `edge_*` carry the clearing edge's delivery/owner timestamps
+/// (`None` for non-edge clears); `resolve_mono_ms` is the apply-entry or
+/// setter moment that cleared it. `gui` is the target GUI-thread
+/// active/focus sampled at `resolve_mono_ms` (`None` when trace is off or
+/// unreadable: suppressed, never edge-time). Clearing rows never
+/// claim the edge caused the activation, only that the remembered flight
+/// ended here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct InFlightEventDiag {
+    pub(super) token: String,
+    pub(super) effect: String,
+    pub(super) cause: &'static str,
+    pub(super) edge_event_ms: Option<u32>,
+    pub(super) edge_queued_mono_ms: Option<u64>,
+    pub(super) edge_drain_mono_ms: Option<u64>,
+    pub(super) resolve_mono_ms: u64,
+    pub(super) gui: Option<String>,
+    /// Full remembered target identity (HWND plus PID plus process
+    /// creation) for the `member-admitted` join.
+    pub(super) hwnd: Option<u64>,
+    pub(super) pid: Option<u32>,
+    pub(super) creation: Option<String>,
+}
+
+/// Trace-only resolution-time GUI read: the target GUI-thread label
+/// sampled now, or `None` when trace is off (suppressed: the seam performs
+/// no native read). Never a gate, never proof of arrival.
+pub(super) fn gui_resolution_label(ops: &mut dyn NativeOps, hwnd: u64) -> Option<String> {
+    if !ops.diagnostics_trace() {
+        return None;
+    }
+    Some(gui_trace_label(&ops.gui_focus_of(hwnd)))
 }
 
 /// Trace-only per-clear hold record for the common maximize-clear lane
@@ -913,9 +1384,25 @@ pub(super) struct ClearHoldDiag {
 /// trace rows with an honest omitted count in the tick diag.
 pub(super) const MAX_FOCUS_DIAG: usize = 8;
 
+/// Bound for [`InFlightEventDiag`] rows per apply pass, with an honest
+/// omitted count derived from the unbounded `inflight_total` below.
+pub(super) const MAX_INFLIGHT_DIAG: usize = 8;
+
+/// Bound for drained foreground-edge metadata retained per pass for the
+/// flight join. The production HWND queue itself is unbounded per pass
+/// (every drained edge resolves); only this diagnostic sidecar caps.
+pub(super) const MAX_PENDING_FOREGROUND_META: usize = 32;
+
 /// Bound for [`ClearHoldDiag`] rows per apply pass, with an honest omitted
 /// count in the tick diag.
 pub(super) const MAX_CLEAR_HOLD_DIAG: usize = 8;
+
+/// Bound for executed visibility-post rows per apply pass, with an honest
+/// omitted count in the tick diag. Single source of truth lives at the
+/// post site ([`crate::product_hide::sys::MAX_VISIBILITY_POSTS`]); the
+/// source accumulator and this pass total share it, so neither side can
+/// drift the cap.
+pub(super) const MAX_VISIBILITY_DIAG: usize = crate::product_hide::sys::MAX_VISIBILITY_POSTS;
 
 /// Honest outcome of one diff pass. `partial` is true when at least one
 /// write landed while at least one row held: never atomic.
@@ -947,6 +1434,21 @@ pub(super) struct ApplyStats {
     /// Trace-only per-effect focus dispatch rows (see [`FocusDispatchDiag`]).
     /// Bounded to [`MAX_FOCUS_DIAG`] entries in reply order.
     pub(super) focus_dispatch: Vec<FocusDispatchDiag>,
+    /// Trace-only in-flight clearing/landing rows (see [`InFlightEventDiag`]):
+    /// why each remembered focus flight ended this pass. Bounded to
+    /// [`MAX_INFLIGHT_DIAG`] entries; the unbounded total rides
+    /// `inflight_total` below so the tick diag reports an honest omitted
+    /// count past the cap.
+    pub(super) inflight_events: Vec<InFlightEventDiag>,
+    /// Trace-only count of every in-flight clearing attribution this pass,
+    /// including rows past the [`MAX_INFLIGHT_DIAG`] storage cap.
+    pub(super) inflight_total: usize,
+    /// Trace-only count of drained foreground edges whose metadata exceeded
+    /// the [`MAX_PENDING_FOREGROUND_META`] sidecar cap this pass (drained
+    /// from the HostDiff counter at apply entry, same point the pending
+    /// queue itself is taken). The production `pending_foreground` HWNDs
+    /// still resolve; only this diagnostic sidecar folds.
+    pub(super) foreground_meta_omitted: u64,
     /// Trace-only per-clear hold rows (see [`ClearHoldDiag`]): one entry
     /// per published clear desire that dispatched no setter this pass.
     /// Bounded to [`MAX_CLEAR_HOLD_DIAG`] entries in reply order; the
@@ -959,6 +1461,17 @@ pub(super) struct ApplyStats {
     /// the stored rows, so a pass with more held desires than storage
     /// still reports the excess instead of a false zero.
     pub(super) clear_holds_total: usize,
+    /// Trace-only executed visibility posts this pass (see
+    /// [`crate::product_hide::sys::VisibilityPostDiag`]): the actual host
+    /// API that ran per hide/reveal post, in execution order. Bounded to
+    /// [`MAX_VISIBILITY_DIAG`] entries; the unbounded total rides
+    /// `visibility_total` below so the tick diag reports an honest
+    /// omitted count past the cap. Empty unless trace is armed; arrivals
+    /// still prove only through the visibility readback, never these rows.
+    pub(super) visibility_posts: Vec<crate::product_hide::sys::VisibilityPostDiag>,
+    /// Trace-only count of every executed visibility post this pass,
+    /// including rows past the [`MAX_VISIBILITY_DIAG`] storage cap.
+    pub(super) visibility_total: usize,
 }
 
 impl ApplyStats {
@@ -974,6 +1487,31 @@ impl ApplyStats {
                 window: window.to_owned(),
                 hold,
             });
+        }
+    }
+
+    /// Trace-only in-flight clearing attribution: counts every clearing in
+    /// `inflight_total` and retains only the first [`MAX_INFLIGHT_DIAG`]
+    /// rows. Never a policy input: the flight already ended before this
+    /// records why.
+    pub(super) fn note_inflight(&mut self, row: InFlightEventDiag) {
+        self.inflight_total = self.inflight_total.saturating_add(1);
+        if self.inflight_events.len() < MAX_INFLIGHT_DIAG {
+            self.inflight_events.push(row);
+        }
+    }
+
+    /// Trace-only executed visibility post: counts every post in
+    /// `visibility_total` and retains only the first
+    /// [`MAX_VISIBILITY_DIAG`] rows. Never a policy input: the post
+    /// already ran before this records which host API executed.
+    pub(super) fn note_visibility_post(
+        &mut self,
+        row: crate::product_hide::sys::VisibilityPostDiag,
+    ) {
+        self.visibility_total = self.visibility_total.saturating_add(1);
+        if self.visibility_posts.len() < MAX_VISIBILITY_DIAG {
+            self.visibility_posts.push(row);
         }
     }
 }
@@ -1086,6 +1624,25 @@ pub(super) fn lifetime_ok(fresh: &FreshWindow, stored: &HashMap<String, String>)
         return false;
     }
     stored.get(&fresh.token).is_some_and(|tag| tag == live)
+}
+
+/// In-flight landing proof for one remembered focus target: the live
+/// window still names the exact full native identity (HWND plus PID plus
+/// process creation, never HWND alone) with the same lifetime tag the
+/// accepted setter stored. A recycled HWND, a changed tag, or a same-PID
+/// new window never qualifies.
+fn inflight_arrived(ops: &mut dyn NativeOps, fresh: &FreshHost, flight: &InFlightFocus) -> bool {
+    if fresh
+        .stored_tags
+        .get(&flight.token)
+        .is_none_or(|tag| tag != &flight.tag)
+    {
+        return false;
+    }
+    let Some(live) = ops.read_window(&flight.token) else {
+        return false;
+    };
+    live.key == flight.key && lifetime_ok(&live, &fresh.stored_tags)
 }
 
 fn overlay_guarded(window: &FreshWindow) -> bool {
@@ -1355,6 +1912,26 @@ fn finalize(stats: &mut ApplyStats) {
     stats.partial = writes > 0 && (stats.held > 0 || stats.stopped_mid_apply);
 }
 
+/// Drain executed visibility posts (actual host API per hide/reveal post)
+/// into the pass stats with an honest omitted count. The source
+/// accumulator already capped storage with its own unbounded total, so
+/// this adds that total once (no per-row double count) and retains only
+/// up to the shared cap. Called before every `finalize` so
+/// racing-invalidation exits never lose an executed post.
+fn drain_visibility_posts(stats: &mut ApplyStats, ops: &mut dyn NativeOps) {
+    let (rows, total) = ops.take_visibility_posts();
+    let returned = rows.len();
+    for row in rows {
+        stats.note_visibility_post(row);
+    }
+    // The source total already counts the returned rows (each one bumped
+    // it through `note_visibility_post` above), so add only the remainder
+    // past storage: no per-row double count, honest omission preserved.
+    stats.visibility_total = stats
+        .visibility_total
+        .saturating_add(total.saturating_sub(returned));
+}
+
 /// Record one proven window-transfer arrival plus its follow view.
 /// Pre-proven arrivals (no setter ran) record no write; post-setter proof
 /// records one membership write. Follow actuation reports its raw attempt
@@ -1454,12 +2031,138 @@ pub(super) fn apply_world_reply(
         return stats;
     }
     state.prune(reply, fresh);
+    // One monotonic sample for this apply entry (same epoch as the log
+    // stamp): joins setter returns below to the clearing rows recorded
+    // here. A sampling instant only, never a wait or a gate.
+    let entry_mono_ms = super::trace::log_mono_ms();
+    // Stashed reset-generation clearings recorded where no stats were in
+    // scope ride this pass's stats with their honest total.
+    for row in state.inflight_stash.drain(..) {
+        stats.note_inflight(row);
+    }
+    stats.inflight_total = stats
+        .inflight_total
+        .saturating_add(std::mem::take(&mut state.inflight_stash_omitted) as usize);
+    // Lifetime end for the remembered in-flight target: a departed or
+    // recycled lifetime (missing baseline, drifted key, or rotated stored
+    // tag) clears before any bracket can excuse it.
+    if let Some(flight) = state.in_flight.as_ref() {
+        let dead = fresh
+            .baseline
+            .get(&flight.token)
+            .is_none_or(|base| base.key != flight.key)
+            || fresh
+                .stored_tags
+                .get(&flight.token)
+                .is_none_or(|tag| tag != &flight.tag);
+        if dead && let Some(flight) = state.in_flight.take() {
+            let resolve_mono_ms = entry_mono_ms;
+            let gui = gui_resolution_label(ops, flight.key.hwnd);
+            let (hwnd, pid, creation) =
+                (flight.key.hwnd, flight.key.pid, flight.key.creation.clone());
+            stats.note_inflight(InFlightEventDiag {
+                token: flight.token,
+                effect: flight.effect,
+                cause: "lifetime-end",
+                edge_event_ms: None,
+                edge_queued_mono_ms: None,
+                edge_drain_mono_ms: None,
+                resolve_mono_ms,
+                gui,
+                hwnd: Some(hwnd),
+                pid: Some(pid),
+                creation: Some(creation),
+            });
+        }
+    }
+    // Event-driven in-flight resolution: every foreground edge drained
+    // since the last pass resolves now, in delivery order, against the
+    // in-flight remembered by the previous setter. An exact full-identity
+    // (HWND plus PID plus creation) plus lifetime match is the product's
+    // own landing arriving on its own (cleared, even with no switch
+    // running); any other readable foreground is a supersession (cleared,
+    // including a transient foreign competitor the target later returns
+    // past); an unreadable edge keeps the in-flight for the bracket to
+    // fail closed on. Delivery-time snapshots never decide: only these
+    // live reads plus the stored lifetime qualify, so a recycled HWND, a
+    // changed tag, or a same-PID new window never matches. Edge/drain
+    // timestamps ride the clearing rows for the deferred-vs-delayed join
+    // but never influence the match.
+    let pending_meta = std::mem::take(&mut state.pending_foreground_meta);
+    stats.foreground_meta_omitted = std::mem::take(&mut state.pending_foreground_omitted);
+    for (index, hwnd) in std::mem::take(&mut state.pending_foreground)
+        .into_iter()
+        .enumerate()
+    {
+        // Prefix-aligned sidecar only: a missing entry (gap, cap, or HWND
+        // mismatch) reads as unknown timestamps, never a later edge's
+        // stamp joined by bare index.
+        let meta = pending_meta.get(index).filter(|m| m.hwnd == hwnd);
+        let resolved = ops.foreground_identity_of(hwnd);
+        match (&resolved, state.in_flight.as_ref()) {
+            (ForegroundState::Known(live), Some(flight))
+                if live.hwnd == flight.key.hwnd
+                    && live.pid == flight.key.pid
+                    && live.creation == flight.key.creation
+                    && inflight_arrived(ops, fresh, flight) =>
+            {
+                if let Some(flight) = state.in_flight.take() {
+                    let gui = gui_resolution_label(ops, flight.key.hwnd);
+                    let (hwnd, pid, creation) =
+                        (flight.key.hwnd, flight.key.pid, flight.key.creation.clone());
+                    stats.note_inflight(InFlightEventDiag {
+                        token: flight.token,
+                        effect: flight.effect,
+                        cause: "landed-own",
+                        edge_event_ms: meta.map(|m| m.event_ms),
+                        edge_queued_mono_ms: meta.map(|m| m.queued_mono_ms),
+                        edge_drain_mono_ms: meta.map(|m| m.drain_mono_ms),
+                        resolve_mono_ms: entry_mono_ms,
+                        gui,
+                        hwnd: Some(hwnd),
+                        pid: Some(pid),
+                        creation: Some(creation),
+                    });
+                }
+            }
+            (ForegroundState::Known(_), Some(_)) => {
+                if let Some(flight) = state.in_flight.take() {
+                    let gui = gui_resolution_label(ops, flight.key.hwnd);
+                    let (hwnd, pid, creation) =
+                        (flight.key.hwnd, flight.key.pid, flight.key.creation.clone());
+                    stats.note_inflight(InFlightEventDiag {
+                        token: flight.token,
+                        effect: flight.effect,
+                        cause: "superseded-foreign",
+                        edge_event_ms: meta.map(|m| m.event_ms),
+                        edge_queued_mono_ms: meta.map(|m| m.queued_mono_ms),
+                        edge_drain_mono_ms: meta.map(|m| m.drain_mono_ms),
+                        resolve_mono_ms: entry_mono_ms,
+                        gui,
+                        hwnd: Some(hwnd),
+                        pid: Some(pid),
+                        creation: Some(creation),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
 
     // Logical workspace ids need no native binding: the core owns them
     // outright, so membership, view, and migration targets never wait for
     // a binding that will never arrive.
 
-    let HostDiff { gate, effects } = state;
+    let HostDiff {
+        gate,
+        effects,
+        in_flight,
+        pending_foreground,
+        pending_foreground_meta,
+        pending_foreground_omitted: _,
+        inflight_stash: _,
+        inflight_stash_omitted: _,
+    } = state;
 
     // Entry foreground for the NA remembered-focus guard.
     let mut fg_baseline = ops.foreground_state();
@@ -1754,6 +2457,7 @@ pub(super) fn apply_world_reply(
         }
     }
     if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
         finalize(&mut stats);
         return stats;
     }
@@ -1892,6 +2596,7 @@ pub(super) fn apply_world_reply(
         }
     }
     if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
         finalize(&mut stats);
         return stats;
     }
@@ -2107,6 +2812,7 @@ pub(super) fn apply_world_reply(
         }
     }
     if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
         finalize(&mut stats);
         return stats;
     }
@@ -2228,6 +2934,7 @@ pub(super) fn apply_world_reply(
         }
     }
     if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
         finalize(&mut stats);
         return stats;
     }
@@ -2517,6 +3224,7 @@ pub(super) fn apply_world_reply(
         }
     }
     if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
         finalize(&mut stats);
         return stats;
     }
@@ -2545,6 +3253,18 @@ pub(super) fn apply_world_reply(
                         setter: $setter,
                         foreground: $foreground,
                         hold: $hold,
+                        fg_baseline: None,
+                        fg_live: None,
+                        api: None,
+                        call_mono_ms: None,
+                        ret_mono_ms: None,
+                        gui_dispatch: None,
+                        gui_landing: None,
+                        primitive_called: false,
+                        native_return: None,
+                        hwnd: None,
+                        pid: None,
+                        creation: None,
                     });
                 }
             }};
@@ -2645,11 +3365,15 @@ pub(super) fn apply_world_reply(
         }
         // NA-only foreground identity guard: a changed or unreadable
         // foreground during the nonactivating switch vetoes unless the
-        // target already holds it. Pumped paths keep existing behavior.
-        // No fallback exemption: a fallback move also vetoes. A double
-        // zero baseline (None/None) also fails closed: verifiably no
-        // foreground at both reads proves nothing about the switch, so
-        // only a target already holding foreground proceeds.
+        // target already holds it or the change is exactly the remembered
+        // in-flight target landing (the product's own prior accepted
+        // activation, never a supersession). Pumped paths keep existing
+        // behavior. No fallback exemption: a fallback move also vetoes,
+        // and any other change vetoes with the in-flight cleared as
+        // superseded. A double zero baseline (None/None) still fails
+        // closed: verifiably no foreground at both reads proves nothing
+        // about the switch, so only a target already holding foreground
+        // or an exact in-flight landing proceeds.
         if na_views.contains(&(live_out.clone(), live_ws.clone())) {
             let fg_live = ops.foreground_state();
             let changed_or_unknown = match (&fg_baseline, &fg_live) {
@@ -2657,9 +3381,100 @@ pub(super) fn apply_world_reply(
                 _ => true,
             };
             if changed_or_unknown && !ops.is_foreground(&effect.target.0) {
-                push_focus!(false, "skipped", false, Some("foreground-changed"));
-                stats.held += 1;
-                continue;
+                // Event-driven own-landing excuse: the live foreground
+                // names the exact full in-flight identity (HWND plus PID
+                // plus creation) with its lifetime still proven, so this
+                // change is the product's own prior activation arriving
+                // mid-switch. Anything else (including a recycled HWND, a
+                // changed tag, or a same-PID new window) is not the
+                // in-flight target and still vetoes.
+                let own_landing = match (&fg_live, &*in_flight) {
+                    (ForegroundState::Known(live), Some(flight)) => {
+                        live.hwnd == flight.key.hwnd
+                            && live.pid == flight.key.pid
+                            && live.creation == flight.key.creation
+                            && inflight_arrived(ops, fresh, flight)
+                    }
+                    _ => false,
+                };
+                if own_landing {
+                    // Own landing: no veto, no hold. The in-flight clears
+                    // as landed; the trailing setter below replaces it.
+                    if let Some(flight) = in_flight.take() {
+                        let gui = gui_resolution_label(ops, flight.key.hwnd);
+                        let (hwnd, pid, creation) =
+                            (flight.key.hwnd, flight.key.pid, flight.key.creation.clone());
+                        stats.note_inflight(InFlightEventDiag {
+                            token: flight.token,
+                            effect: flight.effect,
+                            cause: "consumed-na-own-landing",
+                            edge_event_ms: None,
+                            edge_queued_mono_ms: None,
+                            edge_drain_mono_ms: None,
+                            resolve_mono_ms: super::trace::log_mono_ms(),
+                            gui,
+                            hwnd: Some(hwnd),
+                            pid: Some(pid),
+                            creation: Some(creation),
+                        });
+                    }
+                } else {
+                    // Other-foreground supersession clears the in-flight;
+                    // an unreadable read leaves it for the next bracket.
+                    if matches!(fg_live, ForegroundState::Known(_))
+                        && let Some(flight) = in_flight.take()
+                    {
+                        let gui = gui_resolution_label(ops, flight.key.hwnd);
+                        let (hwnd, pid, creation) =
+                            (flight.key.hwnd, flight.key.pid, flight.key.creation.clone());
+                        stats.note_inflight(InFlightEventDiag {
+                            token: flight.token,
+                            effect: flight.effect,
+                            cause: "superseded-na-guard",
+                            edge_event_ms: None,
+                            edge_queued_mono_ms: None,
+                            edge_drain_mono_ms: None,
+                            resolve_mono_ms: super::trace::log_mono_ms(),
+                            gui,
+                            hwnd: Some(hwnd),
+                            pid: Some(pid),
+                            creation: Some(creation),
+                        });
+                    }
+                    // Veto with causal evidence: the entry baseline versus
+                    // the post-switch live read ride the trace so a later
+                    // join against `member-admitted` rows identifies
+                    // managed versus foreign windows, not causality.
+                    // The effect stays unspent. The effect dispatched no
+                    // setter, so `api` is `None`: the nonactivating view
+                    // switch that ran (if any) rides the `views` attempt
+                    // rows, never this row.
+                    if stats.focus_dispatch.len() < MAX_FOCUS_DIAG {
+                        stats.focus_dispatch.push(FocusDispatchDiag {
+                            id: effect.id.clone(),
+                            target: effect.target.0.clone(),
+                            kind: effect.kind.as_str(),
+                            dispatched: false,
+                            setter: "skipped",
+                            foreground: false,
+                            hold: Some("foreground-changed"),
+                            fg_baseline: Some(fg_trace_label(&fg_baseline)),
+                            fg_live: Some(fg_trace_label(&fg_live)),
+                            api: None,
+                            call_mono_ms: None,
+                            ret_mono_ms: None,
+                            gui_dispatch: None,
+                            gui_landing: None,
+                            primitive_called: false,
+                            native_return: None,
+                            hwnd: Some(base.key.hwnd),
+                            pid: Some(base.key.pid),
+                            creation: Some(base.key.creation.clone()),
+                        });
+                    }
+                    stats.held += 1;
+                    continue;
+                }
             }
         }
         if !effects.mark_effect_spent(&effect.id) {
@@ -2667,23 +3482,125 @@ pub(super) fn apply_world_reply(
             continue;
         }
         // Foreground read-back is authoritative even if the setter throws:
-        // a throwing call that still landed proves focus. Both the raw
-        // setter disposition and the immediate foreground proof ride the
-        // trace row even when the proof is false, so a dispatched but
-        // unproven setter is distinguishable from no setter at all.
-        let setter_outcome = ops.focus_window(&effect.target.0);
+        // a throwing call that still landed proves focus. The per-call
+        // record rides the trace on the shared log `mono_ms` basis with
+        // stamps strictly around the native primitive (never the
+        // surrounding preflight), alongside the raw setter disposition,
+        // the primitive-vs-dispatched split, and the immediate foreground
+        // proof even when false, so a dispatched-but-unproven setter is
+        // distinguishable from no setter at all. The trace-gated
+        // target GUI-thread read immediately before the primitive rides
+        // along as a dispatch-time observation only, never proof of
+        // arrival; the landing GUI below is sampled at the read-back.
+        let (setter_outcome, call_diag) = ops.focus_window_traced(&effect.target.0);
         let setter = match &setter_outcome {
             Ok(true) => "accepted",
             Ok(false) => "refused",
             Err(()) => "threw",
         };
         let foreground = ops.is_foreground(&effect.target.0);
+        let gui_landing = if foreground {
+            gui_resolution_label(ops, base.key.hwnd)
+        } else {
+            None
+        };
+        let armed_ret_mono_ms = call_diag.ret_mono_ms.unwrap_or(entry_mono_ms);
+        if setter_outcome == Ok(true) {
+            // A newer accepted setter supersedes: drop any drained edges
+            // ahead of the new in-flight (no message pump runs mid-pass,
+            // so this is empty today; the clear keeps a stale queued edge
+            // from ever being processed against the new target).
+            pending_foreground.clear();
+            pending_foreground_meta.clear();
+            // Event-driven in-flight tracking: an accepted setter that
+            // does not prove immediately stays remembered by exact full
+            // native identity plus lifetime until a drained foreground
+            // event resolves its landing or supersession. An immediate
+            // landing clears (nothing to remember); a newer accepted
+            // setter replaces. No blocking, timers, timeouts, retry, or
+            // replay.
+            if foreground {
+                if let Some(flight) = in_flight.take() {
+                    let gui = gui_resolution_label(ops, flight.key.hwnd);
+                    let (hwnd, pid, creation) =
+                        (flight.key.hwnd, flight.key.pid, flight.key.creation.clone());
+                    stats.note_inflight(InFlightEventDiag {
+                        token: flight.token,
+                        effect: flight.effect,
+                        cause: "superseded-new-setter",
+                        edge_event_ms: None,
+                        edge_queued_mono_ms: None,
+                        edge_drain_mono_ms: None,
+                        resolve_mono_ms: armed_ret_mono_ms,
+                        gui,
+                        hwnd: Some(hwnd),
+                        pid: Some(pid),
+                        creation: Some(creation),
+                    });
+                }
+            } else if let Some(tag) = fresh.stored_tags.get(&effect.target.0).cloned()
+                && !tag.is_empty()
+                && let Some(flight) = in_flight.replace(InFlightFocus {
+                    token: effect.target.0.clone(),
+                    key: base.key.clone(),
+                    tag,
+                    effect: effect.id.clone(),
+                    set_mono_ms: armed_ret_mono_ms,
+                })
+            {
+                let gui = gui_resolution_label(ops, flight.key.hwnd);
+                let (hwnd, pid, creation) =
+                    (flight.key.hwnd, flight.key.pid, flight.key.creation.clone());
+                stats.note_inflight(InFlightEventDiag {
+                    token: flight.token,
+                    effect: flight.effect,
+                    cause: "superseded-new-setter",
+                    edge_event_ms: None,
+                    edge_queued_mono_ms: None,
+                    edge_drain_mono_ms: None,
+                    resolve_mono_ms: armed_ret_mono_ms,
+                    gui,
+                    hwnd: Some(hwnd),
+                    pid: Some(pid),
+                    creation: Some(creation),
+                });
+            }
+        }
+        if stats.focus_dispatch.len() < MAX_FOCUS_DIAG {
+            stats.focus_dispatch.push(FocusDispatchDiag {
+                id: effect.id.clone(),
+                target: effect.target.0.clone(),
+                kind: effect.kind.as_str(),
+                dispatched: true,
+                setter,
+                foreground,
+                hold: if foreground {
+                    None
+                } else {
+                    Some("foreground-unproven")
+                },
+                fg_baseline: None,
+                fg_live: None,
+                api: if call_diag.primitive_called {
+                    call_diag.api
+                } else {
+                    None
+                },
+                call_mono_ms: call_diag.call_mono_ms,
+                ret_mono_ms: call_diag.ret_mono_ms,
+                gui_dispatch: call_diag.gui_before.as_ref().map(gui_trace_label),
+                gui_landing,
+                primitive_called: call_diag.primitive_called,
+                native_return: call_diag.native_return,
+                hwnd: Some(base.key.hwnd),
+                pid: Some(base.key.pid),
+                creation: Some(base.key.creation.clone()),
+            });
+        }
         if foreground {
-            push_focus!(true, setter, true, None);
             stats.effects += 1;
             fg_baseline = ops.foreground_state();
         } else {
-            push_focus!(true, setter, false, Some("foreground-unproven"));
             stats.held += 1;
         }
         if gate.current_obs != entry_obs {
@@ -2794,6 +3711,7 @@ pub(super) fn apply_world_reply(
         }
     }
 
+    drain_visibility_posts(&mut stats, ops);
     finalize(&mut stats);
     stats
 }

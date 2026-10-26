@@ -632,7 +632,20 @@ fn pump_once() {
 
 /// Post one visibility effect, then pump until the readback observes it.
 fn post_visibility(hwnd_u64: u64, cmd: i32, expect_visible: bool, timeout_ms: u64) -> Result<()> {
-    if !post_async(hwnd_u64, cmd) {
+    post_visibility_traced(hwnd_u64, cmd, expect_visible, timeout_ms, None)
+}
+
+/// Traced visibility post for the world route: records the actual host API
+/// that ran (never the configured mode) into `sink` when armed. `None`
+/// keeps the legacy behavior exactly (no record, no clock).
+fn post_visibility_traced(
+    hwnd_u64: u64,
+    cmd: i32,
+    expect_visible: bool,
+    timeout_ms: u64,
+    sink: Option<&mut VisibilityPostTrace>,
+) -> Result<()> {
+    if !post_async_traced(hwnd_u64, cmd, sink) {
         return Err(err("error: visibility post failed"));
     }
     poll_visibility(hwnd_u64, expect_visible, timeout_ms, true)
@@ -640,13 +653,25 @@ fn post_visibility(hwnd_u64: u64, cmd: i32, expect_visible: bool, timeout_ms: u6
 
 /// Pump-free nonactivating visibility post for remembered-focus view
 /// switches. Reuses the existing budgets and sleep cadence.
+#[allow(dead_code)]
 fn post_visibility_pos(
     hwnd_u64: u64,
     hide: bool,
     expect_visible: bool,
     timeout_ms: u64,
 ) -> Result<()> {
-    if !post_async_pos(hwnd_u64, hide) {
+    post_visibility_pos_traced(hwnd_u64, hide, expect_visible, timeout_ms, None)
+}
+
+/// Traced nonactivating post (see [`post_visibility_traced`]).
+fn post_visibility_pos_traced(
+    hwnd_u64: u64,
+    hide: bool,
+    expect_visible: bool,
+    timeout_ms: u64,
+    sink: Option<&mut VisibilityPostTrace>,
+) -> Result<()> {
+    if !post_async_pos_traced(hwnd_u64, hide, sink) {
         return Err(err("error: visibility post failed"));
     }
     poll_visibility(hwnd_u64, expect_visible, timeout_ms, false)
@@ -738,15 +763,96 @@ pub(crate) enum VisibilityMode {
     NonactivatingPos,
 }
 
+/// Actual nonactivating `SetWindowPos` flag words posted by
+/// [`post_async_pos`] (hide `0x4097`, show `0x4057`): `SWP_NOMOVE |
+/// SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS` plus
+/// `SWP_HIDEWINDOW` (hide) or `SWP_SHOWWINDOW` (show). Test-pinned below
+/// against the composed `SWP_*` expression so a flag change breaks the
+/// build instead of silently desyncing diagnostics vocabulary.
+pub(crate) const NA_POS_HIDE_FLAGS: u32 = 0x4097;
+pub(crate) const NA_POS_SHOW_FLAGS: u32 = 0x4057;
+
+/// Trace-only host API vocabulary for visibility posts: the exact
+/// primitive that ran. Pumped hides/reveals post `ShowWindowAsync` with
+/// the show command; nonactivating view hides/reveals post `SetWindowPos`
+/// with the async flag word (`SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+/// SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS` plus `SWP_HIDEWINDOW`/`SWP_SHOWWINDOW`).
+/// Recorded only at the actual post site when the caller arms a sink;
+/// early vetos (admission, ledger, pre-read) record nothing and never
+/// infer a call from the configured mode. No user content: HWND plus
+/// the mechanical call facts only.
+pub(crate) const VIEW_POST_API_POS: &str = "SetWindowPos";
+pub(crate) const VIEW_POST_API_SHOW: &str = "ShowWindowAsync";
+
+/// Trace-only record of one executed visibility post: which host API ran
+/// for which HWND and direction, with the activation-affecting parameter
+/// (async `SetWindowPos` flag word or `ShowWindowAsync` command), the
+/// post verdict, and stamps strictly around the primitive on the shared
+/// log `mono_ms` basis. Call-to-return alone never proves arrival; the
+/// existing visibility readback does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VisibilityPostDiag {
+    pub(crate) hwnd: u64,
+    pub(crate) hide: bool,
+    pub(crate) api: &'static str,
+    pub(crate) flags: Option<u32>,
+    pub(crate) cmd: Option<i32>,
+    pub(crate) posted: bool,
+    pub(crate) call_mono_ms: u64,
+    pub(crate) ret_mono_ms: u64,
+}
+
+/// Bound for retained executed-visibility-post rows per pass. The
+/// production posts themselves are never capped (actuation runs every
+/// hide/reveal); only this diagnostic storage caps, with the unbounded
+/// total below keeping the world-apply omission honest.
+pub(crate) const MAX_VISIBILITY_POSTS: usize = 8;
+
+/// Bounded trace accumulator for executed visibility posts: the actual
+/// host API records from the post sites, in execution order. `total`
+/// counts every executed post including rows past the storage cap, so
+/// the tick diag derives an honest omitted count instead of a false
+/// zero. Never a policy input; arrivals still prove only through the
+/// visibility readback.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct VisibilityPostTrace {
+    pub(crate) rows: Vec<VisibilityPostDiag>,
+    pub(crate) total: usize,
+}
+
+impl VisibilityPostTrace {
+    pub(crate) fn push(&mut self, row: VisibilityPostDiag) {
+        self.total = self.total.saturating_add(1);
+        if self.rows.len() < MAX_VISIBILITY_POSTS {
+            self.rows.push(row);
+        }
+    }
+
+    pub(crate) fn take(&mut self) -> (Vec<VisibilityPostDiag>, usize) {
+        (
+            std::mem::take(&mut self.rows),
+            std::mem::take(&mut self.total),
+        )
+    }
+}
+
 /// Async visibility post. Returns `false` when the post refused.
+#[allow(dead_code)]
 fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
+    post_async_traced(hwnd_u64, cmd, None)
+}
+
+/// Traced async post (see [`post_visibility_traced`]): stamps and records
+/// the actual `ShowWindowAsync` call when `sink` is armed, including
+/// refusals; unarmed runs skip the record and the clock.
+fn post_async_traced(hwnd_u64: u64, cmd: i32, sink: Option<&mut VisibilityPostTrace>) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    let hide = cmd == SW_HIDE;
     #[cfg(test)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
         if fake::active(hwnd_u64) {
-            let hide = cmd == SW_HIDE;
             fake::record_post(hwnd_u64, hide, true);
-            return fake::with_mut(hwnd_u64, |w| {
+            let posted = fake::with_mut(hwnd_u64, |w| {
                 if !w.alive || !w.post_ok {
                     return false;
                 }
@@ -756,20 +862,65 @@ fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
                 true
             })
             .unwrap_or(false);
+            if let Some(trace) = sink {
+                let call_mono_ms = crate::tiling_sys::trace::log_mono_ms();
+                let ret_mono_ms = crate::tiling_sys::trace::log_mono_ms();
+                trace.push(VisibilityPostDiag {
+                    hwnd: hwnd_u64,
+                    hide,
+                    api: VIEW_POST_API_SHOW,
+                    flags: None,
+                    cmd: Some(cmd),
+                    posted,
+                    call_mono_ms,
+                    ret_mono_ms,
+                });
+            }
+            return posted;
         }
     }
-    crate::ffi::show_window_async(hwnd_u64, cmd)
+    let armed = sink.is_some();
+    let call_mono_ms = if armed {
+        crate::tiling_sys::trace::log_mono_ms()
+    } else {
+        0
+    };
+    let posted = crate::ffi::show_window_async(hwnd_u64, cmd);
+    if let Some(rows) = sink {
+        rows.push(VisibilityPostDiag {
+            hwnd: hwnd_u64,
+            hide,
+            api: VIEW_POST_API_SHOW,
+            flags: None,
+            cmd: Some(cmd),
+            posted,
+            call_mono_ms,
+            ret_mono_ms: crate::tiling_sys::trace::log_mono_ms(),
+        });
+    }
+    posted
 }
 
 /// Nonactivating async visibility post via `SetWindowPos` with
 /// `SWP_ASYNCWINDOWPOS` (hide `0x4097`, show `0x4057`). The caller never
 /// pumps, so edges the wait would deliver stay undelivered during the wait.
+#[allow(dead_code)]
 fn post_async_pos(hwnd_u64: u64, hide: bool) -> bool {
+    post_async_pos_traced(hwnd_u64, hide, None)
+}
+
+/// Traced nonactivating post (see [`post_visibility_traced`]): stamps and
+/// records the actual `SetWindowPos` flag word when `sink` is armed.
+fn post_async_pos_traced(
+    hwnd_u64: u64,
+    hide: bool,
+    sink: Option<&mut VisibilityPostTrace>,
+) -> bool {
     #[cfg(test)]
     {
         if fake::active(hwnd_u64) {
             fake::record_post(hwnd_u64, hide, false);
-            return fake::with_mut(hwnd_u64, |w| {
+            let posted = fake::with_mut(hwnd_u64, |w| {
                 if !w.alive || !w.post_ok {
                     return false;
                 }
@@ -779,6 +930,25 @@ fn post_async_pos(hwnd_u64: u64, hide: bool) -> bool {
                 true
             })
             .unwrap_or(false);
+            if let Some(trace) = sink {
+                let call_mono_ms = crate::tiling_sys::trace::log_mono_ms();
+                let ret_mono_ms = crate::tiling_sys::trace::log_mono_ms();
+                trace.push(VisibilityPostDiag {
+                    hwnd: hwnd_u64,
+                    hide,
+                    api: VIEW_POST_API_POS,
+                    flags: Some(if hide {
+                        NA_POS_HIDE_FLAGS
+                    } else {
+                        NA_POS_SHOW_FLAGS
+                    }),
+                    cmd: None,
+                    posted,
+                    call_mono_ms,
+                    ret_mono_ms,
+                });
+            }
+            return posted;
         }
     }
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -791,7 +961,35 @@ fn post_async_pos(hwnd_u64: u64, hide: bool) -> bool {
         | SWP_NOACTIVATE
         | SWP_ASYNCWINDOWPOS
         | if hide { SWP_HIDEWINDOW } else { SWP_SHOWWINDOW };
-    crate::ffi::set_window_pos(hwnd_u64, 0, 0, 0, 0, flags)
+    debug_assert_eq!(
+        flags,
+        if hide {
+            NA_POS_HIDE_FLAGS
+        } else {
+            NA_POS_SHOW_FLAGS
+        },
+        "nonactivating SetWindowPos flag word changed: update NA_POS_*_FLAGS"
+    );
+    let armed = sink.is_some();
+    let call_mono_ms = if armed {
+        crate::tiling_sys::trace::log_mono_ms()
+    } else {
+        0
+    };
+    let posted = crate::ffi::set_window_pos(hwnd_u64, 0, 0, 0, 0, flags);
+    if let Some(rows) = sink {
+        rows.push(VisibilityPostDiag {
+            hwnd: hwnd_u64,
+            hide,
+            api: VIEW_POST_API_POS,
+            flags: Some(flags),
+            cmd: None,
+            posted,
+            call_mono_ms,
+            ret_mono_ms: crate::tiling_sys::trace::log_mono_ms(),
+        });
+    }
+    posted
 }
 
 /// Shared visibility poll. Reuses the existing budgets and sleep cadence.
@@ -1518,6 +1716,21 @@ pub(crate) fn hide_managed_claim_with_mode(
     dir: &Path,
     mode: VisibilityMode,
 ) -> Result<WindowIdentity> {
+    hide_managed_claim_with_mode_traced(store, owner, claim, dir, mode, None)
+}
+
+/// Traced hide for the world route: the actual visibility post records
+/// into `sink` when armed (see [`post_visibility_traced`]). Admission,
+/// ledger, and readback behavior are identical; early vetos record
+/// nothing.
+pub(crate) fn hide_managed_claim_with_mode_traced(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    dir: &Path,
+    mode: VisibilityMode,
+    sink: Option<&mut VisibilityPostTrace>,
+) -> Result<WindowIdentity> {
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
     // Shape refusal takes no cleanup, as before.
     check_claim_shape(claim)?;
@@ -1537,10 +1750,10 @@ pub(crate) fn hide_managed_claim_with_mode(
     let _ = &held;
     let post_result = match mode {
         VisibilityMode::PumpedShowAsync => {
-            post_visibility(claim.hwnd, SW_HIDE, false, HIDE_TIMEOUT_MS)
+            post_visibility_traced(claim.hwnd, SW_HIDE, false, HIDE_TIMEOUT_MS, sink)
         }
         VisibilityMode::NonactivatingPos => {
-            post_visibility_pos(claim.hwnd, true, false, HIDE_TIMEOUT_MS)
+            post_visibility_pos_traced(claim.hwnd, true, false, HIDE_TIMEOUT_MS, sink)
         }
     };
     match post_result {
@@ -1563,6 +1776,25 @@ pub fn hide_managed_claim_nonactivating(
     dir: &Path,
 ) -> Result<WindowIdentity> {
     hide_managed_claim_with_mode(store, owner, claim, dir, VisibilityMode::NonactivatingPos)
+}
+
+/// Traced nonactivating hide for the world route (see
+/// [`hide_managed_claim_with_mode_traced`]).
+pub(crate) fn hide_managed_claim_nonactivating_traced(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    dir: &Path,
+    sink: Option<&mut VisibilityPostTrace>,
+) -> Result<WindowIdentity> {
+    hide_managed_claim_with_mode_traced(
+        store,
+        owner,
+        claim,
+        dir,
+        VisibilityMode::NonactivatingPos,
+        sink,
+    )
 }
 
 fn commit_windows(
@@ -1651,6 +1883,22 @@ pub(crate) fn reveal_product_claim_to_with_mode(
     minimized: bool,
     mode: VisibilityMode,
 ) -> std::result::Result<super::ProductTeardown, DynError> {
+    reveal_product_claim_to_with_mode_traced(store, owner, claim, minimized, mode, None)
+}
+
+/// Traced reveal for the world route: the actual visibility post records
+/// into `sink` when armed (see [`post_visibility_traced`]). A minimized
+/// restore keeps the pumped `SW_SHOWMINNOACTIVE` post even in the
+/// nonactivating mode, and the record names the API that actually ran.
+/// Preparation short-circuits (retired/already-visible) record nothing.
+pub(crate) fn reveal_product_claim_to_with_mode_traced(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    minimized: bool,
+    mode: VisibilityMode,
+    sink: Option<&mut VisibilityPostTrace>,
+) -> std::result::Result<super::ProductTeardown, DynError> {
     use super::ProductTeardown;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
     let mut ledger_ms = 0;
@@ -1661,13 +1909,13 @@ pub(crate) fn reveal_product_claim_to_with_mode(
     };
     let post_result = match mode {
         VisibilityMode::PumpedShowAsync => {
-            post_visibility(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS)
+            post_visibility_traced(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS, sink)
         }
         VisibilityMode::NonactivatingPos if prep.show_cmd == SW_SHOWMINNOACTIVE => {
-            post_visibility(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS)
+            post_visibility_traced(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS, sink)
         }
         VisibilityMode::NonactivatingPos => {
-            post_visibility_pos(claim.hwnd, false, true, REVEAL_TIMEOUT_MS)
+            post_visibility_pos_traced(claim.hwnd, false, true, REVEAL_TIMEOUT_MS, sink)
         }
     };
     match post_result {
@@ -1700,6 +1948,25 @@ pub fn reveal_product_claim_to_nonactivating(
         claim,
         minimized,
         VisibilityMode::NonactivatingPos,
+    )
+}
+
+/// Traced nonactivating reveal for the world route (see
+/// [`reveal_product_claim_to_with_mode_traced`]).
+pub(crate) fn reveal_product_claim_to_nonactivating_traced(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    minimized: bool,
+    sink: Option<&mut VisibilityPostTrace>,
+) -> std::result::Result<super::ProductTeardown, DynError> {
+    reveal_product_claim_to_with_mode_traced(
+        store,
+        owner,
+        claim,
+        minimized,
+        VisibilityMode::NonactivatingPos,
+        sink,
     )
 }
 
@@ -2048,6 +2315,31 @@ mod mode_tests {
     }
 
     #[test]
+    fn nonactivating_flag_words_match_swp_expression() {
+        // The actual `SetWindowPos` flag words in `post_async_pos` stay
+        // pinned: hide `0x4097`, show `0x4057`. A flag change must update
+        // the constants (and diagnostics vocabulary) with it.
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SWP_ASYNCWINDOWPOS, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_NOZORDER, SWP_SHOWWINDOW,
+        };
+        let hide = SWP_NOMOVE
+            | SWP_NOSIZE
+            | SWP_NOZORDER
+            | SWP_NOACTIVATE
+            | SWP_ASYNCWINDOWPOS
+            | SWP_HIDEWINDOW;
+        let show = SWP_NOMOVE
+            | SWP_NOSIZE
+            | SWP_NOZORDER
+            | SWP_NOACTIVATE
+            | SWP_ASYNCWINDOWPOS
+            | SWP_SHOWWINDOW;
+        assert_eq!(hide, super::NA_POS_HIDE_FLAGS);
+        assert_eq!(show, super::NA_POS_SHOW_FLAGS);
+    }
+
+    #[test]
     fn nonactivating_hide_records_unpumped_post() {
         let owner = owner();
         let dir = open_store("hide-na", &owner, Vec::new());
@@ -2105,5 +2397,195 @@ mod mode_tests {
         assert_eq!(fake::post_modes(), vec![(9004, false, false)]);
         fake::unregister_all();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The traced pumped post records the actual `ShowWindowAsync` call:
+    /// HWND, direction, command, verdict, and call/return stamps.
+    #[test]
+    fn traced_pumped_post_records_show_api_and_cmd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+        register_window(9101, true, false, Some(TAG.to_owned()));
+        let mut sink = super::VisibilityPostTrace::default();
+        assert!(super::post_async_traced(9101, SW_HIDE, Some(&mut sink)));
+        assert_eq!(sink.rows.len(), 1);
+        let row = &sink.rows[0];
+        assert_eq!(row.hwnd, 9101);
+        assert!(row.hide);
+        assert_eq!(row.api, super::VIEW_POST_API_SHOW);
+        assert_eq!(row.flags, None);
+        assert_eq!(row.cmd, Some(SW_HIDE));
+        assert!(row.posted);
+        assert!(row.call_mono_ms <= row.ret_mono_ms);
+        // Unarmed posts run the same native effect with no record.
+        assert!(super::post_async_traced(9101, SW_HIDE, None));
+        fake::unregister_all();
+    }
+
+    /// The traced nonactivating post records the actual `SetWindowPos`
+    /// flag word, not the configured mode label.
+    #[test]
+    fn traced_pos_post_records_pos_api_and_flags() {
+        register_window(9102, true, false, Some(TAG.to_owned()));
+        let mut sink = super::VisibilityPostTrace::default();
+        assert!(super::post_async_pos_traced(9102, true, Some(&mut sink)));
+        assert_eq!(sink.rows.len(), 1);
+        assert_eq!(sink.rows[0].api, super::VIEW_POST_API_POS);
+        assert_eq!(sink.rows[0].flags, Some(super::NA_POS_HIDE_FLAGS));
+        assert_eq!(sink.rows[0].cmd, None);
+        assert!(sink.rows[0].hide && sink.rows[0].posted);
+        assert!(super::post_async_pos_traced(9102, false, Some(&mut sink)));
+        assert_eq!(sink.rows.len(), 2);
+        assert_eq!(sink.rows[1].api, super::VIEW_POST_API_POS);
+        assert_eq!(sink.rows[1].flags, Some(super::NA_POS_SHOW_FLAGS));
+        assert!(!sink.rows[1].hide && sink.rows[1].posted);
+        fake::unregister_all();
+    }
+
+    /// A refused native post still records the actual call with its
+    /// `false` verdict: the record names what ran, never success.
+    #[test]
+    fn traced_refused_post_records_posted_false() {
+        fake::register(
+            9103,
+            FakeWindow {
+                pid: 4242,
+                process: target_process(),
+                integrity_rid: 0x2000,
+                nonce: Some(TAG.to_owned()),
+                member_tag: Some("member-tag-1".to_owned()),
+                visible: true,
+                iconic: false,
+                maximized: false,
+                alive: true,
+                post_ok: false,
+                defer: false,
+            },
+        );
+        let mut sink = super::VisibilityPostTrace::default();
+        assert!(!super::post_async_pos_traced(9103, true, Some(&mut sink)));
+        assert_eq!(sink.rows.len(), 1);
+        assert_eq!(sink.rows[0].api, super::VIEW_POST_API_POS);
+        assert!(!sink.rows[0].posted);
+        fake::unregister_all();
+    }
+
+    /// End-to-end traced hide/reveal records the executed API per post,
+    /// including the minimized-reveal fallback to the pumped path.
+    #[test]
+    fn traced_hide_reveal_records_executed_api() {
+        let owner = owner();
+        let dir = open_store("trace-api", &owner, Vec::new());
+        let store = LedgerStore::open(&dir).expect("ledger reopen");
+        register_window(9104, true, false, Some(TAG.to_owned()));
+        let claim = hide_claim(9104, false);
+        let mut sink = super::VisibilityPostTrace::default();
+        super::hide_managed_claim_with_mode_traced(
+            &store,
+            &owner,
+            &claim,
+            &dir,
+            VisibilityMode::NonactivatingPos,
+            Some(&mut sink),
+        )
+        .expect("traced na hide");
+        assert_eq!(sink.rows.len(), 1);
+        assert_eq!(sink.rows[0].api, super::VIEW_POST_API_POS);
+        assert_eq!(sink.rows[0].flags, Some(super::NA_POS_HIDE_FLAGS));
+        assert!(sink.rows[0].hide);
+        // Plain reveal posts the nonactivating show.
+        sink = super::VisibilityPostTrace::default();
+        super::reveal_product_claim_to_with_mode_traced(
+            &store,
+            &owner,
+            &claim,
+            false,
+            VisibilityMode::NonactivatingPos,
+            Some(&mut sink),
+        )
+        .expect("traced na reveal");
+        assert_eq!(sink.rows.len(), 1);
+        assert_eq!(sink.rows[0].api, super::VIEW_POST_API_POS);
+        assert_eq!(sink.rows[0].flags, Some(super::NA_POS_SHOW_FLAGS));
+        assert!(!sink.rows[0].hide);
+        fake::unregister_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimized restore keeps the pumped `SW_SHOWMINNOACTIVE` post even
+    /// in the nonactivating mode, and the record says so.
+    #[test]
+    fn traced_minimized_reveal_records_pumped_fallback() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
+        let owner = owner();
+        let claim = hide_claim(9105, true);
+        let dir = open_store("trace-min", &owner, vec![claim.clone()]);
+        let store = LedgerStore::open(&dir).expect("ledger reopen");
+        register_window(9105, false, false, Some(TAG.to_owned()));
+        let mut sink = super::VisibilityPostTrace::default();
+        super::reveal_product_claim_to_with_mode_traced(
+            &store,
+            &owner,
+            &claim,
+            false,
+            VisibilityMode::NonactivatingPos,
+            Some(&mut sink),
+        )
+        .expect("traced na minimized reveal");
+        assert_eq!(sink.rows.len(), 1);
+        assert_eq!(sink.rows[0].api, super::VIEW_POST_API_SHOW);
+        assert_eq!(sink.rows[0].cmd, Some(SW_SHOWMINNOACTIVE));
+        fake::unregister_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Early vetos (here: bad claim shape) record nothing: the sink never
+    /// infers a call from the configured mode.
+    #[test]
+    fn traced_hide_shape_refusal_records_nothing() {
+        let owner = owner();
+        let dir = open_store("trace-veto", &owner, Vec::new());
+        let store = LedgerStore::open(&dir).expect("ledger reopen");
+        let mut bad = hide_claim(9106, false);
+        bad.tag = "bad-tag".to_owned();
+        let mut sink = super::VisibilityPostTrace::default();
+        let result = super::hide_managed_claim_with_mode_traced(
+            &store,
+            &owner,
+            &bad,
+            &dir,
+            VisibilityMode::NonactivatingPos,
+            Some(&mut sink),
+        );
+        assert!(result.is_err());
+        assert!(sink.rows.is_empty() && sink.total == 0);
+        fake::unregister_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The source accumulator caps storage with an honest total: past the
+    /// row cap every executed post still counts, so the world-apply
+    /// omission derives from the total instead of a false zero.
+    #[test]
+    fn traced_source_storage_caps_with_honest_total() {
+        use super::{MAX_VISIBILITY_POSTS, VisibilityPostDiag};
+        let mut sink = super::VisibilityPostTrace::default();
+        for n in 0..(MAX_VISIBILITY_POSTS + 3) {
+            sink.push(VisibilityPostDiag {
+                hwnd: 9200 + n as u64,
+                hide: true,
+                api: super::VIEW_POST_API_POS,
+                flags: Some(super::NA_POS_HIDE_FLAGS),
+                cmd: None,
+                posted: true,
+                call_mono_ms: 11,
+                ret_mono_ms: 13,
+            });
+        }
+        assert_eq!(sink.rows.len(), MAX_VISIBILITY_POSTS);
+        assert_eq!(sink.total, MAX_VISIBILITY_POSTS + 3);
+        let (rows, total) = sink.take();
+        assert_eq!(rows.len(), MAX_VISIBILITY_POSTS);
+        assert_eq!(total, MAX_VISIBILITY_POSTS + 3);
+        assert_eq!(rows[0].hwnd, 9200);
     }
 }

@@ -9,7 +9,7 @@ static LOG_START: OnceLock<Instant> = OnceLock::new();
 /// Milliseconds since the first tiling log row of this process. Common
 /// monotonic time across normal log records; ticks order work, this measures
 /// delays. Never overwrites an existing field.
-pub(super) fn log_mono_ms() -> u64 {
+pub(crate) fn log_mono_ms() -> u64 {
     LOG_START
         .get_or_init(Instant::now)
         .elapsed()

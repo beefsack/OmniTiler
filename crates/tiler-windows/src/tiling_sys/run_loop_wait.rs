@@ -2,14 +2,49 @@
 use super::*;
 
 // Per-turn WinEvent edge drain for the tile loop: takes the queued hook
-// callbacks once, filters own-overlay events, and captures gesture START
-// state. Nested `continue`s below stay on the drain loop.
+// callbacks once, filters own-overlay events, preserves foreground HWNDs
+// in delivery order for the world diff's in-flight focus tracking, and
+// captures gesture START state. Nested `continue`s below stay on the
+// drain loop.
 pub(super) struct EdgeDrain {
     pub woke: bool,
     pub batch_total: u64,
     pub wakes: u64,
     pub starts: u64,
     pub ends: u64,
+    /// Drained `EVENT_SYSTEM_FOREGROUND` HWNDs in delivery order, after the
+    /// own-overlay exclusion below. The world diff resolves each against
+    /// full native identity plus lifetime at apply entry; nothing here
+    /// resolves identity (no pid work in the drain, never in the callback).
+    pub foreground: Vec<u64>,
+    /// Per-kind effective-wake counts for this pass (own-overlay filtered,
+    /// post-filter only): the actual pass relation for wake attribution,
+    /// distinct from the aggregate once-per-throttle counters.
+    pub kind_foreground: u64,
+    pub kind_visibility: u64,
+    pub kind_other: u64,
+    pub kind_unknown: u64,
+    /// Per-event wake counts for this pass (same filtered set as above,
+    /// split by exact WinEvent so mouse/location traffic never hides in
+    /// `other`): foreground, show, hide, create, destroy, location, and
+    /// anything outside the wake set. Bounded fixed counters, never a dump.
+    pub kind_location: u64,
+    pub kind_create: u64,
+    pub kind_destroy: u64,
+    pub kind_show: u64,
+    pub kind_hide: u64,
+    /// Taskbar-subtree hits that woke the loop this pass (pid-scoped
+    /// Explorer traffic, validated against the taskbar subtree).
+    pub taskbar: u64,
+    /// Trace-only drained foreground edges with delivery/owner timestamps,
+    /// in delivery order, parallel to [`EdgeDrain::foreground`]. Capped at
+    /// [`super::observe::MAX_FOREGROUND_TRACE_EDGES`] with the excess in
+    /// [`EdgeDrain::foreground_omitted`]. Empty unless tracing.
+    pub foreground_detail: Vec<super::observe::ForegroundEdgeMeta>,
+    /// Drained foreground edges beyond the detail cap: honest omission,
+    /// never a silent loss (the production `foreground` HWNDs above still
+    /// resolve in the world diff).
+    pub foreground_omitted: usize,
 }
 
 /// Gesture-open pointer-sampling cadence: while a managed gesture holds the
@@ -342,6 +377,22 @@ pub(super) fn drain_hook_edges(
     let mut ow_wakes: u64 = 0;
     let mut ow_starts: u64 = 0;
     let mut ow_ends: u64 = 0;
+    let mut foreground: Vec<u64> = Vec::new();
+    let mut kind_foreground: u64 = 0;
+    let mut kind_visibility: u64 = 0;
+    let mut kind_other: u64 = 0;
+    let mut kind_unknown: u64 = 0;
+    let mut kind_location: u64 = 0;
+    let mut kind_create: u64 = 0;
+    let mut kind_destroy: u64 = 0;
+    let mut kind_show: u64 = 0;
+    let mut kind_hide: u64 = 0;
+    // Trace-only owner-drain timestamp shared by every foreground edge this
+    // pass: the observation moment joining callback delivery
+    // (`queued_mono_ms`) to apply-entry resolution below.
+    let drain_mono_ms = super::trace::log_mono_ms();
+    let mut foreground_detail: Vec<super::observe::ForegroundEdgeMeta> = Vec::new();
+    let mut foreground_omitted: usize = 0;
     for event in events {
         match event {
             HookEvent::Wake(edge) => {
@@ -355,6 +406,66 @@ pub(super) fn drain_hook_edges(
                     continue;
                 }
                 woke = true;
+                match edge.cause {
+                    super::observe::HookCause::Foreground => {
+                        kind_foreground = kind_foreground.saturating_add(1);
+                    }
+                    super::observe::HookCause::Visibility => {
+                        kind_visibility = kind_visibility.saturating_add(1);
+                    }
+                    super::observe::HookCause::Other => {
+                        kind_other = kind_other.saturating_add(1);
+                    }
+                    super::observe::HookCause::Unknown => {
+                        kind_unknown = kind_unknown.saturating_add(1);
+                    }
+                }
+                // Exact-event split for the same filtered set: LOCATION
+                // (mouse/location concern), create/destroy, and show/hide
+                // stay distinct instead of folding into `other`. Gate
+                // vocabulary above is unchanged; this only attributes.
+                match edge.event {
+                    EVENT_OBJECT_LOCATIONCHANGE => {
+                        kind_location = kind_location.saturating_add(1);
+                    }
+                    EVENT_OBJECT_CREATE => {
+                        kind_create = kind_create.saturating_add(1);
+                    }
+                    EVENT_OBJECT_DESTROY => {
+                        kind_destroy = kind_destroy.saturating_add(1);
+                    }
+                    EVENT_OBJECT_SHOW => {
+                        kind_show = kind_show.saturating_add(1);
+                    }
+                    EVENT_OBJECT_HIDE => {
+                        kind_hide = kind_hide.saturating_add(1);
+                    }
+                    _ => {}
+                }
+                // Preserve the foreground edge for event-driven in-flight
+                // focus: the world diff resolves it against full native
+                // identity plus lifetime at apply entry, distinguishing the
+                // product's own landing from a genuine competitor. The
+                // production `wake_cause` classification decides here, and
+                // the own-overlay exclusion above applies first, so our own
+                // border/underlay/paint events never arm in-flight.
+                if edge.cause == super::observe::HookCause::Foreground && raw > 0 {
+                    foreground.push(raw as u64);
+                    if state.trace {
+                        if foreground_detail.len() < super::observe::MAX_FOREGROUND_TRACE_EDGES {
+                            foreground_detail.push(super::observe::ForegroundEdgeMeta {
+                                hwnd: raw as u64,
+                                event_ms: edge.time,
+                                thread: edge.thread,
+                                queued_mono_ms: edge.queued_mono_ms,
+                                drain_mono_ms,
+                                delivery: edge.delivery.clone(),
+                            });
+                        } else {
+                            foreground_omitted = foreground_omitted.saturating_add(1);
+                        }
+                    }
+                }
                 if state.trace {
                     ow_wakes += 1;
                 }
@@ -509,5 +620,181 @@ pub(super) fn drain_hook_edges(
         wakes: ow_wakes,
         starts: ow_starts,
         ends: ow_ends,
+        foreground,
+        kind_foreground,
+        kind_visibility,
+        kind_other,
+        kind_unknown,
+        kind_location,
+        kind_create,
+        kind_destroy,
+        kind_show,
+        kind_hide,
+        taskbar: taskbar_hits,
+        foreground_detail,
+        foreground_omitted,
+    }
+}
+
+/// Trace-only per-pass wake attribution: what woke this pass, on this
+/// pass. The wait return cause set (input/ack/message/notify/timeout/
+/// failed flags plus the selected deadline source and its requested vs
+/// elapsed time) rides alongside the drained hook-kind counts and the
+/// bounded correlated foreground rows, so a later leg can join the actual
+/// waker to the pass instead of an aggregate once-per-throttle summary. A
+/// cause set only: several flags may hold at once and no single waker is
+/// claimed. Commands are attributed by tick: the `world-apply` row for the
+/// same tick carries the consumed command kind. Trace-gated by the caller;
+/// reads member tables and at most [`super::observe::MAX_FOREGROUND_TRACE_ROWS`]
+/// native class names, never drains, arms, or actuates anything.
+pub(super) fn log_wake_attribution(
+    state: &TileLoop,
+    wait: super::observe::WaitWake,
+    diag: OwnerWaitDiag,
+    drain: &EdgeDrain,
+    log_path: &Path,
+) {
+    let rows: Vec<serde_json::Value> = drain
+        .foreground_detail
+        .iter()
+        .take(super::observe::MAX_FOREGROUND_TRACE_ROWS)
+        .map(|meta| {
+            let managed = state.managed.contains(&meta.hwnd);
+            let views: Vec<super::observe::MemberJoinView<'_>> = state
+                .member_tokens
+                .iter()
+                .filter(|(key, _)| key.hwnd == meta.hwnd)
+                .map(|(key, token)| super::observe::MemberJoinView {
+                    hwnd: key.hwnd,
+                    pid: key.pid,
+                    token: token.as_str(),
+                    stored_tag: state.member_tags.get(key).map(String::as_str),
+                })
+                .collect();
+            let (token, reason) =
+                super::observe::join_delivery_token(meta.hwnd, &meta.delivery, &views);
+            let class = super::observe::class_of(meta.hwnd as isize as HWND);
+            let mut row = serde_json::json!({
+                "managed": managed,
+                "token": token,
+                "join": reason,
+                "delivery": meta.delivery.as_str(),
+                "tagged": meta.delivery.has_tag(),
+                "event_ms": meta.event_ms,
+                "thread": meta.thread,
+                "queued_mono_ms": meta.queued_mono_ms,
+                "drain_mono_ms": meta.drain_mono_ms,
+            });
+            if class.is_empty() {
+                row["class"] = serde_json::Value::Null;
+            } else {
+                row["class"] = serde_json::Value::from(class);
+            }
+            row
+        })
+        .collect();
+    let omitted = drain
+        .foreground_detail
+        .len()
+        .saturating_sub(rows.len())
+        .saturating_add(drain.foreground_omitted);
+    let source = OWNER_WAIT_SOURCE_ORDER
+        .get(diag.source as usize)
+        .copied()
+        .unwrap_or("unknown");
+    super::trace::log_json_at(
+        log_path,
+        serde_json::json!({
+            "event": "wake-attribution",
+            "tick": state.tick,
+            "staged": diag.staged,
+            "wait_source": source,
+            "requested_ms": diag.requested_ms,
+            "elapsed_ms": diag.elapsed_ms,
+            "already_due": diag.already_due,
+            "woke": {
+                "input": wait.input,
+                "ack": wait.ack,
+                "message": wait.message,
+                "notify": wait.notify,
+                "timeout": wait.timeout,
+                "failed": wait.failed,
+            },
+            "hook_kinds": {
+                "foreground": drain.kind_foreground,
+                "visibility": drain.kind_visibility,
+                "other": drain.kind_other,
+                "unknown": drain.kind_unknown,
+                "location": drain.kind_location,
+                "create": drain.kind_create,
+                "destroy": drain.kind_destroy,
+                "show": drain.kind_show,
+                "hide": drain.kind_hide,
+                "taskbar": drain.taskbar,
+            },
+            "foreground": rows,
+            "foreground_omitted": omitted,
+        }),
+    );
+}
+
+#[cfg(test)]
+mod edge_kind_tests {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+        EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
+    };
+
+    /// Exact-event wake attribution stays distinct: LOCATION (mouse/location
+    /// concern), create, destroy, show, and hide never fold into one
+    /// `other` bucket. Gate vocabulary (`foreground`/`visibility`/
+    /// `other`) is unchanged; this only attributes.
+    #[test]
+    fn drain_counts_exact_events_distinctly() {
+        use super::super::observe::{DeliverySnapshot, HookEvent, WakeEdge, hook_queue};
+        use super::drain_hook_edges;
+        let mut state = super::super::rmax03_adapter_tests::test_state();
+        state.trace = false;
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.clear();
+        }
+        let push = |hwnd: isize, event: u32| {
+            if let Ok(mut queue) = hook_queue().lock() {
+                queue.push(HookEvent::Wake(WakeEdge::test_with_event(
+                    hwnd,
+                    event,
+                    DeliverySnapshot::Unknown,
+                )));
+            }
+        };
+        push(11, EVENT_SYSTEM_FOREGROUND);
+        push(12, EVENT_OBJECT_SHOW);
+        push(13, EVENT_OBJECT_HIDE);
+        push(14, EVENT_OBJECT_CREATE);
+        push(15, EVENT_OBJECT_DESTROY);
+        push(16, EVENT_OBJECT_LOCATIONCHANGE);
+        let me = crate::model::ProcessIdentity {
+            pid: 9999,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        };
+        let log = state.log_path.clone();
+        let drain = drain_hook_edges(&mut state, &me, &log);
+        assert!(drain.woke);
+        assert_eq!(drain.kind_foreground, 1);
+        assert_eq!(drain.kind_show, 1);
+        assert_eq!(drain.kind_hide, 1);
+        assert_eq!(drain.kind_create, 1);
+        assert_eq!(drain.kind_destroy, 1);
+        assert_eq!(drain.kind_location, 1);
+        // Gate vocabulary unchanged: show/hide ride visibility, the
+        // create/destroy/location topology rides other.
+        assert_eq!(drain.kind_visibility, 2);
+        assert_eq!(drain.kind_other, 3);
+        assert_eq!(drain.kind_unknown, 0);
+        // Only foreground HWNDs arm the in-flight join.
+        assert_eq!(drain.foreground, vec![11u64]);
     }
 }

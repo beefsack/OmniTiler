@@ -11,8 +11,8 @@
 use super::rmax03_adapter_tests::test_state;
 use super::world_capture::{capture_world, resolve_cursor_hit};
 use super::world_diff::{
-    ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, HostDiff, MAX_CLEAR_HOLD_DIAG,
-    NativeOps, apply_world_reply,
+    ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, GuiFocusState, HostDiff,
+    MAX_CLEAR_HOLD_DIAG, NativeOps, apply_world_reply,
 };
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
@@ -1512,6 +1512,292 @@ fn remembered_focus_pure_view_foreign_foreground_vetoes_with_empty_queue() {
     assert!(!row.foreground);
     assert_eq!(row.hold, Some("foreground-changed"));
     assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(!probe.inner.is_foreground("w1"));
+}
+
+/// Veto rows carry both foreground identities: the entry baseline (the
+/// managed w2 member) versus the post-switch live read (the foreign
+/// competitor). A later join against `member-admitted` rows (same
+/// hwnd/pid/creation fields) tells a product-caused prior landing
+/// (managed triple) from a genuine foreign competitor without logging
+/// titles or content.
+#[test]
+fn remembered_focus_veto_carries_baseline_and_live_identity() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    let mut probe = ForeignDuringNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert_eq!(row.hold, Some("foreground-changed"));
+    let baseline = row.fg_baseline.as_deref().expect("veto baseline identity");
+    let live = row.fg_live.as_deref().expect("veto live identity");
+    // Baseline is the managed w2 member; live is the foreign competitor.
+    assert!(
+        baseline.contains("proc-2") && baseline.contains("2002"),
+        "baseline joins managed w2: {baseline}"
+    );
+    assert!(
+        live.contains("foreign") && !live.contains("proc-1") && !live.contains("proc-2"),
+        "live joins no managed member: {live}"
+    );
+    assert_ne!(baseline, live);
+}
+
+/// Accepted setter whose async activation never lands: models an
+/// `Ok(true)` focus call with no foreground change (stolen activation).
+/// The adapter spends the one-shot on dispatch and the immediate read
+/// proves nothing.
+struct AcceptedNeverLands {
+    inner: FakeNative,
+}
+
+impl NativeOps for AcceptedNeverLands {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view(output, logical)
+    }
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view(output, logical)
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        let _ = token;
+        Ok(true)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.poll_external_invalidation()
+    }
+}
+
+/// Blocker regression (no convergence fix yet): a dispatched-but-unproven
+/// focus whose async landing never arrives stays lost. Leg 1 spends the
+/// one-shot on an accepted setter with no immediate foreground; leg 2 is
+/// the observation-only follow-up (the core mints no focus effects on
+/// observations by design), so nothing can retry and the shown workspace
+/// keeps the wrong focus. Genuine supersession must still win, so no
+/// generic replay is applied here; convergence needs a causal
+/// product-vs-competitor distinction first.
+#[test]
+fn remembered_focus_unproven_without_landing_loses_final_focus() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    let mut probe = AcceptedNeverLands { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "accepted");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("foreground-unproven"));
+    // Guarded scope: only veto rows carry identities.
+    assert!(row.fg_baseline.is_none() && row.fg_live.is_none());
+    assert!(!diff.effects.mark_effect_spent("fx-9"));
+    assert!(!probe.inner.is_foreground("w1"));
+    // Observation-only follow-up: no minted effects, no retry possible.
+    let mut diff2 = diff_at(7);
+    let followup = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let stats2 = apply_world_reply(
+        &mut diff2,
+        &followup,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert!(stats2.focus_dispatch.is_empty());
+    assert_eq!(stats2.effects, 0);
+    assert!(!probe.inner.is_foreground("w1"));
+}
+
+/// Late landing after an unproven setter: leg 1 accepts a focus for `w1`
+/// that never lands (spent); leg 2 returns the view nonactivating while
+/// the pending activation lands mid-switch on managed `w1`, and the
+/// trailing focus targets `w2`. The foreground bracket excuses the exact
+/// in-flight landing and dispatches the final focus, which proves at once.
+#[test]
+fn remembered_focus_managed_late_landing_proceeds_to_final_focus() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "accepted");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("foreground-unproven"));
+    assert!(!diff.effects.mark_effect_spent("fx-9"));
+    // The accepted setter is remembered by exact identity plus lifetime.
+    assert!(
+        diff.in_flight
+            .as_ref()
+            .is_some_and(|flight| flight.token == "w1"),
+        "in-flight remembers the unproven target"
+    );
+    // Between passes the user switches away; the pending activation is
+    // still in flight and lands mid-switch on the next return.
+    probe
+        .inner
+        .views
+        .insert(rig.out.clone(), "ws-other".to_owned());
+    probe.land_setter = true;
+    probe.mid_switch_land = Some("w1".to_owned());
+    let stats2 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 2, "op-v2", "fx-10", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.view_writes, 1);
+    assert_eq!(stats2.effects, 1);
+    assert_eq!(stats2.focus_dispatch.len(), 1);
+    let row2 = &stats2.focus_dispatch[0];
+    assert_eq!(row2.id, "fx-10");
+    assert!(row2.dispatched);
+    assert_eq!(row2.setter, "accepted");
+    assert!(row2.foreground);
+    assert_eq!(row2.hold, None);
+    // Landing clears the in-flight; the final target proves at once.
+    assert!(diff.in_flight.is_none());
+    assert!(probe.inner.is_foreground("w2"));
+}
+
+/// Blocker regression (no convergence fix yet): a vetoed view-return
+/// focus stays lost. Leg 1 switches the view but the trailing focus vetoes
+/// on a changed foreground without spending; leg 2 is the observation-only
+/// follow-up (the core mints no focus effects on observations by design),
+/// so the shown workspace keeps the wrong focus with no retry. When the
+/// veto saw a genuine foreign competitor this hold is correct; when it saw
+/// a product-caused prior landing it is final-focus loss with identical
+/// evidence. The new veto identity labels exist to tell the two apart
+/// before any retry is attempted.
+#[test]
+fn remembered_focus_veto_without_retry_loses_final_focus() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    let mut probe = ForeignDuringNonactivating { inner: native };
+    let reply = view_return_reply(&rig);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert_eq!(probe.inner.views.get(&rig.out), Some(&rig.ws));
+    assert!(!probe.inner.is_foreground("w1"));
+    assert!(diff.effects.mark_effect_spent("fx-9"));
+    // Observation-only follow-up: view already shown, no minted effects.
+    let mut diff2 = diff_at(7);
+    let followup = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let stats2 = apply_world_reply(
+        &mut diff2,
+        &followup,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert!(stats2.focus_dispatch.is_empty());
+    assert_eq!(stats2.effects, 0);
+    assert_eq!(probe.inner.views.get(&rig.out), Some(&rig.ws));
     assert!(!probe.inner.is_foreground("w1"));
 }
 
@@ -5237,5 +5523,1243 @@ fn clear_hold_attribution_bounds_storage_but_keeps_total() {
             .all(|row| row.window == "w1" && row.hold == "frame-race"),
         "stored rows keep op/window/hold, got {:?}",
         stats.clear_holds
+    );
+}
+
+// --- event-driven in-flight focus: a prior accepted activation landing
+// mid-switch is the product's own landing, never a foreign supersession ---
+//
+// Desired behavior (user 2026-10-26): after an accepted focus setter the
+// adapter remembers the exact full native target identity including
+// lifetime as in-flight until EVENT_SYSTEM_FOREGROUND arrives. During a
+// later switch the foreground bracket excuses an exact change to this
+// in-flight target (own landing) while any other change still vetoes.
+// Minimal clearing: landing, other-foreground supersession, target
+// lifetime end, and a newer setter. No blocking, timers, timeouts,
+// retry, or replay; the core alone decides the target and the existing
+// fullscreen/game, lifetime, and at-most-once gates stay unchanged.
+//
+// Host ordering modeled below: switch N posts an accepted focus for w1
+// whose async activation has not landed; switch N+1 brackets its view
+// switch while that activation lands mid-switch, then focuses the final
+// target. The own-landing legs fail on the completion-barrier path (the
+// bracket vetoes the product's own landing); the foreign, recycled, and
+// same-PID legs must keep vetoing after the change.
+
+/// Mid-switch setup for [`AsyncFocusProbe`]: plain landing versus
+/// lifetime-hostile variants that must never qualify as in-flight.
+#[derive(Debug, Default)]
+enum MidMutate {
+    #[default]
+    None,
+    /// Recycle w1 under its HWND (new creation plus new lifetime tag)
+    /// before landing on it: same number, new lifetime.
+    RecycleW1,
+    /// Insert a same-PID new window w9 (different HWND and creation)
+    /// before landing on it.
+    SamePidNewW9,
+}
+
+/// Accepted-but-async focus plus scripted mid-switch landings: the
+/// offline shape of real host ordering where a prior SetForegroundWindow
+/// completes during a later nonactivating view switch.
+struct AsyncFocusProbe {
+    inner: FakeNative,
+    /// Land accepted focus setters immediately when true; when false the
+    /// setter reports accepted while foreground stays put (the async
+    /// request is still in flight and is never retried here).
+    land_setter: bool,
+    /// Foreground token to land during the next nonactivating view
+    /// switch (the prior async activation completing mid-switch).
+    /// One-shot: consumed by the first switch that runs.
+    mid_switch_land: Option<String>,
+    mutate: MidMutate,
+    /// Deliver the mid-switch landing through the real WinEvent sink as
+    /// EVENT_SYSTEM_FOREGROUND before flipping the poll, so the landing
+    /// exercises the actual hook plumbing and not a parallel seam.
+    winevent: bool,
+}
+
+impl NativeOps for AsyncFocusProbe {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view(output, logical)
+    }
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        use crate::ffi::WinEventSink as _;
+        let result = self.inner.switch_view(output, logical);
+        if result == Ok(true) {
+            match self.mutate {
+                MidMutate::None => {}
+                MidMutate::RecycleW1 => {
+                    if let Some(window) = self.inner.windows.get_mut("w1") {
+                        window.key.creation = "proc-9".to_owned();
+                        window.live_tag = Some("member-tag-9".to_owned());
+                    }
+                }
+                MidMutate::SamePidNewW9 => {
+                    if let Some(template) = self.inner.windows.get("w1").cloned() {
+                        let mut w9 = template;
+                        w9.key = win_key(1009, 2001, "proc-9");
+                        w9.token = "w9".to_owned();
+                        w9.live_tag = Some("member-tag-9".to_owned());
+                        self.inner.windows.insert("w9".to_owned(), w9);
+                    }
+                }
+            }
+            if let Some(token) = self.mid_switch_land.take() {
+                if self.winevent {
+                    let hwnd = self
+                        .inner
+                        .windows
+                        .get(&token)
+                        .map(|window| window.key.hwnd)
+                        .unwrap_or(1001);
+                    super::observe::LoopEventSink.on_win_event(crate::ffi::WinEvent {
+                        event: windows_sys::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND,
+                        hwnd,
+                        id_object: 0,
+                        thread: 7,
+                        time: 9,
+                    });
+                }
+                self.inner.foreground = Some(token);
+            }
+        }
+        result
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
+    fn foreground_identity_of(&mut self, hwnd: u64) -> ForegroundState {
+        self.inner.foreground_identity_of(hwnd)
+    }
+    fn gui_focus_of(&mut self, hwnd: u64) -> GuiFocusState {
+        self.inner.gui_focus_of(hwnd)
+    }
+    fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
+        if self.land_setter {
+            self.inner.focus_window(token)
+        } else {
+            Ok(true)
+        }
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.poll_external_invalidation()
+    }
+}
+
+/// View-switch plus remembered-focus reply with caller-chosen operation,
+/// effect, and target ids: every rapid-switch leg needs a distinct view
+/// operation so the at-most-once fence never mistakes a later leg for a
+/// repeat of an earlier one.
+fn inflight_view_reply(rig: &Rig, rev: u64, view_op: &str, fx: &str, target: &str) -> WorldReply {
+    let mut reply = reply_shell(7, rev, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .transfers
+        .push(view_transfer(view_op, &rig.out, &rig.ws));
+    reply.effects.push(focus_effect(fx, target));
+    reply
+}
+
+fn apply_probe(
+    diff: &mut HostDiff,
+    reply: &WorldReply,
+    fresh: &FreshHost,
+    probe: &mut AsyncFocusProbe,
+) -> ApplyStats {
+    apply_world_reply(
+        diff,
+        reply,
+        fresh,
+        probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    )
+}
+
+/// Switch N posts an accepted focus for w1 whose async activation has not
+/// landed; switch N+1 lands it mid-switch and must still focus the final
+/// target w2. The barrier path vetoes the product's own landing here.
+#[test]
+fn inflight_prior_activation_landing_mid_switch_focuses_final_target() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.view_writes, 1);
+    assert_eq!(stats1.effects, 0);
+    assert_eq!(stats1.focus_dispatch.len(), 1);
+    assert_eq!(stats1.focus_dispatch[0].hold, Some("foreground-unproven"));
+    probe
+        .inner
+        .views
+        .insert(rig.out.clone(), "ws-other".to_owned());
+    probe.land_setter = true;
+    probe.mid_switch_land = Some("w1".to_owned());
+    let stats2 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 2, "op-v2", "fx-10", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.view_writes, 1);
+    assert_eq!(stats2.effects, 1, "own landing must not veto: {stats2:?}");
+    assert!(probe.inner.is_foreground("w2"));
+    assert_eq!(stats2.focus_dispatch.len(), 1);
+    let row = &stats2.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "accepted");
+    assert!(row.foreground);
+    assert_eq!(row.hold, None);
+}
+
+/// A real foreign foreground move mid-switch still vetoes: the effect
+/// stays unspent and nothing dispatches.
+#[test]
+fn inflight_foreign_foreground_mid_switch_still_vetoes() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    probe
+        .inner
+        .views
+        .insert(rig.out.clone(), "ws-other".to_owned());
+    probe.land_setter = true;
+    probe.mid_switch_land = Some("foreign".to_owned());
+    let stats2 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 2, "op-v2", "fx-10", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.view_writes, 1);
+    assert_eq!(stats2.effects, 0);
+    assert_eq!(stats2.focus_dispatch.len(), 1);
+    let row = &stats2.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.setter, "skipped");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("foreground-changed"));
+    assert!(diff.effects.mark_effect_spent("fx-10"));
+    assert!(!probe.inner.is_foreground("w2"));
+}
+
+/// A recycled HWND (same number, new creation and lifetime tag) never
+/// qualifies as the in-flight target: the bracket still vetoes.
+#[test]
+fn inflight_recycled_lifetime_never_qualifies_as_own_landing() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    probe
+        .inner
+        .views
+        .insert(rig.out.clone(), "ws-other".to_owned());
+    probe.land_setter = true;
+    probe.mutate = MidMutate::RecycleW1;
+    probe.mid_switch_land = Some("w1".to_owned());
+    let stats2 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 2, "op-v2", "fx-10", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 0);
+    assert_eq!(stats2.focus_dispatch.len(), 1);
+    assert_eq!(stats2.focus_dispatch[0].hold, Some("foreground-changed"));
+    assert!(diff.effects.mark_effect_spent("fx-10"));
+}
+
+/// A same-PID new window (different HWND and creation) never qualifies
+/// as the in-flight target either.
+#[test]
+fn inflight_same_pid_new_window_never_qualifies_as_own_landing() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    probe
+        .inner
+        .views
+        .insert(rig.out.clone(), "ws-other".to_owned());
+    probe.land_setter = true;
+    probe.mutate = MidMutate::SamePidNewW9;
+    probe.mid_switch_land = Some("w9".to_owned());
+    let stats2 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 2, "op-v2", "fx-10", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 0);
+    assert_eq!(stats2.focus_dispatch.len(), 1);
+    assert_eq!(stats2.focus_dispatch[0].hold, Some("foreground-changed"));
+    assert!(diff.effects.mark_effect_spent("fx-10"));
+}
+
+/// Event-before-event-loop-delivery: the mid-switch landing arrives as a
+/// real EVENT_SYSTEM_FOREGROUND edge through the owner sink before the
+/// loop drains it, and the poll the bracket reads agrees. The edge must
+/// classify as a foreground wake for the in-flight HWND through the
+/// production `wake_cause`/`window_edge_wakes` rules.
+#[test]
+fn inflight_landing_delivery_rides_real_foreground_winevent() {
+    use super::observe::{HookCause, HookEvent, hook_queue, wake_cause, window_edge_wakes};
+    use windows_sys::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND;
+    if let Ok(mut queue) = hook_queue().lock() {
+        queue.clear();
+    }
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: true,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    assert!(
+        window_edge_wakes(EVENT_SYSTEM_FOREGROUND, 0),
+        "foreground window edges must wake through the production rule"
+    );
+    assert_eq!(wake_cause(EVENT_SYSTEM_FOREGROUND), HookCause::Foreground);
+    probe
+        .inner
+        .views
+        .insert(rig.out.clone(), "ws-other".to_owned());
+    probe.land_setter = true;
+    probe.mid_switch_land = Some("w1".to_owned());
+    let stats2 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 2, "op-v2", "fx-10", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 1, "own landing must not veto: {stats2:?}");
+    assert!(probe.inner.is_foreground("w2"));
+    let hwnd = probe
+        .inner
+        .windows
+        .get("w1")
+        .map(|window| window.key.hwnd as isize)
+        .unwrap_or(1001);
+    let edges: Vec<super::observe::WakeEdge> = hook_queue()
+        .lock()
+        .map(|queue| {
+            queue
+                .iter()
+                .filter_map(|event| match event {
+                    HookEvent::Wake(edge) => Some(edge.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(edges.len(), 1, "one landing edge was delivered: {edges:?}");
+    assert_eq!(edges[0].hwnd, hwnd);
+    assert_eq!(edges[0].cause, HookCause::Foreground);
+    assert_eq!(wake_cause(edges[0].event), HookCause::Foreground);
+    if let Ok(mut queue) = hook_queue().lock() {
+        queue.clear();
+    }
+}
+
+/// A newer accepted setter supersedes the prior in-flight target: a later
+/// landing on the stale target vetoes instead of proceeding.
+#[test]
+fn inflight_newer_setter_supersedes_prior_inflight() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.view_writes, 1);
+    assert_eq!(stats1.effects, 0);
+    // The accepted setter is remembered by exact identity plus lifetime.
+    assert!(
+        diff.in_flight
+            .as_ref()
+            .is_some_and(|flight| flight.token == "w1"),
+        "in-flight remembers the unproven target"
+    );
+    // Newer setter for w2 with no view work: no bracket, lands at once,
+    // superseding (replacing then clearing on landing) the prior in-flight.
+    probe.land_setter = true;
+    let mut reply2 = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply2.effects.push(focus_effect("fx-10", "w2"));
+    let stats2 = apply_probe(&mut diff, &reply2, &fresh, &mut probe);
+    assert_eq!(stats2.effects, 1);
+    assert!(probe.inner.is_foreground("w2"));
+    assert!(
+        diff.in_flight.is_none(),
+        "newer setter supersedes the prior in-flight"
+    );
+    // The stale w1 activation landing now is superseded, not own: veto.
+    probe
+        .inner
+        .views
+        .insert(rig.out.clone(), "ws-other".to_owned());
+    probe.mid_switch_land = Some("w1".to_owned());
+    let stats3 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 3, "op-v3", "fx-11", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats3.view_writes, 1);
+    assert_eq!(stats3.effects, 0);
+    assert_eq!(stats3.focus_dispatch.len(), 1);
+    assert_eq!(stats3.focus_dispatch[0].hold, Some("foreground-changed"));
+    assert!(diff.effects.mark_effect_spent("fx-11"));
+}
+
+/// Target lifetime end clears the in-flight at the next entry: a departed
+/// baseline can never excuse a later bracket.
+#[test]
+fn inflight_cleared_when_target_lifetime_ends() {
+    let (rig, mut diff, mut fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), "ws-other".to_owned());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_view_reply(&rig, 1, "op-v1", "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    assert!(
+        diff.in_flight
+            .as_ref()
+            .is_some_and(|flight| flight.token == "w1"),
+        "in-flight remembers the unproven target"
+    );
+    // The w1 lifetime ends: the next baseline drops the member.
+    fresh.baseline.remove("w1");
+    let followup = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let stats2 = apply_probe(&mut diff, &followup, &fresh, &mut probe);
+    assert!(stats2.focus_dispatch.is_empty());
+    assert!(
+        diff.in_flight.is_none(),
+        "ended lifetime clears the in-flight"
+    );
+}
+
+// --- event-driven in-flight resolution through the real delivery/drain
+// lifecycle ---
+//
+// The owner loop drains hook callbacks before every apply with no message
+// pump between that drain and the focus setter, so a drained edge always
+// predates the pass's setter. Entry processing therefore resolves each
+// drained `EVENT_SYSTEM_FOREGROUND` against the in-flight remembered by
+// the previous setter: an exact full-identity-plus-lifetime match is the
+// product's own landing (cleared), any other readable foreground is a
+// supersession (cleared), and an unreadable edge keeps the in-flight for
+// the bracket to fail closed on. Delivery-time snapshots never decide:
+// only live reads plus the stored lifetime qualify, so a recycled HWND, a
+// changed tag, or a same-PID new window never matches.
+
+/// Drain collected foreground HWNDs through the REAL owner drain: edges
+/// delivered through the real WinEvent sink ride the production queue,
+/// classification, own-overlay exclusion, and delivery-order preservation.
+fn drain_foreground_via_real_loop(hwnds: &[u64]) -> Vec<u64> {
+    use super::observe::{HookCause, hook_queue};
+    use super::run_loop_wait::drain_hook_edges;
+    use crate::ffi::WinEventSink as _;
+    use windows_sys::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND;
+    if let Ok(mut queue) = hook_queue().lock() {
+        queue.clear();
+    }
+    for hwnd in hwnds {
+        super::observe::LoopEventSink.on_win_event(crate::ffi::WinEvent {
+            event: EVENT_SYSTEM_FOREGROUND,
+            hwnd: *hwnd,
+            id_object: 0,
+            thread: 7,
+            time: 9,
+        });
+    }
+    // The production wake rule classifies the delivered edge before any
+    // state transition is claimed from it.
+    assert!(super::observe::window_edge_wakes(
+        EVENT_SYSTEM_FOREGROUND,
+        0
+    ));
+    assert_eq!(
+        super::observe::wake_cause(EVENT_SYSTEM_FOREGROUND),
+        HookCause::Foreground
+    );
+    let mut scratch = super::rmax03_adapter_tests::test_state();
+    let me = process_identity(&win_key(1001, 2001, "proc-1"));
+    let log = scratch.log_path.clone();
+    let drain = drain_hook_edges(&mut scratch, &me, &log);
+    assert!(drain.woke);
+    if let Ok(mut queue) = hook_queue().lock() {
+        queue.clear();
+    }
+    drain.foreground
+}
+
+/// Focus-only async setter: no view work, so no bracket runs and the
+/// unproven target is remembered as in-flight.
+fn inflight_focus_only_reply(rig: &Rig, rev: u64, fx: &str, target: &str) -> WorldReply {
+    let mut reply = reply_shell(7, rev, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.effects.push(focus_effect(fx, target));
+    reply
+}
+
+/// Own landing observed purely through the event lifecycle: the accepted
+/// setter never lands in the poll, the real sink delivers the foreground
+/// edge, the real drain collects it, and the next apply - with no
+/// workspace switch at all - clears the in-flight on the exact match.
+#[test]
+fn inflight_clears_on_foreground_event_without_switch() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_focus_only_reply(&rig, 1, "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    assert!(
+        diff.in_flight
+            .as_ref()
+            .is_some_and(|flight| flight.token == "w1"),
+        "in-flight remembers the unproven target"
+    );
+    // The async activation lands outside any switch: the real sink delivers
+    // the edge and the real drain collects the HWND in delivery order.
+    let hwnds = drain_foreground_via_real_loop(&[1001]);
+    assert_eq!(hwnds, vec![1001]);
+    diff.push_foreground_events(hwnds);
+    // No workspace switch runs here: the event alone resolves the landing.
+    let stats2 = apply_probe(
+        &mut diff,
+        &reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 0);
+    assert!(stats2.focus_dispatch.is_empty());
+    assert!(
+        diff.in_flight.is_none(),
+        "own-landing event clears the in-flight with no switch"
+    );
+}
+
+/// Transient foreign foreground followed by a return to the target still
+/// supersedes: the first readable non-match clears, and the return finds
+/// no in-flight to confirm.
+#[test]
+fn inflight_transient_foreign_then_return_clears() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_focus_only_reply(&rig, 1, "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    assert!(diff.in_flight.is_some());
+    // A foreign competitor takes foreground and the target returns, all
+    // outside any switch: delivery order is preserved end to end.
+    let hwnds = drain_foreground_via_real_loop(&[9999, 1001]);
+    assert_eq!(hwnds, vec![9999, 1001]);
+    diff.push_foreground_events(hwnds);
+    let stats2 = apply_probe(
+        &mut diff,
+        &reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 0);
+    assert!(
+        diff.in_flight.is_none(),
+        "transient foreign supersession clears even though foreground returned"
+    );
+}
+
+/// A stale queued edge (delivered before the newer setter, drained in
+/// production order ahead of it) resolves against the OLD in-flight and
+/// can never clear the newer setter: drain-before-apply ordering plus the
+/// setter-side buffer clear keep delivery order exact.
+#[test]
+fn inflight_stale_queued_event_cannot_clear_newer_setter() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_focus_only_reply(&rig, 1, "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    assert!(diff.in_flight.is_some());
+    // Production order: the w1 landing edge drains BEFORE the newer w2
+    // setter runs, so entry processing confirms the old landing first and
+    // the newer setter then owns the in-flight alone. The poll names a
+    // foreign window so the newer setter stays async-unproven.
+    let hwnds = drain_foreground_via_real_loop(&[1001]);
+    diff.push_foreground_events(hwnds);
+    probe.inner.foreground = Some("foreign".to_owned());
+    let stats2 = apply_probe(
+        &mut diff,
+        &inflight_focus_only_reply(&rig, 2, "fx-10", "w2"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 0);
+    assert!(
+        diff.in_flight
+            .as_ref()
+            .is_some_and(|flight| flight.token == "w2"),
+        "stale pre-setter edge resolves the old landing; the newer setter still owns in-flight"
+    );
+    assert!(
+        diff.pending_foreground.is_empty(),
+        "setter consumes the drained edges; nothing stale survives it"
+    );
+}
+
+/// A recycled lifetime never matches as an own landing: the drained edge
+/// names the HWND but live creation/tag proof fails, so the event clears
+/// as supersession instead of confirming.
+#[test]
+fn inflight_recycled_event_never_matches_new_lifetime() {
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: false,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats1 = apply_probe(
+        &mut diff,
+        &inflight_focus_only_reply(&rig, 1, "fx-9", "w1"),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats1.effects, 0);
+    assert!(diff.in_flight.is_some());
+    // The HWND is recycled under the queued edge: same number, new
+    // creation and lifetime tag.
+    if let Some(window) = probe.inner.windows.get_mut("w1") {
+        window.key.creation = "proc-9".to_owned();
+        window.live_tag = Some("member-tag-9".to_owned());
+    }
+    let hwnds = drain_foreground_via_real_loop(&[1001]);
+    diff.push_foreground_events(hwnds);
+    let stats2 = apply_probe(
+        &mut diff,
+        &reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats2.effects, 0);
+    assert!(
+        diff.in_flight.is_none(),
+        "recycled lifetime clears as supersession, never as an own landing"
+    );
+}
+
+// --- foreground metadata sidecar bounds ---
+//
+// The drained-edge metadata sidecar is diagnostic only: over-cap edges
+// fold into an honest omitted count while the production HWND queue stays
+// whole, and the next apply drains that count into its stats.
+
+/// Over-cap metadata folds into the honest omission counter while every
+/// drained HWND still resolves: the production queue never loses an edge
+/// to the diagnostic cap.
+#[test]
+fn foreground_meta_sidecar_caps_with_honest_omission() {
+    use super::observe::{DeliverySnapshot, ForegroundEdgeMeta};
+    use super::world_diff::MAX_PENDING_FOREGROUND_META;
+    let mut diff = HostDiff::new(ADAPTER, GENERATION);
+    let extra: usize = 8;
+    let total = MAX_PENDING_FOREGROUND_META + extra;
+    let hwnds: Vec<u64> = (0..total).map(|n| 0x2_0000 + n as u64).collect();
+    let metas: Vec<ForegroundEdgeMeta> = hwnds
+        .iter()
+        .map(|hwnd| ForegroundEdgeMeta {
+            hwnd: *hwnd,
+            event_ms: 9,
+            thread: 7,
+            queued_mono_ms: 11,
+            drain_mono_ms: 13,
+            delivery: DeliverySnapshot::Unknown,
+        })
+        .collect();
+    diff.push_foreground_drain(hwnds.clone(), metas);
+    assert_eq!(
+        diff.pending_foreground, hwnds,
+        "production HWND queue stays whole past the sidecar cap"
+    );
+    assert_eq!(
+        diff.pending_foreground_meta.len(),
+        MAX_PENDING_FOREGROUND_META
+    );
+    assert_eq!(diff.pending_foreground_omitted, extra as u64);
+}
+
+/// The sidecar omission drains into the next pass's stats with the queue
+/// itself, so the `world-apply` row reports the fold instead of dropping
+/// it silently. Foreign edges resolve as no-ops here (no in-flight), which
+/// is exactly the point: the count rides the stats regardless.
+#[test]
+fn foreground_meta_omission_drains_into_apply_stats() {
+    use super::observe::{DeliverySnapshot, ForegroundEdgeMeta};
+    use super::world_diff::MAX_PENDING_FOREGROUND_META;
+    let (rig, mut diff, fresh, mut native) = view_return_base();
+    native.foreground = Some("w2".to_owned());
+    native.pending_invalidation = false;
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let extra: usize = 5;
+    let total = MAX_PENDING_FOREGROUND_META + extra;
+    let hwnds: Vec<u64> = (0..total).map(|n| 0x3_0000 + n as u64).collect();
+    let metas: Vec<ForegroundEdgeMeta> = hwnds
+        .iter()
+        .map(|hwnd| ForegroundEdgeMeta {
+            hwnd: *hwnd,
+            event_ms: 9,
+            thread: 7,
+            queued_mono_ms: 11,
+            drain_mono_ms: 13,
+            delivery: DeliverySnapshot::Unknown,
+        })
+        .collect();
+    diff.push_foreground_drain(hwnds, metas);
+    let mut probe = AsyncFocusProbe {
+        inner: native,
+        land_setter: true,
+        mid_switch_land: None,
+        mutate: MidMutate::None,
+        winevent: false,
+    };
+    let stats = apply_probe(
+        &mut diff,
+        &reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]),
+        &fresh,
+        &mut probe,
+    );
+    assert_eq!(stats.foreground_meta_omitted, extra as u64);
+    assert_eq!(
+        diff.pending_foreground_omitted, 0,
+        "omission counter drains with the queue, never accumulates across passes"
+    );
+    assert!(diff.pending_foreground.is_empty());
+    assert!(diff.pending_foreground_meta.is_empty());
+}
+
+/// Generation reset clears the queue and its omission counter together: a
+/// reset must never leak a stale fold into a later pass's stats.
+#[test]
+fn generation_reset_clears_foreground_omission_counter() {
+    use super::observe::{DeliverySnapshot, ForegroundEdgeMeta};
+    use super::world_diff::MAX_PENDING_FOREGROUND_META;
+    let mut diff = HostDiff::new(ADAPTER, GENERATION);
+    let total = MAX_PENDING_FOREGROUND_META + 3;
+    let hwnds: Vec<u64> = (0..total).map(|n| 0x4_0000 + n as u64).collect();
+    let metas: Vec<ForegroundEdgeMeta> = hwnds
+        .iter()
+        .map(|hwnd| ForegroundEdgeMeta {
+            hwnd: *hwnd,
+            event_ms: 9,
+            thread: 7,
+            queued_mono_ms: 11,
+            drain_mono_ms: 13,
+            delivery: DeliverySnapshot::Unknown,
+        })
+        .collect();
+    diff.push_foreground_drain(hwnds, metas);
+    assert_eq!(diff.pending_foreground_omitted, 3);
+    diff.reset_generation("gen-2");
+    assert!(diff.pending_foreground.is_empty());
+    assert!(diff.pending_foreground_meta.is_empty());
+    assert_eq!(diff.pending_foreground_omitted, 0);
+}
+
+/// Successive drains never join later detail onto an earlier production
+/// HWND by bare index: after a 40-edge drain (32 retained, 8 omitted) one
+/// more edge with detail leaves the sidecar at its 32-row prefix, counts
+/// the honest 9 omitted, and resolves the gapped slots as unknown.
+#[test]
+fn foreground_meta_sidecar_keeps_prefix_across_drains() {
+    use super::observe::{DeliverySnapshot, ForegroundEdgeMeta};
+    use super::world_diff::MAX_PENDING_FOREGROUND_META;
+    let mut diff = HostDiff::new(ADAPTER, GENERATION);
+    let first: Vec<u64> = (0..40).map(|n| 0x5_0000 + n as u64).collect();
+    let first_meta: Vec<ForegroundEdgeMeta> = first
+        .iter()
+        .take(MAX_PENDING_FOREGROUND_META)
+        .map(|hwnd| ForegroundEdgeMeta {
+            hwnd: *hwnd,
+            event_ms: 9,
+            thread: 7,
+            queued_mono_ms: 11,
+            drain_mono_ms: 13,
+            delivery: DeliverySnapshot::Unknown,
+        })
+        .collect();
+    diff.push_foreground_drain_traced(first.clone(), first_meta, 8);
+    assert_eq!(diff.pending_foreground.len(), 40);
+    assert_eq!(diff.pending_foreground_meta.len(), 32);
+    assert_eq!(diff.pending_foreground_omitted, 8);
+    let later = vec![0x5_1000u64];
+    let later_meta = vec![ForegroundEdgeMeta {
+        hwnd: later[0],
+        event_ms: 10,
+        thread: 7,
+        queued_mono_ms: 12,
+        drain_mono_ms: 14,
+        delivery: DeliverySnapshot::Unknown,
+    }];
+    diff.push_foreground_drain_traced(later.clone(), later_meta, 0);
+    assert_eq!(
+        diff.pending_foreground,
+        first
+            .iter()
+            .copied()
+            .chain(later.iter().copied())
+            .collect::<Vec<_>>(),
+        "production queue stays whole and ordered"
+    );
+    assert_eq!(
+        diff.pending_foreground_meta.len(),
+        MAX_PENDING_FOREGROUND_META,
+        "later detail never joins the earlier gapped HWND at index 32"
+    );
+    assert!(
+        diff.pending_foreground_meta
+            .iter()
+            .all(|m| m.hwnd != later[0]),
+        "later metadata is omitted, not misassigned"
+    );
+    assert_eq!(diff.pending_foreground_omitted, 9);
+}
+
+/// In-flight clearing attribution stays bounded with an honest total: past
+/// the row cap every clearing still counts, so the tick diag reports the
+/// excess instead of a false small number.
+#[test]
+fn inflight_clearing_attribution_counts_past_row_cap() {
+    use super::world_diff::{InFlightEventDiag, MAX_INFLIGHT_DIAG};
+    let mut stats = ApplyStats::default();
+    for n in 0..(MAX_INFLIGHT_DIAG + 4) {
+        stats.note_inflight(InFlightEventDiag {
+            token: format!("w{n}"),
+            effect: format!("fx-{n}"),
+            cause: "superseded-foreign",
+            edge_event_ms: None,
+            edge_queued_mono_ms: None,
+            edge_drain_mono_ms: None,
+            resolve_mono_ms: 21,
+            gui: Some("unknown".to_owned()),
+            hwnd: None,
+            pid: None,
+            creation: None,
+        });
+    }
+    assert_eq!(stats.inflight_events.len(), MAX_INFLIGHT_DIAG);
+    assert_eq!(stats.inflight_total, MAX_INFLIGHT_DIAG + 4);
+}
+
+/// Executed visibility-post attribution stays bounded with an honest
+/// total: past the row cap every post still counts, so the tick diag
+/// reports the excess instead of a false small number.
+#[test]
+fn visibility_post_attribution_counts_past_row_cap() {
+    use super::world_diff::MAX_VISIBILITY_DIAG;
+    use crate::product_hide::sys::{VIEW_POST_API_POS, VisibilityPostDiag};
+    let mut stats = ApplyStats::default();
+    for n in 0..(MAX_VISIBILITY_DIAG + 3) {
+        stats.note_visibility_post(VisibilityPostDiag {
+            hwnd: 1000 + n as u64,
+            hide: n % 2 == 0,
+            api: VIEW_POST_API_POS,
+            flags: Some(crate::product_hide::sys::NA_POS_HIDE_FLAGS),
+            cmd: None,
+            posted: true,
+            call_mono_ms: 11,
+            ret_mono_ms: 13,
+        });
+    }
+    assert_eq!(stats.visibility_posts.len(), MAX_VISIBILITY_DIAG);
+    assert_eq!(stats.visibility_total, MAX_VISIBILITY_DIAG + 3);
+    assert_eq!(stats.visibility_posts[0].hwnd, 1000);
+}
+
+// --- per-native-call focus diagnostics (B1-B4, B8) ---
+//
+// The adapter dispatch and the native primitive are distinct facts: the
+// row reports whether `SetForegroundWindow` actually ran, with stamps
+// strictly around the primitive and the pre-call GUI read, plus the full
+// target identity for the `member-admitted` join.
+
+/// Plain focus reply with no view transfer: the target already lives on
+/// the shown view, so the effect dispatches through the setter lane.
+fn plain_focus_reply(rig: &Rig, rev: u64, id: &str, target: &str) -> WorldReply {
+    let mut reply = reply_shell(7, rev, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.effects.push(OneShotEffect {
+        id: id.to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId(target.to_owned()),
+        issued_revision: 1,
+    });
+    reply
+}
+
+fn apply_plain(
+    diff: &mut HostDiff,
+    reply: &WorldReply,
+    fresh: &FreshHost,
+    native: &mut FakeNative,
+) -> ApplyStats {
+    apply_world_reply(
+        diff,
+        reply,
+        fresh,
+        native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    )
+}
+
+/// An actual primitive call reports the full record: `primitive_called`
+/// with the exact API, call/return stamps in order, the pre-call GUI read
+/// (dispatch) distinct from the read-back GUI (landing), and the full
+/// target identity.
+#[test]
+fn focus_diag_records_actual_primitive_call() {
+    use super::world_diff::FOCUS_SETTER_API;
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.set_diagnostics_trace(true);
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    native.gui_state.insert(
+        1001,
+        GuiFocusState::Known {
+            thread: 7,
+            active: 0,
+            focus: 0,
+        },
+    );
+    let stats = apply_plain(
+        &mut diff,
+        &plain_focus_reply(&rig, 1, "fx-1", "w1"),
+        &fresh,
+        &mut native,
+    );
+    assert_eq!(stats.effects, 1);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "accepted");
+    assert!(row.foreground);
+    assert!(row.primitive_called);
+    assert_eq!(row.native_return, Some(true));
+    assert_eq!(row.api, Some(FOCUS_SETTER_API));
+    let (call, ret) = (
+        row.call_mono_ms.expect("actual call stamp"),
+        row.ret_mono_ms.expect("actual return stamp"),
+    );
+    assert!(call <= ret, "primitive window orders call before return");
+    // Pre-call GUI read keeps the pre value; the landing read observes the
+    // activation the primitive caused.
+    assert_eq!(
+        row.gui_dispatch.as_deref(),
+        Some("thread:7:active:0:focus:0")
+    );
+    assert_eq!(
+        row.gui_landing.as_deref(),
+        Some("thread:7:active:1001:focus:1001")
+    );
+    assert_eq!(row.hwnd, Some(1001));
+    assert_eq!(row.pid, Some(2001));
+    assert_eq!(row.creation.as_deref(), Some("proc-1"));
+    assert_eq!(native.gui_calls, 2, "pre-call plus landing reads only");
+}
+
+/// A pre-primitive veto dispatches but never runs the native setter:
+/// `primitive_called` is false with no API and no stamps, and no GUI read
+/// issues.
+#[test]
+fn focus_diag_veto_reports_no_primitive() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.set_diagnostics_trace(true);
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    native.move_size.insert("w1".to_owned());
+    let stats = apply_plain(
+        &mut diff,
+        &plain_focus_reply(&rig, 1, "fx-1", "w1"),
+        &fresh,
+        &mut native,
+    );
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched, "adapter attempted the setter");
+    assert_eq!(row.setter, "refused");
+    assert!(!row.foreground);
+    assert_eq!(row.hold, Some("foreground-unproven"));
+    assert!(!row.primitive_called);
+    assert_eq!(row.native_return, None);
+    assert!(row.api.is_none());
+    assert!(row.call_mono_ms.is_none());
+    assert!(row.ret_mono_ms.is_none());
+    assert!(row.gui_dispatch.is_none());
+    assert!(row.gui_landing.is_none());
+    assert_eq!(row.hwnd, Some(1001));
+    assert_eq!(row.pid, Some(2001));
+    assert_eq!(row.creation.as_deref(), Some("proc-1"));
+    assert_eq!(native.gui_calls, 0, "vetoed primitive issues no GUI read");
+}
+
+/// Trace off suppresses every diagnostics GUI read: the rows carry no GUI
+/// labels and the seam counts zero reads, while the behavior (proven
+/// focus) and the primitive record stay intact.
+#[test]
+fn focus_diag_trace_off_suppresses_gui_reads() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    native.gui_state.insert(
+        1001,
+        GuiFocusState::Known {
+            thread: 7,
+            active: 0,
+            focus: 0,
+        },
+    );
+    assert!(!native.diagnostics_trace());
+    let stats = apply_plain(
+        &mut diff,
+        &plain_focus_reply(&rig, 1, "fx-1", "w1"),
+        &fresh,
+        &mut native,
+    );
+    assert_eq!(stats.effects, 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.primitive_called);
+    assert_eq!(row.native_return, Some(true));
+    assert!(row.call_mono_ms.is_some());
+    assert!(row.ret_mono_ms.is_some());
+    assert!(row.gui_dispatch.is_none());
+    assert!(row.gui_landing.is_none());
+    assert_eq!(native.gui_calls, 0);
+}
+
+/// A drained foreign edge clearing a remembered flight reports the edge's
+/// delivery/owner stamps plus the remembered target identity, with the GUI
+/// sampled at resolution time.
+#[test]
+fn inflight_clearing_carries_edge_stamps_and_target_identity() {
+    use super::observe::{DeliverySnapshot, ForegroundEdgeMeta};
+    use super::world_diff::InFlightFocus;
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.set_diagnostics_trace(true);
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    diff.in_flight = Some(InFlightFocus {
+        token: "w1".to_owned(),
+        key: win_key(1001, 2001, "proc-1"),
+        tag: "member-tag-1".to_owned(),
+        effect: "fx-1".to_owned(),
+        set_mono_ms: 5,
+    });
+    diff.push_foreground_drain(
+        vec![0x9_9999],
+        vec![ForegroundEdgeMeta {
+            hwnd: 0x9_9999,
+            event_ms: 31,
+            thread: 3,
+            queued_mono_ms: 11,
+            drain_mono_ms: 13,
+            delivery: DeliverySnapshot::Unknown,
+        }],
+    );
+    let stats = apply_plain(
+        &mut diff,
+        &reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]),
+        &fresh,
+        &mut native,
+    );
+    assert!(diff.in_flight.is_none());
+    assert_eq!(stats.inflight_events.len(), 1);
+    let row = &stats.inflight_events[0];
+    assert_eq!(row.cause, "superseded-foreign");
+    assert_eq!(row.edge_event_ms, Some(31));
+    assert_eq!(row.edge_queued_mono_ms, Some(11));
+    assert_eq!(row.edge_drain_mono_ms, Some(13));
+    assert_eq!(row.hwnd, Some(1001));
+    assert_eq!(row.pid, Some(2001));
+    assert_eq!(row.creation.as_deref(), Some("proc-1"));
+    assert!(
+        row.gui.is_some(),
+        "resolution-time GUI sampled while traced"
     );
 }

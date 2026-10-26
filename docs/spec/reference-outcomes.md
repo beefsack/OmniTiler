@@ -66,8 +66,14 @@ The user is unsure of the desired behavior; gather Tier 1 outcomes before decidi
 ### Workspace arrival and navigation without window focus
 
 Source-only Tier 1 audit (2026-10-25): COSMIC, Hyprland, i3 and sway,
-per the [reference tiers](../decisions.md#reference-tiers). These rows do not
-select a fallback policy or change [R-WS-09](reference-outcomes/workspaces.md#r-ws-09-select-ws2-select-ws1-return-focus-and-viewport).
+per the [reference tiers](../decisions.md#reference-tiers). User 2026-10-26
+extended [R-WS-09](reference-outcomes/workspaces.md#r-ws-09-select-ws2-select-ws1-return-focus-and-viewport):
+select/show restores eligible remembered focus, else per-workspace MRU, else
+first eligible member (layout child order tentative, pending user review),
+without a setting. Hyprland's cursor fallback is a deliberate deviation, not
+an arrival target: the window under the pointer is unknown before reveal.
+Core eligibility and game/fullscreen gates are unchanged. Other no-focus
+questions below remain undecided; this decision does not choose their policy.
 "No window focus" distinguishes an absent keyboard target from focus on an
 internal split/workspace node; neither implies that the workspace is empty.
 Ordinary windows, no fullscreen, exclusive shell layer or custom mouse binding.
@@ -76,6 +82,7 @@ remains undecided; these single-output probes do not answer it.
 
 | Variant / minimal action sequence | COSMIC | Hyprland | i3 | sway |
 | --- | --- | --- | --- | --- |
+| Occupied arrival without valid remembered client: focus B then A; leave WS2 with no client focused or remove its remembered client; select/show WS2. Separately move fresh A/B there without focus history and return | Repair uses MRU stack-last, else first mapped (floating first), else fullscreen; absent-seat/empty-stack refresh may retain no focus. Exact sequence/runtime result TBD (`NF-C-arrive`) | Remembered floating target first; otherwise fullscreen cover, then cursor hit with `follow_mouse=1`, else top-left/first candidate. OmniTiler deliberately does not use cursor hit. Exact sequence/runtime result TBD (`NF-H-arrive`) | Descends per-workspace focus order maintained by attachment/movement, rather than a separate empty-memory heuristic. Exact sequence/runtime identity TBD (`NF-I-arrive`) | Destination descendant in seat focus-stack order, else workspace node. Exact sequence/runtime identity TBD (`NF-S-arrive`) |
 | Previously empty destination: visit empty WS2; elsewhere focus A then B; move A then B to WS2 without follow; select WS2 | Focus repair, when triggered, chooses stack-last, else first mapped (floating layer first), else fullscreen. With absent seat focus and empty stack, refresh instead keeps no focus. Whether this exact move sequence reaches the empty-stack branch is TBD (`NF-C-arrive`) | With no remembered target, fullscreen cover, then pointer-hit when `follow_mouse=1`, then top-left/first candidate. `follow_mouse=0` uses the candidate; a remembered floating window takes priority in both variants. Exact A/B identity depends on placement/pointer (`NF-H-arrive`) | Descends destination focus order. Attachment and movement maintain that order even without following; this is not an empty-memory fallback (`NF-I-arrive`). Exact A/B identity for the full sequence TBD | Selects first destination descendant in seat focus-stack order, otherwise the workspace node. Transfer preserves existing seat-node order; do not equate move order with focus order (`NF-S-arrive`). Exact A/B identity for the full sequence TBD |
 | Workspace-level no-window focus with A/B still shown, if reachable; issue directional focus on one output | No keyboard target makes `next_focus` return none; action may navigate workspace/output rather than select A/B in place. Reachability for this exact start TBD (`NF-C-direction`) | No window anchor attempts the directional monitor fallback; without an adjacent output this is a no-op (`NF-H-direction`) | Workspace-node focus attempts another output, else no-op. A focused internal split is different: it can select a sibling subtree and descend to a window (`NF-I-direction`) | Workspace-node focus attempts another output, else no-op. Explicit `focus child` / `focus tiling` are separate verbs (`NF-S-direction`) |
 | Focus B with A/B visible; click exposed desktop/root, not a client, decoration or shell surface | Empty hit does not request new focus; retains B (`NF-C-click`) | Empty hit skips the window-refocus branch; retains B. Empty-motion refocus is a separate path (`NF-H-click`) | Same-output root click retains focus; cross-output root click selects that output's active workspace. Exact gap-to-root hit testing TBD (`NF-I-click`) | A hit resolved as workspace node with no surface focuses that node, clearing client keyboard focus while windows may remain shown. Exact gap hit testing TBD (`NF-S-click`) |

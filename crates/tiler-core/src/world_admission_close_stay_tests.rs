@@ -1508,3 +1508,585 @@ fn stay_hidden_mover_scope_converges_without_staged_focus_or_close() {
         settled.windows
     );
 }
+
+#[test]
+fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
+    // Hidden arrival with no focus history: a stay-send parks win-b on
+    // the hidden spare without touching its focus memory. Selecting the
+    // spare must focus the first (only) layout leaf instead of staying
+    // quiet; an empty select stays quiet (R-CLOSE-03).
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    // Stay-send the focused win-b to the hidden spare.
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-b",
+            Some(11),
+            Some(WorldCommand::Send {
+                window: WindowId("win-b".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: other.clone(),
+                follow: false,
+            }),
+        ),
+    );
+    // Membership receipt settles the stay flight; the spare session is
+    // born focusless (stay keeps the source selected).
+    let mut arrived_b = fact("win-b", "out-a", 100);
+    arrived_b.observed_workspace = Some(other.clone());
+    let settled = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("win-a", "out-a", 0), arrived_b],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "stay flight settles: {:?}",
+        settled.transfers
+    );
+    assert_eq!(
+        committed_focus(&engine, "out-a", &other),
+        None,
+        "hidden arrival records no focus memory"
+    );
+    // Selecting the arrival workspace focuses its first layout leaf.
+    let shown = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "win-a",
+            Some(12),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&other),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&shown, "out-a"), other);
+    assert_eq!(shown.effects.len(), 1, "{:?}", shown.effects);
+    assert_eq!(shown.effects[0].target.0, "win-b");
+    assert_eq!(shown.effects[0].id, "fx-12");
+}
+
+#[test]
+fn select_remembered_sticky_skips_to_eligible_later() {
+    // Ineligible top candidate falls through: win-b is the remembered
+    // leaf on WS1, but its staged row turns sticky while WS1 is hidden.
+    // Returning must skip win-b and focus eligible win-a instead of
+    // staying quiet.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    // Remember win-b through the observed global focus.
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-b",
+            None,
+            None,
+        ),
+    );
+    // Switch away to the empty spare: no remembered focus there.
+    let away = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&other),
+            }),
+        ),
+    );
+    assert!(away.effects.is_empty());
+    // win-b turns sticky natively while hidden; it stays a linked tiled
+    // member, so the return must skip it rather than lose focus.
+    let mut sticky_b = fact("win-b", "out-a", 100);
+    sticky_b.sticky = true;
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), sticky_b],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&view_a),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back, "out-a"), view_a);
+    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
+    assert_eq!(back.effects[0].target.0, "win-a");
+    assert_eq!(back.effects[0].id, "fx-12");
+}
+
+#[test]
+fn select_first_layout_sticky_skips_to_later_arrival() {
+    // Hidden stay-arrivals carry no focus memory; the first layout leaf
+    // (win-b, admitted first) turns sticky before the reveal. Selecting
+    // the spare must skip win-b and focus win-a.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    // Stay-send win-b to the hidden spare, then settle the flight.
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-b",
+            Some(11),
+            Some(WorldCommand::Send {
+                window: WindowId("win-b".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: other.clone(),
+                follow: false,
+            }),
+        ),
+    );
+    let mut arrived_b = fact("win-b", "out-a", 100);
+    arrived_b.observed_workspace = Some(other.clone());
+    let settled = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("win-a", "out-a", 0), arrived_b],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "stay flight settles: {:?}",
+        settled.transfers
+    );
+    // Stay-send win-a to the same hidden spare, then settle with win-b
+    // sticky. Both arrivals stay focusless (stay keeps source selected).
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "win-a",
+            Some(12),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: other.clone(),
+                follow: false,
+            }),
+        ),
+    );
+    let mut sticky_b = fact("win-b", "out-a", 100);
+    sticky_b.observed_workspace = Some(other.clone());
+    sticky_b.sticky = true;
+    let mut arrived_a = fact("win-a", "out-a", 0);
+    arrived_a.observed_workspace = Some(other.clone());
+    let settled = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![sticky_b, arrived_a],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "second stay flight settles: {:?}",
+        settled.transfers
+    );
+    assert_eq!(
+        first_leaf_window(&engine, "out-a", &other).as_deref(),
+        Some("win-b"),
+        "layout order starts at the first arrival"
+    );
+    // Selecting the arrival workspace skips sticky win-b for win-a.
+    let mut sticky_select = fact("win-b", "out-a", 100);
+    sticky_select.sticky = true;
+    let shown = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![sticky_select, fact("win-a", "out-a", 0)],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&other),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&shown, "out-a"), other);
+    assert_eq!(shown.effects.len(), 1, "{:?}", shown.effects);
+    assert_eq!(shown.effects[0].target.0, "win-a");
+    assert_eq!(shown.effects[0].id, "fx-13");
+}
+
+#[test]
+fn select_held_scope_stays_quiet_despite_eligible() {
+    // Held scopes never take view-return focus: WS1 carries seeded memory
+    // for win-a, but a bounds change under the gesture barrier holds the
+    // scope, so returning moves the view with no focus effect.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    let away = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&other),
+            }),
+        ),
+    );
+    assert!(away.effects.is_empty());
+    // Same geometry with a changed gap under the barrier: the scope
+    // holds, so the return moves the view with no focus effect.
+    let mut held = report(
+        3,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+        vec![("out-a", other.as_str())],
+        vec![],
+        "",
+        Some(12),
+        Some(WorldCommand::SelectNumbered {
+            output: Some(OutputId("out-a".to_owned())),
+            index: index_of(&view_a),
+        }),
+    );
+    held.gesture_barrier = true;
+    for screen in &mut held.screens {
+        screen.gap = 8;
+    }
+    let back = accepted(&mut engine, &held);
+    assert_eq!(view_of(&back, "out-a"), view_a);
+    assert!(
+        back.effects.is_empty(),
+        "held scope stays quiet: {:?}",
+        back.effects
+    );
+}
+
+#[test]
+fn select_without_native_focus_returns_recorded_leaf() {
+    // Seeded memory without native focus: WS1 is bootstrapped without
+    // native focus yet carries seeded memory for win-a, and the spare's
+    // unfocused admissions record newcomer memory for win-c. Returns name
+    // the recorded leaves; the MRU-vs-first discrimination lives in the
+    // session chain test (world seeds always record memory here).
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+        ),
+    );
+    let view_a = view_of(&first, "out-a");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| *id != &view_a)
+        .expect("spare")
+        .clone();
+    let index_of = |id: &str| -> u8 {
+        u8::try_from(ring.iter().position(|row| row == id).expect("ring member") + 1)
+            .expect("ordinal fits")
+    };
+    // Occupy the spare; the empty select stays quiet (R-CLOSE-03).
+    let away = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&other),
+            }),
+        ),
+    );
+    assert!(away.effects.is_empty());
+    assert_eq!(view_of(&away, "out-a"), other);
+    // Two unfocused arrivals while the spare is shown; newcomer memory
+    // records the latest arrival.
+    for seq in [3u64, 4u64] {
+        let mut windows = vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-a", 200),
+        ];
+        if seq == 4 {
+            windows.push(fact("win-d", "out-a", 300));
+        }
+        accepted(
+            &mut engine,
+            &report(
+                seq,
+                windows,
+                vec![("out-a", other.as_str())],
+                vec![],
+                "",
+                None,
+                None,
+            ),
+        );
+    }
+    assert_eq!(
+        committed_focus(&engine, "out-a", &other).as_deref(),
+        Some("win-c"),
+        "newcomer memory records the first arrival"
+    );
+    assert_eq!(
+        first_leaf_window(&engine, "out-a", &other).as_deref(),
+        Some("win-c"),
+        "layout order starts at the first admission"
+    );
+    // Probe: what focus memory does the never-natively-focused WS1 carry?
+    // (Bootstrap seeds win-a; the return below guards the recorded leaf.)
+    assert_eq!(
+        committed_focus(&engine, "out-a", &view_a).as_deref(),
+        Some("win-a")
+    );
+    // Return to WS1 names the seeded win-a (first layout leaf here is
+    // win-b, so this guards the recorded leaf, not the layout order).
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&view_a),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back, "out-a"), view_a);
+    assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
+    assert_eq!(back.effects[0].id, "fx-12", "{:?}", back.effects);
+    assert_eq!(back.effects[0].target.0, "win-a", "{:?}", back.effects);
+    // And back again: the spare return still names remembered win-c.
+    let back_other = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-a", 200),
+                fact("win-d", "out-a", 300),
+            ],
+            vec![("out-a", view_a.as_str())],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::SelectNumbered {
+                output: Some(OutputId("out-a".to_owned())),
+                index: index_of(&other),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&back_other, "out-a"), other);
+    assert_eq!(back_other.effects.len(), 1, "{:?}", back_other.effects);
+    assert_eq!(back_other.effects[0].target.0, "win-c");
+    assert_eq!(back_other.effects[0].id, "fx-13");
+}
+
+/// First layout leaf window for one workspace domain, in deterministic
+/// child order (tentative no-history tie-break).
+fn first_leaf_window(engine: &WorldEngine, output: &str, workspace: &str) -> Option<String> {
+    let key = crate::session::DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+    };
+    let session = engine.engine().session(&key)?;
+    let mut node = session.tree_for(&key)?;
+    loop {
+        match node {
+            crate::directional::Node::Leaf { id } => {
+                return session
+                    .snapshot()
+                    .windows
+                    .iter()
+                    .find(|link| &link.leaf == id)
+                    .map(|link| link.window.0.clone());
+            }
+            crate::directional::Node::Group { children, .. } => {
+                node = children.first()?;
+            }
+        }
+    }
+}

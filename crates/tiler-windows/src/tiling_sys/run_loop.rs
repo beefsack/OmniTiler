@@ -1051,6 +1051,20 @@ pub(super) fn run_tile_loop(
                 }
             }
             let drain = drain_hook_edges(&mut state, me, &log_path);
+            // The drain strictly precedes observation and apply with no
+            // message pump between, so every preserved foreground edge
+            // predates the pass's focus setter: entry processing can never
+            // meet a stale queued edge against a newer in-flight.
+            if state.trace
+                && let Some(diag) = wait_diag
+            {
+                super::run_loop_wait::log_wake_attribution(&state, wait, diag, &drain, &log_path);
+            }
+            state.world.push_foreground_drain(
+                drain.foreground,
+                drain.foreground_detail,
+                drain.foreground_omitted,
+            );
             let mut woke = drain.woke;
             // Trace-only batch breakdown for the owner-work sample; default
             // runs skip the counting.
