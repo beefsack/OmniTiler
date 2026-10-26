@@ -60,7 +60,7 @@ unknown state. Scoped runs decorate only in-scope apps; unscoped runs
 decorate ordinary apps through the same product gate. Tune it with
 `--no-active-border`, `--active-border-width 0..=32` (default 3),
 `--active-border-gap 0..=64` (default 0), `--active-border-radius 0..=64`
-(default 6), `--active-border-color #rrggbb` (fallback `#2a82da`), and
+(default host-derived centerline 17.5 on Tahoe 26+, 10.5 older/unknown), `--active-border-color #rrggbb` (fallback `#2a82da`), and
 `--active-border-theme` / `--no-active-border-theme` (default on); the same
 keys live under the `"active_border"` object in
 `~/Library/Application Support/OmniTiler/settings.json`, with CLI winning

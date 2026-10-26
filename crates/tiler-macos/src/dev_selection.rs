@@ -28,9 +28,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::active_border::{
-    ActiveBorderOptions, DEFAULT_COLOR_RGB, DEFAULT_GAP, DEFAULT_RADIUS, DEFAULT_USE_THEME,
-    DEFAULT_WIDTH, MAX_GAP, MAX_RADIUS, MAX_WIDTH, parse_color, parse_gap, parse_radius,
-    parse_width,
+    ActiveBorderOptions, DEFAULT_COLOR_RGB, DEFAULT_GAP, DEFAULT_USE_THEME, DEFAULT_WIDTH, MAX_GAP,
+    MAX_RADIUS, MAX_WIDTH, host_default_radius, parse_color, parse_gap, parse_radius, parse_width,
 };
 use crate::config::ProbeModifier;
 use crate::input_policy::InputPreset;
@@ -158,7 +157,9 @@ pub struct DevSettings {
 /// field optional; CLI wins per field). Key naming mirrors the Windows
 /// settings catalog fields (`border.enabled/width/gap/radius/color/use-theme`,
 /// storage `core.border.*`) under the `--active-border-*` CLI prefix:
-/// width 3, gap 0, radius 6, fallback `#2a82da`, theme on, switch on.
+/// width 3, gap 0, host-derived centerline radius (17.5 on Tahoe 26+,
+/// 10.5 older/unknown with default width/gap), fallback `#2a82da`, theme
+/// on, switch on.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActiveBorderSettings {
@@ -168,7 +169,9 @@ pub struct ActiveBorderSettings {
     pub width: Option<f64>,
     /// Gap between target frame and ring in points, `0..=64` (default 0).
     pub gap: Option<f64>,
-    /// Inner corner radius in points, `0..=64` (default 6).
+    /// Centerline stroke-path corner radius in points, `0..=64` (default
+    /// host-derived: native base + gap + width / 2; explicit values apply
+    /// verbatim, never re-offset).
     pub radius: Option<f64>,
     /// Fallback colour as `#rrggbb` (default `#2a82da`).
     pub color: Option<String>,
@@ -217,7 +220,8 @@ pub struct BorderCli {
     pub width: Option<String>,
     /// Target-to-ring gap `0..=64`.
     pub gap: Option<String>,
-    /// Inner corner radius `0..=64`.
+    /// Centerline stroke-path corner radius `0..=64` (explicit values apply
+    /// verbatim; unset derives the host default after width/gap resolve).
     pub radius: Option<String>,
     /// Fallback colour `#rrggbb`.
     pub color: Option<String>,
@@ -228,13 +232,15 @@ pub struct BorderCli {
 
 /// Merge CLI border selections over the settings file: an explicitly passed
 /// CLI flag always wins; otherwise the file value applies; otherwise the
-/// built-in default (on, width 3, gap 0, radius 6, `#2a82da`, theme on).
+/// host default (on, width 3, gap 0, centerline radius derived as native
+/// base + gap + width / 2 after width/gap resolve, `#2a82da`, theme on).
 /// Every value validates through the shared bounds; failures refuse closed
 /// (never a silent fallback). Border configuration is startup-only: a
 /// running tile session never re-reads it.
 pub fn resolve_border_config(
     cli: &BorderCli,
     file: Option<&ActiveBorderSettings>,
+    os_major: Option<u32>,
 ) -> Result<ActiveBorderOptions, String> {
     let enabled = cli.enabled.or(file.and_then(|f| f.enabled)).unwrap_or(true);
     let width = match &cli.width {
@@ -255,7 +261,7 @@ pub fn resolve_border_config(
         Some(raw) => parse_radius(raw)?,
         None => match file.and_then(|f| f.radius) {
             Some(value) => file_bound(value, MAX_RADIUS, "radius")?,
-            None => DEFAULT_RADIUS,
+            None => host_default_radius(os_major, width, gap),
         },
     };
     let color = match &cli.color {
@@ -744,22 +750,81 @@ mod tests {
 
     #[test]
     fn border_defaults_match_shared_parity() {
-        // Nothing set anywhere: on, width 3, gap 0, radius 6, `#2a82da`,
-        // theme on (KDE/Windows parity).
-        let resolved = resolve_border_config(&BorderCli::default(), None).expect("resolves");
+        // Nothing set anywhere: on, width 3, gap 0, host-derived centerline
+        // radius (`#2a82da`, theme on). Tahoe 26+ derives 16 + 0 + 3/2;
+        // older/unknown derive 9 + 0 + 3/2 (portable `None` route matches
+        // `ActiveBorderStyle::default`).
+        for (family, want) in [(Some(26), 17.5), (Some(15), 10.5), (None, 10.5)] {
+            let resolved =
+                resolve_border_config(&BorderCli::default(), None, family).expect("resolves");
+            assert!(resolved.enabled);
+            assert_eq!(resolved.style.width, 3.0);
+            assert_eq!(resolved.style.gap, 0.0);
+            assert_eq!(resolved.style.radius, want, "family={family:?}");
+            assert_eq!(
+                crate::active_border::render_color(resolved.style.color),
+                "#2a82da"
+            );
+            assert!(resolved.style.use_theme);
+        }
         assert_eq!(
-            resolved,
+            resolve_border_config(&BorderCli::default(), None, None).expect("resolves"),
             crate::active_border::ActiveBorderOptions::default()
         );
-        assert!(resolved.enabled);
-        assert_eq!(resolved.style.width, 3.0);
-        assert_eq!(resolved.style.gap, 0.0);
-        assert_eq!(resolved.style.radius, 6.0);
+    }
+
+    #[test]
+    fn border_host_default_derives_after_width_gap() {
+        // Unset radius follows the RESOLVED width/gap, not the 3/0 defaults.
+        let file = ActiveBorderSettings {
+            width: Some(5.0),
+            gap: Some(2.0),
+            ..ActiveBorderSettings::default()
+        };
+        let modern =
+            resolve_border_config(&BorderCli::default(), Some(&file), Some(26)).expect("resolves");
+        assert_eq!(modern.style.radius, 16.0 + 2.0 + 2.5);
+        let legacy =
+            resolve_border_config(&BorderCli::default(), Some(&file), Some(15)).expect("resolves");
+        assert_eq!(legacy.style.radius, 9.0 + 2.0 + 2.5);
+        // Empty section is the same as absent: pure host default.
+        let empty = ActiveBorderSettings::default();
         assert_eq!(
-            crate::active_border::render_color(resolved.style.color),
-            "#2a82da"
+            resolve_border_config(&BorderCli::default(), Some(&empty), Some(26))
+                .expect("resolves")
+                .style
+                .radius,
+            17.5
         );
-        assert!(resolved.style.use_theme);
+        // Explicit radius (CLI or file) applies verbatim on every family.
+        let cli = BorderCli {
+            radius: Some("12".to_owned()),
+            ..BorderCli::default()
+        };
+        for family in [Some(26), Some(15), None] {
+            assert_eq!(
+                resolve_border_config(&cli, Some(&file), family)
+                    .expect("resolves")
+                    .style
+                    .radius,
+                12.0,
+                "family={family:?}"
+            );
+        }
+        // Auto-derived default caps at the configured radius range; the
+        // width/gap config itself still resolves.
+        let wide = ActiveBorderSettings {
+            width: Some(32.0),
+            gap: Some(64.0),
+            ..ActiveBorderSettings::default()
+        };
+        for family in [Some(26), None] {
+            let capped = resolve_border_config(&BorderCli::default(), Some(&wide), family)
+                .expect("resolves");
+            assert_eq!(capped.style.width, 32.0);
+            assert_eq!(capped.style.gap, 64.0);
+            assert_eq!(capped.style.radius, 64.0, "family={family:?}");
+        }
     }
 
     #[test]
@@ -773,7 +838,8 @@ mod tests {
             use_theme: Some(false),
         };
         // File alone applies wholesale (switch off included).
-        let resolved = resolve_border_config(&BorderCli::default(), Some(&file)).expect("resolves");
+        let resolved =
+            resolve_border_config(&BorderCli::default(), Some(&file), None).expect("resolves");
         assert!(!resolved.enabled);
         assert_eq!(resolved.style.width, 5.0);
         assert_eq!(resolved.style.gap, 2.0);
@@ -787,7 +853,7 @@ mod tests {
             use_theme: Some(true),
             ..BorderCli::default()
         };
-        let resolved = resolve_border_config(&cli, Some(&file)).expect("resolves");
+        let resolved = resolve_border_config(&cli, Some(&file), Some(26)).expect("resolves");
         assert!(!resolved.enabled);
         assert_eq!(resolved.style.width, 7.0);
         assert_eq!(resolved.style.gap, 2.0);
@@ -799,13 +865,17 @@ mod tests {
             enabled: Some(false),
             ..BorderCli::default()
         };
-        assert!(!resolve_border_config(&cli, None).expect("resolves").enabled);
+        assert!(
+            !resolve_border_config(&cli, None, None)
+                .expect("resolves")
+                .enabled
+        );
         let cli = BorderCli {
             use_theme: Some(true),
             ..BorderCli::default()
         };
         assert!(
-            resolve_border_config(&cli, Some(&file))
+            resolve_border_config(&cli, Some(&file), Some(26))
                 .expect("resolves")
                 .style
                 .use_theme
@@ -841,7 +911,7 @@ mod tests {
                 ..BorderCli::default()
             },
         ] {
-            assert!(resolve_border_config(&cli, None).is_err());
+            assert!(resolve_border_config(&cli, None, None).is_err());
         }
         // File numbers validate the same way (never a silent fallback).
         for file in [
@@ -863,7 +933,7 @@ mod tests {
             },
         ] {
             assert!(file.validate().is_err());
-            assert!(resolve_border_config(&BorderCli::default(), Some(&file)).is_err());
+            assert!(resolve_border_config(&BorderCli::default(), Some(&file), None).is_err());
         }
         // Boundary values pass on both routes.
         let cli = BorderCli {
@@ -873,7 +943,7 @@ mod tests {
             color: Some("#2A82DA".to_owned()),
             ..BorderCli::default()
         };
-        let resolved = resolve_border_config(&cli, None).expect("resolves");
+        let resolved = resolve_border_config(&cli, None, None).expect("resolves");
         assert_eq!(resolved.style.width, 32.0);
         assert_eq!(resolved.style.color, (0x2a, 0x82, 0xda));
     }
@@ -946,7 +1016,7 @@ mod tests {
             color: Some("#ff0000".to_owned()),
             ..BorderCli::default()
         };
-        let border = resolve_border_config(&border_cli, None).expect("resolves");
+        let border = resolve_border_config(&border_cli, None, None).expect("resolves");
         let highlight =
             resolve_pager_highlight_config(&PagerHighlightCli::default(), None).expect("resolves");
         assert_eq!(border.style.color, (0xff, 0x00, 0x00));
@@ -999,9 +1069,12 @@ mod tests {
         assert_eq!(section.width, Some(5.0));
         assert_eq!(section.color.as_deref(), Some("#112233"));
         assert!(settings.validate().is_ok());
-        let resolved =
-            resolve_border_config(&BorderCli::default(), settings.active_border.as_ref())
-                .expect("resolves");
+        let resolved = resolve_border_config(
+            &BorderCli::default(),
+            settings.active_border.as_ref(),
+            Some(26),
+        )
+        .expect("resolves");
         assert!(!resolved.enabled);
         assert_eq!(resolved.style.radius, 8.0);
         // Unknown nested fields refuse loudly (typos never silently no-op).
@@ -1012,6 +1085,8 @@ mod tests {
         let bad: DevSettings =
             serde_json::from_str(r#"{"active_border":{"width":99}}"#).expect("parses shape");
         assert!(bad.validate().is_err());
-        assert!(resolve_border_config(&BorderCli::default(), bad.active_border.as_ref()).is_err());
+        assert!(
+            resolve_border_config(&BorderCli::default(), bad.active_border.as_ref(), None).is_err()
+        );
     }
 }

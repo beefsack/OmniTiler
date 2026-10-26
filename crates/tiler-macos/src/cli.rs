@@ -429,7 +429,7 @@ pub fn help_text() -> String {
            \x20 \x20 active border on by default: [--no-active-border] [--active-border-width 0..=32]\n\
            \x20 \x20 [--active-border-gap 0..=64] [--active-border-radius 0..=64]\n\
            \x20 \x20 [--active-border-color #rrggbb] [--active-border-theme|--no-active-border-theme]\n\
-           \x20 \x20 (width 3, gap 0, radius 6, fallback #2a82da, theme on; border config\n\
+           \x20 \x20 (width 3, gap 0, host-derived centerline radius 17.5 Tahoe 26+/10.5 older-or-unknown, fallback #2a82da, theme on; border config\n\
            \x20 \x20 resolves CLI-over-settings-file like modifier/preset);\n\
            \x20 \x20 pager focused-miniature highlight defaults to the live system\n\
            \x20 \x20 accent: [--pager-highlight-color #rrggbb]\n\

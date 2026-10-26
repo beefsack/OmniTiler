@@ -317,6 +317,7 @@ edge cases tentative. Acceptance of an approach does not claim native evidence.
 | Tentative 2026-10-27 | Matched numbered-send unbound backing executes through the existing creator; an explicit backing desire requires exactly one append, never a silently reused SID; bound/missing/mismatched stays pinned with no creation | Adapter contract completion, not a core policy or new eager-spare proposal; native macOS result TBD |
 | Tentative 2026-10-27 | Coalesced claim/effect events stage one early cadence body on the existing 50 ms pump; every dispatched terminal outcome requests one owner reread plus one early body even at unchanged revision | Theoretical bound 250 to 50 ms per stage, not a measured native distribution; no native replay, new timer, or polling thread; the 250 ms routine and 1 s `SCOPED_BACKSTOP_INTERVAL` bound silence for lost/unsupported notifications; pending receipts complete once on the first readable row with the original stamp preserved |
 | Tentative 2026-10-27 | Same-state held plan-truth retention (same current scopes, bindings, homing, and current workareas; fresh rows win; minimized absence stands; any change invalidates) plus a queued baseline-SID source fence before select/create auth spend (genuine pre/post evidence, `None` when unknown); presentation is already engine-stable, so no cache; own-append order growth at the same current stays valid | Adapter-only retention and fences; renderers still revalidate every shape against live native legs; native macOS before/after result TBD |
+| Tentative 2026-10-27 | Host-derived active-border centerline default (native base 16 on Tahoe 26+ / legacy 9 source fallback + `gap + width / 2`, capped at 64; explicit values verbatim, host-local, no core) | Standard-window fallback is approximate, not universal; fractional outsets keep pre-existing whole-point rounding; native evidence is the narrow fixture readback below, not product border pixels |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -1127,15 +1128,45 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   pre-launch SIGINT/stop path reuses the same helper. Lock/run teardown is
   unchanged. Offline tests PASS (104 asserts, 0 failures in
   `scripts/macos-dev.test.sh`); `bash -n` clean on both scripts.
-- Radius research parked with no implementation choice: the existing default
-  6 is unchanged and 9 is not blessed. Independent re-read of the JankyBorders
+- Radius research parked with no implementation choice at that time: the existing default
+  6 was unchanged and 9 was not blessed. Independent re-read of the JankyBorders
   sibling clone corrects the earlier quote: the fallback is
-  `radius > 0 ? radius : 9`, not `radius > 0 ? 9 : 9`. Pins inspected:
+  `radius > 0 ? radius : 9`, not `radius > 0 ? 9 : 9`. Pins inspected
+  (sibling clone, not this repository's history):
   `1dcf3477e1ed89eaf1a0c1ced3c6b15dcb2ff896` (per-window read) and
   `3a9d75cd1f7f36d2f3ef303e98f9eb781f5da423`. A 9 fallback does not establish
   a native 26 default; the per-window API is 26+ and private SLS reads are
-  permitted with SIP on. No core/config edits. Next: a bounded read-only
-  fixture measure or API probe with actual numbers; no invented version default.
+  permitted with SIP on. No core/config edits at that time. Resolved
+  tentatively by the host-derived default below; this paragraph is now
+  historical.
+
+## Tentative host-derived corner default (2026-10-27)
+
+- Tentative default (macOS only, no core change): unset
+  `--active-border-radius` derives as native base + `gap + width / 2`
+  (centerline outset, so the ring stays concentric with the window corner),
+  capped at the configured radius maximum 64. The cap reflects the
+  configured radius range; it never refuses the width/gap config.
+  Explicit radii apply verbatim on every family; explicit 64 accepted and
+  `>64` refused are unchanged. Resolution order is CLI over file over host
+  default, after width/gap resolve; the OS read is the existing
+  `macos_major` with the portable `None` stub.
+- Bases: 16 on Tahoe release family 26+ (narrow fixture readback: one
+  normal decorated resizable window, SLS read of 4 corners at 16 twice;
+  borderless reads zero, recorded as UNKNOWN not zero); 9 on older/unknown
+  as the source-history fallback from the sibling JankyBorders pins above
+  (not a modern actual; no live pre-26 measurement in this tree). At the
+  default width 3 gap 0 this gives 17.5 on 26+ and 10.5 older/unknown; the
+  portable `None` route (10.5) matches `ActiveBorderStyle::default`, which
+  the diagnostic `border_session` fixture style consumes explicitly and
+  unchanged. Permitted width 32 gap 64 auto-derives 64 on 26+ and unknown.
+- Approximate standard-window fallback, not universal; fractional outsets
+  keep the pre-existing nearest-whole-point rounding at presentation, no
+  architecture change. No product border-pixel claim and no pre-26 native
+  actual measurement; raw probe artifacts are not retained (the measurement
+  report notes the probe/run directory was removed). Own
+  process/window/socket plus caffeinate cleanup and protected-baseline
+  restore are confirmed for the readback leg.
 
 ## Risks and open evidence
 

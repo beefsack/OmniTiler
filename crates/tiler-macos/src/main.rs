@@ -943,6 +943,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             let border = tiler_macos::dev_selection::resolve_border_config(
                 &border,
                 file.active_border.as_ref(),
+                tiler_macos::ffi::macos_major(),
             )
             .map_err(|reason| {
                 write_refused(&reason);
