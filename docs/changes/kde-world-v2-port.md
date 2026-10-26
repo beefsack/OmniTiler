@@ -1313,6 +1313,8 @@
 
 ### Gesture transport cutover: unaccepted recovery outcome (2026-10-26)
 
+- Historical status: the recovery blockers in this subsection are superseded by
+  [the accepted offline correction](#gesture-transport-accepted-offline-recovery-2026-10-26).
 - **Incomplete, not accepted:** the native source and broker cutover build,
   but terminal-capture recovery has two reproduced failures. The old JS
   verdict/drop/resize/preview route and native oracle endpoint/press capture
@@ -1412,6 +1414,48 @@
   `src/scripting/workspace_wrapper.h:66,309`, implementation `.cpp:310,341`.
   Defensive producer reads conform to these signatures/order; inventory and
   **10/10** guard regressions pass without changing capture behavior.
+
+### Gesture transport accepted offline recovery (2026-10-26)
+
+- The two original recovery regressions pass and independent boundary review
+  accepts the correction. One implementation initially passed an inaccurate
+  fresh-source terminal mock; review rejected it. Corrected tests model the
+  real broker's consume-once terminal and byte-identical cached response: a
+  fresh source cannot re-emit a consumed `GestureSettled`.
+- Retain the oldest exact terminal envelope, original source/watermark and
+  attempt accounting through timeout, malformed/wrong-lane response, busy wire,
+  same-generation rediscovery and genuine native invalidation. Two bounded
+  fast retries transition to existing host-deadline recovery, without permanent
+  abandonment or a new terminal identity. Rotation and stop clear the old
+  recovery obligation; a newer fresh capture cannot replace the owed envelope.
+- `beginReplayCapture` stamps the original envelope watermark.
+  `tryDischargeTerminalSettlement` is ack-only: current generation/incarnation,
+  exact reply source/watermark, settled-id/core-association equality and exact
+  pending native identity must all prove. It applies no setter, desire, effect
+  or paint. A stale/superseded reply may therefore discharge only its terminal
+  while its snapshot remains unapplied. Mismatched or malformed data cannot
+  resolve that obligation.
+- Timer justification lives at the definition: the terminal is already frozen;
+  two-second cadence bounds lost transport callbacks and rapid retry load,
+  while the existing 25-second host deadline bounds silent-call recovery.
+  Elapsed time proves no finish, cancellation, freshness or settlement. At most
+  one recovery timer is live; neither cadence is a native settle wait.
+- Final serial declared-environment gates: workspace build; service **307/307**,
+  core/protocol **1,402/1,402**, Windows Linux-available **725/725**, and strict
+  scoped clippy pass. JS typecheck/build and **711/711** tests pass, with zero
+  failures/skips/cancellations. Host-matched native build/CTest **34/34**, exact
+  world acceptance **6/6**, workspace fmt/whitespace, KWin API guard **10/10**
+  and third-party-notice freshness pass. Existing full-workspace macOS Linux
+  limitations remain **3,928 passed/eight dock-swipe failures** and five strict-
+  clippy dead-code errors listed above; no unrelated fixes or native claims.
+- Bound remains the broker's existing remembered-source cache. If the exact
+  response is evicted before recovery, the adapter cannot manufacture a
+  settlement or a replacement terminal; cache-eviction recovery remains a
+  separate limitation. No shared-core behavior/protocol change is introduced.
+- Native fixture drag/release/Esc evidence is next, separately from this offline
+  acceptance. Stage 5 producing-gesture/native-invalidation freshness remains
+  unaccepted and is the next renderer package; N5, game/fullscreen suspension,
+  race-audit items and later stages remain parked.
 
 ## Stage 5 bounded plan (2026-10-26)
 

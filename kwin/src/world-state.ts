@@ -753,6 +753,18 @@ export class WorldAdapterState {
         return flight;
     }
 
+    // Replay flight for an exact same-envelope terminal redelivery: the
+    // bytes name the ORIGINAL watermark, so the flight binding must stamp
+    // it too (beginCapture would stamp the current fence instead). Source
+    // and generation bindings are unchanged: only the watermark rides back.
+    beginReplayCapture(source: string, watermark: string, clientCmd: string | null): CaptureFlight | null {
+        const flight = this.beginCapture(source, clientCmd);
+        if (flight !== null) {
+            flight.watermark = watermark;
+        }
+        return flight;
+    }
+
     onDiscovery(gen: string, incarnation: string, adapter?: string, req?: string, expectedReq?: string): boolean {
         // Authenticated discovery binds the generation plus the broker
         // incarnation only for the exact adapter namespace and the exact

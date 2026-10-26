@@ -1314,8 +1314,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     if (changed) {
                         waitCursor = "0";
                         wakePendingCapture = false;
+                        // A fresh generation re-observes from a new
+                        // watermark: the post-discovery dispatch below
+                        // re-proves every native fact. A same-generation
+                        // rebind is transport-only (the broker map persists),
+                        // so it must not fabricate a native invalidation: the
+                        // bump would supersede an in-flight terminal envelope
+                        // and suppress its exact same-envelope recovery while
+                        // the terminal is factually unchanged.
+                        state.invalidate();
                     }
-                    state.invalidate();
                     // A fresh generation drops the old effect identity
                     // before the post-discovery observation: stale snapshots
                     // and replaced waiters never cross the rotation.
@@ -1333,23 +1341,28 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // the broker map reset with the engine, so stale core
                     // ids and replaced waiters never cross the rotation. An
                     // unavailable interval inside a generation recovers
-                    // without reset (broker mapping persists there).
-                    gestureSnapshot = null;
-                    gestureTerminalPending = null;
-                    gestureBoundAssoc = null;
-                    lastBoundaryKey = null;
-                    clearGestureAck();
-                    clearTerminalCaptureRetry();
-                    lastResolvedCaptureSource = null;
-                    gestureWaiterOutstanding = false;
-                    gestureWaiterGen = null;
-                    try {
-                        gestureWatchdogCancel?.();
-                    } catch (error) {
-                        void error;
+                    // without reset (broker mapping persists there). A
+                    // same-generation rebind keeps the pending terminal, its
+                    // proven association, and its exact same-envelope retry:
+                    // the broker remembers the settlement under this generation.
+                    if (changed) {
+                        gestureSnapshot = null;
+                        gestureTerminalPending = null;
+                        gestureBoundAssoc = null;
+                        lastBoundaryKey = null;
+                        clearGestureAck();
+                        clearTerminalCaptureRetry();
+                        lastResolvedCaptureSource = null;
+                        gestureWaiterOutstanding = false;
+                        gestureWaiterGen = null;
+                        try {
+                            gestureWatchdogCancel?.();
+                        } catch (error) {
+                            void error;
+                        }
+                        gestureWatchdogCancel = null;
+                        cancelGestureRecovery();
                     }
-                    gestureWatchdogCancel = null;
-                    cancelGestureRecovery();
                     void dispatch(false);
                     armEffectWaiter();
                     armGestureWaiter();
@@ -2303,6 +2316,97 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         sendGestureAck();
     };
 
+    // Whether the exact settlement for this terminal identity is still
+    // owed: the terminal is pending and no ack for it is already underway.
+    // An armed ack retires the native FIFO exactly once on identity match,
+    // so the capture-lane obligation is discharged while it is in flight.
+    const isTerminalSettlementOwedFor = (
+        gesture: { instance: string; serial: string } | null,
+    ): boolean => {
+        if (gesture === null) {
+            return false;
+        }
+        const pending = gestureTerminalPending;
+        if (
+            pending === null ||
+            pending.instance !== gesture.instance ||
+            pending.serial !== gesture.serial
+        ) {
+            return false;
+        }
+        const ack = gestureAckPending;
+        if (ack !== null && ack.instance === pending.instance && ack.serial === pending.serial) {
+            return false;
+        }
+        return true;
+    };
+    const isTerminalCaptureOwed = (flight: CaptureFlight): boolean =>
+        isTerminalSettlementOwedFor(flight.gesture);
+
+    // Ack-only settlement discharge, split from snapshot freshness: proves
+    // the broker's bound response settles THIS pending terminal (current
+    // generation, current broker incarnation, response source/nativeInvalid
+    // equal the flight's original envelope bindings, settled id equals the
+    // bound association core id, association and flight native pairs equal
+    // the pending terminal) and arms the exact native ack. Applies no
+    // setters, consumes no desires, paints nothing: stale snapshots,
+    // superseded watermarks, and stale revisions may still discharge the
+    // terminal while their observations stay unapplied. Returns true when
+    // the settlement is proven (ack armed or already underway).
+    const tryDischargeTerminalSettlement = (parsed: WorldReply, flight: CaptureFlight): boolean => {
+        if (stopped) {
+            return false;
+        }
+        if (state.boundGen === null || parsed.gen !== state.boundGen) {
+            return false;
+        }
+        if (state.brokerIncarnation === null || parsed.adapter !== state.brokerIncarnation) {
+            return false;
+        }
+        if (parsed.req !== flight.source || parsed.source !== flight.source) {
+            return false;
+        }
+        if (parsed.nativeInvalid !== flight.watermark) {
+            return false;
+        }
+        const settled = parsed.gestureSettled;
+        const assoc = parsed.gestureAssoc;
+        if (settled === null || settled === undefined) {
+            return false;
+        }
+        if (assoc === null || assoc === undefined) {
+            return false;
+        }
+        if (typeof settled.id !== "string" || settled.id === "" || settled.id !== assoc.coreId) {
+            return false;
+        }
+        const pending = gestureTerminalPending;
+        if (pending === null) {
+            return false;
+        }
+        if (assoc.instance !== pending.instance || assoc.serial !== pending.serial) {
+            return false;
+        }
+        if (
+            flight.gesture === null ||
+            flight.gesture.instance !== pending.instance ||
+            flight.gesture.serial !== pending.serial
+        ) {
+            return false;
+        }
+        const ack = gestureAckPending;
+        if (ack !== null) {
+            return ack.instance === pending.instance && ack.serial === pending.serial;
+        }
+        ackGestureTerminal(
+            flight.gesture,
+            settled.id,
+            { instance: assoc.instance, serial: assoc.serial, coreId: assoc.coreId },
+        );
+        const armed = gestureAckPending;
+        return armed !== null && armed.instance === pending.instance && armed.serial === pending.serial;
+    };
+
     // Terminal take collection for one filed queue-client command. The
     // capture reply never carries the result (requester-only even when the
     // actuator is the issuer): ready carries the core result (possibly null
@@ -2871,15 +2975,34 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // infers a new terminal: it fires only while the same terminal is
     // still pending and no newer native input arrived. No double commit
     // (server-side dedup by source), no unrelated window events needed.
+    //
+    // Timer justification (genuine recovery bounds, never causality
+    // inference): the native terminal is already frozen upstream and the
+    // envelope bytes are immutable; the timers below bound only the loss of
+    // the transport callback itself (a killed callDBus never invokes its
+    // callback, mirroring the 25 s host kill documented at
+    // WAIT_HOST_DEADLINE_MS). Elapsed time never proves the native
+    // finished, cancelled, went fresh, or settled: settlement is proven
+    // only by the broker's bound response (exact gestureSettled plus the
+    // broker-bound gestureAssoc) and retirement only by the native ack.
+    // The 2 s fast cadence matches the existing capture timeout
+    // (WORLD_TIMEOUT_MS) and fires at most TERMINAL_CAPTURE_MAX_RETRIES
+    // times; the 25 s cadence reuses the existing host deadline
+    // (WAIT_HOST_DEADLINE_MS) and persists the exact pending envelope
+    // until the same terminal settles, rotates, or stops. No busy loop:
+    // at most one retry timer lives at a time.
     let terminalCaptureRetry: {
         envelope: string; source: string; watermark: string;
         gesture: { instance: string; serial: string }; attempts: number;
         timerCancel: (() => void) | null;
     } | null = null;
     const TERMINAL_CAPTURE_MAX_RETRIES = 2;
-    // Last envelope source resolved by any received reply (accept, stale,
-    // or rejection): a late timeout for a resolved source never re-arms a
-    // same-envelope retry. Reset on generation rotation and stop.
+    // Last envelope source resolved by a VALID definitive broker reply
+    // (accepted, stale-but-parsed, or in-band rejection). Transport loss
+    // and invalid data (non-string, oversize, malformed) never resolve
+    // the replay obligation: the same terminal stays pending and the
+    // bounded cadence above still recovers it. Reset on generation
+    // rotation and stop.
     let lastResolvedCaptureSource: string | null = null;
     const clearTerminalCaptureRetry = (): void => {
         try {
@@ -2967,18 +3090,119 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
         }
-        // A fresh terminal send supersedes any pending same-envelope retry:
-        // the live send owns recovery now (its own failures re-arm below).
+        // A fresh terminal send supersedes any pending same-envelope retry
+        // only for a NEW terminal: a same-identity re-carry keeps the
+        // oldest unrecovered envelope owning recovery (only the original
+        // source can retrieve the broker's cached settlement; a fresh
+        // source never re-settles a consumed terminal).
         if (flight.gesture !== null) {
-            clearTerminalCaptureRetry();
+            const pending = gestureTerminalPending;
+            if (
+                pending === null ||
+                pending.instance !== flight.gesture.instance ||
+                pending.serial !== flight.gesture.serial
+            ) {
+                clearTerminalCaptureRetry();
+            }
         }
         transmitCapture(envelope, flight, headOp);
     };
 
     // Bounded same-envelope retry arming for a failed commandless terminal
-    // send. Fires only while the same terminal is still pending, the wire
-    // is free, and no newer native input arrived; the timer redelivers the
-    // byte-identical envelope (never a new source, never a new terminal).
+    // send. Fires only while the same terminal settlement is still owed
+    // and the wire is free. Fast failures redeliver the byte-identical
+    // envelope at most TERMINAL_CAPTURE_MAX_RETRIES times (2 s cadence);
+    // further failures persist the exact pending envelope at the existing
+    // 25 s host-deadline cadence until the same terminal settles, rotates,
+    // or stops (never a new source, never a new terminal, never a silent
+    // give-up). Oldest-envelope ownership: an entry armed for the same
+    // terminal identity keeps governing (a newer re-carry proves nothing
+    // new and can never retrieve the cached settlement); only an unowned
+    // identity arms a fresh schedule. Attempt accounting rides the owned
+    // envelope: the timer holds the count as an in-flight marker
+    // (timerCancel null) so the redelivery's own failure increments
+    // instead of restarting at 1.
+    const fireTerminalRetry = (
+        saved: { envelope: string; source: string; watermark: string; gesture: { instance: string; serial: string }; attempts: number },
+        cadenceMs: number,
+    ): void => {
+        if (stopped) {
+            return;
+        }
+        if (lastResolvedCaptureSource === saved.source) {
+            terminalCaptureRetry = null;
+            return;
+        }
+        if (state.boundGen === null) {
+            return;
+        }
+        // The terminal moved on (settled, acked, or superseded): the owned
+        // envelope is dead. Otherwise the replay fires regardless of the
+        // current watermark: the bytes name the ORIGINAL fence and the
+        // replay flight below rebinds it exactly, so a bound old reply can
+        // still discharge the settlement while the snapshot stays stale.
+        if (!isTerminalSettlementOwedFor(saved.gesture)) {
+            terminalCaptureRetry = null;
+            return;
+        }
+        if (state.inFlight !== null) {
+            // Wire busy: re-arm the same cadence (count unchanged, at most
+            // one timer) so the exact envelope is never silently dropped.
+            // A newer fresh reply resolving this source still cancels below.
+            clearTerminalCaptureRetry();
+            terminalCaptureRetry = {
+                envelope: saved.envelope, source: saved.source, watermark: saved.watermark,
+                gesture: saved.gesture, attempts: saved.attempts,
+                timerCancel: scheduleOnce(cadenceMs, () => {
+                    const pending = terminalCaptureRetry;
+                    if (pending === null || stopped) {
+                        return;
+                    }
+                    fireTerminalRetry(
+                        {
+                            envelope: pending.envelope, source: pending.source,
+                            watermark: pending.watermark, gesture: pending.gesture,
+                            attempts: pending.attempts,
+                        },
+                        cadenceMs,
+                    );
+                }),
+            };
+            return;
+        }
+        // The count crosses the flight: the marker below (timerCancel null)
+        // preserves it so the redelivery's own failure increments.
+        terminalCaptureRetry = {
+            envelope: saved.envelope, source: saved.source, watermark: saved.watermark,
+            gesture: saved.gesture, attempts: saved.attempts, timerCancel: null,
+        };
+        // The replay flight rebinds the ORIGINAL envelope watermark (the
+        // bytes carry the old fence): beginCapture would stamp the current
+        // fence instead, which would weaken the source/gen binding proof.
+        const retryFlight = state.beginReplayCapture(saved.source, saved.watermark, null);
+        if (retryFlight === null) {
+            // Wire raced busy after the guard: re-arm the same cadence so
+            // the exact envelope is not silently dropped. The count is
+            // unchanged (no new attempt fired). At most one timer lives.
+            terminalCaptureRetry.timerCancel = scheduleOnce(cadenceMs, () => {
+                const pending = terminalCaptureRetry;
+                if (pending === null || stopped) {
+                    return;
+                }
+                fireTerminalRetry(
+                    {
+                        envelope: pending.envelope, source: pending.source,
+                        watermark: pending.watermark, gesture: pending.gesture,
+                        attempts: pending.attempts,
+                    },
+                    cadenceMs,
+                );
+            });
+            return;
+        }
+        retryFlight.gesture = { instance: saved.gesture.instance, serial: saved.gesture.serial };
+        transmitCapture(saved.envelope, retryFlight, null);
+    };
     const maybeRetryTerminalCapture = (envelope: string, flight: CaptureFlight): void => {
         if (stopped || flight.clientCmd !== null || flight.gesture === null) {
             return;
@@ -2998,44 +3222,46 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         const prev = terminalCaptureRetry;
-        const attempts = prev !== null && prev.source === flight.source ? prev.attempts + 1 : 1;
+        let attempts: number;
+        if (prev !== null && prev.source === flight.source) {
+            // The owned envelope failed again: its own count increments
+            // toward the host-deadline escalation below.
+            attempts = prev.attempts + 1;
+        } else if (
+            prev !== null &&
+            prev.gesture.instance === flight.gesture.instance &&
+            prev.gesture.serial === flight.gesture.serial
+        ) {
+            // A newer re-carry failed while the oldest envelope is owned:
+            // the oldest keeps governing (only it can retrieve the cached
+            // settlement), so this failure schedules nothing new.
+            return;
+        } else {
+            attempts = 1;
+        }
+        const gesture = { instance: flight.gesture.instance, serial: flight.gesture.serial };
         if (attempts > TERMINAL_CAPTURE_MAX_RETRIES) {
+            // Fast bound reached: the exact pending envelope persists and
+            // retries at the existing host-deadline cadence (never a hot
+            // loop, never abandoned while core-settled). Each host failure
+            // re-arms exactly one host timer below via the same path.
             clearTerminalCaptureRetry();
+            log(`omnitiler:world:terminal-retry attempt=${attempts} recovery=host-deadline`);
+            const saved = { envelope, source: flight.source, watermark: flight.watermark, gesture, attempts };
+            const timerCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+                fireTerminalRetry(saved, WAIT_HOST_DEADLINE_MS);
+            });
+            terminalCaptureRetry = {
+                envelope, source: flight.source, watermark: flight.watermark,
+                gesture, attempts, timerCancel,
+            };
             return;
         }
         clearTerminalCaptureRetry();
         log(`omnitiler:world:terminal-retry attempt=${attempts} recovery=same-envelope`);
-        const gesture = { instance: flight.gesture.instance, serial: flight.gesture.serial };
+        const saved = { envelope, source: flight.source, watermark: flight.watermark, gesture, attempts };
         const timerCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
-            if (terminalCaptureRetry === null || stopped) {
-                return;
-            }
-            const saved = terminalCaptureRetry;
-            if (lastResolvedCaptureSource === saved.source) {
-                terminalCaptureRetry = null;
-                return;
-            }
-            terminalCaptureRetry = null;
-            if (state.boundGen === null || state.inFlight !== null) {
-                return;
-            }
-            if (state.currentInvalid !== saved.watermark) {
-                return;
-            }
-            const still = gestureTerminalPending;
-            if (
-                still === null ||
-                still.instance !== saved.gesture.instance ||
-                still.serial !== saved.gesture.serial
-            ) {
-                return;
-            }
-            const retryFlight = state.beginCapture(saved.source, null);
-            if (retryFlight === null) {
-                return;
-            }
-            retryFlight.gesture = { instance: saved.gesture.instance, serial: saved.gesture.serial };
-            transmitCapture(saved.envelope, retryFlight, null);
+            fireTerminalRetry(saved, WORLD_TIMEOUT_MS);
         });
         terminalCaptureRetry = {
             envelope, source: flight.source, watermark: flight.watermark,
@@ -3079,9 +3305,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     settled = true;
                     timeoutCancel();
-                    // Any received reply resolves the envelope: a late
-                    // timeout for this source never re-arms a retry.
-                    lastResolvedCaptureSource = flight.source;
                     if (typeof reply !== "string") {
                         log("omnitiler:world:transport-error recovery=on-next-event");
                         state.noteRejectedOrTransportError();
@@ -3110,7 +3333,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         wakeFollowup();
                         return;
                     }
+                    // Only a valid definitive broker reply resolves the
+                    // replay obligation: transport loss and invalid data
+                    // above retain it (the same terminal stays pending and
+                    // the bounded cadence still recovers it). A late
+                    // timeout for a resolved source never re-arms. Wrong-lane
+                    // and binding-mismatch replies below resolve nothing.
                     if (isWorldRejection(parsed)) {
+                        // An in-band rejection is a definitive broker verdict
+                        // for this source: the capture was refused (never
+                        // processed), so a fresh re-carry can still settle
+                        // the terminal event-driven. The replay obligation
+                        // for this source resolves with the verdict.
+                        lastResolvedCaptureSource = flight.source;
                         if (parsed.kind === "generation-mismatch") {
                             // Poison/restart: queued intents belong to the
                             // dead generation and drop with one diagnostic;
@@ -3141,11 +3376,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         return;
                     }
                     if (!isCoreWorldReply(parsed)) {
-                        // Queue/take/presentation lanes never arrive here.
+                        // Queue/take/presentation lanes never arrive on the
+                        // capture callback: a wrong-lane payload is
+                        // malformed-class (never a resolution, never an
+                        // actuation). The same terminal stays owed and the
+                        // bounded same-envelope cadence still recovers it.
                         log("omnitiler:world:reply-malformed recovery=on-next-event");
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight);
+                        maybeRetryTerminalCapture(envelope, flight);
+                        wakeFollowup();
                         return;
                     }
                     // Previous accepted snapshot is the accepted-reply cache
@@ -3153,6 +3394,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // tracking across generation rebinds.
                     const verdict = state.acceptReply(parsed, flight.source, flight.watermark);
                     if (!verdict.applied) {                        log(`omnitiler:world:stale reason=${token(verdict.reason)} recovery=catchup`);
+                        // Ack-only discharge first: a bound old reply can
+                        // still carry the exact settlement for the pending
+                        // terminal even when the snapshot is stale. Only a
+                        // discharged (or unowed) terminal resolves the
+                        // replay obligation; otherwise the oldest exact
+                        // envelope persists on its bounded cadence.
+                        const discharged = tryDischargeTerminalSettlement(parsed, flight);
                         // The filed head is never replayed. Consume exactly
                         // the flight this callback owns: the stale record
                         // otherwise wedges every later dispatch
@@ -3161,15 +3409,33 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // unsent queued remainder are retained; the
                         // redispatch below drains the queue after it.
                         state.releaseFlight(flight.source);
+                        if (discharged || !isTerminalCaptureOwed(flight)) {
+                            lastResolvedCaptureSource = flight.source;
+                            clearTerminalCaptureRetry();
+                        } else {
+                            maybeRetryTerminalCapture(envelope, flight);
+                        }
                         if (state.dirty || pendingQueue.length > 0) {
                             scheduleDispatch();
                         }
                         wakeFollowup();
                         return;
                     }
-                    // An accepted reply resolves the envelope: a pending
-                    // same-envelope terminal retry is consumed with it.
-                    clearTerminalCaptureRetry();
+                    // Ack-only settlement discharge before the freshness
+                    // split: a bound reply carrying the exact settlement for
+                    // the pending terminal retires the native FIFO even when
+                    // the snapshot is superseded. Only a discharged (or
+                    // unowed) terminal resolves the replay obligation; an
+                    // accepted-but-unsettled terminal keeps the oldest exact
+                    // envelope on its bounded cadence (fresh sources never
+                    // re-settle a consumed terminal).
+                    const discharged = tryDischargeTerminalSettlement(parsed, flight);
+                    if (discharged || !isTerminalCaptureOwed(flight)) {
+                        lastResolvedCaptureSource = flight.source;
+                        clearTerminalCaptureRetry();
+                    } else {
+                        maybeRetryTerminalCapture(envelope, flight);
+                    }
                     if (state.currentInvalid !== flight.watermark) {
                         // Native input landed during flight: the drained
                         // command already executed server-side (collect its

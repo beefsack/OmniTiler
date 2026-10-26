@@ -267,6 +267,7 @@ describe("native gesture broker cutover", () => {
         gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }>;
         fireDelay: (delay: number) => void;
         fireScriptStart: () => void;
+        fireNativeInvalidation: () => void;
         globalCalls: Array<{ method: string; payload: string }>;
         heldDescribes: Array<{ payload: string; callback: (reply: unknown) => void }>;
         answerHeld: (index?: number) => void;
@@ -284,6 +285,7 @@ describe("native gesture broker cutover", () => {
             interactiveMoveResizeStarted: { connect: () => undefined, disconnect: () => undefined },
             interactiveMoveResizeFinished: { connect: () => undefined, disconnect: () => undefined },
         };
+        const invalidateHandlers: Array<() => void> = [];
         const surface = {
             windowList: () => [fakeWin],
             screens: [{ name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
@@ -293,7 +295,16 @@ describe("native gesture broker cutover", () => {
             get activeWindow() { return fakeWin; },
             clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
             currentDesktopForScreen: () => ws1,
-            windowAdded: { connect: () => undefined, disconnect: () => undefined },
+            // Native-invalidation drivers: the entry attaches its watermark
+            // advance here, so tests capture the handlers and fire them like
+            // the host would on a real arrival.
+            windowAdded: {
+                connect: (handler: () => void) => {
+                    invalidateHandlers.push(handler);
+                    return () => undefined;
+                },
+                disconnect: () => undefined,
+            },
             windowRemoved: { connect: () => undefined, disconnect: () => undefined },
         };
         const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
@@ -420,6 +431,11 @@ describe("native gesture broker cutover", () => {
         fireDelay(120);
         return {
             calls, gestureCalls, fireDelay, globalCalls, heldDescribes, answerHeld,
+        fireNativeInvalidation: () => {
+                for (const handler of [...invalidateHandlers]) {
+                    handler();
+                }
+            },
         fireScriptStart: () => {
                 try {
                     scriptStartHandler?.();
@@ -1013,7 +1029,13 @@ describe("native gesture broker cutover", () => {
             assert.ok(held !== undefined);
             held.callback(42);
             assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack on malformed reply");
-            h.fireDelay(2000);
+            // The live callback arms the retry immediately (the wire is
+            // free: the failed flight is already dropped), so one 2 s
+            // cadence fires exactly one same-envelope redelivery. The answer
+            // lands inside the redelivery's own 2 s deadline: answering
+            // after a second sweep would time the redelivery out first (a
+            // distinct multi-loss scenario covered by the bounded-cadence
+            // regression above), not this single-recovery path.
             h.fireDelay(2000);
             console.log(`[retry-proof] malformed held=${h.heldDescribes.length} describes=${h.calls.filter((c) => c.method === "DescribeWorld").length}`);
             assert.equal(h.heldDescribes.length, 1, "malformed reply arms one same-envelope retry");
@@ -1022,6 +1044,492 @@ describe("native gesture broker cutover", () => {
             const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
             assert.equal(acks.length, 1, "terminal acks exactly once after malformed recovery");
             assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("REGRESSION: host cadence persists past the first host retry and stop cancels it", () => {
+        // The exact pending envelope survives at the 25 s host-deadline
+        // cadence until the same terminal settles (never silently
+        // abandoned); stop drops the pending host timer with no further
+        // send. Losing a host redelivery re-arms exactly one host timer.
+        const h = startCutoverHarness({
+            manualDescribe: true,
+            settledHook: (report, assoc) => {
+                const raw = report["nativeGesture"] as Record<string, unknown> | null;
+                if (raw !== null && (raw["phase"] === "released" || raw["phase"] === "cancelled")) {
+                    assert.ok(assoc !== null);
+                    return { id: (assoc as { coreId: string }).coreId, committed: true };
+                }
+                return null;
+            },
+        });
+        try {
+            const wait = h.gestureCalls.find((c) => c.method === "WaitGesture");
+            assert.ok(wait !== undefined);
+            wait.callback(gestureSnapshot({ serial: "1", revision: "1", phase: "started" }));
+            h.fireDelay(120);
+            h.answerHeld(0);
+            h.fireDelay(120);
+            h.answerHeld(0);
+            h.fireDelay(120);
+            const wait2 = last(h.gestureCalls.filter((c) => c.method === "WaitGesture"));
+            assert.ok(wait2 !== undefined);
+            wait2.callback(gestureSnapshot({ serial: "1", revision: "2", phase: "released", cursor: [30, 30] }));
+            h.fireDelay(120);
+            assert.equal(h.heldDescribes.length, 1, "terminal capture held");
+            const firstBytes = h.heldDescribes[0]?.payload as string;
+            // Exhaust the two fast retries: initial timeout, retry, its
+            // timeout, retry, its timeout arms the host timer.
+            h.fireDelay(2000);
+            h.fireDelay(2000);
+            h.fireDelay(2000);
+            h.fireDelay(2000);
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 3, "two bounded fast retries sent");
+            // First host redelivery, then lose it too: exactly one more
+            // host timer re-arms (no fast resend, no duplicate).
+            h.fireDelay(25000);
+            assert.equal(h.heldDescribes.length, 4, "first host redelivery");
+            assert.equal(h.heldDescribes[3]?.payload as string, firstBytes, "host retry keeps the exact envelope");
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 4, "lost host retry times out without a fast resend");
+            h.fireDelay(25000);
+            assert.equal(h.heldDescribes.length, 5, "host cadence persists past the first host retry");
+            assert.equal(h.heldDescribes[4]?.payload as string, firstBytes, "second host retry keeps the exact envelope");
+            // Settlement on the host retry acks exactly once.
+            h.answerHeld(4);
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 1, "terminal acks exactly once");
+            // Stop cancels everything pending: further cadences send nothing.
+            h.stop();
+            h.fireDelay(2000);
+            h.fireDelay(25000);
+            assert.equal(h.heldDescribes.length, 4, "stop cancels the pending retry with no further send");
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 1, "no late ack after stop");
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("REGRESSION: a late reply after the timeout never settles or double-arms", () => {
+        // The transmit settled flag owns the flight: a reply arriving after
+        // its timeout already settled is ignored (no ack, no state
+        // change), while the armed same-envelope retry still recovers the
+        // terminal exactly once.
+        const h = startCutoverHarness({
+            manualDescribe: true,
+            settledHook: (report, assoc) => {
+                const raw = report["nativeGesture"] as Record<string, unknown> | null;
+                if (raw !== null && (raw["phase"] === "released" || raw["phase"] === "cancelled")) {
+                    assert.ok(assoc !== null);
+                    return { id: (assoc as { coreId: string }).coreId, committed: true };
+                }
+                return null;
+            },
+        });
+        try {
+            const wait = h.gestureCalls.find((c) => c.method === "WaitGesture");
+            assert.ok(wait !== undefined);
+            wait.callback(gestureSnapshot({ serial: "1", revision: "1", phase: "started" }));
+            h.fireDelay(120);
+            h.answerHeld(0);
+            h.fireDelay(120);
+            h.answerHeld(0);
+            h.fireDelay(120);
+            const wait2 = last(h.gestureCalls.filter((c) => c.method === "WaitGesture"));
+            assert.ok(wait2 !== undefined);
+            wait2.callback(gestureSnapshot({ serial: "1", revision: "2", phase: "released", cursor: [30, 30] }));
+            h.fireDelay(120);
+            assert.equal(h.heldDescribes.length, 1, "terminal capture held");
+            const firstBytes = h.heldDescribes[0]?.payload as string;
+            // Lose the initial flight, then deliver its reply late: the
+            // settled guard drops it (no ack, no resolution effects).
+            h.fireDelay(2000);
+            const late = h.heldDescribes[0];
+            assert.ok(late !== undefined);
+            late.callback(42);
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "late reply after timeout never acks");
+            // The armed retry still fires with the exact envelope and
+            // settles exactly once.
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 2, "armed retry still fires after the late reply");
+            assert.equal(h.heldDescribes[1]?.payload as string, firstBytes, "retry keeps the exact envelope");
+            h.answerHeld(1);
+            const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
+            assert.equal(acks.length, 1, "terminal acks exactly once after late-reply recovery");
+            assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
+        } finally {
+            h.stop();
+        }
+    });
+
+    // Faithful consume-once broker: the first processed source for a
+    // terminal identity settles it and its byte-identical response is
+    // cached; a byte-identical redelivery replays the cached response
+    // (even when stale), while a fresh source carrying the consumed
+    // terminal settles nothing. Mirrors the Rust
+    // exact_envelope_replay_recovers_byte_identical_settled_response
+    // contract. The settledHook blind-settle pattern must never be used
+    // for terminal-recovery tests: it settles every fresh source, which
+    // the real broker never does for a consumed terminal.
+    function startFaithfulBroker(): {
+        replyFor: (payload: string) => string;
+    } {
+        let rev = 0;
+        let obs = 0;
+        const coreIds = new Map<string, string>();
+        let nextCore = 1;
+        const settledKeys = new Set<string>();
+        const cachedBySource = new Map<string, string>();
+        const presentation = { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] };
+        const replyFor = (payload: string): string => {
+            const body = JSON.parse(payload) as { source: string; nativeInvalid: string; gen: string };
+            const hit = cachedBySource.get(body.source);
+            if (hit !== undefined) {
+                return hit;
+            }
+            rev += 1;
+            obs += 1;
+            const report = (JSON.parse(payload) as { report: Record<string, unknown> }).report;
+            const raw = report["nativeGesture"] as Record<string, unknown> | null;
+            let assoc: { instance: string; serial: string; coreId: string } | null = null;
+            let settled: { id: string; committed: boolean } | null = null;
+            if (
+                raw !== null && raw !== undefined &&
+                typeof raw["instance"] === "string" && typeof raw["serial"] === "string" &&
+                (raw["serial"] as string) !== "0"
+            ) {
+                const key = `${raw["instance"] as string} ${raw["serial"] as string}`;
+                let id = coreIds.get(key);
+                if (id === undefined) {
+                    id = String(nextCore);
+                    nextCore += 1;
+                    coreIds.set(key, id);
+                }
+                assoc = { instance: raw["instance"] as string, serial: raw["serial"] as string, coreId: id };
+                if (raw["phase"] === "released" || raw["phase"] === "cancelled") {
+                    if (!settledKeys.has(key)) {
+                        settledKeys.add(key);
+                        settled = { id, committed: true };
+                    }
+                }
+            }
+            const text = JSON.stringify({
+                v: 2, adapter: "broker-1", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
+                ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
+                windows: [], transfers: [], effects: [], result: null,
+                gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
+                source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
+                presentation,
+            });
+            cachedBySource.set(body.source, text);
+            return text;
+        };
+        return { replyFor };
+    }
+
+    function driveOpenToTerminal(h: {
+        gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }>;
+        fireDelay: (delay: number) => void;
+        heldDescribes: Array<{ payload: string; callback: (reply: unknown) => void }>;
+    }, answer: (index: number) => void): string {
+        const wait = h.gestureCalls.find((c) => c.method === "WaitGesture");
+        assert.ok(wait !== undefined);
+        wait.callback(gestureSnapshot({ serial: "1", revision: "1", phase: "started" }));
+        h.fireDelay(120);
+        answer(0);
+        h.fireDelay(120);
+        answer(0);
+        h.fireDelay(120);
+        const wait2 = last(h.gestureCalls.filter((c) => c.method === "WaitGesture"));
+        assert.ok(wait2 !== undefined);
+        wait2.callback(gestureSnapshot({ serial: "1", revision: "2", phase: "released", cursor: [30, 30] }));
+        h.fireDelay(120);
+        assert.equal(h.heldDescribes.length, 1, "terminal capture held");
+        return h.heldDescribes[0]?.payload as string;
+    }
+
+    function answerIdleAck(h: {
+        gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }>;
+        fireDelay: (delay: number) => void;
+        heldDescribes: Array<{ payload: string; callback: (reply: unknown) => void }>;
+    }, answer: (index: number) => void): void {
+        const ack = last(h.gestureCalls.filter((c) => c.method === "AckGesture"));
+        assert.ok(ack !== undefined, "terminal acked exactly once before the native retires it");
+        ack.callback(gestureSnapshot({
+            serial: "0", revision: "3", phase: "idle", win: "", kind: "",
+            startRect: null, startCursor: null, cursor: null,
+        }));
+        h.fireDelay(120);
+        for (let i = 0; i < 5 && h.heldDescribes.length > 0; i += 1) {
+            answer(0);
+            h.fireDelay(120);
+        }
+        assert.equal(h.heldDescribes.length, 0, "follow-up observes quietly");
+        assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 1, "no late second ack");
+    }
+
+    it("REGRESSION: reply loss after the broker settled the terminal recovers via exact same-envelope replay", () => {
+        // Processed-reply-lost: the broker settles the terminal but the
+        // response never arrives. A later invalidation plus a fresh capture
+        // (which settles nothing: the terminal is consumed) must not kill
+        // the pending exact envelope. The bounded cadence replays the
+        // byte-identical bytes and the cached settlement acks the native
+        // FIFO exactly once, with no actuation from any stale snapshot.
+        const h = startCutoverHarness({ manualDescribe: true });
+        const broker = startFaithfulBroker();
+        const answerFaithful = (index: number): void => {
+            const held = h.heldDescribes[index];
+            assert.ok(held !== undefined, "held DescribeWorld exists");
+            h.heldDescribes.splice(index, 1);
+            held.callback(broker.replyFor(held.payload));
+        };
+        try {
+            const firstBytes = driveOpenToTerminal(h, answerFaithful);
+            const first = h.heldDescribes[0];
+            assert.ok(first !== undefined);
+            // The broker settles the terminal but the response is lost on
+            // the wire: process (consume + cache) without delivering.
+            const settledBytes = broker.replyFor(first.payload);
+            assert.ok((JSON.parse(settledBytes) as Record<string, unknown>)["gestureSettled"] !== null, "broker settled the terminal");
+            // Native input lands while the original capture is outstanding:
+            // the watermark advances under the pending retry.
+            h.fireNativeInvalidation();
+            h.fireDelay(120);
+            assert.equal(h.heldDescribes.length, 1, "no fresh send while the terminal flight is out");
+            // Lose the original flight: the timeout arms the same-envelope
+            // retry (no send yet). Drop the lost husk like the transport.
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 1, "timeout arms the retry without sending");
+            h.heldDescribes.splice(0, 1);
+            // A second native event re-carries the still-pending terminal on
+            // a FRESH envelope (new source, same native identity): the wire
+            // is free, so the fresh capture goes out first.
+            h.fireNativeInvalidation();
+            h.fireDelay(120);
+            assert.equal(h.heldDescribes.length, 1, "fresh re-carry goes out while the retry waits");
+            const freshBytes = h.heldDescribes[0]?.payload as string;
+            assert.ok(freshBytes !== firstBytes, "re-carry mints a fresh envelope, never the stale bytes");
+            // The fresh carry answers before its own timeout: the consumed
+            // terminal settles nothing, so no ack fires and the original
+            // envelope stays owed.
+            const fresh = h.heldDescribes[0];
+            assert.ok(fresh !== undefined);
+            h.heldDescribes.splice(0, 1);
+            const freshReply = broker.replyFor(fresh.payload);
+            assert.equal((JSON.parse(freshReply) as Record<string, unknown>)["gestureSettled"], null, "consumed terminal never re-settles on a fresh source");
+            fresh.callback(freshReply);
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from the null-settlement fresh carry");
+            // The retained retry now replays the byte-identical original
+            // envelope; the broker answers from cache (stale rev: a newer
+            // reply was already accepted, so only the ack-only lane may
+            // act, never stale snapshot setters).
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 1, "exact replay goes out after the fresh carry lands");
+            const replayBytes = h.heldDescribes[0]?.payload as string;
+            assert.equal(replayBytes, firstBytes, "replay keeps the exact original bytes");
+            const replay = h.heldDescribes[0];
+            assert.ok(replay !== undefined);
+            h.heldDescribes.splice(0, 1);
+            const replayReply = broker.replyFor(replay.payload);
+            assert.equal(replayReply, settledBytes, "broker replays the byte-identical cached response");
+            replay.callback(replayReply);
+            const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
+            assert.equal(acks.length, 1, "cached settlement acks exactly once");
+            assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
+            answerIdleAck(h, answerFaithful);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("REGRESSION: busy-flight interleaving keeps the oldest unrecovered envelope", () => {
+        // Two losses in a row: the original terminal flight times out while
+        // invalidated, then the fresh re-carry is lost too. The retry must
+        // keep owning the OLDEST unrecovered envelope (never the newer
+        // re-carry, which can never retrieve the cached settlement) and the
+        // busy-wire fire must re-arm the same cadence instead of dropping.
+        const h = startCutoverHarness({ manualDescribe: true });
+        const broker = startFaithfulBroker();
+        const answerFaithful = (index: number): void => {
+            const held = h.heldDescribes[index];
+            assert.ok(held !== undefined, "held DescribeWorld exists");
+            h.heldDescribes.splice(index, 1);
+            held.callback(broker.replyFor(held.payload));
+        };
+        try {
+            const firstBytes = driveOpenToTerminal(h, answerFaithful);
+            const first = h.heldDescribes[0];
+            assert.ok(first !== undefined);
+            const settledBytes = broker.replyFor(first.payload);
+            assert.ok((JSON.parse(settledBytes) as Record<string, unknown>)["gestureSettled"] !== null, "broker settled the terminal");
+            h.fireNativeInvalidation();
+            h.fireDelay(120);
+            assert.equal(h.heldDescribes.length, 1, "no fresh send while the terminal flight is out");
+            // Lose the original flight and exhaust both fast retries: each
+            // redelivery is lost too, so the exact envelope persists at
+            // the host-deadline cadence. Husks of lost flights drop like
+            // the transport.
+            h.fireDelay(2000);
+            h.heldDescribes.splice(0, 1);
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 1, "first fast retry redelivers");
+            assert.equal(h.heldDescribes[0]?.payload as string, firstBytes, "fast retry keeps the exact bytes");
+            h.fireDelay(2000);
+            h.heldDescribes.splice(0, 1);
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 1, "second fast retry redelivers");
+            assert.equal(h.heldDescribes[0]?.payload as string, firstBytes, "fast retry keeps the exact bytes");
+            h.fireDelay(2000);
+            h.heldDescribes.splice(0, 1);
+            // A native event re-carries the still-pending terminal on a
+            // FRESH envelope while the host-cadence retry waits.
+            h.fireNativeInvalidation();
+            h.fireDelay(120);
+            assert.equal(h.heldDescribes.length, 1, "fresh re-carry goes out");
+            const freshBytes = h.heldDescribes[0]?.payload as string;
+            assert.ok(freshBytes !== firstBytes, "re-carry mints a fresh envelope");
+            // The host-cadence retry fires into the busy wire: same cadence
+            // re-arms (never a bare drop, never a second timer), provable
+            // because the envelope still replays below.
+            h.fireDelay(25000);
+            assert.equal(h.heldDescribes.length, 1, "busy wire re-arms instead of sending");
+            // The fresh carry answers: the consumed terminal settles
+            // nothing, so no ack fires and the oldest envelope stays owed
+            // (its loss must not replace the owned envelope either).
+            const fresh = h.heldDescribes[0];
+            assert.ok(fresh !== undefined);
+            h.heldDescribes.splice(0, 1);
+            const freshReply = broker.replyFor(fresh.payload);
+            assert.equal((JSON.parse(freshReply) as Record<string, unknown>)["gestureSettled"], null, "consumed terminal never re-settles on a fresh source");
+            fresh.callback(freshReply);
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from the null-settlement fresh carry");
+            // The retained oldest envelope replays byte-identically and the
+            // cached settlement acks exactly once. A wait-lane host
+            // timeout may win the wire first with one more fresh re-carry
+            // (the harness never answers the wait lane, so its 25 s
+            // watchdog re-arms every round): each such carry settles
+            // nothing, and the owned envelope replays on the next round.
+            for (let i = 0; i < 3; i += 1) {
+                h.fireDelay(25000);
+                const top: { payload: string; callback: (reply: unknown) => void } | undefined =
+                    h.heldDescribes[h.heldDescribes.length - 1];
+                assert.ok(top !== undefined, "a redelivery goes out each host round");
+                if (top.payload === firstBytes) {
+                    break;
+                }
+                assert.ok(i < 2, "owned envelope replays after at most one wait-lane interleave");
+                const extra = broker.replyFor(top.payload);
+                assert.equal((JSON.parse(extra) as Record<string, unknown>)["gestureSettled"], null, "wait-lane re-carry settles nothing");
+                h.heldDescribes.splice(h.heldDescribes.length - 1, 1);
+                top.callback(extra);
+                assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "no ack from a null-settlement re-carry");
+            }
+            assert.equal(h.heldDescribes.length, 1, "oldest envelope replays after the busy hold");
+            const replayBytes = h.heldDescribes[0]?.payload as string;
+            assert.equal(replayBytes, firstBytes, "replay keeps the exact original bytes");
+            const replay = h.heldDescribes[0];
+            assert.ok(replay !== undefined);
+            h.heldDescribes.splice(0, 1);
+            assert.equal(broker.replyFor(replay.payload), settledBytes, "broker replays the byte-identical cached response");
+            replay.callback(settledBytes);
+            const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
+            assert.equal(acks.length, 1, "cached settlement acks exactly once");
+            assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
+            answerIdleAck(h, answerFaithful);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("REGRESSION: a wrong-lane reply on the capture callback retains same-envelope recovery", () => {
+        // A queue-lane payload arriving on the DescribeWorld callback is
+        // malformed-class (never a resolution, never an actuation): the
+        // same terminal stays owed and the bounded cadence still replays
+        // the exact envelope to a settlement.
+        const h = startCutoverHarness({ manualDescribe: true });
+        const broker = startFaithfulBroker();
+        const answerFaithful = (index: number): void => {
+            const held = h.heldDescribes[index];
+            assert.ok(held !== undefined, "held DescribeWorld exists");
+            h.heldDescribes.splice(index, 1);
+            held.callback(broker.replyFor(held.payload));
+        };
+        try {
+            const firstBytes = driveOpenToTerminal(h, answerFaithful);
+            const first = h.heldDescribes[0];
+            assert.ok(first !== undefined);
+            h.heldDescribes.splice(0, 1);
+            first.callback(JSON.stringify({
+                v: 2, outcome: "queued", gen: "gen-1",
+                client: "test-adapter", clientCmd: "1", globalCmd: "1",
+            }));
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "wrong lane never acks");
+            assert.equal(h.heldDescribes.length, 0, "wrong lane sends nothing immediately");
+            // The retained retry replays the exact envelope; the broker
+            // settles it on first processing.
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 1, "wrong lane retains the same-envelope retry");
+            const replayBytes = h.heldDescribes[0]?.payload as string;
+            assert.equal(replayBytes, firstBytes, "retry keeps the exact original bytes");
+            const replay = h.heldDescribes[0];
+            assert.ok(replay !== undefined);
+            h.heldDescribes.splice(0, 1);
+            const replayReply = broker.replyFor(replay.payload);
+            assert.ok((JSON.parse(replayReply) as Record<string, unknown>)["gestureSettled"] !== null, "replayed terminal settles");
+            replay.callback(replayReply);
+            const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
+            assert.equal(acks.length, 1, "settlement acks exactly once after wrong-lane recovery");
+            assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
+            answerIdleAck(h, answerFaithful);
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("REGRESSION: a binding-mismatch reply resolves nothing and loses no retry", () => {
+        // A core-lane reply that binds another source (correct generation,
+        // exact settlement for our terminal, wrong source correlation) must
+        // neither ack (wrong flight) nor resolve the replay obligation: the
+        // correct oldest envelope still replays to its own settlement.
+        const h = startCutoverHarness({ manualDescribe: true });
+        const broker = startFaithfulBroker();
+        const answerFaithful = (index: number): void => {
+            const held = h.heldDescribes[index];
+            assert.ok(held !== undefined, "held DescribeWorld exists");
+            h.heldDescribes.splice(index, 1);
+            held.callback(broker.replyFor(held.payload));
+        };
+        try {
+            const firstBytes = driveOpenToTerminal(h, answerFaithful);
+            const first = h.heldDescribes[0];
+            assert.ok(first !== undefined);
+            const settledBytes = broker.replyFor(first.payload);
+            assert.ok((JSON.parse(settledBytes) as Record<string, unknown>)["gestureSettled"] !== null, "broker settled the terminal");
+            h.heldDescribes.splice(0, 1);
+            // Same settlement, but bound to a foreign source: proves the
+            // source correlation carries the fact, not the parse alone.
+            const foreign = JSON.parse(settledBytes) as Record<string, unknown>;
+            foreign["req"] = "src-999";
+            foreign["source"] = "src-999";
+            first.callback(JSON.stringify(foreign));
+            assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "foreign-source settlement never acks our flight");
+            // The oldest envelope still replays (the mismatch resolved
+            // nothing) and its own bound settlement acks exactly once.
+            h.fireDelay(2000);
+            assert.equal(h.heldDescribes.length, 1, "binding mismatch retains the same-envelope retry");
+            const replayBytes = h.heldDescribes[0]?.payload as string;
+            assert.equal(replayBytes, firstBytes, "retry keeps the exact original bytes");
+            const replay = h.heldDescribes[0];
+            assert.ok(replay !== undefined);
+            h.heldDescribes.splice(0, 1);
+            assert.equal(broker.replyFor(replay.payload), settledBytes, "broker replays the byte-identical cached response");
+            replay.callback(settledBytes);
+            const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
+            assert.equal(acks.length, 1, "own bound settlement acks exactly once");
+            assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
+            answerIdleAck(h, answerFaithful);
         } finally {
             h.stop();
         }

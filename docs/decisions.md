@@ -2974,7 +2974,7 @@ platform API behavior.
   cursor warp stays unsupported and is never reported applied. Transport
   precedes Stage 5 producing-gesture/native-invalidation freshness work; its
   identity is exposed now, enforcement belongs to that next package.
-  [Unaccepted implementation and remaining recovery failures](changes/kde-world-v2-port.md#gesture-transport-cutover-unaccepted-recovery-outcome-2026-10-26).
+  [Contract and accepted offline recovery](changes/kde-world-v2-port.md#gesture-transport-accepted-offline-recovery-2026-10-26).
 - Frameless migration placement extraction, 2026-10-23: core publishes
   cross-output sessionless migration placement as an effective frame consumed
   by membership actuation, not as a tile allocation or ordinary float frame
