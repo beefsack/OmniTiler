@@ -3,6 +3,11 @@
 Status: closed 2026-10-24. The [closing outcome](#closing-outcome-2026-10-24)
 supersedes historical pending-stage and readiness statements below.
 
+User-approved 2026-10-26: three-way placement subsumes launch targeting;
+dev-only exact-owner `migrate-workspace --direction` control; learned-minimum
+growth heuristic. These approvals supersede historical tentative labels for
+those three choices throughout this record; native acceptance limits remain.
+
 ## Goal and scope
 
 - Implement the approved [core/platform boundary](../../decisions.md#core-platform-boundary):
@@ -139,7 +144,7 @@ remove the code it supersedes before its acceptance.
 - Neutral equal-workspace-count support serves native desktops shared across
   outputs; host-owned workspaces/Spaces remain observations. No platform-name
   checks in core.
-- Tentative: three-way placement subsumes launch targeting, pending review.
+- User-approved 2026-10-26: three-way placement subsumes launch targeting.
   Startup/restart restoration must not be treated as fresh cursor placement.
 - Parked: empty-workspace focus across outputs; edge-nearest versus MRU
   cross-output focus; float physical-output versus membership-home direction;
@@ -780,7 +785,7 @@ of cursor-first fresh placement or the entire rearchitecture.
 
 ### Final migration and receipt corrections
 
-- Added the tentative dev-only exact-owner `migrate-workspace --direction`
+- Added the User-approved 2026-10-26 dev-only exact-owner `migrate-workspace --direction`
   control, using the existing normal-owner control boundary and production
   migration handler. Proof owners refuse; lifecycle cleanup covers its request
   file. No binding, default chord, input hook or injected-input exception was
@@ -1127,7 +1132,7 @@ of cursor-first fresh placement or the entire rearchitecture.
 - Closing, complete-inventory departure and incarnation reset prune all three
   frame-policy maps together. A float excursion preserves the lifetime's bound
   but grants no automatic float geometry authority. The acquisition heuristic is
-  [tentative pending dogfooding](../../decisions.md#core-platform-boundary): an
+  [User-approved 2026-10-26](../../decisions.md#core-platform-boundary): an
   external enlargement racing a setter cannot be causally distinguished from
   an application clamp. Smaller stable evidence prevents permanent fighting.
 - Shared `test-fixtures/frame-convergence.json` supplies acquisition and
@@ -3037,10 +3042,10 @@ of cursor-first fresh placement or the entire rearchitecture.
 - The code cleanup/abstraction review and fixture follow-ups remain separate
   work. No known correctness defect is waived by those deferrals. Durable
   ownership, scope and port decisions are in [decisions](../../decisions.md).
-- Tentative choices remain learned-minimum acquisition, historical stage
-  sequencing, three-way placement subsuming launch targeting, development
-  controls (including exact-owner migration), and Activities defaults pending
-  KDE evidence. Nothing in this close-out promotes them to final decisions.
+- User-approved 2026-10-26: learned-minimum acquisition, three-way placement
+  subsuming launch targeting and dev-only exact-owner migration control.
+  Historical stage sequencing and Activities defaults pending KDE evidence
+  are not promoted by those approvals.
 - Parked questions remain cross-output empty-workspace focus, edge-nearest
   versus MRU directional focus, float physical-output versus membership-home
   direction, explicit-output versus directional send, and cross-output drag

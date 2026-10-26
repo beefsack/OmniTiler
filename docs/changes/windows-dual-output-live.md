@@ -508,7 +508,7 @@ complete checklist row is closed by these bounded legs.
   sends act on the focused window's output regardless of cursor. Historical
   2026-10-20: interim foreground-first commands (`1e7bfaf4`) remained pending
   adoption. Core/Windows targeting and settings are now delivered (see above).
-  Tentative (user review pending): the three-way placement setting subsumes
+  User-approved 2026-10-26: the three-way placement setting subsumes
   the launch half of workspace-switch targeting. Send relative-target scope
   and focus-follows-cursor/cursor-warp defaults are recorded in the linked
   decisions; core/Windows adoption is delivered, with native FFC hover-follow

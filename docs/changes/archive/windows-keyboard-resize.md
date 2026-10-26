@@ -23,7 +23,7 @@
 
 ## Material decisions
 
-- Tentative, pending user review: resize defaults remain enabled under Authentic
+- User-approved 2026-10-26: resize defaults remain enabled under Authentic
   and Compatible because no Windows owner/conflict is recorded. Compatible
   disables only known conflicts, not unknown ownership. Both presets and actual
   rebound chords must explicitly disclose unknown ownership and unproven live
@@ -31,7 +31,7 @@
 - Synthetic SendInput cannot prove physical shortcuts because the product
   injected-input fence rejects them. Exact-owner test-needed commands may prove
   downstream intent/geometry only; native physical interception stays user-owned.
-- Tentative, pending user review: `resize --direction DIR --mode MODE` is a
+- User-approved 2026-10-26: `resize --direction DIR --mode MODE` is a
   test-needed exact-owner, consume-once normal-owner control. It captures live
   foreground through the existing origin map and dispatches through the real
   keyboard drain with production fences. No carried HWND or injected-input

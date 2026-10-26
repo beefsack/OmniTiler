@@ -17,15 +17,7 @@ current product policy.
 Tentative index (user review pending; not approved product rules):
 - Windows focus dispatch restores the bounded owner-thread E8 prime without
   thread-input attachment; native and physical acceptance remain distinct
-  ([record](changes/windows-directional-focus-startup.md#fresh-trace-diagnosis-and-correction-2026-10-26))
-- Windows command rejection services owed observation-only catchup on the same
-  turn, without queuing or replaying the command
-  ([record](changes/windows-directional-focus-startup.md#evidence-and-decisions))
-- Workspace no-history arrival uses layout child order
-  ([below](#workspaces), [record](changes/archive/workspace-arrival-focus-convergence.md))
-- Windows nonactivating remembered-focus view application, live foreground/
-  gesture proof and same-pass hidden foreground facts
-  ([change record](changes/archive/windows-workspace-focus-restore.md#alternative-native-mechanism-2026-10-25))
+  ([record](changes/archive/windows-directional-focus-startup.md#physical-acceptance-2026-10-26))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))
 - macOS adapter defaults, focus oracle, observation recovery, scoped input
@@ -35,15 +27,8 @@ Tentative index (user review pending; not approved product rules):
   ([below](#shortcuts-conflicts-and-presets))
 - Aligned migration D5 source refill and empty-cell spare rules
   ([below](#workspaces))
-- Later keep-below handling and unload-restoration question;
-  Windows D3/D4/Q3 interim until shared 13f delivery
+- Later KDE keep-below handling and unload-restoration question
   ([below](#fixed-size-admission))
-- Compatible resize preset scope and test-needed resize control
-  ([below](#shortcuts-conflicts-and-presets))
-- Three-way placement subsuming launch targeting
-  ([below](#placement-minimums-and-startup-adoption))
-- Dev-only exact-owner migrate-workspace control and learned-minimum growth
-  heuristic ([below](#engine-architecture-and-convergence))
 - KDE world placement traces ([below](#observability))
 - Activities defaults ([below](#port-deferred-investigations-2026-10-24))
 - KDE v2 stage sequencing and broker capture transport
@@ -1405,7 +1390,7 @@ platform API behavior.
   i3/sway per-workspace focus order and COSMIC MRU/first-mapped reasoning;
   Hyprland's cursor/candidate fallback is deliberately rejected because the
   window under the pointer is not known until the workspace appears.
-  **Tentative, pending user review:** deterministic layout child order defines
+  **User-approved 2026-10-26:** deterministic layout child order defines
   "first". Candidate eligibility and fullscreen/game gates remain unchanged;
   empty/minimized-only workspaces retain no focused client (R-CLOSE-03,
   REQ-MNZ-03). Directional focus from no focus, general no-active-window states,
@@ -1427,6 +1412,15 @@ platform API behavior.
   foreground/visibility, pager and genuine supersession verified
   ([evidence and limits](changes/archive/workspace-arrival-focus-convergence.md)).
 - R-WS-02: returning B inserts after remembered target anchor A; no before/after setting (User 2026-10-10, 0.1 triage D18).
+- **User-approved 2026-10-26:** Windows nonactivating remembered-focus view
+  application, full foreground-identity bracketing (including exact in-flight
+  landing), and same-pass hidden foreground facts retain their existing scope,
+  lifetime, safety and at-most-once gates.
+  [Definitions](changes/archive/windows-workspace-focus-restore.md#alternative-native-mechanism-2026-10-25).
+- **User-approved 2026-10-26:** command rejection or catchup-required refusal
+  services owed observation-only catchup on the same turn, without command
+  queuing or replay.
+  [Definition](changes/archive/windows-directional-focus-startup.md#evidence-and-decisions).
 - Shared model:
   - Each managed workspace owns a session-local tiled/floating flag. Startup
     seeds all workspaces from the saved default (`true`); live default changes
@@ -1923,7 +1917,7 @@ platform API behavior.
     owner restart in the same intentional-float store, with recompute
     fallback if unavailable.
   - D7 status: Linux planner/KDE delivered offline ([record](changes/archive/fixed-window-tile-override-restart.md)); Windows fixed-origin tile marker delivered offline 2026-10-11 ([record](changes/archive/windows-fixed-size-admission.md)). Only settled tile wins over known automatic fixed origin write `OmniTiler.TileOverride.v1`; generic non-fixed unfloats do not. Hydration covers visible and retained/maximized admitted lifetimes before automatic classification, without requiring hints or granting write/recovery authority.
-  - Tentative Windows D3/D4/Q3 intersection, kept for now 2026-10-14, superseded
+  - Superseded Windows D3/D4/Q3 interim (2026-10-14), superseded
     by the User 2026-10-17 option A decision below: hydrated fixed-origin
     overrides keep the reserved tiled slot beneath maximize under both
     `core.born_maximized` values, including hint loss. Generic non-fixed
@@ -2242,11 +2236,12 @@ platform API behavior.
   pixel steps matching KDE, and real Keep/Disable/Rebind controls with exact
   modifier arms ([record](changes/archive/windows-keyboard-resize.md)). Native
   gates, downstream CLI geometry and Settings Apply/Revert agent-observed;
-  physical interception/rebound adoption user-owned. Tentative, pending user
-  review: both presets keep resize defaults because Windows ownership is
+  physical interception/rebound adoption user-owned. User-approved 2026-10-26:
+  both presets keep resize defaults because Windows ownership is
   unverified; Compatible disables known conflicts only, with no conflict-free
-  claim. Test-needed exact-owner `resize --direction DIR --mode MODE` control
-  is also tentative; it uses production fences, not injected-hook bypass.
+  claim. User-approved 2026-10-26: test-only exact-owner
+  `resize --direction DIR --mode MODE` control uses production fences, not
+  injected-hook bypass.
 - Windows Xbox shortcut handling (user-approved 2026-10-16): Compatible binds
   float to Ctrl+Win+G and fullscreen to Ctrl+Win+F11; Authentic keeps Win+G
   and Win+F11. Exact bound Ctrl toggle arms must route with the same consumed
@@ -2492,7 +2487,7 @@ platform API behavior.
   relative sends (next/previous) also count on the focused window's output,
   with no setting (Tier 1: COSMIC and i3/sway focused-output, Hyprland
   cursor-output; 3 to 1).
-  Tentative (user review pending): the three-way placement setting subsumes the
+  User-approved 2026-10-26: the three-way placement setting subsumes the
   launch half of workspace-switch targeting. Decision 1d: focus-follows-cursor
   is an on/off setting, default off. Cursor-warp (cursor follows focus) is a
   setting, default off (COSMIC); the i3/sway preset turns warp on when focus
@@ -2739,7 +2734,7 @@ platform API behavior.
   physical frame once after an observed DPI transition, with renewed safety
   gates; stable clamp/adoption policy is not part of that conversion.
   [Acceptance and remaining stages](changes/archive/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22).
-- **Tentative, pending review (2026-10-22):** retain a dev-only exact-owner
+- **User-approved 2026-10-26:** retain a dev-only exact-owner
   `migrate-workspace --direction` control, parallel to `send-output`, for
   whole-workspace native acceptance. It invokes the existing production
   handler with unchanged identity, scope, suspension and topology gates; no
@@ -2837,7 +2832,7 @@ platform API behavior.
   minima retain the existing proportional/overconstrained behavior. Closing,
   complete-inventory departure and incarnation reset retire learned evidence.
   No new adapter contract or native policy owner is introduced.
-  **Tentative heuristic, pending dogfooding:** accepted, time-stamped growth at
+  **User-approved 2026-10-26 heuristic:** accepted, time-stamped growth at
   the requested origin can establish an axis minimum only when neither axis
   shrinks, current readable facts corroborate immediate readback (or follow an
   exact immediate target arrival with later same-origin growth), the tiled

@@ -15,18 +15,11 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
-- P0 | Windows physical workspace-switch focus defect | User dogfood 2026-10-26:
-  Fresh traces show recurrent startup Win+arrow native refusals and a delayed
-  workspace observation. The switch setter returns promptly; its foreground
-  edge drains after 10 ms but coalesced key-up handling strands observation
-  until an unrelated wake about 10 s later. Event-driven servicing correction
-  and restoration of the dropped pre-setter E8 prime pass offline regressions;
-  prime-only restoration remains tentative. Fixture idle landings resolve in
-  22-25 ms and pager focus state in 36-38 ms, but no-prime startup also succeeds:
-  startup causality is not isolated. Immediate physical shortcuts, rapid native
-  toggles, genuine current-payload mid-switch veto, pager geometry-paint latency
-  and ordinary-app keyboard-focus acceptance remain open.
-  [Record](changes/windows-directional-focus-startup.md).
+- P0 | Windows rapid send-follow arrival fails to retile | User physical dogfood
+  2026-10-26: rapid alternating Win+Shift+1 / Win+Shift+2 with two ordinary apps
+  rarely leaves the focused arrival at its singleton full-size frame beneath
+  the other window. Diagnose final core geometry/stack intent, native holds and
+  missing convergence; desired-behavior regression and event-driven repair pending.
 - P2 | Pager shows stale source layout after send-follow | User dogfood
   2026-10-26: after sending a window away with follow, the source workspace's
   pager cell keeps the pre-send split until revisited. User wants to explore
@@ -75,7 +68,7 @@ decisions of 2026-09-24 are under
   native hover-follow unverified). KDE/macOS by their ports
   ([guide](porting/world-adapter-guide.md), [KDE](porting/kde-port-notes.md),
   [macOS](porting/macos-port-notes.md)).
-  Tentative (user review pending): three-way placement subsumes launch targeting.
+  User-approved 2026-10-26: three-way placement subsumes launch targeting.
 - P1 | Empty-workspace focus across outputs | User physical 2026-10-20:
   Win+digit to an empty workspace on one output focused a window on another,
   so a following workspace send moved that window. Desired behavior is

@@ -376,7 +376,7 @@ COSMIC and i3/sway focused-output, Hyprland cursor-output). This supersedes the 
 focused-output default in R-OUT-05 / REQ-OUT-05; not implemented on any platform.
 User 2026-10-20 explicitly approves implementing the three-way placement logic
 in platform-neutral shared core where possible; platforms supply cursor position
-and settings. Tentative (user review pending): the three-way placement setting
+and settings. User-approved 2026-10-26: the three-way placement setting
 subsumes the launch half of workspace-switch targeting. Decision 1d:
 focus-follows-cursor is an on/off setting, default off; cursor-warp (cursor
 follows focus) is a setting, default off (COSMIC). The i3/sway preset enables

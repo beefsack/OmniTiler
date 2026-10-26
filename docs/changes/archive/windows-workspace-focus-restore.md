@@ -190,7 +190,7 @@
   nonactivating reveal restored both owned windows; fixture shutdown and
   native process absence verified cleanup. This is a primitive experiment,
   not integrated workspace acceptance.
-- **Tentative, pending user review:** use nonactivating async visibility
+- **User-approved 2026-10-26:** use nonactivating async visibility
   writes with non-pumping confirmation only for a pure view matching the
   focus target's live homing. Retain full destination-view proof before
   focus, existing visibility deadlines, ledger/recovery fencing and the
@@ -198,11 +198,13 @@
   switches without focus intent retain their existing path; minimized
   reveal retains its existing pumped restore command and fails closed if
   that produces pending events.
-- **Tentative, pending user review:** compare full native foreground identity
+- **User-approved 2026-10-26:** compare full native foreground identity
   before/after the switch; changed or unreadable foreground prevents focus
   dispatch. Re-prove native move/size state independently of delayed hooks.
-  The existing fullscreen/game, lifetime and at-most-once gates remain.
-- **Tentative, pending user review:** for the departing foreground hidden by
+  Exact still-in-flight own landing is accepted under the subsequently approved
+  identity rule; every other change still vetoes. The existing fullscreen/game,
+  lifetime and at-most-once gates remain.
+- **User-approved 2026-10-26:** for the departing foreground hidden by
   this same nonactivating switch only, read fresh hidden-window facts under
   the exact committed claim and live identity/member-tag fences. Apply the
   fullscreen and eligibility predicates to these facts rather than treating

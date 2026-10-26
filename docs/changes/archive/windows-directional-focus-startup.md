@@ -42,7 +42,7 @@
   workspace-arrival, nonactivating-view or in-flight focus changes. A rejected
   command arms the sequencer's observation-only obligation, but the command
   adapter returned without servicing it and could idle indefinitely.
-- Tentative pending user review: service one owed observation-only pass on the
+- User-approved 2026-10-26: service one owed observation-only pass on the
   same turn after core rejection or a catchup-required dispatch refusal, using
   that turn's captured products. Keep the rejected/refused command dropped;
   no queue, replay, core-policy change or weakened sequencer fence.
@@ -98,8 +98,8 @@
 - The original user-owned check was three ordinary windows with physical
   Win+arrow, including an edge no-op followed by a valid direction. The user
   subsequently confirms Win+arrow fixed. Multiple-output and game acceptance
-  are not implied by these fixture legs. Same-turn catchup remains tentative
-  pending user review.
+  are not implied by these fixture legs. Same-turn catchup is User-approved
+  2026-10-26.
 
 ## Subsequent physical workspace report (2026-10-26)
 
@@ -414,3 +414,17 @@
   startup prime causality, immediate physical shortcut behavior, rapid native
   toggles, genuine current-payload mid-switch veto, actual pager geometry paint
   and ordinary-app keyboard-focus acceptance are not claimed complete.
+
+## Physical acceptance (2026-10-26)
+
+- User physical acceptance with ordinary applications on current main including
+  `3fb4be07`: Win+arrow navigation works at launch; repeated rapid Win+arrow on a
+  three-window workspace worked every time; switching between two workspaces
+  landed correct focus every time. The physical workspace-switch focus P0 is
+  closed. Earlier open physical-acceptance statements above are historical.
+- The E8 prime-only restoration remains tentative pending explicit user approval.
+  Physical acceptance does not isolate prime causality or approve removal of
+  thread-input attachment. Rapid native mid-switch veto, pager geometry paint,
+  multiple-output and game breadth are not inferred from this acceptance.
+- Separate rare send-follow arrival geometry/stacking failure is tracked
+  independently; this acceptance does not close it.

@@ -13,6 +13,14 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## Windows physical workspace-switch focus defect (closed 2026-10-26)
+
+- User physical acceptance on current main including `3fb4be07`, ordinary apps:
+  launch Win+arrow, rapid three-window Win+arrow, and two-workspace switching
+  all land correct focus consistently. The P0 is closed. E8 prime-only
+  restoration remains tentative; physical acceptance does not isolate causality.
+  [Record](changes/archive/windows-directional-focus-startup.md#physical-acceptance-2026-10-26).
+
 ## Windows dual-output run history (condensed 2026-10-24; user checks remain active)
 
 *Archived 2026-10-24 from backlog.md `## Open work` during backlog consolidation; retained verbatim as delivery evidence.*

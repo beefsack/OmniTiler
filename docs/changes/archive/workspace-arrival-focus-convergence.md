@@ -5,7 +5,7 @@
 - Selecting/showing a nonempty workspace restores its remembered focus, or its
   most recently focused eligible member when memory is absent (User 2026-10-26).
 - With no member focus history, use the first eligible member in deterministic
-  layout order, tentative pending user review.
+  layout child order, User-approved 2026-10-26.
 - Diagnose and repair final-focus loss after rapid Windows workspace switches.
 - No setting, directional no-focus change, empty-workspace focus change,
   fullscreen/game gate weakening, or adapter-owned focus policy.
@@ -35,7 +35,7 @@
 - User 2026-10-26: per-workspace MRU fallback; no-history first member.
   i3/sway per-workspace order and COSMIC MRU are the behavioral rationale;
   Hyprland cursor/candidate fallback is deliberately not adopted.
-- Tentative pending review: deterministic layout order breaks no-history ties.
+- User-approved 2026-10-26: deterministic layout child order breaks no-history ties.
 - User 2026-10-26: replace the tentative synchronous queue completion with
   exact-identity in-flight tracking, using the existing foreground WinEvents.
   No blocking, timer or timeout. A same-window user click while that exact
@@ -131,5 +131,5 @@
   ordinary applications, games and multiple-output checks remain user-owned,
   not implied by fixture verification. Refused/unresponsive native activation
   remains unproven and is not retried. Directional/general no-focus questions
-  remain undecided. No new tentative decision; layout-order tie-breaking remains
-  pending user review. Next action for this change: none.
+  remain undecided. Layout-order tie-breaking is User-approved 2026-10-26.
+  Next action for this change: none.
