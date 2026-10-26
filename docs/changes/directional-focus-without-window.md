@@ -88,10 +88,41 @@ checks to core.
 
 ## Remaining verification and limits
 
-- Linux CI gates pending. Native macOS/KDE integration, physical no-focus
-  shortcuts, native no-focus output crossing and game variants remain unproved.
+- Implementation pushed as `00221036`; integration verification remains open
+  because the whole-workspace CI gates are not green. Keep this record active
+  until the failures below are resolved and the required gates rerun.
+- Native macOS/KDE integration, physical no-focus shortcuts, native no-focus
+  output crossing and game variants remain unproved.
 - A live new-path leg was not practical: normal owners ignore injected keys,
   and the approved CLI requires a managed origin. Neither gate was weakened.
 - Review notes: the vertical regression exercises Down (Up shares the same
   branch); fit-excluded/game destination exclusion relies on existing session
   admission. No new game-specific behavior or acceptance is claimed.
+
+## Cross-platform CI evidence and blocker
+
+[CI run 40315667855](https://github.com/beefsack/OmniTiler/actions/runs/40315667855)
+at `00221036` completed with failure. Comparison:
+[parent run 40313044307](https://github.com/beefsack/OmniTiler/actions/runs/40313044307)
+at `68ce0b75`.
+
+- macOS CI passed its fixture and portable build/tests, unsafe gate, formatting
+  and strict clippy. Shell, licenses/bans/sources and notices jobs also passed.
+- Linux shared-core no-focus unit and acceptance journeys passed. The workspace
+  test step then failed on eight untouched `tiler-macos` dock-swipe tests with
+  `macOS major unreadable`, identical to the parent run. Later Linux formatting,
+  strict clippy, unsafe and KDE exporter steps were skipped, not passed.
+- KWin tests failed fetching `async-broadcast v0.7.2` in offline mode, also in
+  the parent run; typecheck was skipped. Native effect tests failed the same two
+  facts-transport tests as the parent; native settings tests were skipped.
+- Windows portable tests hit the same eight dock-swipe failures plus
+  `wrong_sid_arrival_is_unproven_without_replay` (`scripted full row`). The
+  additional failure is absent in the parent and passes on Linux/macOS at the
+  same feature revision; its cause is unproven, not established as pre-existing
+  or flaky. The test and scripted native-row loop are untouched by this change.
+  Later Windows CI formatting/clippy gates were skipped; the local Windows
+  three-package gates above passed independently.
+- No unrelated test, dependency, native transport or safety-gate changes were
+  made to obtain a green result. Next: resolve the owning macOS/KWin/native CI
+  failures, investigate the additional Windows test failure, rerun required
+  gates, then archive this record. Physical new-path proof remains separate.

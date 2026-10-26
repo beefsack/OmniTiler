@@ -86,7 +86,9 @@ decisions of 2026-09-24 are under
   Shared core, strict JSON and Windows no-origin keyboard routing delivered;
   per-WM matrix recorded (COSMIC TBD after surface-only check). No-forced-refocus
   holds in core regressions and fixture minimize. Native Windows gates pass;
-  Linux CI pending. New no-focus physical shortcut/output-crossing proof remains
+  Linux no-focus tests pass, whole-workspace CI blocked by unrelated suites
+  ([details](changes/directional-focus-without-window.md#cross-platform-ci-evidence-and-blocker)).
+  New no-focus physical shortcut/output-crossing proof remains
   user-owned: the CLI retains its managed-origin gate and injected keys remain
   filtered. [Evidence/limits](changes/directional-focus-without-window.md).
 - P1 | Platform-neutral spam/stress acceptance tests | User 2026-10-26, after
