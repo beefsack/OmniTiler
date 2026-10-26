@@ -310,6 +310,7 @@ fn minimized_entries_home_through_last_known_domains() {
         }],
         cg_complete: true,
         cg_owner_wids: vec![7],
+        cg_alive: Vec::new(),
         revision: 3,
     };
     refresh_minimized(&mut retained, 1001, &snapshot);
@@ -359,6 +360,7 @@ fn minimized_close_in_app_and_at_terminate_ride_explicit_closes() {
         }],
         cg_complete: true,
         cg_owner_wids: vec![7],
+        cg_alive: Vec::new(),
         revision: 3,
     };
     refresh_minimized(&mut retained, 1001, &minimized_snapshot());
@@ -660,6 +662,7 @@ fn hidden_app_snapshot(wid: u32) -> ScopedBackendSnapshot {
         }],
         cg_complete: true,
         cg_owner_wids: vec![wid],
+        cg_alive: Vec::new(),
         revision: 3,
     }
 }
@@ -726,6 +729,7 @@ fn hidden_app_exclusion_mints_minimized_record_for_explicit_close() {
         excluded_reasons: Vec::new(),
         cg_complete: true,
         cg_owner_wids: vec![7],
+        cg_alive: Vec::new(),
         revision: 4,
     };
     refresh_minimized(&mut retained, 1001, &unhide);

@@ -194,6 +194,18 @@ impl std::fmt::Display for IncompleteRead {
 
 impl std::error::Error for IncompleteRead {}
 
+/// Fresh CG window-server entry for exactly one PID, from the full
+/// title-free list read alongside the AX legs. Owner, layer, on-screen
+/// state, and frame bounds ride together so a CG-alive window absent from
+/// AX still carries fresh liveness evidence (never derived from AX wids).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CgWindowEntry {
+    pub wid: u32,
+    pub layer: i32,
+    pub onscreen: bool,
+    pub bounds: crate::ffi::CgBounds,
+}
+
 /// Outcome of one bounded per-app native read. `windows` carries every
 /// joined window (partial facts included; classification gates
 /// completeness separately via [`Self::classify_all`]). Any failed leg fails
@@ -217,6 +229,13 @@ pub struct NativeReadOutcome {
     /// (`cg_complete` true). Empty with `cg_complete` false carries no
     /// claim; empty with `cg_complete` true proves absence.
     pub cg_owner_wids: Vec<u32>,
+    /// Fresh per-window CG evidence for exactly this PID (sorted by wid):
+    /// the layer, on-screen state, and frame bounds behind
+    /// `cg_owner_wids`. Empty with `cg_complete` false carries no claim.
+    /// The snapshot builder joins these with fresh SLS membership for
+    /// AX-absent CG-alive windows, so off-current liveness re-homes on
+    /// fresh native facts instead of a stale home.
+    pub cg_entries: Vec<CgWindowEntry>,
 }
 
 impl NativeReadOutcome {
@@ -384,6 +403,21 @@ pub fn read_app_window_facts_with_cg(
     // unreadable (unknown, never absence).
     let (cg_complete, cg_owner_wids) = cg_owner_inventory(pid, &cg_result);
     let cg_list = cg_result.unwrap_or_default();
+    // Fresh per-window CG evidence for exactly this PID (sorted by wid):
+    // the layer, on-screen state, and frame bounds behind the inventory.
+    // Unreadable lists carry nothing (unknown, never absence).
+    let mut cg_entries: Vec<CgWindowEntry> = cg_list
+        .iter()
+        .filter(|w| w.pid == pid)
+        .map(|w| CgWindowEntry {
+            wid: w.wid,
+            layer: w.layer,
+            onscreen: w.onscreen,
+            bounds: w.bounds,
+        })
+        .collect();
+    cg_entries.sort_by_key(|e| e.wid);
+    cg_entries.dedup_by_key(|e| e.wid);
     let requested = windows.len();
     let mut out = Vec::new();
     let mut failed = 0usize;
@@ -455,6 +489,7 @@ pub fn read_app_window_facts_with_cg(
         windows: out,
         cg_complete,
         cg_owner_wids,
+        cg_entries,
     })
 }
 
@@ -649,6 +684,7 @@ mod tests {
             windows: vec![full_facts()],
             cg_complete: true,
             cg_owner_wids: vec![7],
+            cg_entries: Vec::new(),
         }
     }
 

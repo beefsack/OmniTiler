@@ -399,6 +399,57 @@ pub struct ExcludedOmission {
     pub reason: ExcludeReason,
 }
 
+/// Fresh CG-alive evidence for one AX-absent window of exactly this PID,
+/// read on the owning per-app worker alongside the AX legs (never on the
+/// engine thread, never fabricated). `spaces` is the fresh live SLS Space
+/// membership read for this wid (empty = unreadable/unknown, never "no
+/// Space"); `layer`/`onscreen`/`bounds` are the fresh CG window-server
+/// entry for the same wid and PID (owner match proven by the join). Only
+/// AX-absent CG-owner wids ride here; AX-observed and classifier-excluded
+/// wids never do. The roster re-homes a detail only on an exact singleton
+/// membership homing a hidden (non-current) domain in the current context —
+/// current targets need fresh AX/classifier state before writes.
+/// Multi-Space, empty, unhomed, degenerate-frame, missing-entry, and
+/// shared-SID multi-output details hold unknown, never a guessed home.
+/// Hidden/minimized flags are never refreshed here: the roster keeps its
+/// retained truth for those.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CgAliveDetail {
+    pub wid: u32,
+    /// Fresh live SLS Space membership read for this wid (empty =
+    /// unreadable/unknown, never "no Space"). Only AX-absent CG-owner
+    /// wids ride here.
+    pub spaces: Vec<u64>,
+    pub layer: i32,
+    pub onscreen: bool,
+    /// Fresh CG frame evidence as integer bounds (`None` when the CG
+    /// entry is missing; non-positive width/height when degenerate:
+    /// both hold unknown, never a guessed home).
+    pub bounds: Option<(i32, i32, i32, i32)>,
+}
+
+impl CgAliveDetail {
+    /// Fresh singleton membership, if the live SLS read proved exactly one
+    /// Space (`None` on unreadable, multi-Space, or unhomed reads — never
+    /// a guess).
+    #[must_use]
+    pub fn singleton(&self) -> Option<u64> {
+        if self.spaces.len() == 1 {
+            return Some(self.spaces[0]);
+        }
+        None
+    }
+
+    /// Fresh CG frame evidence is present and non-degenerate (liveness
+    /// proof alongside the owner join; degenerate frames hold unknown).
+    #[must_use]
+    pub const fn frame_live(&self) -> bool {
+        match self.bounds {
+            Some((_, _, w, h)) => w > 0 && h > 0,
+            None => false,
+        }
+    }
+}
 /// One backend-reported scoped observation payload for a single app. Plain
 /// data only; handles never escape the owning thread. `revision` is the
 /// context revision read at snapshot time: the engine re-fences it against
@@ -453,8 +504,13 @@ pub struct ScopedBackendSnapshot {
     /// is explicit unreadable (unknown, never absence). `cg_owner_wids`
     /// lists the owner wids in that fresh complete list (sorted); empty
     /// with `true` proves absence, empty with `false` claims nothing.
+    /// `cg_alive` carries fresh per-window evidence (SLS membership plus
+    /// CG frame/owner) for AX-absent CG-owner wids only, so the roster can
+    /// re-home off-current liveness on fresh native facts instead of a
+    /// stale home. Empty with `cg_complete` false carries no claim.
     pub cg_complete: bool,
     pub cg_owner_wids: Vec<u32>,
+    pub cg_alive: Vec<CgAliveDetail>,
     pub revision: u64,
 }
 
@@ -481,6 +537,7 @@ impl ScopedBackendSnapshot {
             excluded_reasons: Vec::new(),
             cg_complete: false,
             cg_owner_wids: Vec::new(),
+            cg_alive: Vec::new(),
             revision,
         }
     }

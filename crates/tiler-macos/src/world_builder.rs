@@ -2064,6 +2064,7 @@ mod tests {
             }],
             cg_complete: true,
             cg_owner_wids: vec![7],
+            cg_alive: Vec::new(),
             revision: 3,
         };
         refresh_minimized(&mut retained, 1001, &hide_snapshot);

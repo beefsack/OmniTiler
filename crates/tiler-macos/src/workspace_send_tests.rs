@@ -10,18 +10,33 @@
 //! separately in `workspace_send_live_tests` over scripted native readers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::session::DomainKey;
-use tiler_core::size_hints::WindowSizeHints;
+use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{FrameSetter, HoldReason, WorldCommand, validate_report};
+use tiler_core::world_report::{
+    FrameSetter, HoldReason, ScopeAuthority, WorldCommand, validate_report,
+};
 
 use crate::ffi::{SlsDisplayRow, SlsSpaceType};
-use crate::runtime_core::LifetimeMemory;
-use crate::runtime_types::{NativeContext, ObservedWindow};
+use crate::focus_route::FocusRoute;
+use crate::runtime_core::{
+    LifetimeMemory, RetainedApp, RetainedCore, RosterEntry, apply_roster_covering,
+    audit_roster_hold, clear_focus_into, mark_roster_incomplete, note_scoped_members,
+    partition_scoped_members, preserve_non_covering_hidden, prune_current_homed_with_oracle,
+    rehydrate_cg_alive, snapshot_is_covering,
+};
+use crate::runtime_types::{
+    CgAliveDetail, NativeContext, ObservedWindow, PHASE1_GENERATION, ScopedBackendSnapshot,
+    ScopedWindowMeta,
+};
 use crate::topology::{PointsRect, TopologySnapshot};
 use crate::world_builder::{ReportInput, build_report};
+use crate::world_command_map::send_command_implicit;
+use crate::world_runtime::{DispatchContext, WorldSession, build_dispatch_report};
+use crate::world_sequencer::ObservationClock;
 
 use crate::desktop_shortcuts::{
     FakeStore, ShortcutEntry, desktop_digit_keycode, desktop_symbolic_id, lock_path_for,
@@ -1334,6 +1349,70 @@ fn stay_shape_stays_unbound_but_armed_in_product() {
 }
 
 #[test]
+fn refused_line_pins_shape_and_correlated_ids() {
+    use tiler_core::world_report::SendSource;
+    let command = WorldCommand::SendNumbered {
+        window: WindowId("4242_8".to_owned()),
+        source: SendSource::HomeThenCachedLive,
+        index: 2,
+        follow: true,
+    };
+    let (subject, index, follow, source) = describe_send_command(&command);
+    assert_eq!(
+        format_send_refused_line(
+            "send",
+            "scope-held",
+            &subject,
+            &index,
+            follow,
+            &source,
+            5,
+            5,
+            "req-5",
+            Some(5),
+            "roster:4242:cg-alive",
+        ),
+        "tiler-macos send refused op=send kind=scope-held subject=4242_8 index=2 follow=true source=home-cached-live obs=5 req=5 req_id=req-5 command_seq=Some(5) held=roster:4242:cg-alive",
+    );
+    // Explicit sources render the output id; unreadable scopes join the
+    // held detail verbatim (never titles, content, or paths).
+    let explicit = WorldCommand::SendNumbered {
+        window: WindowId("4242_7".to_owned()),
+        source: SendSource::Explicit(OutputId("macos-display-1".to_owned())),
+        index: 1,
+        follow: false,
+    };
+    let (subject, index, follow, source) = describe_send_command(&explicit);
+    assert_eq!(
+        (subject.as_str(), index.as_str(), follow, source.as_str()),
+        ("4242_7", "1", false, "macos-display-1")
+    );
+    assert_eq!(
+        format_send_refused_line(
+            "send",
+            "scope-held",
+            "4242_7",
+            "1",
+            false,
+            "macos-display-1",
+            7,
+            7,
+            "req-7",
+            None,
+            "macos-display-1/space-277:unreadable",
+        ),
+        "tiler-macos send refused op=send kind=scope-held subject=4242_7 index=1 follow=false source=macos-display-1 obs=7 req=7 req_id=req-7 command_seq=None held=macos-display-1/space-277:unreadable",
+    );
+    // Non-send commands keep the none shape (the dispatch site never
+    // renders those: only send-shaped refusals log).
+    let other = WorldCommand::SelectTrailing { output: None };
+    assert_eq!(
+        describe_send_command(&other),
+        ("none".to_owned(), "-".to_owned(), false, "none".to_owned())
+    );
+}
+
+#[test]
 fn readiness_line_pins_scoped_runtime_config() {
     assert_eq!(
         format_send_readiness_line("tap", "authentic", 1, 57),
@@ -2212,6 +2291,1212 @@ fn trailing_request_carries_admitted_pins_and_pinned_display() {
             classify_trailing_prep_error(reason),
             SendEffectOutcome::PossiblyExecuted,
             "{reason}"
+        );
+    }
+}
+
+/// Fake-native covering snapshot for the joined send legs: the exact
+/// production [`ScopedBackendSnapshot`] shape (AX legs plus the CG owner
+/// oracle plus fresh per-window CG-alive evidence for AX-absent CG-owner
+/// wids), never titles, content, or paths. `cg_alive_spaces` is the fake
+/// owning-worker capture for AX-absent CG wids: fresh live SLS membership
+/// per wid (empty = unreadable/unknown) with fresh CG layer/on-screen/frame
+/// evidence minted alongside (layer 0, offscreen, live bounds — the
+/// liveness proof, never an AX read).
+fn live_snapshot(
+    windows: Vec<ObservedWindow>,
+    spaces: Vec<(u32, Vec<u64>)>,
+    cg_owner_wids: Vec<u32>,
+    cg_alive_spaces: Vec<(u32, Vec<u64>)>,
+    revision: u64,
+) -> ScopedBackendSnapshot {
+    ScopedBackendSnapshot {
+        windows,
+        focused_wid: None,
+        focus_cg_owned: false,
+        focus_evidence: None,
+        sys_focus: None,
+        global_focus: None,
+        meta: spaces
+            .into_iter()
+            .map(|(wid, spaces)| ScopedWindowMeta {
+                wid,
+                spaces,
+                fullscreen: false,
+                minimized: false,
+                hidden: false,
+            })
+            .collect(),
+        excluded: 0,
+        excluded_reasons: Vec::new(),
+        cg_complete: true,
+        cg_owner_wids,
+        cg_alive: cg_alive_spaces
+            .into_iter()
+            .map(|(wid, spaces)| CgAliveDetail {
+                wid,
+                spaces,
+                layer: 0,
+                onscreen: false,
+                bounds: Some((8, 38, 2224, 1123)),
+            })
+            .collect(),
+        revision,
+    }
+}
+
+/// Drive one covering backend snapshot through the production roster path:
+/// oracle covering, exact-Space partition, CG-alive re-homing on fresh
+/// native facts, retained homing, and the hold audit. Returns the proven
+/// close ids (the caller stages them into `pending_closes`, mirroring the
+/// ingest); use [`drive_covering_snapshot`] when no closes are expected.
+fn drive_covering_snapshot_allow_close(
+    retained: &mut RetainedCore,
+    pid: u32,
+    snapshot: &ScopedBackendSnapshot,
+    ctx: &NativeContext,
+) -> Vec<WindowId> {
+    assert!(
+        snapshot_is_covering(snapshot.windows.is_empty(), snapshot.excluded > 0),
+        "this leg only drives covering snapshots"
+    );
+    let pruned = apply_roster_covering(retained, pid, snapshot, ctx);
+    let (mut members, _) = partition_scoped_members(&snapshot.windows, &snapshot.meta, ctx);
+    for (key, windows) in rehydrate_cg_alive(retained, pid, snapshot, ctx) {
+        for w in windows {
+            for members_of_domain in members.values_mut() {
+                members_of_domain.retain(|other| other.wid != w.wid);
+            }
+            members.entry(key.clone()).or_default().push(w);
+        }
+    }
+    note_scoped_members(retained, pid, &members);
+    if let Some(app) = retained.apps.get_mut(&pid) {
+        app.windows = members.values().flatten().copied().collect();
+    }
+    audit_roster_hold(retained, pid, ctx);
+    pruned
+}
+
+/// Drive one covering backend snapshot with no closes expected: the
+/// assertions read the retained truth and the dispatched report, never an
+/// invented intermediate.
+fn drive_covering_snapshot(
+    retained: &mut RetainedCore,
+    pid: u32,
+    snapshot: &ScopedBackendSnapshot,
+    ctx: &NativeContext,
+) {
+    let pruned = drive_covering_snapshot_allow_close(retained, pid, snapshot, ctx);
+    assert!(
+        pruned.is_empty(),
+        "no closes on this leg, pruned={pruned:?}"
+    );
+}
+
+/// Minimal home leg: both windows AX-observed on current Space 1 with a
+/// complete oracle and no absent windows. Returns retained truth plus the
+/// context for follow-on legs.
+fn home_both_on_1() -> (RetainedCore, NativeContext) {
+    let mut retained = RetainedCore::default();
+    retained.apps.insert(
+        4242,
+        RetainedApp {
+            generation: 1,
+            seq_last: 0,
+            cmd_counter: 0,
+            windows: Vec::new(),
+            focused_wid: None,
+            roster: BTreeMap::new(),
+            roster_incomplete: false,
+            roster_cause: String::new(),
+        },
+    );
+    let ctx = repro_ctx(1);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![repro_observed(7), repro_observed(8)],
+            vec![(7, vec![1]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx.revision,
+        ),
+        &ctx,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "home read holds nothing"
+    );
+    (retained, ctx)
+}
+
+/// Dispatch one report through the production session join: the real
+/// [`build_dispatch_report`] over retained truth (real member projection,
+/// real unknown-home collection, real roster-incomplete fence).
+fn dispatch_join(
+    session: &mut WorldSession,
+    retained: &RetainedCore,
+    ctx: &NativeContext,
+    obs: u64,
+    req: u64,
+    command_seq: Option<u64>,
+    command: Option<WorldCommand>,
+) -> tiler_core::world_report::WorldReport {
+    build_dispatch_report(
+        session,
+        retained,
+        &DispatchContext::Native(Arc::new(ctx.clone())),
+        &[],
+        obs,
+        req,
+        command_seq,
+        command,
+        None,
+        &format!("req-{req}"),
+    )
+    .expect("context reports")
+}
+
+fn repro_observed(wid: u32) -> ObservedWindow {
+    ObservedWindow {
+        wid,
+        x: 8,
+        y: 38,
+        w: 2224,
+        h: 1123,
+        floating: false,
+        fullscreen: false,
+        hints: WindowSizeHints::none(),
+    }
+}
+
+/// Drive the joined home -> send-2-follow -> arrival legs through the
+/// production roster/oracle/builder/engine path, returning the converged
+/// state: both windows homed, the send transfer settled on Space 277 with
+/// complete inventory. Return and re-send legs build on this.
+fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
+    use tiler_core::world_report::TransferKind;
+
+    let mut retained = RetainedCore::default();
+    retained.apps.insert(
+        4242,
+        RetainedApp {
+            generation: 1,
+            seq_last: 0,
+            cmd_counter: 0,
+            windows: Vec::new(),
+            focused_wid: None,
+            roster: BTreeMap::new(),
+            roster_incomplete: false,
+            roster_cause: String::new(),
+        },
+    );
+    let mut session = WorldSession::new(
+        FixedSizePredicate::BothAxes,
+        true,
+        FocusRoute::Slps,
+        Arc::new(ObservationClock::new()),
+    );
+    let mut engine = WorldEngine::new(PHASE1_GENERATION).expect("phase-1 generation parses");
+    let w7 = repro_observed(7);
+    let w8 = repro_observed(8);
+
+    // Home: current Space 1, both windows there. Nothing held.
+    let ctx = repro_ctx(1);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![1]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx.revision,
+        ),
+        &ctx,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "home read holds nothing"
+    );
+    let first = dispatch_join(&mut session, &retained, &ctx, 1, 1, None, None);
+    assert!(validate_report(&first));
+    assert!(first.inventory_complete, "home inventory is complete");
+    assert!(matches!(
+        engine.handle_report(&first),
+        WorldOutcome::Accepted(_)
+    ));
+
+    // First send-2 follow admits over the production implicit route. The
+    // subject is the observed focus (production focus truth); the report
+    // carries it as the staged focused window.
+    retained.observed_focus = Some(WindowId("4242_7".to_owned()));
+    let send2 = send_command_implicit(&send(2), "4242_7").expect("production send route");
+    let second = dispatch_join(&mut session, &retained, &ctx, 2, 2, Some(2), Some(send2));
+    assert!(validate_report(&second));
+    match engine.handle_report(&second) {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("first send-2 follow admits, got {other:?}"),
+    }
+    let retained_targets = engine.retained_transfers();
+    let windowed: Vec<_> = retained_targets
+        .iter()
+        .filter(|target| matches!(target.kind, TransferKind::Window(_)))
+        .collect();
+    assert_eq!(windowed.len(), 1, "one retained window transfer");
+    assert_eq!(windowed[0].target_workspace, "ws-2");
+
+    // Follow-through: current Space 277, the subject arrived there.
+    let ctx277 = repro_ctx(277);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![277]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx277.revision,
+        ),
+        &ctx277,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "arrival read holds nothing"
+    );
+    let third = dispatch_join(&mut session, &retained, &ctx277, 3, 3, None, None);
+    assert!(validate_report(&third));
+    assert!(third.inventory_complete, "arrival inventory is complete");
+    assert!(
+        matches!(engine.handle_report(&third), WorldOutcome::Accepted(_)),
+        "arrival observation applies"
+    );
+    assert!(
+        engine.retained_transfers().is_empty(),
+        "arrival observation settles the send transfer"
+    );
+    let arrived = third
+        .windows
+        .iter()
+        .find(|w| w.window.0 == "4242_7")
+        .expect("arrived subject reports");
+    let space277 = ctx277
+        .domains
+        .iter()
+        .find(|d| d.space == 277)
+        .expect("277 domain")
+        .workspace
+        .0
+        .clone();
+    assert_eq!(
+        arrived.native_workspace.as_deref(),
+        Some(space277.as_str()),
+        "arrival carries native 277 evidence"
+    );
+    (retained, session, engine)
+}
+
+/// Joined home -> send-follow -> return recovery over the production
+/// roster/oracle/builder/engine path: the first send admits and arrival
+/// settles, then a return to the source Space with a partial AX read (the
+/// moved subject omitted) carries fresh CG-alive evidence for the absent
+/// window (positive CG oracle plus a fresh singleton SLS membership for
+/// Space 277 read on the owning worker alongside the AX legs). The roster
+/// re-homes the off-current lifetime on those fresh facts instead of
+/// holding, the next report carries it with native 277 evidence and
+/// complete inventory, and a legitimate send to the recovered target
+/// admits. No hand-set holds: every state comes from the production
+/// functions.
+#[test]
+fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
+    use tiler_core::world_report::TransferKind;
+
+    let (mut retained, mut session, mut engine) = joined_home_send_arrival();
+    let w7 = repro_observed(7);
+    let w8 = repro_observed(8);
+
+    // Return to Space 1 with a partial AX read (subject omitted) plus
+    // fresh CG-alive evidence for the absent window: a positive CG oracle
+    // with a fresh singleton SLS membership for Space 277, read on the
+    // owning worker alongside the AX legs. The roster re-homes the
+    // off-current lifetime on those fresh facts instead of holding. Focus
+    // truth clears: the subject is no longer on the current Space
+    // (production clears focus into the owning PID exactly here).
+    clear_focus_into(&mut retained, 4242);
+    let ctx1 = repro_ctx(1);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w8],
+            vec![(8, vec![1])],
+            vec![7, 8],
+            vec![(7, vec![277])],
+            ctx1.revision,
+        ),
+        &ctx1,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "fresh CG-alive membership re-homes instead of holding"
+    );
+    assert_eq!(
+        retained.window_domains.get("4242_7"),
+        Some(&repro_key(277)),
+        "omitted subject keeps its off-current home on fresh facts"
+    );
+    let fourth = dispatch_join(&mut session, &retained, &ctx1, 4, 4, None, None);
+    assert!(validate_report(&fourth));
+    assert!(fourth.inventory_complete, "re-homed inventory is complete");
+    let space277 = ctx1
+        .domains
+        .iter()
+        .find(|d| d.space == 277)
+        .expect("277 domain")
+        .workspace
+        .0
+        .clone();
+    let fact7 = fourth
+        .windows
+        .iter()
+        .find(|w| w.window.0 == "4242_7")
+        .expect("re-homed fact rides the report");
+    assert_eq!(
+        fact7.native_workspace.as_deref(),
+        Some(space277.as_str()),
+        "re-homed fact carries native 277 evidence"
+    );
+    match engine.handle_report(&fourth) {
+        WorldOutcome::Accepted(reply) => {
+            assert!(
+                reply
+                    .scopes
+                    .iter()
+                    .all(|s| s.authority.hold_reason().is_none()),
+                "no scope holds after re-homing, scopes={:?}",
+                reply.scopes,
+            );
+        }
+        other => panic!("return observation applies, got {other:?}"),
+    }
+
+    // A legitimate send to the recovered off-current target admits. The
+    // bystander is the current focus (the physical subject on Space 1).
+    retained.observed_focus = Some(WindowId("4242_8".to_owned()));
+    let to_off_current = send_command_implicit(&send(2), "4242_8").expect("production send route");
+    let fifth = dispatch_join(
+        &mut session,
+        &retained,
+        &ctx1,
+        5,
+        5,
+        Some(5),
+        Some(to_off_current),
+    );
+    assert!(validate_report(&fifth));
+    assert!(fifth.inventory_complete, "send report is complete");
+    match engine.handle_report(&fifth) {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("send to recovered off-current target admits, got {other:?}"),
+    }
+    let retained_targets = engine.retained_transfers();
+    let windowed: Vec<_> = retained_targets
+        .iter()
+        .filter(|target| matches!(target.kind, TransferKind::Window(_)))
+        .collect();
+    assert_eq!(windowed.len(), 1, "one retained window transfer");
+    assert_eq!(windowed[0].target_workspace, "ws-2");
+
+    // Follow-through: current Space 277, the second subject arrived there;
+    // the transfer settles and inventory stays complete.
+    let ctx277b = repro_ctx(277);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![277]), (8, vec![277])],
+            vec![7, 8],
+            vec![],
+            ctx277b.revision,
+        ),
+        &ctx277b,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "arrival read holds nothing"
+    );
+    let sixth = dispatch_join(&mut session, &retained, &ctx277b, 6, 6, None, None);
+    assert!(validate_report(&sixth));
+    assert!(sixth.inventory_complete, "arrival inventory is complete");
+    assert!(
+        matches!(engine.handle_report(&sixth), WorldOutcome::Accepted(_)),
+        "arrival observation applies"
+    );
+    assert!(
+        engine.retained_transfers().is_empty(),
+        "arrival observation settles the send transfer"
+    );
+}
+
+/// Genuinely unknown off-current stays held: the same joined legs as the
+/// recovery test, but the owning worker reads no fresh SLS membership for
+/// the absent window (empty = unreadable/unknown). The roster keeps the
+/// `cg-alive` hold, the report carries the unknown-home fact with no
+/// native receipt and incomplete inventory, the core holds the existing
+/// off-current scope `Unreadable`, and a legitimate send to that target
+/// refuses `scope-held`. No hand-set holds.
+#[test]
+fn cg_alive_unreadable_membership_holds_target_scope() {
+    let (mut retained, mut session, mut engine) = joined_home_send_arrival();
+    let w8 = repro_observed(8);
+
+    // Return with a positive CG oracle but unreadable SLS membership: the
+    // off-current lifetime retains unknown.
+    clear_focus_into(&mut retained, 4242);
+    let ctx1 = repro_ctx(1);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w8],
+            vec![(8, vec![1])],
+            vec![7, 8],
+            vec![(7, vec![])],
+            ctx1.revision,
+        ),
+        &ctx1,
+    );
+    assert!(
+        retained.apps[&4242].roster_incomplete,
+        "unreadable CG-alive membership fences inventory"
+    );
+    assert_eq!(retained.apps[&4242].roster_cause, "cg-alive");
+    assert!(
+        !retained.window_domains.contains_key("4242_7"),
+        "unknown subject loses homing"
+    );
+    let fourth = dispatch_join(&mut session, &retained, &ctx1, 4, 4, None, None);
+    assert!(validate_report(&fourth));
+    assert!(
+        !fourth.inventory_complete,
+        "unknown hold fences the whole report"
+    );
+    let fact7 = fourth
+        .windows
+        .iter()
+        .find(|w| w.window.0 == "4242_7")
+        .expect("unknown-home fact retained, never dropped");
+    assert_eq!(
+        fact7.native_workspace, None,
+        "unknown home carries no native receipt"
+    );
+    match engine.handle_report(&fourth) {
+        WorldOutcome::Accepted(reply) => {
+            assert!(
+                reply.scopes.iter().any(|s| s.scope.contains("ws-2")
+                    && s.authority == ScopeAuthority::Hold(HoldReason::Unreadable)),
+                "adoption fence holds the existing off-current target scope, scopes={:?}",
+                reply.scopes,
+            );
+        }
+        other => panic!("return observation applies, got {other:?}"),
+    }
+
+    // A legitimate send to the held off-current target refuses
+    // `scope-held`. The bystander is the current focus (the physical
+    // subject on Space 1).
+    retained.observed_focus = Some(WindowId("4242_8".to_owned()));
+    let to_off_current = send_command_implicit(&send(2), "4242_8").expect("production send route");
+    let fifth = dispatch_join(
+        &mut session,
+        &retained,
+        &ctx1,
+        5,
+        5,
+        Some(5),
+        Some(to_off_current),
+    );
+    assert!(validate_report(&fifth));
+    assert!(
+        !fifth.inventory_complete,
+        "hold persists across the send report"
+    );
+    match engine.handle_report(&fifth) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(
+            kind, "scope-held",
+            "send to the genuinely unknown off-current target fences on the held scope"
+        ),
+        other => panic!("send to held off-current target refuses scope-held, got {other:?}"),
+    }
+}
+
+/// Unreadable CG oracle holds without proving anything: the same home leg,
+/// then a return whose AX read omits the subject while the window-server
+/// list itself is unreadable. The roster keeps the `cg-unreadable` hold
+/// (unknown, never guessed absence) and a send to the existing logical
+/// target still fences. Uses the home-only setup plus one manual leg: the
+/// logical target exists after the joined send/arrival.
+#[test]
+fn cg_unreadable_oracle_holds_target_scope() {
+    let (mut retained, mut session, mut engine) = joined_home_send_arrival();
+    let w8 = repro_observed(8);
+
+    clear_focus_into(&mut retained, 4242);
+    let ctx1 = repro_ctx(1);
+    let mut snap = live_snapshot(
+        vec![w8],
+        vec![(8, vec![1])],
+        vec![7, 8],
+        vec![],
+        ctx1.revision,
+    );
+    // Window-server unreadable: no owner inventory, no per-window
+    // evidence — unknown, never absence.
+    snap.cg_complete = false;
+    snap.cg_owner_wids.clear();
+    snap.cg_alive.clear();
+    drive_covering_snapshot(&mut retained, 4242, &snap, &ctx1);
+    assert!(
+        retained.apps[&4242].roster_incomplete,
+        "unreadable oracle fences inventory"
+    );
+    assert_eq!(retained.apps[&4242].roster_cause, "cg-unreadable");
+    assert!(
+        !retained.window_domains.contains_key("4242_7"),
+        "unknown subject loses homing"
+    );
+    let fourth = dispatch_join(&mut session, &retained, &ctx1, 4, 4, None, None);
+    assert!(validate_report(&fourth));
+    assert!(!fourth.inventory_complete, "hold fences the report");
+    match engine.handle_report(&fourth) {
+        WorldOutcome::Accepted(reply) => {
+            assert!(
+                reply.scopes.iter().any(|s| s.scope.contains("ws-2")
+                    && s.authority == ScopeAuthority::Hold(HoldReason::Unreadable)),
+                "adoption fence holds the target scope, scopes={:?}",
+                reply.scopes,
+            );
+        }
+        other => panic!("return observation applies, got {other:?}"),
+    }
+    retained.observed_focus = Some(WindowId("4242_8".to_owned()));
+    let to_off_current = send_command_implicit(&send(2), "4242_8").expect("production send route");
+    let fifth = dispatch_join(
+        &mut session,
+        &retained,
+        &ctx1,
+        5,
+        5,
+        Some(5),
+        Some(to_off_current),
+    );
+    assert!(validate_report(&fifth));
+    match engine.handle_report(&fifth) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(
+            kind, "scope-held",
+            "send to the unreadable-oracle target fences on the held scope"
+        ),
+        other => panic!("send to held target refuses scope-held, got {other:?}"),
+    }
+}
+
+/// Actual close prunes and releases: after the home leg, a covering read
+/// whose complete CG oracle omits the subject proves absence. The roster
+/// drops the id as an explicit close (never a hold), the report carries
+/// the close with complete inventory, and the engine accepts it.
+#[test]
+fn actual_close_prunes_and_releases_hold() {
+    let mut session = WorldSession::new(
+        FixedSizePredicate::BothAxes,
+        true,
+        FocusRoute::Slps,
+        Arc::new(ObservationClock::new()),
+    );
+    let mut engine = WorldEngine::new(PHASE1_GENERATION).expect("phase-1 generation parses");
+    let w8 = repro_observed(8);
+
+    // Converge the home leg through the joined report path first.
+    let (mut retained, ctx1) = home_both_on_1();
+    let first = dispatch_join(&mut session, &retained, &ctx1, 1, 1, None, None);
+    assert!(validate_report(&first));
+    assert!(first.inventory_complete, "home inventory is complete");
+    assert!(matches!(
+        engine.handle_report(&first),
+        WorldOutcome::Accepted(_)
+    ));
+
+    // Covering read: AX sees only w8, the complete oracle lists only w8 —
+    // the subject is proven gone.
+    let pruned = drive_covering_snapshot_allow_close(
+        &mut retained,
+        4242,
+        &live_snapshot(vec![w8], vec![(8, vec![1])], vec![8], vec![], ctx1.revision),
+        &ctx1,
+    );
+    assert_eq!(
+        pruned,
+        vec![WindowId("4242_7".to_owned())],
+        "proven absence closes explicitly"
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "proven close holds nothing"
+    );
+    for id in &pruned {
+        session.pending_closes.insert(id.clone());
+    }
+    let second = dispatch_join(&mut session, &retained, &ctx1, 2, 2, None, None);
+    assert!(validate_report(&second));
+    assert!(second.inventory_complete, "close report is complete");
+    assert!(
+        second.closed.iter().any(|id| id.0 == "4242_7"),
+        "close rides explicitly, closed={:?}",
+        second.closed,
+    );
+    assert!(
+        matches!(engine.handle_report(&second), WorldOutcome::Accepted(_)),
+        "close observation applies"
+    );
+}
+
+/// Current-target CG-alive evidence never promotes to actuating facts:
+/// after the home leg the AX read omits the subject but the worker's fresh
+/// SLS proves the current Space. The roster drops the stale home and stays
+/// held pending AX (hide/minimize/exclusion may have changed during AX
+/// blindness; CG onscreen cannot disambiguate). A follow-on fresh AX read
+/// on the current Space clears and converges.
+#[test]
+fn cg_alive_current_target_holds_pending_ax_then_recovers() {
+    let (mut retained, ctx) = home_both_on_1();
+    let w7 = repro_observed(7);
+    let w8 = repro_observed(8);
+    // AX omits 7; fresh SLS says current Space 1. No promotion.
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w8],
+            vec![(8, vec![1])],
+            vec![7, 8],
+            vec![(7, vec![1])],
+            ctx.revision,
+        ),
+        &ctx,
+    );
+    assert!(
+        retained.apps[&4242].roster_incomplete,
+        "current-target CG evidence holds pending fresh AX"
+    );
+    assert!(
+        !retained.window_domains.contains_key("4242_7"),
+        "stale home drops instead of promoting to current"
+    );
+    let mut session = WorldSession::new(
+        FixedSizePredicate::BothAxes,
+        true,
+        FocusRoute::Slps,
+        Arc::new(ObservationClock::new()),
+    );
+    let held = dispatch_join(&mut session, &retained, &ctx, 2, 2, None, None);
+    assert!(validate_report(&held));
+    assert!(!held.inventory_complete, "hold fences inventory");
+    // Fresh AX observes 7 on the current Space: authoritative truth clears.
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![1]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx.revision,
+        ),
+        &ctx,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "fresh AX on current clears the hold"
+    );
+    assert_eq!(
+        retained.window_domains.get("4242_7"),
+        Some(&repro_key(1)),
+        "fresh AX re-homes current"
+    );
+    let recovered = dispatch_join(&mut session, &retained, &ctx, 3, 3, None, None);
+    assert!(validate_report(&recovered));
+    assert!(recovered.inventory_complete, "inventory is complete");
+}
+
+/// Ambiguous or unhomed CG-alive evidence holds: multi-Space, unhomed-SID
+/// (fullscreen/system/deleted Space), and degenerate-frame details each
+/// retain unknown instead of guessing a home. One fresh retained core per
+/// case over the same home leg.
+#[test]
+fn cg_alive_ambiguous_multi_unhomed_and_degenerate_hold() {
+    for (label, spaces, bounds) in [
+        ("multi", vec![1, 277], Some((8, 38, 2224, 1123))),
+        ("unhomed", vec![999], Some((8, 38, 2224, 1123))),
+        ("degenerate", vec![277], Some((0, 0, 0, 0))),
+        ("missing-frame", vec![277], None),
+    ] {
+        let (mut retained, ctx) = home_both_on_1();
+        let w8 = repro_observed(8);
+        let mut snap = live_snapshot(
+            vec![w8],
+            vec![(8, vec![1])],
+            vec![7, 8],
+            vec![(7, spaces)],
+            ctx.revision,
+        );
+        snap.cg_alive[0].bounds = bounds;
+        drive_covering_snapshot(&mut retained, 4242, &snap, &ctx);
+        assert!(
+            retained.apps[&4242].roster_incomplete,
+            "{label}: ambiguous evidence holds"
+        );
+        assert!(
+            !retained.window_domains.contains_key("4242_7"),
+            "{label}: ambiguous evidence homes nothing"
+        );
+    }
+}
+
+/// Safeguards: classifier-excluded rows never re-home through CG-alive
+/// evidence (minimized/hidden sources ride the minimized path), details
+/// for unknown WIDs never mint roster rows, and another PID's snapshot
+/// never touches this PID's homing. The non-covering preservation helper
+/// also skips excluded rows, so Cmd+H/minimize coverage never leaks into
+/// members.
+#[test]
+fn cg_alive_skips_excluded_and_foreign_lifetimes() {
+    use crate::classifier::ExcludeReason;
+
+    let (mut retained, ctx) = home_both_on_1();
+    // Excluded minimized-source row plus retained CG liveness for it: the
+    // detail must not re-home the excluded id.
+    retained.apps.get_mut(&4242).expect("app").roster.insert(
+        9,
+        RosterEntry {
+            observed: None,
+            spaces: Vec::new(),
+            fullscreen_meta: false,
+            minimized_meta: false,
+            hidden_meta: false,
+            excluded: Some(ExcludeReason::Minimized),
+        },
+    );
+    let mut snap = live_snapshot(
+        vec![repro_observed(7), repro_observed(8)],
+        vec![(7, vec![1]), (8, vec![1])],
+        vec![7, 8, 9],
+        vec![(9, vec![277])],
+        ctx.revision,
+    );
+    // Detail for an unknown WID (never in the roster) rides alongside.
+    snap.cg_alive.push(CgAliveDetail {
+        wid: 77,
+        spaces: vec![277],
+        layer: 0,
+        onscreen: false,
+        bounds: Some((8, 38, 2224, 1123)),
+    });
+    snap.cg_alive.sort_by_key(|d| d.wid);
+    snap.cg_owner_wids.push(77);
+    snap.cg_owner_wids.sort_unstable();
+    let extras = rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx);
+    assert!(
+        extras.values().flatten().all(|w| w.wid != 9 && w.wid != 77),
+        "excluded and unknown ids never re-home, extras={extras:?}"
+    );
+    assert!(
+        !retained.window_domains.contains_key("4242_9"),
+        "excluded id gains no homing"
+    );
+    assert!(
+        !retained.window_domains.contains_key("4242_77"),
+        "unknown wid mints no homing"
+    );
+    // The non-covering preservation helper also skips the excluded row, so
+    // a minimized/hidden source never leaks into members during blindness.
+    let preserved = preserve_non_covering_hidden(&retained, 4242, &snap, &ctx);
+    assert!(
+        preserved.iter().all(|(_, w)| w.wid != 9),
+        "excluded rows never preserve, preserved={preserved:?}"
+    );
+    // Another PID's snapshot never touches this PID's homing (the app is
+    // unknown there, so the call is a no-op).
+    let foreign = live_snapshot(vec![], vec![], vec![7], vec![(7, vec![277])], ctx.revision);
+    let before: BTreeMap<String, DomainKey> = retained.window_domains.clone();
+    let foreign_extras = rehydrate_cg_alive(&mut retained, 9999, &foreign, &ctx);
+    assert!(foreign_extras.is_empty(), "unknown PID re-homes nothing");
+    assert_eq!(
+        retained.window_domains, before,
+        "foreign snapshot touches nothing"
+    );
+}
+
+/// Per-app hold isolation: one PID recovering does not release another
+/// PID's hold. The global report stays incomplete while any PID holds,
+/// even when the recovering PID clears its own cause.
+#[test]
+fn recovering_pid_does_not_release_other_pid_hold() {
+    let (mut retained, ctx) = home_both_on_1();
+    // Second app with its own held roster (unreadable oracle).
+    retained.apps.insert(
+        5555,
+        RetainedApp {
+            generation: 1,
+            seq_last: 0,
+            cmd_counter: 0,
+            windows: Vec::new(),
+            focused_wid: None,
+            roster: BTreeMap::new(),
+            roster_incomplete: true,
+            roster_cause: "cg-unreadable".to_owned(),
+        },
+    );
+    // First PID recovers fully on fresh AX.
+    let w7 = repro_observed(7);
+    let w8 = repro_observed(8);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![1]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx.revision,
+        ),
+        &ctx,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "recovered PID holds nothing"
+    );
+    assert!(
+        retained.apps[&5555].roster_incomplete,
+        "other PID's hold survives a sibling recovery"
+    );
+    let mut session = WorldSession::new(
+        FixedSizePredicate::BothAxes,
+        true,
+        FocusRoute::Slps,
+        Arc::new(ObservationClock::new()),
+    );
+    let report = dispatch_join(&mut session, &retained, &ctx, 2, 2, None, None);
+    assert!(
+        !report.inventory_complete,
+        "global inventory stays fenced by the held PID"
+    );
+}
+
+/// Non-covering empty AX read with CG-alive evidence, through the
+/// production helpers: nothing observable on the current Space, but the
+/// window server still owns both windows and fresh SLS proves them on the
+/// hidden Space. The production non-covering path marks `blank-hidden`
+/// before re-homing (the helper below mirrors that order); the rehydrate
+/// step clears it when the complete oracle leaves no unhomed absent. The
+/// report is complete with both facts homed hidden.
+#[test]
+fn non_covering_empty_ax_with_cg_alive_rehomes_hidden() {
+    let (mut retained, _) = home_both_on_1();
+    // Current Space moves to 277; the AX legs observe nothing there.
+    let ctx277 = repro_ctx(277);
+    let snap = live_snapshot(
+        vec![],
+        vec![],
+        vec![7, 8],
+        vec![(7, vec![1]), (8, vec![1])],
+        ctx277.revision,
+    );
+    assert!(
+        !snapshot_is_covering(snap.windows.is_empty(), snap.excluded > 0),
+        "empty AX read is non-covering"
+    );
+    // Production non-covering path: current-homed prune fenced by the
+    // fresh oracle (CG-alive retains), blind-hidden preservation via the
+    // production helper (fresh-evidence wids never preserve stale homes),
+    // the production `blank-hidden` mark, then fresh re-homing which must
+    // clear it.
+    let pruned = prune_current_homed_with_oracle(&mut retained, 4242, &snap, &ctx277);
+    assert!(pruned.is_empty(), "CG-alive retains, pruned={pruned:?}");
+    let (mut members, _) = partition_scoped_members(&snap.windows, &snap.meta, &ctx277);
+    for (key, w) in preserve_non_covering_hidden(&retained, 4242, &snap, &ctx277) {
+        members.entry(key).or_default().push(w);
+    }
+    // Production marks the hold before re-homing; the test exercises the
+    // real mark so a missing clear would fail here.
+    mark_roster_incomplete(&mut retained, 4242, "blank-hidden");
+    assert!(
+        retained.apps[&4242].roster_incomplete,
+        "production non-covering marks blank-hidden before re-homing"
+    );
+    for (key, windows) in rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx277) {
+        for w in windows {
+            for members_of_domain in members.values_mut() {
+                members_of_domain.retain(|other| other.wid != w.wid);
+            }
+            members.entry(key.clone()).or_default().push(w);
+        }
+    }
+    note_scoped_members(&mut retained, 4242, &members);
+    if let Some(app) = retained.apps.get_mut(&4242) {
+        app.windows = members.values().flatten().copied().collect();
+    }
+    audit_roster_hold(&mut retained, 4242, &ctx277);
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "fresh hidden membership clears the production blank-hidden hold"
+    );
+    assert_eq!(
+        retained.window_domains.get("4242_7"),
+        Some(&repro_key(1)),
+        "hidden home follows fresh facts"
+    );
+    assert_eq!(
+        retained.window_domains.get("4242_8"),
+        Some(&repro_key(1)),
+        "hidden home follows fresh facts"
+    );
+    let mut session = WorldSession::new(
+        FixedSizePredicate::BothAxes,
+        true,
+        FocusRoute::Slps,
+        Arc::new(ObservationClock::new()),
+    );
+    let report = dispatch_join(&mut session, &retained, &ctx277, 2, 2, None, None);
+    assert!(validate_report(&report));
+    assert!(report.inventory_complete, "inventory is complete");
+}
+
+/// Shared-SID multiple-output arbitration never uses the stale retained
+/// rect: one Space homed by two outputs holds unknown until fresh AX
+/// proof, instead of assigning the stale overlap winner.
+#[test]
+fn cg_alive_shared_output_holds_without_stale_assignment() {
+    use crate::runtime_types::{NativeContext, NativeDomain};
+    use tiler_core::directional::{OutputId, WorkspaceId};
+    use tiler_core::geometry::Rect;
+
+    let (mut retained, base) = home_both_on_1();
+    // One SID shared by two outputs: the stale retained rect for wid 7
+    // sits entirely inside output-1's work area (the old code would have
+    // arbitrated there), but the recovery must hold.
+    let shared = NativeContext {
+        revision: base.revision,
+        domains: vec![
+            NativeDomain {
+                cg_id: 1,
+                uuid: None,
+                output: OutputId("macos-display-1".to_owned()),
+                workspace: WorkspaceId("space-277".to_owned()),
+                space: 277,
+                current: false,
+                readable: true,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1440,
+                    h: 900,
+                },
+                visible: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1440,
+                    h: 900,
+                },
+            },
+            NativeDomain {
+                cg_id: 2,
+                uuid: None,
+                output: OutputId("macos-display-2".to_owned()),
+                workspace: WorkspaceId("space-277-b".to_owned()),
+                space: 277,
+                current: false,
+                readable: true,
+                bounds: Rect {
+                    x: 1440,
+                    y: 0,
+                    w: 1440,
+                    h: 900,
+                },
+                visible: Rect {
+                    x: 1440,
+                    y: 0,
+                    w: 1440,
+                    h: 900,
+                },
+            },
+        ],
+        skipped: Vec::new(),
+    };
+    let w8 = repro_observed(8);
+    // AX observes nothing for 7; fresh SLS proves singleton 277 (shared).
+    let snap = live_snapshot(
+        vec![],
+        vec![],
+        vec![7],
+        vec![(7, vec![277])],
+        shared.revision,
+    );
+    let _ = (w8, base);
+    // Seed the hold as the covering path would (`cg-alive`): the shared
+    // detail must not clear it and must not home either output.
+    mark_roster_incomplete(&mut retained, 4242, "cg-alive");
+    let extras = rehydrate_cg_alive(&mut retained, 4242, &snap, &shared);
+    assert!(
+        extras.is_empty(),
+        "shared SID homes nothing, extras={extras:?}"
+    );
+    assert!(
+        !retained.window_domains.contains_key("4242_7"),
+        "shared SID drops the stale home instead of assigning it"
+    );
+    assert!(
+        retained.apps[&4242].roster_incomplete,
+        "shared SID keeps the hold until fresh AX proof"
+    );
+}
+
+/// Outside move to hidden re-homes, outside move back to current drops the
+/// stale hidden receipt and holds, then fresh AX converges. Same PID,
+/// external membership changes only — never a stale-home promotion.
+#[test]
+fn cg_alive_hidden_rehome_then_current_move_holds_until_ax() {
+    let (mut retained, ctx1) = home_both_on_1();
+    let w8 = repro_observed(8);
+    // External move to hidden 277 while AX blind: fresh singleton 277
+    // re-homes hidden (allowed) with complete inventory.
+    let ctx_hidden = repro_ctx(1);
+    let moved_out = live_snapshot(
+        vec![w8],
+        vec![(8, vec![1])],
+        vec![7, 8],
+        vec![(7, vec![277])],
+        ctx_hidden.revision,
+    );
+    drive_covering_snapshot(&mut retained, 4242, &moved_out, &ctx_hidden);
+    // 277 is hidden under ctx1 (current 1), so this re-homes hidden.
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "outside move to hidden re-homes without holding"
+    );
+    assert_eq!(
+        retained.window_domains.get("4242_7"),
+        Some(&repro_key(277)),
+        "hidden home follows the fresh singleton"
+    );
+    // External move back to current 1 while AX blind: the fresh current
+    // target drops the stale hidden receipt and holds pending AX.
+    let back_to_current = live_snapshot(
+        vec![w8],
+        vec![(8, vec![1])],
+        vec![7, 8],
+        vec![(7, vec![1])],
+        ctx1.revision,
+    );
+    drive_covering_snapshot_allow_close(&mut retained, 4242, &back_to_current, &ctx1);
+    assert!(
+        retained.apps[&4242].roster_incomplete,
+        "outside move to current holds instead of promoting"
+    );
+    assert!(
+        !retained.window_domains.contains_key("4242_7"),
+        "stale hidden receipt drops on a fresh current move"
+    );
+    // Fresh AX observes 7 on current: authoritative truth clears.
+    let w7 = repro_observed(7);
+    drive_covering_snapshot(
+        &mut retained,
+        4242,
+        &live_snapshot(
+            vec![w7, w8],
+            vec![(7, vec![1]), (8, vec![1])],
+            vec![7, 8],
+            vec![],
+            ctx1.revision,
+        ),
+        &ctx1,
+    );
+    assert!(
+        !retained.apps[&4242].roster_incomplete,
+        "fresh AX on current clears after an outside move"
+    );
+    assert_eq!(
+        retained.window_domains.get("4242_7"),
+        Some(&repro_key(1)),
+        "fresh AX converges the moved window"
+    );
+}
+
+/// Non-covering blind-preservation never leaks a stale other-Space home
+/// after fresh facts contradict it: current, ambiguous, and unreadable
+/// details all skip preservation, drop the stale receipt, and hold.
+#[test]
+fn non_covering_contradicted_facts_drop_stale_home() {
+    for (label, spaces, bounds) in [
+        ("current", vec![277], Some((8, 38, 2224, 1123))),
+        ("ambiguous", vec![1, 277], Some((8, 38, 2224, 1123))),
+        ("unreadable", Vec::new(), Some((8, 38, 2224, 1123))),
+        ("degenerate", vec![277], Some((0, 0, 0, 0))),
+    ] {
+        let (mut retained, _) = home_both_on_1();
+        let ctx277 = repro_ctx(277);
+        let mut snap = live_snapshot(
+            vec![],
+            vec![],
+            vec![7, 8],
+            vec![(7, spaces)],
+            ctx277.revision,
+        );
+        snap.cg_alive[0].bounds = bounds;
+        // Add the bystander detail so only wid 7 is contradicted.
+        snap.cg_alive.push(CgAliveDetail {
+            wid: 8,
+            spaces: vec![1],
+            layer: 0,
+            onscreen: false,
+            bounds: Some((8, 38, 2224, 1123)),
+        });
+        snap.cg_alive.sort_by_key(|d| d.wid);
+        snap.cg_owner_wids.sort_unstable();
+        let pruned = prune_current_homed_with_oracle(&mut retained, 4242, &snap, &ctx277);
+        assert!(
+            pruned.is_empty(),
+            "{label}: oracle retains, pruned={pruned:?}"
+        );
+        let (mut members, _) = partition_scoped_members(&snap.windows, &snap.meta, &ctx277);
+        for (key, w) in preserve_non_covering_hidden(&retained, 4242, &snap, &ctx277) {
+            // The contradicted wid never preserves; the healthy hidden
+            // bystander (wid 8) still may.
+            assert_ne!(w.wid, 7, "{label}: contradicted wid never preserves stale");
+            members.entry(key).or_default().push(w);
+        }
+        mark_roster_incomplete(&mut retained, 4242, "blank-hidden");
+        for (key, windows) in rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx277) {
+            for w in windows {
+                for members_of_domain in members.values_mut() {
+                    members_of_domain.retain(|other| other.wid != w.wid);
+                }
+                members.entry(key.clone()).or_default().push(w);
+            }
+        }
+        note_scoped_members(&mut retained, 4242, &members);
+        if let Some(app) = retained.apps.get_mut(&4242) {
+            app.windows = members.values().flatten().copied().collect();
+        }
+        audit_roster_hold(&mut retained, 4242, &ctx277);
+        assert!(
+            retained.apps[&4242].roster_incomplete,
+            "{label}: contradicted facts hold"
+        );
+        assert!(
+            !retained.window_domains.contains_key("4242_7"),
+            "{label}: stale home drops instead of leaking"
         );
     }
 }

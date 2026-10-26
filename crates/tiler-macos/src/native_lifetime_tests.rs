@@ -124,6 +124,7 @@ fn scoped_snapshot(
         excluded_reasons: Vec::new(),
         cg_complete,
         cg_owner_wids,
+        cg_alive: Vec::new(),
         revision,
     }
 }
@@ -920,6 +921,7 @@ fn cg_oracle_rides_build_scoped_snapshot_from_real_read() {
         windows: vec![facts(7)],
         cg_complete: true,
         cg_owner_wids: vec![7],
+        cg_entries: Vec::new(),
     };
     let snap = build_scoped_snapshot(
         1001,
@@ -944,6 +946,7 @@ fn cg_oracle_rides_build_scoped_snapshot_from_real_read() {
         windows: vec![facts(7)],
         cg_complete: false,
         cg_owner_wids: Vec::new(),
+        cg_entries: Vec::new(),
     };
     let snap = build_scoped_snapshot(
         1001,

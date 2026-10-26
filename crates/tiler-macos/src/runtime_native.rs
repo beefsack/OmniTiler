@@ -13,7 +13,6 @@
 use std::sync::{Arc, Mutex};
 
 use tiler_core::directional::WindowId;
-use tiler_core::session::DomainKey;
 
 use crate::focus_route::global_focus_agrees;
 use crate::runtime::{
@@ -313,38 +312,11 @@ pub(crate) fn handle_scoped_observation(
             );
         }
         // Blind-hidden preservation: re-home this PID's retained rows from
-        // still-known non-current domains. Observed windows re-home below,
-        // so a moved window still follows its membership; retired Spaces
-        // drop via the live-context fence; current domains stay
-        // authoritative-loss, so a genuinely emptied current Space still
-        // converges to empty.
-        let mut preserved: Vec<(DomainKey, ObservedWindow)> = Vec::new();
-        if let Some(app) = retained.apps.get(&pid) {
-            for (wid, entry) in &app.roster {
-                let Some(obs) = entry.observed else {
-                    continue;
-                };
-                if snapshot.windows.iter().any(|w| w.wid == *wid) {
-                    continue;
-                }
-                let id = window_id(pid, *wid);
-                let Some(key) = retained.window_domains.get(&id) else {
-                    continue;
-                };
-                if ctx.is_current(key) {
-                    continue;
-                }
-                let known = ctx
-                    .domains
-                    .iter()
-                    .any(|d| d.output == key.output && d.workspace == key.workspace);
-                if !known {
-                    continue;
-                }
-                preserved.push((key.clone(), obs));
-            }
-        }
-        for (key, w) in preserved {
+        // still-known non-current domains (production helper: excluded rows
+        // and fresh-evidence wids never preserve stale homes).
+        for (key, w) in
+            crate::runtime_core::preserve_non_covering_hidden(retained, pid, &snapshot, &ctx)
+        {
             members.entry(key).or_default().push(w);
         }
         let remainder = retained
@@ -388,6 +360,24 @@ pub(crate) fn handle_scoped_observation(
                 "covering-close",
                 pruned.len() as u64,
             );
+        }
+    }
+    // Fresh CG-alive re-homing (owning-worker evidence, never a stale
+    // home, hidden domains only): AX-absent CG-owner windows with an exact
+    // fresh singleton SLS membership homing a hidden domain plus live CG
+    // frame evidence re-home here, so an off-current window the AX legs
+    // missed stays homed instead of fencing the whole report. Current
+    // targets, shared-output SIDs, and genuinely unknown details
+    // (unreadable/multi/unhomed/degenerate) drop the stale home and keep
+    // the hold pending fresh AX; actual closes already pruned above.
+    // Fresh wins over the stale non-covering preservation (same function,
+    // above): drop any same-wid preserved row before pushing the fresh home.
+    for (key, windows) in crate::runtime_core::rehydrate_cg_alive(retained, pid, &snapshot, &ctx) {
+        for w in windows {
+            for members_of_domain in members.values_mut() {
+                members_of_domain.retain(|other| other.wid != w.wid);
+            }
+            members.entry(key.clone()).or_default().push(w);
         }
     }
     let entry = retained.apps.entry(pid).or_insert(RetainedApp {

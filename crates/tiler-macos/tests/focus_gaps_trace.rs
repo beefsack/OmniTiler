@@ -264,6 +264,7 @@ fn scripted(windows: Vec<ObservedWindow>, focused: Option<u32>) -> ScopedBackend
         excluded_reasons: Vec::new(),
         cg_complete: true,
         cg_owner_wids,
+        cg_alive: Vec::new(),
         revision: 0,
     }
 }

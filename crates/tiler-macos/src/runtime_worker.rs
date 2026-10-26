@@ -844,6 +844,7 @@ mod tests {
             excluded_reasons: Vec::new(),
             cg_complete: true,
             cg_owner_wids: Vec::new(),
+            cg_alive: Vec::new(),
             revision: 9,
         }
     }

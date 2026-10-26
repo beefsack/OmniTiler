@@ -89,7 +89,7 @@
 /// No modifier-plus-drag product trigger exists.
 use std::path::Path;
 
-use tiler_core::world_report::FrameSetter;
+use tiler_core::world_report::{FrameSetter, SendSource, WorldCommand};
 
 use crate::desktop_shortcuts::{ApplyOutcome, DesktopShortcutStore, apply_with_store_to};
 use crate::input_policy::InputPreset;
@@ -1224,5 +1224,103 @@ pub fn format_send_admitted_line(
 ) -> String {
     format!(
         "tiler-macos send admitted action={action} subject={subject} target={target} from={from} display={display} op={op} route=unselected phase=admission revision={revision:?} now_ms={now_ms} submitted complete=false"
+    )
+}
+
+/// Human-short source token for one send command: explicit outputs render
+/// the output id, implicit sources render their resolution intent. Pure
+/// (the refusal line carries it; the core owns the actual resolution).
+#[must_use]
+pub(crate) fn describe_send_source(source: &SendSource) -> String {
+    match source {
+        SendSource::Explicit(output) => output.0.clone(),
+        SendSource::HomeThenAction => "home-action".to_owned(),
+        SendSource::HomeThenCachedLive => "home-cached-live".to_owned(),
+    }
+}
+
+/// Plain send-command shape for the refusal line: `(subject, index,
+/// follow, source)`. Numbered sends carry the positional index, relative
+/// sends carry the signed delta, direct sends carry `direct`, directional
+/// sends carry `directional`; non-send commands carry the `none` fallback
+/// (the dispatch site never renders those: only send-shaped refusals log).
+/// Pure (the dispatch site renders; tests pin the vocabulary).
+#[must_use]
+pub(crate) fn describe_send_command(command: &WorldCommand) -> (String, String, bool, String) {
+    match command {
+        WorldCommand::SendNumbered {
+            window,
+            source,
+            index,
+            follow,
+        } => (
+            window.0.clone(),
+            index.to_string(),
+            *follow,
+            describe_send_source(source),
+        ),
+        WorldCommand::SendRelative {
+            window,
+            source,
+            delta,
+            follow,
+        } => (
+            window.0.clone(),
+            format!("relative{delta:+}"),
+            *follow,
+            describe_send_source(source),
+        ),
+        WorldCommand::Send {
+            window,
+            target_output,
+            target_workspace,
+            follow,
+        } => (
+            window.0.clone(),
+            "direct".to_owned(),
+            *follow,
+            format!("{}/{}", target_output.0, target_workspace),
+        ),
+        WorldCommand::SendDirectional {
+            window,
+            direction,
+            follow,
+        } => (
+            window.0.clone(),
+            "directional".to_owned(),
+            *follow,
+            direction.clone(),
+        ),
+        _ => ("none".to_owned(), "-".to_owned(), false, "none".to_owned()),
+    }
+}
+
+/// One bounded metadata-only refusal line for a core-rejected SEND: the
+/// dispatch op, the core kind, the requested send shape (subject/index/
+/// follow/source — never titles, content, or paths), the correlated report
+/// observation/request ids plus the command sequence the rejection
+/// consumed, and the held-scope detail (`scope:reason` per unreadable
+/// scope plus `roster:{pid}:{cause}` per incomplete roster, `-` when
+/// nothing is held). Pure (the dispatch site emits on the rejected path
+/// for send-shaped commands only, so accepted traffic and non-send
+/// refusals pay nothing); streams live under `--stream` like every stderr
+/// line, before any teardown.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub(crate) fn format_send_refused_line(
+    op: &str,
+    kind: &str,
+    subject: &str,
+    index: &str,
+    follow: bool,
+    source: &str,
+    observation_seq: u64,
+    request_seq: u64,
+    request_id: &str,
+    command_seq: Option<u64>,
+    held: &str,
+) -> String {
+    format!(
+        "tiler-macos send refused op={op} kind={kind} subject={subject} index={index} follow={follow} source={source} obs={observation_seq} req={request_seq} req_id={request_id} command_seq={command_seq:?} held={held}"
     )
 }

@@ -675,6 +675,7 @@ fn build_scoped_snapshot_maps_complete_reads_with_membership() {
         windows: vec![facts(7, 0.0), facts(8, 200.0)],
         cg_complete: true,
         cg_owner_wids: vec![7, 8],
+        cg_entries: Vec::new(),
     };
     let app = NativeAppFacts {
         pid: 4242,
@@ -740,6 +741,7 @@ fn build_scoped_snapshot_refuses_unhomed_and_incomplete_reads() {
         windows: vec![facts(7)],
         cg_complete: true,
         cg_owner_wids: vec![7],
+        cg_entries: Vec::new(),
     };
     assert!(
         build_scoped_snapshot(
@@ -766,6 +768,7 @@ fn build_scoped_snapshot_refuses_unhomed_and_incomplete_reads() {
         windows: vec![gapped],
         cg_complete: true,
         cg_owner_wids: vec![7],
+        cg_entries: Vec::new(),
     };
     assert!(
         build_scoped_snapshot(

@@ -3539,6 +3539,7 @@ mod trailing_join_tests {
             excluded_reasons: Vec::new(),
             cg_complete: true,
             cg_owner_wids: vec![7],
+            cg_alive: Vec::new(),
             revision: 9,
         };
         process_job(
@@ -3596,6 +3597,7 @@ mod trailing_join_tests {
             excluded_reasons: Vec::new(),
             cg_complete: true,
             cg_owner_wids: vec![7],
+            cg_alive: Vec::new(),
             revision: 9,
         };
         let pending_before = session.pending_closes.clone();
@@ -3705,6 +3707,7 @@ mod trailing_join_tests {
                 excluded_reasons: Vec::new(),
                 cg_complete,
                 cg_owner_wids: cg_owner,
+                cg_alive: Vec::new(),
                 revision: 9,
             };
             process_job(

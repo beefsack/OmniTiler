@@ -53,6 +53,7 @@ pub fn scoped_snapshots_equal(prev: &ScopedBackendSnapshot, next: &ScopedBackend
         && prev.excluded == next.excluded
         && prev.cg_complete == next.cg_complete
         && prev.cg_owner_wids == next.cg_owner_wids
+        && prev.cg_alive == next.cg_alive
         && prev.revision == next.revision
 }
 
@@ -256,6 +257,7 @@ mod tests {
             excluded_reasons: Vec::new(),
             cg_complete: true,
             cg_owner_wids: vec![wid],
+            cg_alive: Vec::new(),
             revision,
         }
     }

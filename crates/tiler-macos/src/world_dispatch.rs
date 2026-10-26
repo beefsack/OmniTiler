@@ -743,6 +743,40 @@ fn dispatch_ticket(
             session.sequencer().clear_flight();
             count_token(shared, &format!("{op}-rejected-{kind}"));
             emit(shared, pid, generation, seq, "core-reply", kind, 0);
+            // Correlated refusal detail (stderr only, rejected SEND path
+            // only): the requested send shape plus the report
+            // observation/request ids the rejection consumed and the
+            // held-scope detail, so a fenced send names its subject and
+            // its fence instead of counting anonymously. Non-send
+            // refusals stay ring-only (never a `send refused` line).
+            if let Some(command) = ticket.command.as_ref()
+                && matches!(
+                    command,
+                    WorldCommand::SendNumbered { .. }
+                        | WorldCommand::SendRelative { .. }
+                        | WorldCommand::Send { .. }
+                        | WorldCommand::SendDirectional { .. }
+                )
+            {
+                let (subject, index, follow, source) =
+                    crate::workspace_send::describe_send_command(command);
+                eprintln!(
+                    "{}",
+                    crate::workspace_send::format_send_refused_line(
+                        op,
+                        kind,
+                        &subject,
+                        &index,
+                        follow,
+                        &source,
+                        ticket.observation_seq,
+                        ticket.request_seq,
+                        &ticket.request_id,
+                        ticket.command_seq,
+                        &held_detail(&dispatch, retained),
+                    )
+                );
+            }
             DispatchVerdict::Refused {
                 token: format!("rejected-{kind}"),
                 select_operation: None,
@@ -1044,6 +1078,37 @@ fn count_token(shared: &Arc<Mutex<Shared>>, token: &str) {
     lock_shared(shared).count_reply(token);
 }
 
+/// Held-scope detail for the refusal line: `output/workspace:reason` per
+/// unreadable dispatch scope plus `roster:{pid}:{cause}` per incomplete
+/// roster (`-` when nothing is held). Metadata only (static tokens plus
+/// IDs, never content); computed on the rejected-send path only, so steady
+/// state pays nothing.
+fn held_detail(dispatch: &DispatchContext, retained: &RetainedCore) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let DispatchContext::Native(ctx) = dispatch {
+        for domain in &ctx.domains {
+            if !domain.readable {
+                parts.push(format!(
+                    "{}/{}:unreadable",
+                    domain.output.0, domain.workspace.0
+                ));
+            }
+        }
+    }
+    let mut roster: Vec<String> = retained
+        .apps
+        .iter()
+        .filter(|(_, app)| app.roster_incomplete)
+        .map(|(pid, app)| format!("roster:{pid}:{}", app.roster_cause))
+        .collect();
+    roster.sort();
+    parts.extend(roster);
+    if parts.is_empty() {
+        return "-".to_owned();
+    }
+    parts.join(",")
+}
+
 /// Static scope-hold token for the ring (`emit` needs `&'static str`):
 /// every [`HoldReason`](tiler_core::world_report::HoldReason) is
 /// enumerated, so a held scope names its reason with no per-reply
@@ -1148,9 +1213,11 @@ fn consume_world_reply(
     };
     // Held-scope visibility (diagnostic only): an applied reply whose scope
     // holds authorizes no writes there, yet still counts as accepted with
-    // zero frames — without this line the hold is silent in the ring. One
-    // bounded line per held scope (holds are exceptional; controlled and
-    // untouched scopes log nothing).
+    // zero frames — the ring token below keeps the hold visible without a
+    // per-scope stderr line (holds persist across observations, so per-held
+    // scope stderr would spam steady state; the send-refusal line carries
+    // the held detail on the rejected path instead). Controlled and
+    // untouched scopes log nothing.
     for scope in &reply.scopes {
         if let Some(reason) = scope.authority.hold_reason() {
             emit(shared, pid, generation, seq, "scope", hold_token(reason), 0);

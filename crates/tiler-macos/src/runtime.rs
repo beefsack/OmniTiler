@@ -1094,6 +1094,7 @@ impl RuntimeHandle {
                 excluded_reasons: Vec::new(),
                 cg_complete: obs.cg_complete,
                 cg_owner_wids: obs.cg_owner_wids,
+                cg_alive: Vec::new(),
                 revision: obs.revision,
             },
         };

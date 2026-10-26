@@ -591,6 +591,52 @@ pub fn build_scoped_snapshot(
         });
         windows.push(observed);
     }
+    // Fresh CG-alive evidence for AX-absent CG-owner wids (owning worker
+    // only, alongside the AX legs): a fresh live SLS membership read plus
+    // the fresh CG entry (layer, on-screen, integer bounds) for the same
+    // wid and PID. AX-observed and classifier-excluded wids never ride
+    // here. A failed membership read records empty (unknown, never a
+    // refused snapshot: the roster holds unknown instead). Sorted by wid.
+    let live_wids: std::collections::BTreeSet<u32> = windows
+        .iter()
+        .map(|w| w.wid)
+        .chain(excluded_reasons.iter().map(|o| o.wid))
+        .collect();
+    let cg_entry_of = |wid: u32| outcome.cg_entries.iter().find(|e| e.wid == wid);
+    let mut cg_alive = Vec::new();
+    for wid in &outcome.cg_owner_wids {
+        if live_wids.contains(wid) {
+            continue;
+        }
+        if cg_alive
+            .iter()
+            .any(|d: &crate::runtime_types::CgAliveDetail| d.wid == *wid)
+        {
+            continue;
+        }
+        let spaces = spaces_of(*wid).unwrap_or_default();
+        let (layer, onscreen, bounds) = match cg_entry_of(*wid) {
+            Some(entry) => (
+                entry.layer,
+                entry.onscreen,
+                Some((
+                    entry.bounds.x as i32,
+                    entry.bounds.y as i32,
+                    entry.bounds.w as i32,
+                    entry.bounds.h as i32,
+                )),
+            ),
+            None => (0, false, None),
+        };
+        cg_alive.push(crate::runtime_types::CgAliveDetail {
+            wid: *wid,
+            spaces,
+            layer,
+            onscreen,
+            bounds,
+        });
+    }
+    cg_alive.sort_by_key(|d| d.wid);
     Ok(ScopedBackendSnapshot {
         windows,
         focused_wid,
@@ -603,6 +649,7 @@ pub fn build_scoped_snapshot(
         excluded_reasons,
         cg_complete: outcome.cg_complete,
         cg_owner_wids: outcome.cg_owner_wids.clone(),
+        cg_alive,
         revision,
     })
 }
@@ -1942,6 +1989,7 @@ mod tests {
             }],
             cg_complete: true,
             cg_owner_wids: vec![wid],
+            cg_entries: Vec::new(),
         }
     }
 
@@ -2015,5 +2063,76 @@ mod tests {
         assert_eq!(snap.windows.len(), 1);
         assert_eq!(snap.excluded, 0);
         assert!(snap.excluded_reasons.is_empty());
+    }
+
+    #[test]
+    fn scoped_snapshot_attaches_cg_alive_evidence_for_ax_absent_owner_wids() {
+        use crate::native_facts::CgWindowEntry;
+        // AX observes only wid 8; the complete CG oracle still owns 7.
+        // The worker joins a fresh SLS membership plus the CG entry for
+        // the absent wid alongside the AX legs (never a stale home).
+        let mut outcome = reason_fixture(8, false, Some(crate::classifier::SUBROLE_STANDARD));
+        outcome.pid = 4242;
+        outcome.cg_owner_wids = vec![7, 8];
+        outcome.cg_entries = vec![CgWindowEntry {
+            wid: 7,
+            layer: 0,
+            onscreen: false,
+            bounds: crate::ffi::CgBounds {
+                x: 8.0,
+                y: 38.0,
+                w: 2224.0,
+                h: 1123.0,
+            },
+        }];
+        let spaces_of = |wid: u32| match wid {
+            8 => Ok(vec![1u64]),
+            7 => Ok(vec![277u64]),
+            _ => Ok(vec![]),
+        };
+        let snap = build_scoped_snapshot(
+            4242,
+            9,
+            &outcome,
+            &reason_app(),
+            &spaces_of,
+            None,
+            false,
+            false,
+        )
+        .expect("complete facts snapshot");
+        assert_eq!(snap.windows.len(), 1, "only the AX leg reports");
+        assert_eq!(snap.cg_alive.len(), 1, "absent owner wid rides evidence");
+        let detail = &snap.cg_alive[0];
+        assert_eq!(detail.wid, 7);
+        assert_eq!(detail.spaces, vec![277u64]);
+        assert_eq!(detail.singleton(), Some(277));
+        assert!(detail.frame_live(), "CG bounds prove liveness");
+        assert_eq!(detail.bounds, Some((8, 38, 2224, 1123)));
+        // An unreadable SLS leg for the ABSENT wid records empty
+        // (unknown, never a refused snapshot): the roster holds instead.
+        // (An unreadable leg for an AX-observed window still refuses the
+        // whole snapshot — covered by the gates suite.)
+        let partial_spaces = |wid: u32| match wid {
+            8 => Ok(vec![1u64]),
+            _ => Err("sls down".to_owned()),
+        };
+        let snap = build_scoped_snapshot(
+            4242,
+            9,
+            &outcome,
+            &reason_app(),
+            &partial_spaces,
+            None,
+            false,
+            false,
+        )
+        .expect("absent-only SLS failure admits with unknown evidence");
+        assert_eq!(snap.cg_alive.len(), 1);
+        assert!(
+            snap.cg_alive[0].spaces.is_empty(),
+            "unreadable membership rides empty (unknown)"
+        );
+        assert_eq!(snap.cg_alive[0].singleton(), None);
     }
 }

@@ -16,7 +16,8 @@ use tiler_core::{
 };
 
 use crate::runtime_types::{
-    NativeContext, ObservedWindow, PHASE1_GAP, ScopedWindowMeta, parse_window_id, window_id,
+    CgAliveDetail, NativeContext, ObservedWindow, PHASE1_GAP, ScopedWindowMeta, parse_window_id,
+    window_id,
 };
 
 // -- Engine retained state -----------------------------------------------------
@@ -895,6 +896,206 @@ pub(crate) fn note_scoped_members(
                 .insert(window_id(pid, w.wid), key.clone());
         }
     }
+}
+
+/// Blind-hidden preservation for a non-covering (empty) snapshot: the
+/// production rows this PID retains from still-known non-current domains.
+/// Classifier-excluded rows never preserve (minimized/hidden sources ride
+/// the minimized path). Any wid with fresh CG-alive evidence never
+/// preserves its stale home: the fresh read either re-homes hidden in
+/// [`rehydrate_cg_alive`] or contradicts the old receipt (current target,
+/// ambiguous, unreadable, unhomed, degenerate, shared-output), so the old
+/// receipt cannot be preserved as truth. Callers merge the returned rows
+/// into the partition map before [`note_scoped_members`]; the rehydrate
+/// step drops same-wid stale mappings for contradicted details.
+pub(crate) fn preserve_non_covering_hidden(
+    retained: &RetainedCore,
+    pid: u32,
+    snapshot: &crate::runtime_types::ScopedBackendSnapshot,
+    ctx: &NativeContext,
+) -> Vec<(DomainKey, ObservedWindow)> {
+    let mut preserved: Vec<(DomainKey, ObservedWindow)> = Vec::new();
+    let Some(app) = retained.apps.get(&pid) else {
+        return preserved;
+    };
+    for (wid, entry) in &app.roster {
+        if entry.excluded.is_some() {
+            continue;
+        }
+        let Some(obs) = entry.observed else {
+            continue;
+        };
+        if snapshot.windows.iter().any(|w| w.wid == *wid) {
+            continue;
+        }
+        if snapshot.cg_alive.iter().any(|d| d.wid == *wid) {
+            continue;
+        }
+        let id = window_id(pid, *wid);
+        let Some(key) = retained.window_domains.get(&id) else {
+            continue;
+        };
+        if ctx.is_current(key) {
+            continue;
+        }
+        let known = ctx
+            .domains
+            .iter()
+            .any(|d| d.output == key.output && d.workspace == key.workspace);
+        if !known {
+            continue;
+        }
+        preserved.push((key.clone(), obs));
+    }
+    preserved
+}
+
+/// Re-home AX-absent CG-alive windows on fresh native facts, grounded
+/// NON-CURRENT only: for each [`CgAliveDetail`] of exactly this PID's
+/// snapshot, a detail re-homes only on an exact fresh singleton SLS
+/// membership homing a hidden (non-current) domain in the current context
+/// plus fresh non-degenerate CG frame evidence. A singleton homing the
+/// current domain never re-homes here — current membership requires fresh
+/// AX/classifier state before writes (hide/minimize/exclusion may change
+/// during AX blindness; CG onscreen cannot disambiguate). Such a
+/// current-target detail drops its stale home and stays held pending AX.
+/// Multi-Space, empty (unreadable), unhomed (fullscreen/system/deleted
+/// Space), degenerate-frame, missing-entry, and shared-SID multi-output
+/// details all hold unknown, never a guessed home (shared SIDs never
+/// arbitrate on the stale retained rect). Only retained live roster rows
+/// re-home (classifier-excluded rows never do; minimized/hidden sources
+/// ride the minimized path); hidden/minimized flags are never refreshed
+/// here — the roster keeps its retained truth. Geometry reuses the retained
+/// observed frame (last AX truth, possibly stale within the Space); the CG
+/// frame is liveness evidence only, never a fabricated AX read. PID/WID
+/// matching is by this PID's roster (the caller fences generation/sequence
+/// exactly like [`apply_roster_covering`], and a relaunch clears the
+/// roster, so a stale lifetime never re-homes). Any detail that fails to
+/// re-home drops the stale mapping for that wid (fresh facts contradict
+/// the old receipt, so it cannot be preserved as truth). Returns the extra
+/// member windows per domain for the caller to merge into the partition
+/// map before [`note_scoped_members`]. Clears the `cg-alive` /
+/// `cg-unreadable` / `blank-hidden` hold when the complete oracle leaves
+/// no unhomed CG-owner absent and every retained absent row is freshly
+/// grounded; genuinely unknown details keep the hold.
+pub(crate) fn rehydrate_cg_alive(
+    retained: &mut RetainedCore,
+    pid: u32,
+    snapshot: &crate::runtime_types::ScopedBackendSnapshot,
+    ctx: &NativeContext,
+) -> BTreeMap<DomainKey, Vec<ObservedWindow>> {
+    let mut extra: BTreeMap<DomainKey, Vec<ObservedWindow>> = BTreeMap::new();
+    // Decide under shared borrows; mutate below (one roster row at most
+    // per detail: details are sorted-unique by wid from the builder).
+    // Fresh evidence always overwrites: `window_domains` still holds the
+    // PREVIOUS snapshot's homing here (the prune in `note_scoped_members`
+    // runs later), so a skip-if-homed would keep a stale home — an outside
+    // move is proven only by the fresh SLS read below, never the last
+    // membership merely because CG is still alive.
+    let mut rehomed: Vec<(u32, u64, DomainKey, ObservedWindow)> = Vec::new();
+    let mut contradicted: Vec<u32> = Vec::new();
+    {
+        let Some(app) = retained.apps.get(&pid) else {
+            return extra;
+        };
+        for detail in &snapshot.cg_alive {
+            let detail: &CgAliveDetail = detail;
+            let Some(entry) = app.roster.get(&detail.wid) else {
+                continue;
+            };
+            if entry.excluded.is_some() {
+                continue;
+            }
+            let Some(obs) = entry.observed else {
+                continue;
+            };
+            let (Some(sid), true) = (detail.singleton(), detail.frame_live()) else {
+                contradicted.push(detail.wid);
+                continue;
+            };
+            let candidates: Vec<&crate::runtime_types::NativeDomain> =
+                ctx.domains.iter().filter(|d| d.space == sid).collect();
+            // Never guess across outputs: a SID homed by several domains
+            // holds until fresh AX proof, even when the stale retained rect
+            // overlaps one work area. New CG-coordinate semantics are out
+            // of scope for this recovery.
+            if candidates.len() != 1 {
+                contradicted.push(detail.wid);
+                continue;
+            }
+            let domain = candidates[0];
+            let key = DomainKey {
+                output: domain.output.clone(),
+                workspace: domain.workspace.clone(),
+            };
+            // Current-domain recovery needs fresh AX/classifier state:
+            // promoting an AX-absent window to an actuating domain on
+            // CG/SLS alone could authorize writes for a hidden/minimized/
+            // excluded window. Drop the stale home and hold pending AX.
+            if ctx.is_current(&key) {
+                contradicted.push(detail.wid);
+                continue;
+            }
+            rehomed.push((detail.wid, sid, key, obs));
+        }
+    }
+    for (wid, sid, key, obs) in &rehomed {
+        if let Some(app) = retained.apps.get_mut(&pid)
+            && let Some(entry) = app.roster.get_mut(wid)
+        {
+            entry.spaces = vec![*sid];
+        }
+        retained
+            .window_domains
+            .insert(window_id(pid, *wid), key.clone());
+        extra.entry(key.clone()).or_default().push(*obs);
+    }
+    // Fresh contradiction drops the stale receipt: the old home is no
+    // longer truth once fresh SLS/CG fails to confirm it (current target,
+    // ambiguous, unreadable, unhomed, degenerate, or shared-output).
+    for wid in &contradicted {
+        if let Some(app) = retained.apps.get_mut(&pid)
+            && let Some(entry) = app.roster.get_mut(wid)
+        {
+            entry.spaces.clear();
+        }
+        retained.window_domains.remove(&window_id(pid, *wid));
+    }
+    // The oracle hold lifts only when the COMPLETE oracle leaves no
+    // unhomed CG-owner absent AND every retained absent row is freshly
+    // grounded: every CG-owner wid is AX-live, excluded, or freshly
+    // re-homed above, and every roster row absent from AX/exclusions is
+    // freshly re-homed. Anything else keeps the hold (including
+    // `blank-hidden` from the non-covering path: a fully re-homed hidden
+    // scope is covering truth for this PID). Decided from this call's
+    // success set (never the still-stale homing map, whose prune runs
+    // later in `note_scoped_members`).
+    if snapshot.cg_complete
+        && let Some(app) = retained.apps.get_mut(&pid)
+        && (app.roster_cause == "cg-alive"
+            || app.roster_cause == "cg-unreadable"
+            || app.roster_cause == "blank-hidden")
+    {
+        let live: std::collections::BTreeSet<u32> =
+            snapshot.windows.iter().map(|w| w.wid).collect();
+        let excluded: std::collections::BTreeSet<u32> =
+            snapshot.excluded_reasons.iter().map(|o| o.wid).collect();
+        let homed: std::collections::BTreeSet<u32> =
+            rehomed.iter().map(|(wid, _, _, _)| *wid).collect();
+        let pending_owner = snapshot
+            .cg_owner_wids
+            .iter()
+            .any(|wid| !live.contains(wid) && !excluded.contains(wid) && !homed.contains(wid));
+        let pending_roster = app
+            .roster
+            .iter()
+            .any(|(wid, _)| !live.contains(wid) && !excluded.contains(wid) && !homed.contains(wid));
+        if !pending_owner && !pending_roster {
+            app.roster_incomplete = false;
+            app.roster_cause.clear();
+        }
+    }
+    extra
 }
 
 /// Record synthetic (metadataless) homing: every retained window of one

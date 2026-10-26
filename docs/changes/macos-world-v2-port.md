@@ -1010,10 +1010,37 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   than a queue wedge; the missing requested ordinal and per-scope context
   prevents causal attribution. No tentative implementation or product decision
   is made here.
-- Retraction: the earlier Worker hypothesis of a missing creation seam is
-  withdrawn. The accepted creation seam exists
-  ([targeting and receipt cutover](#reviewed-targeting-and-receipt-cutover));
-  no missing-seam diagnosis is recorded.
+- Source review confirms the accepted native creation seam is already implemented;
+  missing-seam diagnosis is unsupported.
+
+## Off-current native-fact recovery (2026-10-26)
+
+- Established production-seam cause: AX partial/full-empty omissions hide an
+  off-current member while positive CG still owns it; the native home is then
+  lost/unknown and the off-current scope holds, so the later send is fenced
+  `scope-held`. No core change.
+- Fix (macOS only): the owning per-app worker attaches fresh SLS singleton
+  membership plus CG liveness (layer/onscreen/integer bounds) for AX-absent
+  CG-owner wids alongside the AX legs; the roster re-homes only a retained
+  live lifetime onto a hidden (non-current) domain on an exact singleton plus
+  live frame. Ambiguous (multi/unhomed/shared-SID), current-target,
+  degenerate-frame, missing-entry and unreadable details drop the stale home
+  and retain the hold until fresh AX; per-PID clearing uses the complete CG
+  oracle only.
+- Diagnostics: rejected sends log one bounded metadata-only `send refused`
+  line (subject/index/follow/source, observation/request/command seq,
+  held-scope detail); per-scope scope-held stderr spam is removed. No titles,
+  content, or paths.
+- Review corrections accepted: an incomplete-helper test asserting a false
+  branch was replaced with the true branch; held-scope ring tokens kept.
+  Causal repair only.
+- Original-run note: the exact requested ordinal and per-scope context for the
+  original dogfood run remain missing, so that run is not claimed proven; the
+  `unknown`/`unchanged` refusal vocabulary is retained for those cases. This
+  workspace part is complete OFFLINE; live native proof remains pending.
+- Gates: locked macOS build PASS; macOS tests PASS (1,390: 1,242 library plus
+  148 integration, 0 failed); strict all-target clippy PASS; workspace fmt and
+  diff check PASS. No shared-source change, no live acceptance claimed.
 
 ## Risks and open evidence
 
