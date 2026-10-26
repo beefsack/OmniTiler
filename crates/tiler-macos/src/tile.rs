@@ -4198,6 +4198,7 @@ mod tests {
                 closed: vec![],
                 host_owned_workspace_domains: true,
                 equal_workspace_count: false,
+                birth_clear: false,
                 native: vec![NativeObservation {
                     output: OutputId("out-a".to_owned()),
                     native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
@@ -4208,6 +4209,7 @@ mod tests {
                     tiler_core::output_selection::MigrationSourceRefill::default(),
                 anchor_fallback: tiler_core::admission::AnchorFallback::default(),
                 no_space_result: tiler_core::admission::NoSpaceResult::default(),
+                born_maximized: tiler_core::born_maximized::BornMaximized::default(),
                 switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
                 fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
                 focus_follows_cursor: false,
