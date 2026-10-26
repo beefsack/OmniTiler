@@ -7,6 +7,9 @@ endif()
 if(NOT DEFINED PRES_CONSUMER)
     message(FATAL_ERROR "usage: cmake -DPRES_CONSUMER=<file> -P validate-metadata.cmake")
 endif()
+if(NOT DEFINED PRES_ROUTER)
+    message(FATAL_ERROR "usage: cmake -DPRES_ROUTER=<file> -P validate-metadata.cmake")
+endif()
 if(NOT DEFINED DRAG_HEADER OR NOT DEFINED DRAG_IMPL)
     message(FATAL_ERROR "usage: cmake -DDRAG_HEADER=<file> -DDRAG_IMPL=<file> -P validate-metadata.cmake")
 endif()
@@ -98,6 +101,7 @@ file(READ "${PRES_IMPL}" PRES_IMPL_TEXT)
 file(READ "${PRES_LOGIC}" PRES_LOGIC_TEXT)
 file(READ "${PRES_TEST}" PRES_TEST_TEXT)
 file(READ "${PRES_CONSUMER}" PRES_CONSUMER_TEXT)
+file(READ "${PRES_ROUTER}" PRES_ROUTER_TEXT)
 
 # Deleted superseded policy derivation must not return: no group-highlight
 # or visual-policy FFI, no shared visual predicates, no outer-rect
@@ -137,7 +141,7 @@ foreach(PRES_CONSUMER_WIRING "applyPresentationPaint" "clearPresentationPaint" "
         message(FATAL_ERROR "presentation wiring validation failed: '${PRES_CONSUMER_WIRING}' not found in consumer header")
     endif()
 endforeach()
-foreach(PRES_WIRING "applyPresentation" "clearPresentation" "foregroundMatchesNow" "isLiveEligibleNow" "groupMoveLiveNow" "m_presentation" "onTrackedFrameChanged" "onGroupMemberFrameChanged")
+foreach(PRES_WIRING "applyPresentation" "clearPresentation" "foregroundMatchesNow" "isLiveEligibleNow" "groupMoveLiveNow" "m_router" "onTrackedFrameChanged" "onGroupMemberFrameChanged" "onWindowActivated")
     string(FIND "${PRES_IMPL_TEXT}" "${PRES_WIRING}" PRES_WIRING_IMPL_POS)
     if(PRES_WIRING_IMPL_POS EQUAL -1)
         message(FATAL_ERROR "presentation wiring validation failed: '${PRES_WIRING}' not found in implementation")
@@ -147,22 +151,30 @@ foreach(PRES_WIRING "applyPresentation" "clearPresentation" "foregroundMatchesNo
         message(FATAL_ERROR "presentation wiring validation failed: '${PRES_WIRING}' not found in header")
     endif()
 endforeach()
-# Shared-consumer helpers the implementation must call (never reimplement):
-# fence/floor checks, gesture-latch clearing, and the exact stroke
-# derivation. Declared in the consumer header, not the effect header.
-foreach(PRES_SHARED_CALL "markBorderGeometryDirty" "markUnderlayGeometryDirty" "presentationBorderFresh" "presentationUnderlayFresh" "borderStrokeFromPublished" "clearPaintPreview")
-    string(FIND "${PRES_IMPL_TEXT}" "${PRES_SHARED_CALL}" PRES_SHARED_CALL_POS)
-    if(PRES_SHARED_CALL_POS EQUAL -1)
-        message(FATAL_ERROR "presentation wiring validation failed: shared '${PRES_SHARED_CALL}' not called by implementation")
+# Production routing delegation: every native paint-state transition runs
+# through the Qt-only router the offline gate tests (same ownership, no
+# second policy). The handler bodies delegate; they never reimplement
+# witness/floor/latch/order logic. The router header owns the transition
+# functions; the consumer header owns strict parse plus order fencing.
+foreach(PRES_ROUTER_CALL "m_router.onActivation(" "m_router.onTrackedFrame(" "m_router.onMemberFrame(" "m_router.onGestureBoundary(" "m_router.onStreamReset(" "m_router.onDisplayHide(" "m_router.applyEndpointPaint(" "m_router.setSourceInstance(")
+    string(FIND "${PRES_IMPL_TEXT}" "${PRES_ROUTER_CALL}" PRES_ROUTER_CALL_POS)
+    if(PRES_ROUTER_CALL_POS EQUAL -1)
+        message(FATAL_ERROR "presentation routing validation failed: '${PRES_ROUTER_CALL}' delegation missing in implementation")
+    endif()
+endforeach()
+foreach(PRES_ROUTER_DEF "class PresentationRouter" "void onActivation" "void onTrackedFrame" "void onMemberFrame" "void onGestureBoundary" "void onStreamReset" "void onDisplayHide" "applyEndpointPaint" "setSourceInstance")
+    string(FIND "${PRES_ROUTER_TEXT}" "${PRES_ROUTER_DEF}" PRES_ROUTER_DEF_POS)
+    if(PRES_ROUTER_DEF_POS EQUAL -1)
+        message(FATAL_ERROR "presentation routing validation failed: '${PRES_ROUTER_DEF}' not found in router header")
     endif()
 endforeach()
 
 string(REGEX MATCHALL "Q_SCRIPTABLE" PRES_SCRIPTABLE_MATCHES "${PRES_IMPL_TEXT}")
 list(LENGTH PRES_SCRIPTABLE_MATCHES PRES_SCRIPTABLE_COUNT)
-if(NOT PRES_SCRIPTABLE_COUNT EQUAL 3)
-    message(FATAL_ERROR "presentation D-Bus validation failed: expected paint setter, paint clear plus the held WaitPresentationFacts Q_SCRIPTABLE methods, found ${PRES_SCRIPTABLE_COUNT}")
+if(NOT PRES_SCRIPTABLE_COUNT EQUAL 4)
+    message(FATAL_ERROR "presentation D-Bus validation failed: expected paint setter, paint clear, display hide plus the held WaitPresentationFacts Q_SCRIPTABLE methods, found ${PRES_SCRIPTABLE_COUNT}")
 endif()
-foreach(PRES_METHOD SetPresentation ClearPresentation WaitPresentationFacts)
+foreach(PRES_METHOD SetPresentation ClearPresentation HidePresentation WaitPresentationFacts)
     string(FIND "${PRES_IMPL_TEXT}" "${PRES_METHOD}" PRES_METHOD_POS)
     if(PRES_METHOD_POS EQUAL -1)
         message(FATAL_ERROR "presentation D-Bus validation failed: ${PRES_METHOD} not found")
@@ -201,7 +213,7 @@ foreach(PRES_FACTS "presentationFactsJson" "presentationFactsStale" "presentatio
         message(FATAL_ERROR "presentation facts validation failed: '${PRES_FACTS}' not found in implementation, logic, header, or facts module")
     endif()
 endforeach()
-foreach(PRES_FACTS_WIRE "\"v\":1" "\"instance\"" "\"rev\"" "\"chord\"" "\"chordKnown\"" "\"changed\"" "\"superseded\"" "\"available\"")
+foreach(PRES_FACTS_WIRE "\"v\":1" "\"instance\"" "\"rev\"" "\"invalidation\"" "\"chord\"" "\"chordKnown\"" "\"changed\"" "\"superseded\"" "\"available\"")
     string(FIND "${PRES_LOGIC_TEXT}" "${PRES_FACTS_WIRE}" PRES_FACTS_WIRE_POS)
     if(PRES_FACTS_WIRE_POS EQUAL -1)
         message(FATAL_ERROR "presentation facts validation failed: wire key ${PRES_FACTS_WIRE} not found in shared logic")
@@ -227,7 +239,7 @@ endif()
 # Consumer contract: the shared consumer header owns strict shape plus
 # order fencing; native styling stays out of the payload (independent
 # colors, live system accent default, never core-derived).
-foreach(PRES_CONSUMER_KEY "\"v\":1" "\"gen\"" "\"rev\"" "\"obs\"" "\"foreground\"" "\"border\"" "\"underlay\"" "\"preview\"" "\"status\"" "\"members\"" "StaleIgnored" "Malformed" "16384" "isJsonIntValue" "clearPaintDisplay" "clearPaintPreview" "borderStrokeFromPublished" "presentationBorderFresh" "presentationUnderlayFresh" "paintOrderGreater" "PaintOrder")
+foreach(PRES_CONSUMER_KEY "\"v\":1" "\"gen\"" "\"rev\"" "\"obs\"" "\"coveredInstance\"" "\"coveredInvalid\"" "\"foreground\"" "\"border\"" "\"underlay\"" "\"preview\"" "\"producerInstance\"" "\"producerSerial\"" "\"status\"" "\"members\"" "StaleIgnored" "Malformed" "16384" "isJsonIntValue" "clearPaintDisplay" "clearPaintPreview" "borderStrokeFromPublished" "presentationBorderFresh" "presentationUnderlayFresh" "presentationCoveredCurrent" "paintOrderGreater" "PaintOrder" "coverClearsFloor")
     string(FIND "${PRES_CONSUMER_TEXT}" "${PRES_CONSUMER_KEY}" PRES_CONSUMER_KEY_POS)
     if(PRES_CONSUMER_KEY_POS EQUAL -1)
         message(FATAL_ERROR "presentation consumer validation failed: '${PRES_CONSUMER_KEY}' not found in consumer header")
@@ -288,7 +300,8 @@ foreach(PRES_PASSIVE "mouseChanged" "MetaModifier" "ShiftModifier" "m_firstMouse
         endif()
     endif()
 endforeach()
-# Focus activation must clear the old paint immediately; fullscreen/minimized
+# Focus activation must hide the old paint immediately (display-only,
+# preserving order/invalidation evidence); fullscreen/minimized
 # transitions must update visibility via the owned tracked signals; the
 # held paint's foreground must bind to the live active internalId;
 # registration failure must fail closed with no retry. Maximize observation
@@ -309,7 +322,9 @@ endforeach()
 # A window removed mid-gesture must drop the held drop-preview immediately:
 # forgetting the exact tracked move window clears the preview latch and
 # re-evaluates the item, so no stale shape survives with no later paint to
-# clear it. Clearing-only: no fence, floor, epoch, or order touched.
+# clear it. The latch clear plus the causal bump route through the
+# production router (same ownership, tested offline); the body must not
+# touch ordering state directly.
 string(FIND "${PRES_IMPL_TEXT}" "void ActiveWindowBorderEffect::forgetGestureWindow" FORGET_START_POS)
 if(FORGET_START_POS EQUAL -1)
     message(FATAL_ERROR "presentation removal validation failed: forgetGestureWindow missing")
@@ -320,10 +335,10 @@ if(FORGET_END_POS EQUAL -1)
     message(FATAL_ERROR "presentation removal validation failed: forgetGestureWindow body not closed")
 endif()
 string(SUBSTRING "${FORGET_TAIL}" 0 ${FORGET_END_POS} FORGET_BODY)
-foreach(FORGET_CLEAR "m_groupMoveWindow" "clearPaintPreview" "updateDragPreview")
+foreach(FORGET_CLEAR "m_groupMoveWindow" "m_router.onGestureBoundary" "updateDragPreview")
     string(FIND "${FORGET_BODY}" "${FORGET_CLEAR}" FORGET_CLEAR_POS)
     if(FORGET_CLEAR_POS EQUAL -1)
-        message(FATAL_ERROR "presentation removal validation failed: '${FORGET_CLEAR}' missing in forgetGestureWindow (held preview must clear on removal)")
+        message(FATAL_ERROR "presentation removal validation failed: '${FORGET_CLEAR}' missing in forgetGestureWindow (held preview must clear on removal via the router)")
     endif()
 endforeach()
 string(FIND "${PRES_IMPL_TEXT}" "registerService" PRES_REG_POS)

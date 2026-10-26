@@ -256,6 +256,14 @@ export interface WorldObservation {
     // raw lane (plus the same-capture cursor/windowAt facts) to the core
     // ingress. Terminal snapshots freeze the native finish cursor.
     nativeGesture?: NativeGestureSnapshot | null;
+    // Stage 5 causal coverage witness (effect-owned, never the JS transport
+    // watermark): the native-invalidation source instance plus the counter
+    // value covered by this capture, or null when the effect facts are
+    // unknown. The broker validates and strips this raw lane before the
+    // strict core decode, records it as the capture's coverage, and serves
+    // it back with the presentation; missing proof yields no drawable
+    // coverage, never guessed truth.
+    nativeInvalidWitness?: { instance: string; counter: string } | null;
     actionForeground: string | null;
     actionCached: null;
     actionOutputs: string[];
@@ -501,9 +509,14 @@ function convertHintBound(value: number | null, delta: number | null): number | 
 // absent, stale, or malformed). Absent/null rides disabled zeros and the
 // core hides instead of projecting. Offline tests inject exact values;
 // production always supplies the field with the latest fetched snapshot.
+// `invalidation` is the Stage 5 causal witness: the effect-owned monotonic
+// native-invalidation counter in the snapshot's instance namespace. The
+// broker records each capture's covered value and rendering requires
+// covering the latest; never compared across instances.
 export interface PresentationSnapshot {
     instance: string;
     rev: string;
+    invalidation: string;
     chord: boolean;
     borderGap: number;
     borderWidth: number;
@@ -1530,6 +1543,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     return {
         mode, topology, bindings, domains, minimized, predicate: predicateWire, complete, gesture,
         nativeGesture: env.nativeGesture ?? null,
+        // The causal witness rides from the latest fetched effect facts
+        // (null when the facts are unknown: no drawable coverage then).
+        nativeInvalidWitness: env.presentationFacts !== null && env.presentationFacts !== undefined
+            ? { instance: env.presentationFacts.instance, counter: env.presentationFacts.invalidation }
+            : null,
         focusedGlobal: activeId,
         screens: screenFacts, windowFacts, views, closed, hostOwned, equalCount, native,
         floatIntent: floatIntentDeduped, tileIntent: tileIntentDeduped,

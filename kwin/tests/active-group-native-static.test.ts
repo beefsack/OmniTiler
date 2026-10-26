@@ -27,10 +27,11 @@ function extractBody(body: string, marker: string): string {
 }
 
 describe("presentation native static contract", () => {
-    it("exposes the paint setter, paint clear, and the held facts waiter through the effect-owned endpoint", () => {
-        assert.equal(countMatches(effectImpl, /Q_SCRIPTABLE/g), 3);
+    it("exposes the paint setter, paint clear, display hide, and the held facts waiter through the effect-owned endpoint", () => {
+        assert.equal(countMatches(effectImpl, /Q_SCRIPTABLE/g), 4);
         assert.match(effectImpl, /SetPresentation/);
         assert.match(effectImpl, /ClearPresentation/);
+        assert.match(effectImpl, /HidePresentation/);
         assert.doesNotMatch(effectImpl, /LastVerdict/);
         assert.doesNotMatch(effectImpl, /SetGroupHighlight/);
         assert.doesNotMatch(effectImpl, /ClearGroupHighlight/);
@@ -65,7 +66,8 @@ describe("presentation native static contract", () => {
         assert.match(logic, /presentationFactsLeaseMs/);
         assert.match(logic, /"instance"/);
         assert.match(logic, /"changed"/);
-        assert.match(logic, /\\"superseded\\":%9/);
+        assert.match(logic, /\\"invalidation\\":\\"%3\\"/);
+        assert.match(logic, /\\"superseded\\":%10/);
         assert.match(logic, /\\"available\\"/);
         // No script maximize handoff: observation seeds directly from the
         // native committed maximizeMode() for the hide veto only.
@@ -120,7 +122,7 @@ describe("presentation native static contract", () => {
         assert.match(effectHeader, /m_borderItem/);
         assert.match(effectHeader, /m_groupItem/);
         assert.match(effectHeader, /m_groupAnchor/);
-        assert.match(effectHeader, /m_presentation/);
+        assert.match(effectHeader, /PresentationRouter m_router/);
         assert.match(effectHeader, /m_dragPreviewRect/);
         assert.doesNotMatch(effectHeader, /m_groupMemberIds/);
         assert.doesNotMatch(effectHeader, /m_groupState/);
@@ -163,20 +165,34 @@ describe("presentation native static contract", () => {
         // The held accepted inner rect maps into the tracked window item
         // without a second outset; visibility is core paint plus live
         // foreground plus hide-only vetoes, never derived eligibility.
-        assert.match(effectImpl, /m_presentation\.borderInner/);
+        assert.match(effectImpl, /m_router\.paint\.borderInner/);
         assert.match(effectImpl, /m_borderItem\.setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
-        assert.match(effectImpl, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh;/);
+        assert.match(effectImpl, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh && current;/);
         // The ring replays the published outer exactly: its stroke is
         // derived strictly from the published inner/outer pair (half the
-        // uniform inset), never live config width, and a set geometry
-        // floor hides stale shapes until a strictly newer paint arrives.
-        assert.match(effectImpl, /borderStrokeFromPublished\(m_presentation\.borderInner, m_presentation\.borderOuter\)/);
-        assert.match(effectImpl, /presentationBorderFresh\(&m_presentation\)/);
+        // uniform inset), never live config width; a set geometry floor
+        // hides stale shapes until a strictly covering paint arrives, and
+        // every drawn surface additionally requires held coverage equal
+        // to the actual latest witness.
+        assert.match(effectImpl, /borderStrokeFromPublished\(m_router\.paint\.borderInner, m_router\.paint\.borderOuter\)/);
+        assert.match(effectImpl, /presentationBorderFresh\(&m_router\.paint\)/);
+        assert.match(effectImpl, /presentationCoveredCurrent\(&m_router\.paint\)/);
         assert.match(effectImpl, /setOutline\(ringOutlineForWidth\(stroke\)\)/);
+        // Frame dirt advances the causal witness even with no held paint:
+        // member-frame signals route through the production router, never
+        // gated on held paint or member lists (observed facts, not display
+        // state).
         assert.match(effectImpl, /onTrackedFrameChanged/);
         assert.match(effectImpl, /onGroupMemberFrameChanged/);
-        assert.match(effectImpl, /markBorderGeometryDirty\(&m_presentation\)/);
-        assert.match(effectImpl, /markUnderlayGeometryDirty\(&m_presentation\)/);
+        {
+            const trackedBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onTrackedFrameChanged(");
+            assert.match(trackedBody, /m_router\.onTrackedFrame\(factsInstance\(\)\)/);
+            assert.match(trackedBody, /updateBorder\(\)/);
+            const memberBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow");
+            assert.match(memberBody, /m_router\.onMemberFrame\(factsInstance\(\)\)/);
+            assert.doesNotMatch(memberBody, /!m_presentation\.has/);
+            assert.doesNotMatch(memberBody, /m_presentation\.underlayMembers\.contains/);
+        }
         assert.match(effectHeader, /onTrackedFrameChanged\(\);/);
         assert.match(effectHeader, /onGroupMemberFrameChanged\(EffectWindow \*window\);/);
         assert.doesNotMatch(effectImpl, /initialOk/);
@@ -206,7 +222,7 @@ describe("presentation native static contract", () => {
         assert.match(effectImpl, /isLiveEligibleNow/);
     });
 
-    it("gates the preview on live gesture liveness without identity matching", () => {
+    it("gates the preview on live gesture liveness plus the producing identity", () => {
         // Classification at Started via the underlying Window; resize alone
         // never arms and the chord stays independent.
         assert.match(effectImpl, /isInteractiveMove/);
@@ -215,8 +231,10 @@ describe("presentation native static contract", () => {
         assert.match(effectImpl, /groupMoveLiveNow/);
         // The published preview win is the insertion neighbor, never the
         // mover: no identity match against the mover is performed anywhere.
+        // The producing identity instead matches the live open gesture.
         assert.doesNotMatch(effectImpl, /group_highlight_move_arm_matches/);
         assert.doesNotMatch(effectImpl, /groupMoveMatchesNow/);
+        assert.match(effectImpl, /previewProducerMatchesLive/);
         // End/cancel/removal clears the exact tracked move window only.
         assert.match(effectImpl, /m_groupMoveWindow == window/);
         assert.match(effectImpl, /m_groupMoveWindow\.clear\(\)/);
@@ -232,12 +250,15 @@ describe("presentation native static contract", () => {
         const armBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::updateGroupMoveArm(");
         assert.match(armBody, /isInteractiveMove/);
         assert.match(armBody, /m_groupMoveWindow == window/);
-        // The preview show gate is held paint plus liveness plus endpoint
-        // only; the rect is consumed verbatim in overlay space.
+        // The preview show gate is held paint plus producer liveness plus
+        // covered-current plus endpoint only; the rect is consumed verbatim
+        // in overlay space.
         const previewBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::updateDragPreview()");
-        assert.match(previewBody, /m_presentation\.previewHas/);
+        assert.match(previewBody, /m_router\.paint\.previewHas/);
+        assert.match(previewBody, /producerLive/);
+        assert.match(previewBody, /presentationCoveredCurrent/);
         assert.match(previewBody, /groupMoveLiveNow/);
-        assert.match(previewBody, /m_presentation\.previewRect/);
+        assert.match(previewBody, /m_router\.paint\.previewRect/);
     });
 
     it("reports bounded paint setter and transition outcomes without raw identities", () => {
@@ -295,18 +316,30 @@ describe("presentation native static contract", () => {
         // consumer header (offline-tested); member matching uses bare-UUID
         // string compares against the held paint list.
         assert.doesNotMatch(effectImpl, /QJsonDocument/);
-        assert.match(effectImpl, /m_presentation\.underlayMembers/);
+        assert.match(effectImpl, /m_router\.paint\.underlayMembers/);
     });
 
-    it("binds the paint to the live foreground, clears on activation, and fails closed on endpoint loss", () => {
+    it("binds the paint to the live foreground, hides display-only on activation, and fails closed on endpoint loss", () => {
         // The held paint's foreground binds to the live active internalId;
         // a stale paint never renders under a new focus.
         assert.match(effectImpl, /internalId/);
         assert.match(effectImpl, /WithoutBraces/);
         assert.match(effectImpl, /foregroundMatchesNow/);
-        assert.match(effectHeader, /PresentationPaint m_presentation/);
-        // Focus activation clears immediately before async refresh.
+        assert.match(effectHeader, /PresentationRouter m_router/);
+        // Focus activation hides display-only immediately before async
+        // refresh (order/invalidation evidence preserved): the stream
+        // resets only on explicit replacement, never on activation. The
+        // production route is a named method the offline gate pins
+        // exactly; the signal handler only delegates to it.
         assert.match(effectImpl, /windowActivated/);
+        assert.match(effectImpl, /onWindowActivated\(\);/);
+        assert.match(effectHeader, /void onWindowActivated\(\);/);
+        {
+            const activationBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onWindowActivated(");
+            assert.match(activationBody, /m_router\.onActivation\(factsInstance\(\)\)/);
+            assert.match(activationBody, /updateDragPreview\(\)/);
+            assert.doesNotMatch(activationBody, /clearPresentationPaint/);
+        }
         assert.match(effectImpl, /clearPresentation\(\);/);
         // Registration failure fails closed with no retry. Focus clears
         // synchronously (no async settle); the only singleShot in the
@@ -341,14 +374,15 @@ describe("presentation native static contract", () => {
         assert.doesNotMatch(consumer, /isStrictInt/);
         assert.match(consumer, /std::isfinite/);
         // Findings F/G: order fence independent of visible state, geometry
-        // floors cleared only by strictly newer content, preview latch
-        // cleared on gesture boundaries.
+        // floors keyed on the causal witness and cleared only by strictly
+        // covering content, preview latch cleared on gesture boundaries.
         assert.match(consumer, /PaintOrder/);
         assert.match(consumer, /paintOrderGreater/);
         assert.match(consumer, /markBorderGeometryDirty/);
         assert.match(consumer, /markUnderlayGeometryDirty/);
         assert.match(consumer, /presentationBorderFresh/);
         assert.match(consumer, /presentationUnderlayFresh/);
+        assert.match(consumer, /presentationCoveredCurrent/);
         // Finding C: the stroke derives strictly from the published pair.
         assert.match(consumer, /borderStrokeFromPublished/);
         // The consumer header holds Qt-only parse plus order fencing: no
@@ -520,7 +554,20 @@ describe("presentation native static contract", () => {
         assert.ok(effectImpl.indexOf("attachGestureWindow(window);", gestureSetup) < effectImpl.indexOf("m_borderItem.setZ(-1)", gestureSetup));
         // Live move start arms the latch; finish/removal clears the exact
         // tracked window, all from the authoritative gesture callbacks.
+        // Every gesture boundary (start, resize finish, abort/drop) routes
+        // through the production router's causal bump: the counter is
+        // native facts lifecycle, not the renderer move latch.
         assert.match(effectImpl, /updateGroupMoveArm\(window\)/);
+        assert.match(effectImpl, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
+        {
+            const startBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGestureDragStart(");
+            assert.match(startBody, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
+            const finishBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGestureDragFinish(");
+            assert.match(finishBody, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
+            assert.match(finishBody, /updateDragPreview\(\)/);
+            const forgetBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::forgetGestureWindow(");
+            assert.match(forgetBody, /m_router\.onGestureBoundary\(factsInstance\(\)\)/);
+        }
         // No second plugin effect or factory.
         assert.doesNotMatch(effectImpl, /DragOracleEffect/);
         assert.doesNotMatch(effectImpl, /dragoracle-metadata\.json/);

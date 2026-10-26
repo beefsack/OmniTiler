@@ -489,6 +489,7 @@ if(BUILD_TESTING)
             -DPRES_LOGIC=${CMAKE_CURRENT_SOURCE_DIR}/activeborderlogic.h
             -DPRES_TEST=${CMAKE_CURRENT_SOURCE_DIR}/presentationconsumer_test.cpp
             -DPRES_CONSUMER=${CMAKE_CURRENT_SOURCE_DIR}/presentation_consumer.h
+            -DPRES_ROUTER=${CMAKE_CURRENT_SOURCE_DIR}/presentation_router.h
             -DDRAG_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.h
             -DDRAG_IMPL=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.cpp
             -DEXPECTED_PLUGIN_ID=omnitiler-active-border

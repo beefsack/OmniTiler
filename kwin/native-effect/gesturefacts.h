@@ -114,6 +114,10 @@ public:
     QString instance() const;
     quint64 revision() const;
     QString openWin() const;
+    // Live open native identity for the Stage 5 preview-producer match:
+    // "0" when no gesture is open. The renderer only dims a preview whose
+    // producing identity equals this live identity.
+    QString openSerial() const;
 
 private:
     QString currentSnapshot(bool changed, bool superseded, bool available) const;

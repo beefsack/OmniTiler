@@ -387,9 +387,9 @@ describe("native KCM static contract", () => {
         assert.match(effect, /themeValid \? themeColor\.alpha\(\) : 0/);
         assert.doesNotMatch(logic, /activeBorderColor/);
         assert.doesNotMatch(logic, /visual_policy_ffi/);
-        assert.match(effect, /m_presentation\.borderInner/);
+        assert.match(effect, /m_router\.paint\.borderInner/);
         assert.match(effect, /setInnerRect\(window \? window->windowItem\(\)->mapFromScene\(innerRect\) : RectF\(\)\)/);
-        assert.match(effect, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh;/);
+        assert.match(effect, /const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh && current;/);
         assert.match(effect, /setVisible\(visible\)/);
         assert.match(effect, /addRepaintFull\(\)/);
     });
@@ -456,7 +456,7 @@ describe("native KCM static contract", () => {
         // Stage 5 pure renderer: the stored core outer rect paints
         // verbatim. Config extension rides the style facts ingress; no
         // native outer-rect recomputation or extension resolution remains.
-        assert.match(effect, /m_presentation\.underlayOuter/);
+        assert.match(effect, /m_router\.paint\.underlayOuter/);
         assert.doesNotMatch(effect, /groupUnderlayOuterRect/);
         assert.doesNotMatch(effect, /groupUnderlayEffectiveExtension\(/);
         assert.doesNotMatch(logic, /groupUnderlayOuterRect/);

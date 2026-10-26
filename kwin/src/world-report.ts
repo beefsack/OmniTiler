@@ -386,12 +386,16 @@ export type WorldTakeReply =
 // mover-home `sourceOut`/`sourceWs`, insertion-neighbor `win`) when the
 // cached reply carried a drop preview, else null. `win` is the insertion
 // neighbor, never the mover identity: the subscriber must not treat it as
-// a mover match.
+// a mover match. `producerInstance`/`producerSerial` name the actual
+// producing native gesture, or nulls when that identity is unproven (a
+// renderer hides unproven previews, fail closed).
 export interface WorldPreview {
     rect: [number, number, number, number];
     sourceOut: string;
     sourceWs: string;
     win: string;
+    producerInstance: string | null;
+    producerSerial: string | null;
 }
 export interface WorldPresentationReply {
     outcome: "presentation";
@@ -399,6 +403,10 @@ export interface WorldPresentationReply {
     req: string;
     rev: string;
     obs: string;
+    // Causal coverage the cached capture covered (nulls when unproven:
+    // missing proof yields no drawable coverage, never guessed truth).
+    coveredInstance: string | null;
+    coveredInvalid: string | null;
     scopes: WorldReplyScope[];
     workspaces: WorldReplyWorkspace[];
     outputs: WorldReplyOutput[];
@@ -1220,17 +1228,21 @@ function parsePresentation(value: unknown): WorldPresentation {
 }
 
 // Presentation-lane reply (ReadWorldPresentation): the exact cached
-// projection shape `project_reply` plus the serving generation and the read
-// correlation bound by `project_read`: exactly
-// {v,outcome,gen,req,rev,obs,scopes,workspaces,outputs,windows,
-// presentation,preview}. No core transport bindings (adapter/source/
-// nativeInvalid/clock), no readiness/consumed flags, no one-shot lanes
-// (result, transfers, effects, gesture/operation settlement, warp), and no
-// retained write tokens (frame_op/clear_op keys are stripped server-side;
-// any carried token refuses). Window rows share the core row shape minus
-// the tokens; every other row shares the core row parser exactly. `preview`
-// is the trimmed renderer-only drop preview (paint `rect`, mover-home
-// source, insertion-neighbor window) or null; any other shape refuses.
+// projection shape `project_reply` plus the serving generation, the read
+// correlation, and the causal coverage, bound by `project_read`: exactly
+// {v,outcome,gen,req,rev,obs,coveredInstance,coveredInvalid,scopes,
+// workspaces,outputs,windows,presentation,preview}. No core transport
+// bindings (adapter/source/nativeInvalid/clock), no readiness/consumed
+// flags, no one-shot lanes (result, transfers, effects, gesture/operation
+// settlement, warp), and no retained write tokens (frame_op/clear_op keys
+// are stripped server-side; any carried token refuses). Window rows share
+// the core row shape minus the tokens; every other row shares the core row
+// parser exactly. `preview` is the trimmed renderer-only drop preview
+// (paint `rect`, mover-home source, insertion-neighbor window, plus the
+// producing-gesture identity or nulls when unproven) or null; any other
+// shape refuses. `coveredInstance`/`coveredInvalid` are the causal witness
+// the cached capture covered (nulls when unproven); non-null values must
+// be an opaque instance and a canonical counter.
 function parsePreview(value: unknown): WorldPreview | null {
     if (value === null) {
         return null;
@@ -1239,7 +1251,11 @@ function parsePreview(value: unknown): WorldPreview | null {
         throw new Error("presentation-preview");
     }
     const o = value as Record<string, unknown>;
-    if (Object.keys(o).length !== 4 || !("rect" in o && "sourceOut" in o && "sourceWs" in o && "win" in o)) {
+    if (
+        Object.keys(o).length !== 6 ||
+        !("rect" in o && "sourceOut" in o && "sourceWs" in o && "win" in o &&
+            "producerInstance" in o && "producerSerial" in o)
+    ) {
         throw new Error("presentation-preview-keys");
     }
     if (!isRect(o["rect"])) {
@@ -1248,15 +1264,31 @@ function parsePreview(value: unknown): WorldPreview | null {
     if (!isOpaqueId(o["sourceOut"]) || !isOpaqueId(o["sourceWs"]) || !isOpaqueId(o["win"])) {
         throw new Error("presentation-preview-id");
     }
+    const producerInstance = o["producerInstance"];
+    const producerSerial = o["producerSerial"];
+    if (producerInstance !== null && !isOpaqueId(producerInstance)) {
+        throw new Error("presentation-preview-producer");
+    }
+    if (
+        producerSerial !== null &&
+        (typeof producerSerial !== "string" || !isCanonicalU64(producerSerial) || producerSerial === "0")
+    ) {
+        throw new Error("presentation-preview-producer");
+    }
+    if ((producerInstance === null) !== (producerSerial === null)) {
+        throw new Error("presentation-preview-producer");
+    }
     return {
         rect: o["rect"] as [number, number, number, number],
         sourceOut: o["sourceOut"] as string,
         sourceWs: o["sourceWs"] as string,
         win: o["win"] as string,
+        producerInstance: producerInstance as string | null,
+        producerSerial: producerSerial as string | null,
     };
 }
 function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldPresentationReply | null {
-    if (!hasExactKeys(r, ["v", "outcome", "gen", "req", "rev", "obs", "scopes", "workspaces", "outputs", "windows", "presentation", "preview"])) {
+    if (!hasExactKeys(r, ["v", "outcome", "gen", "req", "rev", "obs", "coveredInstance", "coveredInvalid", "scopes", "workspaces", "outputs", "windows", "presentation", "preview"])) {
         return null;
     }
     if (r["outcome"] !== "presentation" || r["gen"] !== gen) {
@@ -1268,6 +1300,17 @@ function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldP
     const rev = r["rev"];
     const obs = r["obs"];
     if (typeof rev !== "string" || !isCanonicalU64(rev) || typeof obs !== "string" || !isCanonicalU64(obs)) {
+        return null;
+    }
+    const coveredInstance = r["coveredInstance"];
+    const coveredInvalid = r["coveredInvalid"];
+    if (coveredInstance !== null && !isOpaqueId(coveredInstance)) {
+        return null;
+    }
+    if (coveredInvalid !== null && (typeof coveredInvalid !== "string" || !isCanonicalU64(coveredInvalid))) {
+        return null;
+    }
+    if ((coveredInstance === null) !== (coveredInvalid === null)) {
         return null;
     }
     const scopesRaw = r["scopes"];
@@ -1287,6 +1330,8 @@ function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldP
         const preview = parsePreview(r["preview"]);
         return {
             outcome: "presentation", gen, req: r["req"] as string, rev, obs,
+            coveredInstance: coveredInstance as string | null,
+            coveredInvalid: coveredInvalid as string | null,
             scopes, workspaces, outputs, windows, presentation, preview,
         };
     } catch (error) {
@@ -1717,7 +1762,10 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
     // broker fills it from the raw native lane. nativeGesture is the
     // verbatim effect snapshot (or null when unknown); cursorWindow is the
     // same-capture script window fact (or null when unknown). The broker
-    // strips both raw keys before the strict decode.
+    // strips all three raw keys before the strict decode.
+    // nativeInvalidWitness is the Stage 5 causal coverage witness (or null
+    // when the effect facts are unknown): the broker validates, strips,
+    // and records it as this capture's coverage.
     const nativeGesture = (observation.nativeGesture ?? null) === null
         ? "null"
         : rawNativeGestureJson(
@@ -1726,6 +1774,10 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
     const cursorWindow = (observation.cursorWindow ?? null) === null
         ? "null"
         : esc(observation.cursorWindow as string);
+    const witness = (observation.nativeInvalidWitness ?? null) === null
+        ? "null"
+        : `{"instance":${esc((observation.nativeInvalidWitness as { instance: string }).instance)},` +
+          `"counter":${esc((observation.nativeInvalidWitness as { counter: string }).counter)}}`;
     return `{"v":${WORLD_CONTRACT_VERSION},"mode":${esc(observation.mode)},` +
         `"screens":[${screens}],"windows":[${windows}],"views":[${views}],"closed":[${closed}],` +
         `"hostOwned":${observation.hostOwned ? "true" : "false"},"equalCount":${observation.equalCount ? "true" : "false"},` +
@@ -1750,5 +1802,6 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"viewAttempts":[${viewAttempts}],"clearAttempts":[${clearAttempts}],` +
         `"floatIntent":[${floatIntent}],"tileIntent":[${tileIntent}],` +
         `"gestureIngress":null,"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow},` +
+        `"nativeInvalidWitness":${witness},` +
         `"anchorFallback":${esc(input.anchorFallback)},"noSpaceResult":${esc(input.noSpaceResult)}}`;
 }

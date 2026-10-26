@@ -16,11 +16,14 @@
 //! sequencing namespace already stamped by the JS mini-broker. The raw lane
 //! is normalized here by the production [`kde_raw::normalize_raw_windows`]
 //! (direct source include, no public API widened for tests) before the
-//! strict core decode. Raw refusals surface as the broker-shaped
+//! strict core decode, alongside the production gesture-lane fold and the
+//! production invalidation-witness strip (shared broker implementation, no
+//! lane copy). Raw refusals surface as the broker-shaped
 //! in-band error (`kind`/`message`) without touching the engine.
 
 use std::io::{BufRead, Write};
 
+use omnitiler::world_broker::normalize_invalidation_witness;
 use tiler_protocol::world_protocol::{
     WorldEngine, WorldEngineConfig, WorldOutcome, decode_request, encode_error, encode_reply,
 };
@@ -107,13 +110,19 @@ fn main() {
                 }
                 // Real-Rust raw normalization on the stamped capture before
                 // the strict core decode (mirrors the production broker
-                // lane: normalize windows, fold the gesture lane, then
-                // decode/evaluate). A raw refusal rejects in-band without
-                // touching the engine or the queue.
+                // lane: normalize windows, fold the gesture lane, strip
+                // the invalidation witness, then decode/evaluate). A raw
+                // refusal rejects in-band without touching the engine or
+                // the queue.
                 let normalized_body: String = match serde_json::from_str::<serde_json::Value>(body)
                 {
                     Ok(serde_json::Value::Object(mut map)) => {
                         if let Err((kind, message)) = kde_raw::normalize_raw_windows(&mut map) {
+                            return Some(encode_error(kind, message, &generation));
+                        }
+                        if let Err((kind, message)) =
+                            normalize_invalidation_witness(&mut map).map(|_| ())
+                        {
                             return Some(encode_error(kind, message, &generation));
                         }
                         if let Err(err) = gesture_map.normalize_gesture_lane(&mut map) {

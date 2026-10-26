@@ -60,6 +60,15 @@ void PresentationFactsSource::noteStyle(double gap, double width, double extensi
     bumpRevision();
 }
 
+void PresentationFactsSource::noteInvalidation(quint64 counter)
+{
+    if (m_invalidation == counter) {
+        return;
+    }
+    m_invalidation = counter;
+    bumpRevision();
+}
+
 void PresentationFactsSource::bumpRevision()
 {
     ++m_rev;
@@ -71,6 +80,7 @@ QString PresentationFactsSource::currentSnapshot(bool changed, bool superseded, 
     PresentationFactsSnapshot facts;
     facts.instance = m_instance;
     facts.rev = m_rev;
+    facts.invalidation = m_invalidation;
     facts.chord = m_chordHeld;
     facts.chordKnown = m_chordKnown;
     facts.gap = m_gap;
@@ -174,6 +184,11 @@ QString PresentationFactsSource::instance() const
 quint64 PresentationFactsSource::revision() const
 {
     return m_rev;
+}
+
+quint64 PresentationFactsSource::invalidation() const
+{
+    return m_invalidation;
 }
 
 } // namespace KWin

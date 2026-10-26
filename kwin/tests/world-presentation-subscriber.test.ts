@@ -1,8 +1,8 @@
 // Read-only presentation subscriber (Stage 5): event-driven
-// ReadWorldPresentation consumption with generation, request, and
-// transport fencing. No polling, no one-shot/write/result lanes: the
-// subscriber paints accepted core shapes only (border, underlay, drop
-// preview) and hides on anything it cannot prove fresh.
+// ReadWorldPresentation consumption with generation, request, causal
+// coverage, and transport fencing. No polling, no one-shot/write/result
+// lanes: the subscriber paints accepted core shapes only (border,
+// underlay, drop preview) and hides on anything it cannot prove fresh.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -14,9 +14,13 @@ import { isWorldPresentationReply, parseWorldReply } from "../src/world-report";
 
 const GEN = "gen-1";
 
-function projection(req: string, rev: string, obs: string, extra?: Record<string, unknown>, gen: string = GEN): string {
+function projection(
+    req: string, rev: string, obs: string,
+    extra?: Record<string, unknown>, gen: string = GEN,
+): string {
     return JSON.stringify({
         v: 2, outcome: "presentation", gen, req, rev, obs,
+        coveredInstance: "effect-1", coveredInvalid: "5",
         scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
         workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
         outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
@@ -51,11 +55,13 @@ interface Timer { delay: number; cb: () => void; cancelled: boolean }
 interface Harness {
     calls: Call[];
     paints: string[];
+    hides: number;
     clears: number;
     logs: string[];
     gen: string | null;
     stopped: boolean;
-    gestureEpoch: number;
+    invalidation: { instance: string; counter: string } | null;
+    liveGesture: { instance: string; serial: string; coreId: string } | null;
     timers: Timer[];
     sub: ReturnType<typeof createWorldPresentationSubscriber>;
     readReqs: () => string[];
@@ -67,6 +73,7 @@ interface Harness {
 function setup(): Harness {
     const calls: Call[] = [];
     const paints: string[] = [];
+    let hides = 0;
     let clears = 0;
     const logs: string[] = [];
     const timers: Timer[] = [];
@@ -77,14 +84,16 @@ function setup(): Harness {
     h.timers = timers;
     h.gen = GEN;
     h.stopped = false;
-    h.gestureEpoch = 0;
+    h.invalidation = { instance: "effect-1", counter: "5" };
+    h.liveGesture = null;
     h.sub = createWorldPresentationSubscriber({
         callDbus: (_s, _p, _i, method, payload, callback) => {
             assert.equal(method, PRESENTATION_READ_METHOD);
             calls.push({ payload, callback });
         },
         getGeneration: () => h.gen,
-        getGestureEpoch: () => h.gestureEpoch,
+        getInvalidation: () => h.invalidation,
+        getGestureIdentity: () => h.liveGesture,
         isStopped: () => h.stopped,
         log: (m) => { logs.push(m); },
         scheduleOnce: (delay, cb) => {
@@ -97,9 +106,11 @@ function setup(): Harness {
                 paints.push(payload);
                 return true;
             },
+            hidePresentation: () => { hides += 1; },
             clearPresentation: () => { clears += 1; },
         },
     });
+    Object.defineProperty(h, "hides", { get: () => hides });
     Object.defineProperty(h, "clears", { get: () => clears });
     h.readReqs = () => calls.map((c) => (JSON.parse(c.payload) as { req: string }).req);
     h.answerAll = (make) => {
@@ -138,6 +149,10 @@ describe("world presentation subscriber", () => {
         assert.equal(painted["gen"], GEN);
         assert.equal(painted["rev"], "12");
         assert.equal(painted["foreground"], "win-a");
+        // The causal coverage rides the native payload so the effect
+        // fences it too.
+        assert.equal(painted["coveredInstance"], "effect-1");
+        assert.equal(painted["coveredInvalid"], "5");
         assert.deepEqual(painted["border"], { visible: 1, inner: [10, 10, 300, 300], outer: [8, 8, 304, 304] });
         // Underlay anchoring inputs ride verbatim: the held member id list
         // plus the already-verbatim core outer rect. Member rects never
@@ -175,7 +190,7 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 1);
         h.sub.notifyInvalidated();
         const second = h.calls.splice(0)[0] as Call;
-        const secondReq = (JSON.parse(second.payload) as { req: string }).req;
+        const secondReq = (JSON.parse(second.payload) as unknown as { req: string }).req;
         // A late duplicate of the superseded first completion (same old
         // correlation, newer content): fenced by the request nonce and
         // ignored, never resurrecting older content over the live flight.
@@ -202,7 +217,7 @@ describe("world presentation subscriber", () => {
         // notifying, so the live getter already reports it.
         h.gen = "gen-2";
         h.sub.notifyGeneration("gen-2");
-        assert.ok(h.clears > clearsBefore, "rotation hides immediately");
+        assert.ok(h.clears > clearsBefore, "rotation resets the stream immediately");
         assert.equal(h.calls.length, 1, "rotation reseeds one read");
         const req = h.readReqs()[0] as string;
         assert.match(req, /^pres-/);
@@ -214,19 +229,26 @@ describe("world presentation subscriber", () => {
         h.answerAll((r) => projection(r, "12", "12"));
         assert.equal(h.paints.length, 1);
         const callsBefore = h.calls.length;
-        // Same-generation rediscovery (service owner change): force one
+        const hidesBefore = h.hides;
+        // Same-generation rediscovery (service owner change or
+        // rebind): hide display-only (evidence preserved) and force one
         // fresh read even though nothing rotated.
         h.gen = GEN;
         h.sub.notifyGeneration(GEN);
         assert.equal(h.calls.length, callsBefore + 1, "reconnect reseeds");
+        assert.ok(h.hides > hidesBefore, "reconnect hides display-only");
+        // The identical projection repaints (the seed reset the point).
+        h.answerAll((r) => projection(r, "12", "12"));
+        assert.equal(h.paints.length, 2);
     });
 
-    it("hides on malformed, foreign-lane, and mismatched reads", () => {
+    it("hides display-only on malformed, foreign-lane, and mismatched reads", () => {
         const h = setup();
         h.sub.notifyGeneration(GEN);
-        // Malformed JSON hides.
+        // Malformed JSON hides display-only, never resetting the stream.
         h.answerAll(() => "not-json");
-        assert.ok(h.clears >= 1, "malformed hides");
+        assert.ok(h.hides >= 1, "malformed hides");
+        assert.equal(h.clears, 1, "rotation-only clear count unchanged by the error");
         assert.equal(h.paints.length, 0);
         // A queued-lane reply on the read hides too.
         h.sub.notifyInvalidated();
@@ -236,25 +258,37 @@ describe("world presentation subscriber", () => {
         h.sub.notifyInvalidated();
         h.answerAll(() => projection("pres-0-stale", "12", "12"));
         assert.equal(h.paints.length, 0);
-        // The next good read repaints (no wedged clear).
+        // The next good read repaints (no wedged clear), and an equal
+        // retransmit of it never resends.
         h.sub.notifyInvalidated();
         h.answerAll((r) => projection(r, "12", "12"));
         assert.equal(h.paints.length, 1);
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "12", "12"));
+        assert.equal(h.paints.length, 1, "equal retransmit after a hide never resends");
     });
 
     it("publishes and clears the drop preview without one-shot authority", () => {
         const h = setup();
         h.sub.notifyGeneration(GEN);
+        h.liveGesture = { instance: "gesture-1", serial: "1", coreId: "1" };
         const withPreview = (req: string): string => projection(req, "12", "12", {
-            preview: { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" },
+            preview: {
+                rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+                producerInstance: "gesture-1", producerSerial: "1",
+            },
         });
         h.answerAll(withPreview);
         assert.equal(h.paints.length, 1);
         const painted = JSON.parse(h.paints[0] as string) as Record<string, unknown>;
-        // Renderer-only shape: paint rect plus subject proof. The insertion
-        // neighbor `win` is not the mover identity; hover chains, revision
-        // tags, and domain resolution never ride.
-        assert.deepEqual(painted["preview"], { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" });
+        // Renderer-only shape: paint rect plus subject proof plus the
+        // producing native gesture. The insertion neighbor `win` is not
+        // the mover identity; hover chains, revision tags, and domain
+        // resolution never ride.
+        assert.deepEqual(painted["preview"], {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        });
         // A null preview clears the drop target while the rest repaints.
         h.sub.notifyInvalidated();
         h.answerAll((r) => projection(r, "13", "13"));
@@ -319,10 +353,11 @@ describe("world presentation subscriber", () => {
         h.sub.notifyGeneration(GEN);
         assert.equal(h.calls.length, 1);
         h.calls.splice(0);
+        const hidesBefore = h.hides;
         // Finding A: the callback never arrives (B1-verified silent
         // error/timeout). The watchdog fires at the shared host deadline.
         assert.equal(h.fireWatchdog(), true);
-        assert.ok(h.clears >= 1, "lost reply hides instead of retaining stale shapes");
+        assert.ok(h.hides > hidesBefore, "lost reply hides display-only instead of retaining stale shapes");
         assert.equal(h.paints.length, 0);
         assert.equal(h.calls.length, 1, "exactly one retry per deadline (no hot loop)");
         assert.equal(h.liveWatchdogs(), 1, "the retry arms exactly one watchdog");
@@ -361,38 +396,59 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 1, "stale completion paints nothing");
     });
 
-    it("paints a same-epoch preview and strips a cross-epoch preview", () => {
-        const withPreview = (req: string, rev = "12", obs = "12"): string => projection(req, rev, obs, {
-            preview: { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" },
+    it("paints a same-identity preview and strips a foreign or unproven one", () => {
+        const withPreview = (
+            req: string, rev = "12", obs = "12",
+            producer: { producerInstance: string | null; producerSerial: string | null } = {
+                producerInstance: "gesture-1", producerSerial: "1",
+            },
+        ): string => projection(req, rev, obs, {
+            preview: {
+                rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+                ...producer,
+            },
         });
-        // Same gesture epoch: the live gesture's own preview paints.
+        // Same live gesture identity: the live gesture's own preview paints.
         const h = setup();
-        h.gestureEpoch = 7;
+        h.liveGesture = { instance: "gesture-1", serial: "1", coreId: "1" };
         h.sub.notifyGeneration(GEN);
         h.answerAll(withPreview);
         assert.equal(h.paints.length, 1);
         const painted = JSON.parse(h.paints[0] as string) as Record<string, unknown>;
-        assert.deepEqual(painted["preview"], { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" });
-        // Crossed gesture boundary: the read was issued in epoch 7 but a
-        // new gesture started before completion. Border/underlay still
-        // paint from the accepted projection, but the old preview is
-        // dropped (fail-closed hide); the new gesture's own preview
-        // arrives with a newer projection.
+        assert.deepEqual(painted["preview"], {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        });
+        // Foreign producer identity (the old gesture finished and a new
+        // one started): border/underlay still paint from the accepted
+        // projection, but the old preview is dropped (fail-closed hide);
+        // the new gesture's own preview arrives with a newer projection.
         const h2 = setup();
-        h2.gestureEpoch = 7;
+        h2.liveGesture = { instance: "gesture-1", serial: "1", coreId: "1" };
         h2.sub.notifyGeneration(GEN);
-        h2.gestureEpoch = 8;
+        h2.liveGesture = { instance: "gesture-1", serial: "2", coreId: "2" };
         h2.answerAll(withPreview);
         assert.equal(h2.paints.length, 1, "border/underlay still paint");
         const stripped = JSON.parse(h2.paints[0] as string) as Record<string, unknown>;
-        assert.equal(stripped["preview"], null, "crossed-gesture preview hides");
+        assert.equal(stripped["preview"], null, "foreign-producer preview hides");
         assert.ok(h2.logs.some((l) => l.includes("preview-crossed-gesture")));
-        // The generator's epoch, not the prover's: a later same-epoch read
-        // with a new projection paints it (no wedged strip).
+        // An unproven preview (null producer) never arms the latch even
+        // with a live gesture and newer content.
         h2.sub.notifyInvalidated();
-        h2.answerAll((r) => withPreview(r, "13", "13"));
-        assert.equal(h2.paints.length, 2);
-        assert.notEqual((JSON.parse(h2.paints[1] as string) as Record<string, unknown>)["preview"], null);
+        h2.answerAll((r) => withPreview(r, "13", "13", { producerInstance: null, producerSerial: null }));
+        assert.equal((JSON.parse(h2.paints[1] as string) as Record<string, unknown>)["preview"], null);
+        // A later same-identity read with a new projection paints it (no
+        // wedged strip).
+        h2.sub.notifyInvalidated();
+        h2.liveGesture = { instance: "gesture-1", serial: "2", coreId: "2" };
+        h2.answerAll((r) => projection(r, "14", "14", {
+            preview: {
+                rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+                producerInstance: "gesture-1", producerSerial: "2",
+            },
+        }));
+        assert.equal(h2.paints.length, 3);
+        assert.notEqual((JSON.parse(h2.paints[2] as string) as Record<string, unknown>)["preview"], null);
     });
 
     it("resends after an effect reset even with an identical projection", () => {
@@ -401,7 +457,7 @@ describe("world presentation subscriber", () => {
         h.answerAll((r) => projection(r, "12", "12"));
         assert.equal(h.paints.length, 1);
         // Finding H: the effect restarted (new facts instance), so its
-        // paint is gone. The subscriber forgets the painted projection and
+        // paint is gone. The subscriber forgets the painted point and
         // re-reads even though nothing else changed; the identical
         // projection repaints (the dedupe is bypassed by the reset).
         const clearsBefore = h.clears;
@@ -429,5 +485,77 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 1);
         const painted = JSON.parse(h.paints[0] as string) as Record<string, unknown>;
         assert.equal(painted["rev"], "21");
+    });
+
+    it("skips stale coverage without a hot loop and paints the covering read", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        h.answerAll((r) => projection(r, "12", "12", { coveredInvalid: "5" }));
+        assert.equal(h.paints.length, 1);
+        // The native witness advances (facts event) without a new accepted
+        // capture yet: a read covering the old witness can never paint.
+        h.invalidation = { instance: "effect-1", counter: "6" };
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "13", "13", { coveredInvalid: "5" }));
+        assert.equal(h.paints.length, 1, "stale coverage never paints");
+        assert.equal(h.calls.length, 0, "no self re-arm while the covering capture is missing");
+        // The covering capture's notification re-drives one read, which paints.
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "14", "14", { coveredInvalid: "6" }));
+        assert.equal(h.paints.length, 2, "covering paint renders");
+        // Missing proof on either side hides: an unknown latest witness or
+        // an uncovered projection never paints, and a foreign instance
+        // never compares its counters.
+        h.invalidation = null;
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "15", "15", { coveredInvalid: "6" }));
+        assert.equal(h.paints.length, 2, "unknown latest hides");
+        h.invalidation = { instance: "effect-2", counter: "6" };
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "16", "16", { coveredInstance: "effect-1", coveredInvalid: "6" }));
+        assert.equal(h.paints.length, 2, "foreign instance never applies");
+        // Null coverage with a known latest is malformed: hidden
+        // display-only, dirty, and the next event retries into a paint.
+        const hidesBefore = h.hides;
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "17", "17", {
+            coveredInstance: "effect-2",
+            coveredInvalid: null,
+        }));
+        assert.equal(h.paints.length, 2, "null coverage never paints");
+        assert.ok(h.hides > hidesBefore, "malformed coverage hides");
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "18", "18", {
+            coveredInstance: "effect-2", coveredInvalid: "6",
+        }));
+        assert.equal(h.paints.length, 3, "covering paint renders after the malformed leg");
+    });
+
+    it("hides display-only on unknown facts without resetting the stream", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        h.answerAll((r) => projection(r, "12", "12"));
+        assert.equal(h.paints.length, 1);
+        const clearsBefore = h.clears;
+        const hidesBefore = h.hides;
+        // Unknown facts (teardown/timeout, not a proven instance
+        // replacement): hide display-only, retain order/invalidation
+        // evidence and the painted point, and re-read.
+        h.invalidation = null;
+        (h.sub as unknown as { notifyEffectUnknown: () => void }).notifyEffectUnknown();
+        assert.ok(h.hides > hidesBefore, "unknown hides display-only");
+        assert.equal(h.clears, clearsBefore, "unknown is not an explicit stream replacement");
+        assert.equal(h.calls.length, 1, "unknown re-reads without any new event");
+        // A stale retransmit of the hidden bytes can never resurrect: the
+        // retained painted point covers them and latest is still unknown.
+        h.answerAll((r) => projection(r, "12", "12"));
+        assert.equal(h.paints.length, 1, "same-bytes retransmit after unknown never resurrects");
+        // Same-instance return: no reset either (still no Clear), and a
+        // strictly newer covering read paints.
+        h.invalidation = { instance: "effect-1", counter: "5" };
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "13", "13"));
+        assert.equal(h.paints.length, 2, "covering paint renders after same-instance return");
+        assert.equal(h.clears, clearsBefore, "same-instance return never resets the stream");
     });
 });

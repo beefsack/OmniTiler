@@ -3352,13 +3352,24 @@ fn preview_keys(value: &serde_json::Value) -> Vec<String> {
     keys
 }
 
-/// Renderer-only preview shape: paint geometry plus subject proof.
+/// Renderer-only preview shape: paint geometry plus subject proof, plus
+/// the producing-gesture identity (nulls when the producing native gesture
+/// is unproven, e.g. a command-produced preview with no gesture lane: the
+/// geometry still rides the shared projection while the renderer hides it,
+/// fail closed).
 /// Issuer correlation (`hover`, result tag) and core provenance (session
 /// revision, resolution domain) never ride alongside the snapshot.
 fn assert_trimmed_preview(preview: &serde_json::Value) {
     assert_eq!(
         preview_keys(preview),
-        ["rect", "sourceOut", "sourceWs", "win"]
+        [
+            "producerInstance",
+            "producerSerial",
+            "rect",
+            "sourceOut",
+            "sourceWs",
+            "win"
+        ]
     );
     assert!(preview["rect"].is_array());
     for excluded in ["op", "hover", "rev", "domainOut", "domainWs"] {
@@ -3367,6 +3378,19 @@ fn assert_trimmed_preview(preview: &serde_json::Value) {
             "issuer/provenance field {excluded} never rides the preview"
         );
     }
+}
+
+/// A command-produced preview names no producing gesture: both producer
+/// fields ride as explicit nulls (unproven, fail closed at the renderer).
+fn assert_unproven_producer(preview: &serde_json::Value) {
+    assert!(
+        preview.get("producerInstance").is_some_and(|v| v.is_null()),
+        "unproven preview names no instance"
+    );
+    assert!(
+        preview.get("producerSerial").is_some_and(|v| v.is_null()),
+        "unproven preview names no serial"
+    );
 }
 fn drag_preview_command() -> &'static str {
     "{\"op\":\"operation\",\"command\":{\"op\":\"drag-preview\",\
@@ -3439,6 +3463,7 @@ fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
     );
     assert!(projection.get("result").is_none());
     assert_trimmed_preview(&projection["preview"]);
+    assert_unproven_producer(&projection["preview"]);
     assert_eq!(projection["preview"]["rect"], ready["result"]["rect"]);
     // Subject proof: the neighbor identity names a live row of the same
     // cached snapshot, and the mover-home domain matches the issuer lane.
@@ -3540,6 +3565,7 @@ fn preview_survives_rejected_captures_but_fallback_clears_it() {
             .expect("in-band"),
     );
     assert_trimmed_preview(&seeded["preview"]);
+    assert_unproven_producer(&seeded["preview"]);
     // A malformed envelope rejects without touching the cache.
     let malformed = parse(&service.evaluate_capture("{\"v\":2}").expect("in-band"));
     assert_eq!(malformed["outcome"], "rejected");
@@ -3648,6 +3674,7 @@ fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
             .expect("in-band"),
     );
     assert_trimmed_preview(&seeded["preview"]);
+    assert_unproven_producer(&seeded["preview"]);
     assert_eq!(seeded["gen"].as_str(), Some(gen_a.as_str()));
     let boot_b = parse(&service.discovery_body("lifetime-b", "req-1"));
     let gen_b = boot_b["gen"].as_str().expect("gen").to_owned();
@@ -3701,5 +3728,6 @@ fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
     );
     assert_eq!(reseeded["outcome"], "presentation");
     assert_trimmed_preview(&reseeded["preview"]);
+    assert_unproven_producer(&reseeded["preview"]);
     assert_eq!(reseeded["gen"].as_str(), Some(gen_b.as_str()));
 }

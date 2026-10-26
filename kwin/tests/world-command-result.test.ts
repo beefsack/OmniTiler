@@ -163,6 +163,20 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
         registerShortcutFn: () => true,
         readWorkspaceModeFn: () => "per-output-local",
         ...(floatIntent ? { floatIntent: true as const } : {}),
+        effectCallDbus: (_service, _path, _iface, method, payload, callback) => {
+            calls.push({ method, payload, callback });
+        },
+        gestureCallDbus: (_s, _p, _i, method, payload, callback) => {
+            calls.push({ method, payload, callback });
+            if (method === "AckGesture") {
+                callback(JSON.stringify({
+                    v: 1, instance: "gesture-1", serial: "0", revision: "9",
+                    phase: "idle", win: "", kind: "",
+                    startRect: null, startCursor: null, cursor: null,
+                    modalMove: 0, changed: 1, superseded: 0, available: 1,
+                }));
+            }
+        },
         highlightCallDbus: (_service, _path, _iface, method, ...args) => {
             renders.push({ method, args });
         },
@@ -244,6 +258,46 @@ function discover(h: Harness): void {
 
 function stageFixture(name: string): void {
     (globalThis as Record<string, unknown>)["__pendingReply"] = loadFixture(name);
+}
+
+// Effect-facts seam (Stage 5 witness route): answer the held
+// WaitPresentationFacts waiter with a snapshot covering the given
+// invalidation counter. The entry carries the witness on its captures;
+// the subscriber gates paints on it.
+function answerEffectFacts(
+    h: Harness,
+    opts: { instance?: string; rev?: string; invalidation?: string; changed?: boolean } = {},
+): void {
+    const wait = [...h.calls].reverse().find((c) => c.method === "WaitPresentationFacts");
+    assert.ok(wait !== undefined, "held effect facts waiter exists");
+    h.calls.splice(h.calls.indexOf(wait), 1);
+    (wait as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+        v: 1,
+        instance: opts.instance ?? "effect-1",
+        rev: opts.rev ?? "0",
+        invalidation: opts.invalidation ?? "0",
+        chord: 0, chordKnown: 0, gap: 0, width: 3, extension: -1,
+        changed: opts.changed === true ? 1 : 0, superseded: 0, available: 1,
+    }));
+}
+
+// Native gesture seam: complete the held WaitGesture waiter with one
+// authoritative snapshot. The entry maps it to the core ingress lane and
+// exposes the bound association for the subscriber's preview gate.
+function answerGesture(h: Harness, body: Record<string, unknown>): void {
+    const wait = [...h.calls].reverse().find((c) => c.method === "WaitGesture");
+    assert.ok(wait !== undefined, "held WaitGesture exists");
+    h.calls.splice(h.calls.indexOf(wait), 1);
+    (wait as { callback: (reply: unknown) => void }).callback(JSON.stringify(body));
+}
+
+function gestureBody(over: Record<string, unknown>): Record<string, unknown> {
+    return {
+        v: 1, instance: "gesture-1", serial: "1", revision: "1",
+        phase: "started", win: "win-a", kind: "move",
+        startRect: [0, 0, 200, 200], startCursor: [10, 10], cursor: [20, 20],
+        modalMove: 1, changed: 1, superseded: 0, available: 1, ...over,
+    };
 }
 
 // Take-revision counter: every staged accept must advance the revision or
@@ -359,12 +413,20 @@ describe("world command result entry", () => {
         const ws = { id: "ws" };
         const h = setup([makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)], new Map([["out", "ws"]]));
         discover(h);
+        // Seed the effect facts (witness 0) and open gesture A: the
+        // subscriber paints only what covers the latest witness and only
+        // the live gesture's own producing preview.
+        answerEffectFacts(h);
+        answerGesture(h, gestureBody({}));
         stageFixture("reply-group.json");
         stageTake("group");
-        h.replyNext();
+        h.replyNext((accept) => {
+            accept["gestureAssoc"] = { instance: "gesture-1", serial: "1", coreId: "1" };
+        });
         // Answer every presentation read with an accepted projection
-        // carrying a found underlay, a visible border, and a drop preview.
-        // The take-lane active-group result must never paint beside it.
+        // carrying a found underlay, a visible border, and gesture A's
+        // producing drop preview. The take-lane active-group result must
+        // never paint beside it.
         const answerPresentations = (): void => {
             // Drain in a loop: a reply invalidated during flight is
             // skipped, not painted (finding E), and the chained refetch
@@ -379,6 +441,7 @@ describe("world command result entry", () => {
                 const req = (JSON.parse((call as { payload: string }).payload) as Record<string, unknown>)["req"];
                 (call as { callback: (reply: unknown) => void }).callback(JSON.stringify({
                     v: 2, outcome: "presentation", gen: "gen-1", req, rev: "12", obs: "12",
+                    coveredInstance: "effect-1", coveredInvalid: "0",
                     scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
                     workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
                     outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
@@ -403,7 +466,10 @@ describe("world command result entry", () => {
                         },
                         pager: [],
                     },
-                    preview: { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" },
+                    preview: {
+                        rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+                        producerInstance: "gesture-1", producerSerial: "1",
+                    },
                 }));
                 }
             }
@@ -421,7 +487,14 @@ describe("world command result entry", () => {
         assert.deepEqual(payload["underlay"], {
             status: "found", win: "win-a", outer: [0, 0, 800, 600], members: ["win-b", "win-a"],
         });
-        assert.deepEqual(payload["preview"], { rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b" });
+        assert.deepEqual(payload["preview"], {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        });
+        // The causal coverage rides the native payload so the effect
+        // fences it too.
+        assert.equal(payload["coveredInstance"], "effect-1");
+        assert.equal(payload["coveredInvalid"], "0");
         // The staged take-lane active-group result never paints beside the
         // subscriber: no legacy forwarding methods survive.
         assert.ok(!h.renders.some((r) => r.method === "SetGroupHighlight"), "no legacy group forwarding");
@@ -489,12 +562,13 @@ describe("world command result entry", () => {
         discover(h);
         stageFixture("reply-group.json");
         h.replyNext();
-        // Malformed reads hide (clear) instead of painting anything stale.
+        // Malformed reads hide display-only (evidence preserved) instead
+        // of painting anything stale.
         for (const call of h.calls.filter((c) => c.method === "ReadWorldPresentation")) {
             (call as { callback: (reply: unknown) => void }).callback("not-json");
         }
-        const clears = h.renders.filter((r) => r.method === "ClearPresentation");
-        assert.ok(clears.length >= 1, "malformed read clears the renderer");
+        const hides = h.renders.filter((r) => r.method === "HidePresentation");
+        assert.ok(hides.length >= 1, "malformed read hides the renderer display-only");
         assert.ok(!h.renders.some((r) => r.method === "SetPresentation" || r.method === "SetGroupHighlight"));
         h.handle?.stop();
         delete (globalThis as Record<string, unknown>)["__pendingReply"];

@@ -30,17 +30,19 @@ void check(bool condition, const char *expression, const char *file, int line)
 void presentationFactsJsonIsVersionedAndComplete()
 {
     // Exact wire shape the KWin script route parses (v:1, opaque instance
-    // and rev, 0/1 chord lanes, full-precision doubles, changed lane).
+    // and rev, causal invalidation witness, 0/1 chord lanes,
+    // full-precision doubles, changed lane).
     KWin::PresentationFactsSnapshot facts;
     facts.instance = QStringLiteral("instance-1");
     facts.rev = 7;
+    facts.invalidation = 9;
     facts.chord = true;
     facts.chordKnown = true;
     facts.gap = 0.0;
     facts.width = 3.5;
     facts.extension = -1.0;
     facts.changed = true;
-    CHECK(KWin::presentationFactsJson(facts) == QStringLiteral("{\"v\":1,\"instance\":\"instance-1\",\"rev\":\"7\",\"chord\":1,\"chordKnown\":1,\"gap\":0,\"width\":3.5,\"extension\":-1,\"changed\":1,\"superseded\":0,\"available\":1}"));
+    CHECK(KWin::presentationFactsJson(facts) == QStringLiteral("{\"v\":1,\"instance\":\"instance-1\",\"rev\":\"7\",\"invalidation\":\"9\",\"chord\":1,\"chordKnown\":1,\"gap\":0,\"width\":3.5,\"extension\":-1,\"changed\":1,\"superseded\":0,\"available\":1}"));
 }
 
 void presentationFactsStaleDetectsInstanceAndRevision()

@@ -318,6 +318,12 @@ pub struct WorldBroker {
     /// presentation plus the renderer-only drop preview, window write tokens
     /// stripped). Never the full reply.
     presentation: Option<String>,
+    /// Causal coverage of the cached projection: the native-invalidation
+    /// witness (source instance plus counter) the accepted capture
+    /// covered, or `None` when the capture carried no proof (missing
+    /// proof yields no drawable coverage, never guessed truth). Always
+    /// set, cleared, and rotated in lockstep with `presentation`.
+    presentation_covered: Option<CoverWitness>,
     /// Single active producer capture lifetime bound at discovery. Captures
     /// from any other lifetime refuse, so old actuator lifetimes can never
     /// apply after a new one binds (never an ever-growing set of valid old
@@ -453,6 +459,7 @@ impl WorldBroker {
             retired: HashMap::new(),
             retired_order: VecDeque::new(),
             presentation: None,
+            presentation_covered: None,
             capture_lifetime: None,
             source_floor: 0,
             watermarks: HashMap::new(),
@@ -683,6 +690,27 @@ impl WorldBroker {
                 return self.remember_rejection(&refused, envelope, kind, message, clock_now);
             }
         };
+        // Broker-owned causal-witness lane: the raw native-invalidation
+        // witness rides the capture, is validated and stripped before the
+        // strict core decode (same precedent as the gesture lane above), and
+        // binds as this capture's covered value when the reply is accepted.
+        // Missing or null proof yields no drawable coverage, never guessed
+        // truth; malformed proof refuses like any other lane. This witness
+        // is the effect-owned counter, never the JS transport watermark.
+        let covered = match normalize_invalidation_witness(&mut raw_inner) {
+            Ok(covered) => covered,
+            Err((kind, message)) => {
+                let refused = ParsedCapture {
+                    adapter,
+                    generation,
+                    source,
+                    source_seq,
+                    native_invalid,
+                    inner: Map::new(),
+                };
+                return self.remember_rejection(&refused, envelope, kind, message, clock_now);
+            }
+        };
         let parsed = ParsedCapture {
             adapter,
             generation,
@@ -739,18 +767,27 @@ impl WorldBroker {
         }
         // Drain at most one queued command into this fresh capture.
         let head = self.pending.front().cloned();
-        let outcome = match head {
-            Some(queued) => self.dispatch_with_command(
-                &parsed,
-                &queued,
-                &plain_stamped,
-                observation_seq,
-                request_seq,
-                clock,
-            )?,
+        let (outcome, command_produced_preview) = match head {
+            Some(queued) => {
+                let drag_command = command_is_drag_preview(&queued.command);
+                let (outcome, command_produced) = self.dispatch_with_command(
+                    &parsed,
+                    &queued,
+                    &plain_stamped,
+                    observation_seq,
+                    request_seq,
+                    clock,
+                )?;
+                // The reply result is the drained command's own terminal
+                // outcome exactly when the non-fallback dispatch carried a
+                // drag-preview command: only then can the `DragPreview`
+                // result below be command-produced rather than
+                // session-produced by this capture's live native gesture.
+                (outcome, drag_command && command_produced)
+            }
             None => match self.run_engine(&plain_stamped)? {
-                Ok(encoded) => FreshOutcome::Reply(encoded),
-                Err((kind, message)) => FreshOutcome::Rejected { kind, message },
+                Ok(encoded) => (FreshOutcome::Reply(encoded), false),
+                Err((kind, message)) => (FreshOutcome::Rejected { kind, message }, false),
             },
         };
         match outcome {
@@ -780,9 +817,22 @@ impl WorldBroker {
                 // hover chain, no result tag, no session revision) rides the
                 // projection as `preview` (null otherwise) so a renderer
                 // without take-lane authority paints exactly what core
-                // published. The expanded bound reply always fits the reply
+                // published. The preview additionally names its producing
+                // native gesture (`producerInstance`/`producerSerial`) when
+                // this capture's normalized ingress proves it; a
+                // command-produced or otherwise unproven preview rides with
+                // null producer fields and the renderer hides it (fail
+                // closed), while the take lane still settles the issuer.
+                // The covered causal witness rides alongside for the read
+                // lane. The expanded bound reply always fits the reply
                 // cap; oversize fails closed without caching.
-                let preview = drag_preview_of(&encoded);
+                let preview_geometry = drag_preview_of(&encoded);
+                let preview = match (&preview_geometry, &gesture_assoc) {
+                    (Some(_), Some(assoc)) if !command_produced_preview => {
+                        CarriedPreview::proven(preview_geometry, assoc)
+                    }
+                    _ => CarriedPreview::unproven(preview_geometry),
+                };
                 let stripped = strip_result(&encoded);
                 let with_assoc = inject_gesture_assoc(&stripped, gesture_assoc.as_ref());
                 let bound =
@@ -790,7 +840,8 @@ impl WorldBroker {
                 if bound.len() > WORLD_MAX_REPLY_BYTES {
                     return Err(BrokerError::Oversized);
                 }
-                self.presentation = Some(project_reply(&stripped, preview));
+                self.presentation = Some(project_reply(&stripped, preview.as_ref()));
+                self.presentation_covered = covered.clone();
                 self.watermarks
                     .insert(parsed.adapter.clone(), parsed.native_invalid);
                 self.remember_response(&parsed.source, envelope.as_bytes(), &bound);
@@ -869,7 +920,7 @@ impl WorldBroker {
         observation_seq: u64,
         request_seq: u64,
         clock: u64,
-    ) -> Result<FreshOutcome, BrokerError> {
+    ) -> Result<(FreshOutcome, bool), BrokerError> {
         let mut inner = parsed.inner.clone();
         self.stamp_inner(
             &mut inner,
@@ -887,7 +938,11 @@ impl WorldBroker {
             Ok(report) => report,
             Err(error) => {
                 self.pop_settle_failed(queued, error.kind, error.message)?;
-                return self.dispatch_plain_fallback(plain_stamped);
+                // Fallback observation-only dispatch: any preview in its
+                // reply is session-produced, never the settled command's.
+                return self
+                    .dispatch_plain_fallback(plain_stamped)
+                    .map(|outcome| (outcome, false));
             }
         };
         match self.engine.handle_report(&commanded) {
@@ -900,11 +955,16 @@ impl WorldBroker {
                 }
                 let result = result_of(&encoded);
                 self.pop_settle_ready(queued, result)?;
-                Ok(FreshOutcome::Reply(encoded))
+                // The reply result is the drained command's own terminal
+                // outcome: a `DragPreview` result here is command-produced.
+                Ok((FreshOutcome::Reply(encoded), true))
             }
             WorldOutcome::Rejected { kind, message } => {
                 self.pop_settle_failed(queued, kind, message)?;
+                // Fallback observation-only dispatch: any preview in its
+                // reply is session-produced, never the settled command's.
                 self.dispatch_plain_fallback(plain_stamped)
+                    .map(|outcome| (outcome, false))
             }
         }
     }
@@ -1120,7 +1180,12 @@ impl WorldBroker {
     /// stripped). Never carries transfers, effects, terminal results,
     /// settlements, or warp desires; the preview is the single carried
     /// drop-preview geometry (`rect`, mover-home `sourceOut`/`sourceWs`,
-    /// insertion-neighbor `win`; null when the cached reply carried none).
+    /// insertion-neighbor `win`, producing-gesture `producerInstance`/
+    /// `producerSerial` or nulls when unproven; null when the cached reply
+    /// carried none). Every served projection also binds the causal
+    /// coverage the cached capture covered (`coveredInstance`/
+    /// `coveredInvalid`, nulls when unproven). Missing proof yields no
+    /// drawable coverage, never guessed truth.
     pub fn read_presentation(&self, request: &str) -> Result<String, BrokerError> {
         if request.len() > WORLD_MAX_REQUEST_BYTES {
             return Err(BrokerError::Oversized);
@@ -1132,7 +1197,12 @@ impl WorldBroker {
         let Some(cached) = &self.presentation else {
             return Ok(self.error_body("not-ready", "no accepted capture"));
         };
-        Ok(project_read(cached, &self.generation, &req))
+        Ok(project_read(
+            cached,
+            &self.generation,
+            &req,
+            self.presentation_covered.as_ref(),
+        ))
     }
 
     fn take_observation_seq(&mut self) -> Result<u64, BrokerError> {
@@ -1930,6 +2000,111 @@ fn take_duplicate_reply(generation: &str) -> String {
     format!("{{\"v\":2,\"outcome\":\"duplicate\",\"gen\":\"{generation}\"}}")
 }
 
+/// Causal coverage witness of one accepted capture: the
+/// native-invalidation source instance plus the counter value the capture
+/// covered. The counter is the effect-owned causal value, never the JS
+/// transport watermark: captures carry it in the stripped raw
+/// `nativeInvalidWitness` lane. Missing proof is `None` (no drawable
+/// coverage, never guessed truth).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverWitness {
+    /// Witness source instance (opaque effect-facts instance).
+    pub instance: String,
+    /// Covered counter (canonical decimal u64).
+    pub counter: String,
+}
+
+/// Validate and strip the raw native-invalidation witness lane of one
+/// inner report before the strict core decode (same precedent as the
+/// gesture lane): `nativeInvalidWitness` is null or missing (no proof,
+/// `None`), or exactly `{"instance","counter"}` with an opaque instance
+/// and a canonical u64 counter. Any other shape refuses as a lane error.
+/// Pure over the map: never touches the engine.
+pub fn normalize_invalidation_witness(
+    inner: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<CoverWitness>, (&'static str, &'static str)> {
+    let raw = match inner.remove("nativeInvalidWitness") {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::Object(map)) => map,
+        Some(_) => return Err(("malformed", "request is malformed")),
+    };
+    if raw.len() != 2 || !raw.contains_key("instance") || !raw.contains_key("counter") {
+        if raw.keys().any(|k| k != "instance" && k != "counter") {
+            return Err(("unknown-field", "request contains an unknown field"));
+        }
+        return Err(("malformed", "request is malformed"));
+    }
+    let instance = match raw.get("instance") {
+        Some(serde_json::Value::String(s))
+            if !s.is_empty() && s.len() <= 128 && tiler_core::bounds::is_opaque_id(s) =>
+        {
+            s.clone()
+        }
+        Some(serde_json::Value::String(_)) => {
+            return Err(("unknown-value", "request contains an unknown value"));
+        }
+        _ => return Err(("malformed", "request is malformed")),
+    };
+    let counter = match raw.get("counter") {
+        Some(serde_json::Value::String(s)) if is_canonical_u64(s) => s.clone(),
+        Some(serde_json::Value::String(_)) => {
+            return Err(("unknown-value", "request contains an unknown value"));
+        }
+        _ => return Err(("malformed", "request is malformed")),
+    };
+    Ok(Some(CoverWitness { instance, counter }))
+}
+
+/// Whether one queued command is itself a drag-preview operation: its
+/// terminal result may be a command-produced `DragPreview`. Only that exact
+/// op disqualifies the staged gesture association (the result bytes are the
+/// command's own, not the live session's). Any other shape (including a
+/// malformed command, which never drains) is not a drag-preview command.
+fn command_is_drag_preview(command: &serde_json::Value) -> bool {
+    let outer = match command.as_object() {
+        Some(map) => map,
+        None => return false,
+    };
+    if outer.get("op").and_then(serde_json::Value::as_str) != Some("operation") {
+        return false;
+    }
+    match outer.get("command") {
+        Some(serde_json::Value::Object(inner)) => {
+            inner.get("op").and_then(serde_json::Value::as_str) == Some("drag-preview")
+        }
+        _ => false,
+    }
+}
+
+/// Renderer-carried drop preview: the paint geometry plus subject proof,
+/// with the producing native gesture when proven. Unproven previews ride
+/// with null producer fields and the renderer hides them (fail closed),
+/// while the take lane still settles the issuer.
+#[derive(Debug, Clone)]
+struct CarriedPreview {
+    geometry: serde_json::Value,
+    producer: Option<(String, String)>,
+}
+
+impl CarriedPreview {
+    fn proven(
+        geometry: Option<serde_json::Value>,
+        assoc: &crate::kde_gesture::GestureAssoc,
+    ) -> Option<Self> {
+        geometry.map(|geometry| Self {
+            geometry,
+            producer: Some((assoc.instance.clone(), assoc.serial.clone())),
+        })
+    }
+
+    fn unproven(geometry: Option<serde_json::Value>) -> Option<Self> {
+        geometry.map(|geometry| Self {
+            geometry,
+            producer: None,
+        })
+    }
+}
+
 /// Renderer-only drop preview of one accepted reply: the paint geometry
 /// plus the subject proof (`rect`, the mover-home `sourceOut`/`sourceWs`,
 /// and the insertion-neighbor `win`) when the reply carried a `DragPreview`
@@ -1938,7 +2113,8 @@ fn take_duplicate_reply(generation: &str) -> String {
 /// `hover` chain, the session `rev`, the resolution `domainOut`/`domainWs`)
 /// never ride: the subscriber paints from these fields plus the cached
 /// snapshot/scopes/presentation, vets staleness through the projection
-/// generation/revision, and applies live hide-only vetoes at dispatch.
+/// generation/revision/coverage, and applies live hide-only vetoes at
+/// dispatch.
 /// Malformed shapes fail closed to `None`, never a fabricated preview.
 fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
@@ -1971,9 +2147,11 @@ fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
 /// tokens (`frame_op`, `clear_op`) stripped from every window row.
 /// One-shot lanes (result, transfers, effects, settlements, warp) never
 /// enter except through the carried `preview` (paint `rect`, mover-home
-/// source, insertion-neighbor window; null when no drop preview was
-/// published). The `gen`/`req` binding is added at read time.
-fn project_reply(encoded: &str, preview: Option<serde_json::Value>) -> String {
+/// source, insertion-neighbor window, producing-gesture identity or nulls
+/// when unproven; null when no drop preview was published) plus the causal
+/// coverage bound at read time. The `gen`/`req` binding is added at read
+/// time.
+fn project_reply(encoded: &str, preview: Option<&CarriedPreview>) -> String {
     let value: serde_json::Value = serde_json::from_str(encoded).unwrap_or_default();
     let get = |key: &str| value.get(key).cloned().unwrap_or(serde_json::Value::Null);
     let mut windows = get("windows");
@@ -1985,6 +2163,25 @@ fn project_reply(encoded: &str, preview: Option<serde_json::Value>) -> String {
             }
         }
     }
+    let preview_value = match preview {
+        None => serde_json::Value::Null,
+        Some(carried) => {
+            let mut geometry = carried.geometry.clone();
+            if let Some(map) = geometry.as_object_mut() {
+                match &carried.producer {
+                    Some((instance, serial)) => {
+                        map.insert("producerInstance".to_owned(), json_string(instance));
+                        map.insert("producerSerial".to_owned(), json_string(serial));
+                    }
+                    None => {
+                        map.insert("producerInstance".to_owned(), serde_json::Value::Null);
+                        map.insert("producerSerial".to_owned(), serde_json::Value::Null);
+                    }
+                }
+            }
+            geometry
+        }
+    };
     serde_json::json!({
         "v": BROKER_VERSION,
         "outcome": "presentation",
@@ -1995,18 +2192,35 @@ fn project_reply(encoded: &str, preview: Option<serde_json::Value>) -> String {
         "outputs": get("outputs"),
         "windows": windows,
         "presentation": get("presentation"),
-        "preview": preview.unwrap_or(serde_json::Value::Null),
+        "preview": preview_value,
     })
     .to_string()
 }
 
 /// Serve one cached projection to a subscriber: bind the serving
-/// generation and the read correlation.
-fn project_read(cached: &str, generation: &str, req: &str) -> String {
+/// generation, the read correlation, and the causal coverage the cached
+/// capture covered (nulls when unproven: missing proof yields no drawable
+/// coverage, never guessed truth).
+fn project_read(
+    cached: &str,
+    generation: &str,
+    req: &str,
+    covered: Option<&CoverWitness>,
+) -> String {
     let mut value: serde_json::Value = serde_json::from_str(cached).unwrap_or_default();
     if let Some(map) = value.as_object_mut() {
         map.insert("gen".to_owned(), json_string(generation));
         map.insert("req".to_owned(), json_string(req));
+        match covered {
+            Some(witness) => {
+                map.insert("coveredInstance".to_owned(), json_string(&witness.instance));
+                map.insert("coveredInvalid".to_owned(), json_string(&witness.counter));
+            }
+            None => {
+                map.insert("coveredInstance".to_owned(), serde_json::Value::Null);
+                map.insert("coveredInvalid".to_owned(), serde_json::Value::Null);
+            }
+        }
     }
     value.to_string()
 }
@@ -2239,8 +2453,9 @@ mod tests {
             \"outputs\":[],\"windows\":[{\"win\":\"w\",\"frame_op\":\"op-1\",\"clear_op\":\"op-1\",\
             \"alloc\":null}],\"transfers\":[{}],\"effects\":[{}],\"result\":{},\
             \"operationSettled\":[{}],\"gestureSettled\":null,\"presentation\":{}}";
+        let unproven = CarriedPreview::unproven(drag_preview_of(reply));
         let projection: serde_json::Value =
-            serde_json::from_str(&project_reply(reply, drag_preview_of(reply))).expect("JSON");
+            serde_json::from_str(&project_reply(reply, unproven.as_ref())).expect("JSON");
         let window = &projection["windows"][0];
         assert!(window.get("frame_op").is_none());
         assert!(window.get("clear_op").is_none());
@@ -2270,11 +2485,11 @@ mod tests {
             \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\"result\":{preview},\
             \"operationSettled\":[],\"gestureSettled\":null,\"presentation\":{{}}}}"
         );
-        let carried = drag_preview_of(&reply).expect("drop preview carries");
+        let geometry = drag_preview_of(&reply).expect("drop preview carries");
         // Renderer-only shape: paint geometry plus subject proof, nothing
         // issuer-correlated and no core provenance.
         assert_eq!(
-            carried,
+            geometry,
             serde_json::json!({
                 "rect": [0, 0, 396, 600],
                 "sourceOut": "out-1",
@@ -2284,13 +2499,47 @@ mod tests {
         );
         for excluded in ["op", "hover", "rev", "domainOut", "domainWs"] {
             assert!(
-                carried.get(excluded).is_none(),
+                geometry.get(excluded).is_none(),
                 "issuer/provenance field {excluded} never rides the preview"
             );
         }
+        // A proven preview binds its producing native gesture; an unproven
+        // one rides the same geometry with null producer fields (the
+        // renderer hides it, fail closed).
+        let assoc = crate::kde_gesture::GestureAssoc {
+            instance: "gesture-1".to_owned(),
+            serial: "1".to_owned(),
+            core_id: 1,
+        };
+        let proven =
+            CarriedPreview::proven(Some(geometry.clone()), &assoc).expect("proven carries");
         let projection: serde_json::Value =
-            serde_json::from_str(&project_reply(&reply, drag_preview_of(&reply))).expect("JSON");
-        assert_eq!(projection["preview"], carried);
+            serde_json::from_str(&project_reply(&reply, Some(&proven))).expect("JSON");
+        assert_eq!(
+            projection["preview"],
+            serde_json::json!({
+                "rect": [0, 0, 396, 600],
+                "sourceOut": "out-1",
+                "sourceWs": "ws-1",
+                "win": "win-a",
+                "producerInstance": "gesture-1",
+                "producerSerial": "1",
+            })
+        );
+        let unproven = CarriedPreview::unproven(Some(geometry)).expect("unproven carries geometry");
+        let projection: serde_json::Value =
+            serde_json::from_str(&project_reply(&reply, Some(&unproven))).expect("JSON");
+        assert_eq!(
+            projection["preview"],
+            serde_json::json!({
+                "rect": [0, 0, 396, 600],
+                "sourceOut": "out-1",
+                "sourceWs": "ws-1",
+                "win": "win-a",
+                "producerInstance": null,
+                "producerSerial": null,
+            })
+        );
         // The actuator reply lane itself still strips the terminal result:
         // only the projection carries the trimmed preview.
         let stripped: serde_json::Value =
@@ -2299,8 +2548,11 @@ mod tests {
         // A terminal result of any other op never becomes a preview.
         let other = reply.replace("\"drag-preview\"", "\"toggle-float\"");
         assert!(drag_preview_of(&other).is_none());
-        let cleared: serde_json::Value =
-            serde_json::from_str(&project_reply(&other, drag_preview_of(&other))).expect("JSON");
+        let cleared: serde_json::Value = serde_json::from_str(&project_reply(
+            &other,
+            CarriedPreview::unproven(drag_preview_of(&other)).as_ref(),
+        ))
+        .expect("JSON");
         assert!(cleared["preview"].is_null());
         // Missing and malformed preview shapes fail closed to null, never a
         // fabricated geometry: no rect, a non-quad rect, or a missing
@@ -2313,6 +2565,97 @@ mod tests {
         assert!(drag_preview_of(&short_rect).is_none());
         let no_win = reply.replace("\"win\":\"win-a\"", "\"win\":null");
         assert!(drag_preview_of(&no_win).is_none());
+    }
+
+    #[test]
+    fn invalidation_witness_strips_and_validates_strictly() {
+        // Missing or null proof yields no drawable coverage, never a
+        // refusal; the key strips before the strict core decode.
+        let mut missing: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str::<serde_json::Value>("{}")
+                .expect("object")
+                .as_object()
+                .expect("map")
+                .clone();
+        assert_eq!(
+            normalize_invalidation_witness(&mut missing).expect("missing is None"),
+            None
+        );
+        assert!(!missing.contains_key("nativeInvalidWitness"));
+        let mut null: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str::<serde_json::Value>("{\"nativeInvalidWitness\":null}")
+                .expect("object")
+                .as_object()
+                .expect("map")
+                .clone();
+        assert_eq!(
+            normalize_invalidation_witness(&mut null).expect("null is None"),
+            None
+        );
+        // A well-formed witness validates and strips, binding as coverage.
+        let mut proven: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str::<serde_json::Value>(
+                "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":\"7\"},\"v\":2}",
+            )
+            .expect("object")
+            .as_object()
+            .expect("map")
+            .clone();
+        assert_eq!(
+            normalize_invalidation_witness(&mut proven).expect("witness validates"),
+            Some(CoverWitness {
+                instance: "effect-1".to_owned(),
+                counter: "7".to_owned(),
+            })
+        );
+        assert!(!proven.contains_key("nativeInvalidWitness"));
+        assert_eq!(
+            proven.get("v").expect("other keys survive").as_u64(),
+            Some(2)
+        );
+        // Malformed proof refuses: mistyped, wrong keys, non-canonical
+        // counters, and non-opaque instances.
+        for bad in [
+            "{\"nativeInvalidWitness\":7}",
+            "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\"}}",
+            "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":\"07\"}}",
+            "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":7}}",
+            "{\"nativeInvalidWitness\":{\"instance\":\"\",\"counter\":\"7\"}}",
+            "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":\"7\",\"extra\":1}}",
+        ] {
+            let mut inner: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str::<serde_json::Value>(bad)
+                    .expect("object")
+                    .as_object()
+                    .expect("map")
+                    .clone();
+            assert!(
+                normalize_invalidation_witness(&mut inner).is_err(),
+                "malformed witness refuses: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn drag_preview_commands_never_prove_a_native_gesture() {
+        // Only the exact drag-preview operation shape disqualifies the
+        // staged association; unrelated and malformed commands do not.
+        assert!(command_is_drag_preview(
+            &serde_json::json!({"op":"operation","command":{"op":"drag-preview","win":"w"}})
+        ));
+        for other in [
+            serde_json::json!({"op":"select-numbered","out":null,"index":1}),
+            serde_json::json!({"op":"operation","command":{"op":"toggle-float"}}),
+            serde_json::json!({"op":"operation","command":{"op":"drag-drop"}}),
+            serde_json::json!({"op":"operation"}),
+            serde_json::json!({"op":"operation","command":null}),
+            serde_json::json!("drag-preview"),
+        ] {
+            assert!(
+                !command_is_drag_preview(&other),
+                "not a drag command: {other}"
+            );
+        }
     }
 
     #[test]

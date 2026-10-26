@@ -40,6 +40,7 @@ interface FakeWin {
 const STYLE: PresentationSnapshot = {
     instance: "effect-1",
     rev: "4",
+    invalidation: "9",
     chord: false,
     borderGap: 0,
     borderWidth: 3,
@@ -392,6 +393,7 @@ describe("world observation presentation ingress", () => {
         const obs = observe(surface, {
             instance: "effect-2",
             rev: "9",
+            invalidation: "3",
             chord: true,
             borderGap: 0.4,
             borderWidth: 2000,
@@ -408,6 +410,9 @@ describe("world observation presentation ingress", () => {
         // Sentinel -1 resolves to the border width before rounding.
         assert.equal(obs.presentation.underlayExtension, 1024);
         assert.equal(obs.presentation.chordHeld, true);
+        // The causal witness rides alongside: this capture covers the
+        // snapshot's counter in its instance namespace.
+        assert.deepEqual(obs.nativeInvalidWitness, { instance: "effect-2", counter: "3" });
     });
 
     it("rides disabled zeros without an effect snapshot", () => {
@@ -422,6 +427,9 @@ describe("world observation presentation ingress", () => {
             assert.equal(obs.presentation.borderWidth, 0);
             assert.equal(obs.presentation.underlayExtension, 0);
             assert.equal(obs.presentation.chordHeld, false);
+            // Unknown facts carry no coverage proof: missing proof yields
+            // no drawable coverage, never guessed truth.
+            assert.equal(obs.nativeInvalidWitness, null);
         }
     });
 

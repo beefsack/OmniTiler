@@ -23,17 +23,25 @@
 // Payload contract (built by the script subscriber from the accepted broker
 // projection, exact keys, no unknown fields, no trailing data):
 //   {"v":1,"gen":"<opaque>","rev":"<canonical-u64>","obs":"<canonical-u64>",
+//    "coveredInstance":"<opaque>","coveredInvalid":"<canonical-u64>",
 //    "foreground":"<id-or-empty>",
 //    "border":{"visible":0/1,"inner":[x,y,w,h]|null,"outer":[x,y,w,h]|null},
 //    "underlay":{"status":"found","win":"<id>","outer":[x,y,w,h],
 //                "members":["<id>",...]}|{"status":"hidden"},
 //    "preview":{"rect":[x,y,w,h],"sourceOut":"<id>","sourceWs":"<id>",
-//               "win":"<id>"}|null}
+//               "win":"<id>","producerInstance":"<id>"|null,
+//               "producerSerial":"<canonical-u64>"|null}|null}
 // - `v` is exactly the integer 1 (value-based: integral finite double).
 // - `rev`/`obs` are canonical decimal u64 strings (no leading zeros, no
 //   sign). The `(rev, obs)` pair is the order key: different observations
 //   under the same state revision can change presentation, so ordering uses
 //   both, never the revision alone.
+// - `coveredInstance`/`coveredInvalid` are the causal coverage witness:
+//   the native-invalidation source instance plus the counter value this
+//   capture covered. A paint applies only when its witness is the
+//   renderer's latest (same instance); same-instance older coverage never
+//   resurrects, and a foreign instance with a set latest never applies.
+//   Never inferred from timing, geometry, or age.
 // - `foreground` is empty (no eligible target) or an opaque window id.
 // - Rect value check (Qt parses every JSON number as double, so lexical
 //   spelling is unobservable here): finite, integral, in int range, then
@@ -46,12 +54,16 @@
 //   member; member rects never cross). Empty/duplicate/non-id members fail
 //   closed.
 // - `preview.win` is the insertion neighbor, never the mover identity: the
-//   native show gate uses only gesture liveness (a live interactive move),
-//   never an identity match against the mover.
+//   producer identity (`producerInstance`/`producerSerial`, null when the
+//   producing native gesture is unproven) names the actual producing native
+//   gesture. The native show gate matches that producer against the live
+//   open gesture, never against the mover; unproven previews never arm the
+//   latch (fail closed).
 // - The read correlation `req` is subscriber-side only (nonce plus
 //   generation fencing at the read site); native orders paints on
 //   `(gen, rev, obs)` alone, which is sufficient on the ordered channel
-//   with those fences.
+//   with those fences. Coverage gates alongside: a paint whose witness is
+//   older than the renderer's latest (or foreign to it) never applies.
 // - No styling inputs cross here: native styling stays native
 //   (independent per-surface configured fills with the live system accent
 //   default, never core-derived).
@@ -61,16 +73,30 @@
 // - `fence` is the ordering token, independent of visible state: display
 //   clears (focus activation, geometry dirt, malformed payloads) retain it;
 //   only the stream-resetting `ClearPresentation` path (generation
-//   rotation, unbind, stop) resets it. Same-generation older `(rev, obs)`
-//   never applies; a different generation with a set fence never applies
-//   (late old generation must not replace an accepted new one). Newer
-//   `(rev, obs)` applies; equal `(rev, obs)` re-applies idempotently.
-// - `borderFloor`/`underlayFloor` snapshot the fence when native frame
-//   geometry changes on the border target / any held underlay member. The
-//   affected shape stays hidden until a strictly newer paint arrives; an
-//   equal-redelivery never resurrects it, and geometry coincidence (a move
-//   that returns to its start) never clears the floor without a fresh
-//   paint. The underlay depends on ALL held members, not just the anchor.
+//   rotation, unbind, stop, explicit stream replacement) resets it.
+//   Same-generation older `(rev, obs)` never applies; a different generation
+//   with a set fence applies as a new stream (rotation always precedes a new
+//   stream with the stream-resetting clear on the same ordered channel, so a
+//   mismatch means the clear was lost while the endpoint was down and only
+//   accepting recovers; a late old generation after an accepted new one
+//   cannot occur on that ordered channel under subscriber-side generation
+//   fencing). Newer `(rev, obs)` applies; equal `(rev, obs)` re-applies
+//   idempotently.
+// - `latest` is the effect-owned causal witness (advanced by
+//   noteNativeInvalidation on geometry, activation/focus, and gesture
+//   boundaries). `covered` is the witness the held paint covers: paints
+//   apply only when covered matches latest exactly (same instance, equal
+//   counter); same-instance older coverage never applies (in-transit paints
+//   crossing a native invalidation are the reachable stale case), and a
+//   foreign instance with a set latest never applies (reused counters across
+//   instances never compare).
+// - `borderFloor`/`underlayFloor` snapshot the pre-bump latest when native
+//   frame geometry changes on the border target / any held underlay member.
+//   A set floor hides its shape until a paint covers strictly past it in the
+//   same instance; an equal-or-older covering paint never resurrects it, and
+//   geometry coincidence (a move that returns to its start) never clears the
+//   floor without a fresh paint. The underlay depends on ALL held members,
+//   not just the anchor.
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -94,10 +120,24 @@ inline constexpr int PRESENTATION_COORD_MIN = -16384;
 inline constexpr int PRESENTATION_COORD_MAX = 16384;
 inline constexpr int PRESENTATION_SIZE_MAX = 16384;
 
-// Ordering token: serving generation plus the (revision, observation)
-// pair. Opaque generations never compare ordinally; same-generation order
-// uses `(rev, obs)` lexicographically because different observations under
-// the same state revision can change presentation.
+// Causal coverage witness (Stage 5): the native-invalidation source
+// instance plus the counter value covered. Counters never compare across
+// instances.
+struct CoverWitness {
+    QString instance;
+    quint64 counter = 0;
+    bool set = false;
+};
+
+// Scope of one native invalidation bump: which shape floors snapshot the
+// pre-bump latest. Gesture boundaries advance the witness with no floors
+// (the preview latch clears separately and the producer match gates it).
+enum class InvalidationScope : int {
+    None = 0,
+    Border = 1,
+    Underlay = 2,
+    All = 3,
+};
 struct PaintOrder {
     QString gen;
     quint64 rev = 0;
@@ -148,14 +188,26 @@ struct PresentationPaint {
     QByteArray previewSourceOut;
     QByteArray previewSourceWs;
     QByteArray previewWin;
+    // Producing native gesture of the held preview (effect-instance plus
+    // nonzero serial); empty when unproven. The show gate matches it
+    // against the live open gesture. Set only from accepted paints.
+    QByteArray previewProducerInstance;
+    QByteArray previewProducerSerial;
     // Ordering token, independent of visible state (finding G): retained
     // across display-only hides, reset only by the stream-resetting clear.
     PaintOrder fence;
-    // Geometry-dirt floors (finding F): snapshot of the fence when native
-    // frame geometry changed on the dependent windows. A set floor hides
-    // its shape until a strictly newer paint arrives.
-    PaintOrder borderFloor;
-    PaintOrder underlayFloor;
+    // Causal witness: the renderer's latest native invalidation plus the
+    // witness the held paint covers. A paint applies only when covered
+    // matches latest exactly (same instance); older or foreign coverage
+    // never applies.
+    CoverWitness latest;
+    CoverWitness covered;
+    // Geometry-dirt floors (finding F, causal witness form): the pre-bump
+    // latest snapshotted when native frame geometry changed on the
+    // dependent windows. A set floor hides its shape until a paint covers
+    // strictly past it in the same instance.
+    CoverWitness borderFloor;
+    CoverWitness underlayFloor;
 };
 
 enum class PresentationApply : int {
@@ -174,10 +226,40 @@ enum class PresentationApply : int {
     Malformed = 0,
 };
 
-// Display-freshness for the affected shape: a set floor hides until the
-// held fence advances strictly past the dirt point. A generation mismatch
-// between floor and fence fails closed (hidden); floors snapshot the live
-// fence at dirt time so they always share its stream in practice.
+// A paint covers its floor when both name the same instance and the
+// covered counter advances strictly past the dirt point.
+inline bool coverClearsFloor(const CoverWitness &cover, const CoverWitness &floor)
+{
+    if (!cover.set || !floor.set) {
+        return false;
+    }
+    if (cover.instance != floor.instance) {
+        return false;
+    }
+    return cover.counter > floor.counter;
+}
+
+// Draw-gate coverage check: the held paint covers exactly the renderer's
+// actual latest witness (same instance, equal counter). Every drawn
+// surface requires this in addition to its floor: a bump with no floor
+// for a shape (or none at all) still hides that shape until fresh
+// covering paint arrives. Never compares reused counters across
+// instances; missing proof on either side hides.
+inline bool presentationCoveredCurrent(const PresentationPaint *state)
+{
+    if (state == nullptr || !state->has) {
+        return false;
+    }
+    if (!state->latest.set || !state->covered.set) {
+        return false;
+    }
+    return state->covered.instance == state->latest.instance
+        && state->covered.counter == state->latest.counter;
+}
+
+// Display-freshness for the affected shape: an unset floor is fresh; a set
+// floor hides until the held paint covers strictly past the dirt point in
+// the same instance.
 inline bool presentationBorderFresh(const PresentationPaint *state)
 {
     if (state == nullptr) {
@@ -186,7 +268,7 @@ inline bool presentationBorderFresh(const PresentationPaint *state)
     if (!state->borderFloor.set) {
         return true;
     }
-    return paintOrderGreater(state->fence, state->borderFloor);
+    return coverClearsFloor(state->covered, state->borderFloor);
 }
 
 inline bool presentationUnderlayFresh(const PresentationPaint *state)
@@ -197,28 +279,55 @@ inline bool presentationUnderlayFresh(const PresentationPaint *state)
     if (!state->underlayFloor.set) {
         return true;
     }
-    return paintOrderGreater(state->fence, state->underlayFloor);
+    return coverClearsFloor(state->covered, state->underlayFloor);
 }
 
-// Native geometry-dirt marks (finding F): snapshot the current fence so a
-// strictly newer paint alone clears the floor. Never compares live frames,
-// so same-window moves and A->B->A races stay hidden without a fresh paint.
-inline void markBorderGeometryDirty(PresentationPaint *state)
+// Native invalidation bump (Stage 5, causal witness): advances the
+// renderer's latest witness and snapshots the pre-bump value as the dirt
+// floor for the affected shapes. The effect calls this on geometry,
+// activation/focus, and gesture boundaries (gesture scope advances the
+// witness with no floors; the preview latch clears separately and the
+// producer match gates it). Never compares live frames, so same-window
+// moves and A->B->A races stay hidden without a fresh paint. Never
+// compares reused counters across instances: a foreign instance clears
+// the floors (the caller hides the display on replacement; new-instance
+// paints apply fresh below).
+inline void noteNativeInvalidation(
+    PresentationPaint *state, const QString &instance, quint64 counter, InvalidationScope scope)
 {
-    if (state == nullptr) {
+    if (state == nullptr || instance.isEmpty()) {
         return;
     }
-    state->borderFloor = state->fence;
-    state->borderFloor.set = true;
+    CoverWitness prev;
+    if (state->latest.set && state->latest.instance == instance) {
+        prev = state->latest;
+    } else {
+        if (state->latest.set) {
+            state->borderFloor = CoverWitness{};
+            state->underlayFloor = CoverWitness{};
+        }
+        prev = CoverWitness{instance, 0, true};
+    }
+    if (scope == InvalidationScope::Border || scope == InvalidationScope::All) {
+        state->borderFloor = prev;
+    }
+    if (scope == InvalidationScope::Underlay || scope == InvalidationScope::All) {
+        state->underlayFloor = prev;
+    }
+    state->latest = CoverWitness{instance, counter, true};
 }
 
-inline void markUnderlayGeometryDirty(PresentationPaint *state)
+// Native geometry-dirt marks (finding F, causal witness form): snapshot
+// the pre-bump latest as the floor and advance the witness, so only a
+// paint covering strictly past the dirt point clears it.
+inline void markBorderGeometryDirty(PresentationPaint *state, const QString &instance, quint64 counter)
 {
-    if (state == nullptr) {
-        return;
-    }
-    state->underlayFloor = state->fence;
-    state->underlayFloor.set = true;
+    noteNativeInvalidation(state, instance, counter, InvalidationScope::Border);
+}
+
+inline void markUnderlayGeometryDirty(PresentationPaint *state, const QString &instance, quint64 counter)
+{
+    noteNativeInvalidation(state, instance, counter, InvalidationScope::Underlay);
 }
 
 // Native gesture-boundary preview latch clear (finding D): the held
@@ -237,6 +346,25 @@ inline void clearPaintPreview(PresentationPaint *state)
     state->previewSourceOut.clear();
     state->previewSourceWs.clear();
     state->previewWin.clear();
+    state->previewProducerInstance.clear();
+    state->previewProducerSerial.clear();
+}
+
+// Live producer match for the held preview: the held producing identity
+// equals the live open native identity. The effect's show gate calls this
+// with the exact live values; the parse-time gate below uses the same
+// values the SetPresentation endpoint received.
+inline bool previewProducerMatchesLive(
+    const PresentationPaint *state, const QString &liveInstance, const QString &liveSerial)
+{
+    if (state == nullptr || !state->previewHas) {
+        return false;
+    }
+    if (liveInstance.isEmpty() || liveSerial.isEmpty() || liveSerial == QStringLiteral("0")) {
+        return false;
+    }
+    return state->previewProducerInstance == liveInstance.toUtf8()
+        && state->previewProducerSerial == liveSerial.toUtf8();
 }
 
 // Exact-reproduction stroke for the native OutlinedBorderItem (finding C):
@@ -369,14 +497,20 @@ inline bool parseRect(const QJsonValue &value, QRect *out)
 // malformed payloads: the stream continues with its order intact.
 inline void clearPaintDisplay(PresentationPaint *state);
 
-// Applies one `SetPresentation` payload to the held paint. Returns Accepted
-// (state replaced; a set geometry floor still hides the affected shape
-// until strictly newer content arrives), StaleIgnored (older `(rev, obs)`
-// or a mismatched generation with a set fence; display, fence, and floors
-// preserved), or Malformed (display cleared only; fence and floors
-// retained so the stream continues and stale retransmits still cannot
-// resurrect).
-inline PresentationApply applyPresentationPaint(PresentationPaint *state, const QString &payload)
+// Applies one `SetPresentation` payload to the held paint. `liveInstance`
+// and `liveSerial` are the exact live open native gesture identity at the
+// endpoint (instance plus serial, "0" when no gesture is open): a proven
+// preview arms the latch only when its producer matches them. Returns
+// Accepted (state replaced; a set geometry floor still hides the affected
+// shape until a paint covers strictly past it), StaleIgnored (older
+// `(rev, obs)`; no live source witness; or coverage that is not exactly
+// the live source plus counter - older is known-stale, foreign is
+// incomparable, future is unproven; display, fence, witness, and floors
+// preserved), or Malformed (display cleared only; fence, witness, and
+// floors retained so the stream continues and stale retransmits still
+// cannot resurrect).
+inline PresentationApply applyPresentationPaint(
+    PresentationPaint *state, const QString &payload, const QString &liveInstance, const QString &liveSerial)
 {
     using namespace PresentationConsumerDetail;
     if (state == nullptr) {
@@ -395,9 +529,11 @@ inline PresentationApply applyPresentationPaint(PresentationPaint *state, const 
         return failClosed();
     }
     const QJsonObject o = document.object();
-    if (o.size() != 8 || !o.contains(QStringLiteral("v")) || !o.contains(QStringLiteral("gen")) || !o.contains(QStringLiteral("rev"))
-        || !o.contains(QStringLiteral("obs")) || !o.contains(QStringLiteral("foreground")) || !o.contains(QStringLiteral("border"))
-        || !o.contains(QStringLiteral("underlay")) || !o.contains(QStringLiteral("preview"))) {
+    if (o.size() != 10 || !o.contains(QStringLiteral("v")) || !o.contains(QStringLiteral("gen")) || !o.contains(QStringLiteral("rev"))
+        || !o.contains(QStringLiteral("obs")) || !o.contains(QStringLiteral("coveredInstance"))
+        || !o.contains(QStringLiteral("coveredInvalid")) || !o.contains(QStringLiteral("foreground"))
+        || !o.contains(QStringLiteral("border")) || !o.contains(QStringLiteral("underlay"))
+        || !o.contains(QStringLiteral("preview"))) {
         return failClosed();
     }
     if (!isJsonIntValue(o.value(QStringLiteral("v")), nullptr) || o.value(QStringLiteral("v")).toInt(-1) != 1) {
@@ -410,6 +546,16 @@ inline PresentationApply applyPresentationPaint(PresentationPaint *state, const 
         || !isCanonicalU64(o.value(QStringLiteral("obs")).toString(), &obs)) {
         return failClosed();
     }
+    // Causal coverage witness: the capture this paint was read from
+    // covered exactly this native-invalidation value. Never compared
+    // across instances; never inferred from timing or geometry.
+    const QString coveredInstance = o.value(QStringLiteral("coveredInstance")).toString();
+    quint64 coveredInvalid = 0;
+    if (!isOpaqueId(coveredInstance)
+        || !isCanonicalU64(o.value(QStringLiteral("coveredInvalid")).toString(), &coveredInvalid)) {
+        return failClosed();
+    }
+    const CoverWitness incomingCover{coveredInstance, coveredInvalid, true};
     const QString foreground = o.value(QStringLiteral("foreground")).toString(QStringLiteral("\u0000"));
     if (foreground != QStringLiteral("") && !isOpaqueId(foreground)) {
         return failClosed();
@@ -506,13 +652,17 @@ inline PresentationApply applyPresentationPaint(PresentationPaint *state, const 
     QByteArray previewSourceOut;
     QByteArray previewSourceWs;
     QByteArray previewWin;
+    QByteArray previewProducerInstance;
+    QByteArray previewProducerSerial;
     if (!previewValue.isNull()) {
         if (!previewValue.isObject()) {
             return failClosed();
         }
         const QJsonObject preview = previewValue.toObject();
-        if (preview.size() != 4 || !preview.contains(QStringLiteral("rect")) || !preview.contains(QStringLiteral("sourceOut"))
-            || !preview.contains(QStringLiteral("sourceWs")) || !preview.contains(QStringLiteral("win"))) {
+        if (preview.size() != 6 || !preview.contains(QStringLiteral("rect")) || !preview.contains(QStringLiteral("sourceOut"))
+            || !preview.contains(QStringLiteral("sourceWs")) || !preview.contains(QStringLiteral("win"))
+            || !preview.contains(QStringLiteral("producerInstance"))
+            || !preview.contains(QStringLiteral("producerSerial"))) {
             return failClosed();
         }
         if (!parseRect(preview.value(QStringLiteral("rect")), &previewRect)) {
@@ -524,32 +674,66 @@ inline PresentationApply applyPresentationPaint(PresentationPaint *state, const 
         if (!isOpaqueId(sourceOut) || !isOpaqueId(sourceWs) || !isOpaqueId(win)) {
             return failClosed();
         }
-        previewHas = true;
+        // Producing native gesture: null when unproven (fail closed: never
+        // arms the latch). A proven producer arms only when it matches the
+        // live open gesture the endpoint received alongside the payload.
+        const QJsonValue producerInstanceValue = preview.value(QStringLiteral("producerInstance"));
+        const QJsonValue producerSerialValue = preview.value(QStringLiteral("producerSerial"));
+        const bool proven = producerInstanceValue.isString() && producerSerialValue.isString()
+            && isOpaqueId(producerInstanceValue.toString())
+            && isCanonicalU64(producerSerialValue.toString(), nullptr)
+            && producerSerialValue.toString() != QStringLiteral("0");
+        if (!producerInstanceValue.isNull() || !producerSerialValue.isNull()) {
+            if (!proven) {
+                return failClosed();
+            }
+            previewProducerInstance = producerInstanceValue.toString().toUtf8();
+            previewProducerSerial = producerSerialValue.toString().toUtf8();
+            const bool live = !liveInstance.isEmpty() && liveSerial != QStringLiteral("0")
+                && previewProducerInstance == liveInstance.toUtf8()
+                && previewProducerSerial == liveSerial.toUtf8();
+            previewHas = live;
+        }
         previewSourceOut = sourceOut.toUtf8();
         previewSourceWs = sourceWs.toUtf8();
         previewWin = win.toUtf8();
     }
-    // Order fence (findings F/G): same-generation older `(rev, obs)`
-    // never applies (in-transit paints crossing a native invalidation are
-    // the reachable stale case). A mismatched generation with a set fence
-    // is accepted as a new stream: the rotation path always precedes a new
-    // stream with the stream-resetting clear on the same ordered channel,
-    // so a mismatch means the clear was lost while the endpoint was down
-    // and only accepting recovers (rejecting would wedge the fresh stream
-    // forever). A late old generation after an accepted new one cannot
-    // occur on that ordered channel under subscriber-side generation
-    // fencing, so there is no reachable old-replaces-new path to refuse.
-    // Equal `(rev, obs)` re-applies idempotently but never clears a set
-    // geometry floor; only strictly newer content does.
+    // Order fence (findings F/G) plus the causal witness: same-generation
+    // older `(rev, obs)` never applies (in-transit paints crossing a native
+    // invalidation are the reachable stale case). Coverage must prove
+    // against the true live source plus counter: an unset latest (no live
+    // source ever seeded by effect authority) never applies, a foreign
+    // instance never applies (reused counters across instances never
+    // compare), and only exactly equal same-instance coverage applies -
+    // older coverage is known-stale and future coverage is unproven. No
+    // arriving paint may establish latest: the effect-owned router
+    // re-seeds it from authority at every endpoint dispatch.
+    // A mismatched generation with a set fence is accepted as a new stream:
+    // the rotation path always precedes a new stream with the
+    // stream-resetting clear on the same ordered channel, so a mismatch
+    // means the clear was lost while the endpoint was down and only
+    // accepting recovers (rejecting would wedge the fresh stream forever).
+    // A late old generation after an accepted new one cannot occur on that
+    // ordered channel under subscriber-side generation fencing, so there is
+    // no reachable old-replaces-new path to refuse. Equal `(rev, obs)`
+    // re-applies idempotently; covering past a set floor clears it, while
+    // equal-or-older coverage never does.
     const PaintOrder incoming{gen, rev, obs, true};
     if (state->fence.set && gen == state->fence.gen && paintOrderLess(incoming, state->fence)) {
         return PresentationApply::StaleIgnored;
     }
-    const bool strictlyNewer = !state->fence.set || paintOrderGreater(incoming, state->fence);
+    if (!state->latest.set) {
+        return PresentationApply::StaleIgnored;
+    }
+    if (incomingCover.instance != state->latest.instance
+        || incomingCover.counter != state->latest.counter) {
+        return PresentationApply::StaleIgnored;
+    }
     state->has = true;
     state->gen = gen;
     state->rev = rev;
     state->obs = obs;
+    state->covered = incomingCover;
     state->foreground = foreground.toUtf8();
     state->borderVisible = visibleInt == 1;
     state->borderInner = inner;
@@ -563,18 +747,25 @@ inline PresentationApply applyPresentationPaint(PresentationPaint *state, const 
     state->previewSourceOut = previewSourceOut;
     state->previewSourceWs = previewSourceWs;
     state->previewWin = previewWin;
+    state->previewProducerInstance = previewProducerInstance;
+    state->previewProducerSerial = previewProducerSerial;
     state->fence = incoming;
-    if (strictlyNewer) {
-        state->borderFloor = PaintOrder{};
-        state->underlayFloor = PaintOrder{};
+    // Covering strictly past a set floor clears it; equal-or-older coverage
+    // never does (an equal redelivery cannot resurrect a dirtied shape).
+    if (coverClearsFloor(incomingCover, state->borderFloor)) {
+        state->borderFloor = CoverWitness{};
+    }
+    if (coverClearsFloor(incomingCover, state->underlayFloor)) {
+        state->underlayFloor = CoverWitness{};
     }
     return PresentationApply::Accepted;
 }
 
 // Display-only hide (finding G): clears the visible paint while retaining
-// the ordering fence and geometry floors, so a stale retransmit still
-// cannot resurrect. Used by focus activation, geometry-dirt hides, and
-// malformed payloads: the stream continues with its order intact.
+// the ordering fence, the causal witness, and the geometry floors, so a
+// stale retransmit still cannot resurrect. Used by focus activation,
+// geometry-dirt hides, and malformed payloads: the stream continues with
+// its order intact.
 // (Forward-declared above for the malformed path in applyPresentationPaint.)
 inline void clearPaintDisplay(PresentationPaint *state)
 {
@@ -582,18 +773,36 @@ inline void clearPaintDisplay(PresentationPaint *state)
         return;
     }
     const PaintOrder fence = state->fence;
-    const PaintOrder borderFloor = state->borderFloor;
-    const PaintOrder underlayFloor = state->underlayFloor;
+    const CoverWitness latest = state->latest;
+    const CoverWitness covered = state->covered;
+    const CoverWitness borderFloor = state->borderFloor;
+    const CoverWitness underlayFloor = state->underlayFloor;
     *state = PresentationPaint{};
     state->fence = fence;
+    state->latest = latest;
+    state->covered = covered;
     state->borderFloor = borderFloor;
     state->underlayFloor = underlayFloor;
 }
 
-// Stream-resetting clear: display, ordering fence, and geometry floors all
-// reset. Only the subscriber-driven `ClearPresentation` path (generation
-// rotation, unbind, stop) uses this; every legitimate new stream starts
-// from an empty fence.
+// Production activation/error-hide routing (finding G): display-only hide
+// preserving order/invalidation evidence, then the causal bump. The
+// effect's windowActivated handler invokes exactly this (never the
+// stream-resetting clear), and the offline red pins this exact function in
+// production call order.
+inline void hideForActivation(PresentationPaint *state, const QString &instance, quint64 counter)
+{
+    clearPaintDisplay(state);
+    noteNativeInvalidation(state, instance, counter, InvalidationScope::All);
+}
+
+// Stream-resetting clear: display, ordering fence, and geometry floors
+// all reset. Only the subscriber-driven `ClearPresentation` path
+// (generation rotation, unbind, stop, explicit stream replacement) uses
+// this; every legitimate new stream starts from an empty fence. The live
+// source truth is NOT forgotten here: the effect-owned router re-seeds
+// latest from authority at the next endpoint dispatch, so no arriving
+// paint can establish it.
 inline void clearPresentationPaint(PresentationPaint *state)
 {
     if (state != nullptr) {

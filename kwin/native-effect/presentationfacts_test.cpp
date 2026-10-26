@@ -314,6 +314,9 @@ TCHECK(&f, f.effect->isConnected() && f.script->isConnected() && f.foreign->isCo
             f.instance = body.value(QStringLiteral("instance")).toString();
             TCHECK(&f, !f.instance.isEmpty());
             TCHECK(&f, body.value(QStringLiteral("rev")).toString() == QStringLiteral("0"));
+            // The fresh source starts with a zero invalidation witness: the
+            // first capture covers it and paints.
+            TCHECK(&f, body.value(QStringLiteral("invalidation")).toString() == QStringLiteral("0"));
             TCHECK(&f, body.value(QStringLiteral("chord")).toInt(-1) == 0);
             TCHECK(&f, body.value(QStringLiteral("chordKnown")).toInt(-1) == 0);
             f.rev = 0;
@@ -430,6 +433,29 @@ TCHECK(&f, f.effect->isConnected() && f.script->isConnected() && f.foreign->isCo
         });
     });
 
+    // Step 5b: invalidation bump (Stage 5 witness): the effect advances its
+    // monotonic counter on a native event; the held waiter completes with
+    // the fresh witness (changed:1) plus a revision bump, so the script
+    // carries the new covered value on its next capture.
+    f.steps.push_back([&]() {
+        auto *watcher = asyncWait(*scriptCaller, waitRequest(f.instance, QStringLiteral("3"), 20000));
+        QObject::connect(watcher, &QDBusPendingCallWatcher::finished, &app, [&, watcher]() {
+            QDBusPendingReply<QString> reply = *watcher;
+            watcher->deleteLater();
+            TCHECK(&f, reply.isValid());
+            const QJsonObject body = parsePayload(reply.value());
+            TCHECK(&f, body.value(QStringLiteral("changed")).toInt(-1) == 1);
+            TCHECK(&f, body.value(QStringLiteral("invalidation")).toString() == QStringLiteral("1"));
+            TCHECK(&f, body.value(QStringLiteral("rev")).toString() == QStringLiteral("4"));
+            TCHECK(&f, f.source->revision() == 4);
+            f.rev = 4;
+            f.next();
+        });
+        QTimer::singleShot(100, &app, [&]() {
+            f.source->noteInvalidation(1);
+        });
+    });
+
     // Step 6: malformed request completes immediately with no mutation.
     f.steps.push_back([&]() {
         auto *watcher = asyncWait(*scriptCaller, QStringLiteral("not json{{{"));
@@ -439,8 +465,8 @@ TCHECK(&f, f.effect->isConnected() && f.script->isConnected() && f.foreign->isCo
             TCHECK(&f, reply.isValid());
             const QJsonObject body = parsePayload(reply.value());
             TCHECK(&f, body.value(QStringLiteral("changed")).toInt(-1) == 1);
-            TCHECK(&f, body.value(QStringLiteral("rev")).toString() == QStringLiteral("3"));
-            TCHECK(&f, f.source->revision() == 3);
+            TCHECK(&f, body.value(QStringLiteral("rev")).toString() == QStringLiteral("4"));
+            TCHECK(&f, f.source->revision() == 4);
             f.next();
         });
     });
@@ -453,9 +479,9 @@ TCHECK(&f, f.effect->isConnected() && f.script->isConnected() && f.foreign->isCo
             watcher->deleteLater();
             TCHECK(&f, reply.isError());
             TCHECK(&f, reply.error().type() == QDBusError::InvalidArgs);
-            TCHECK(&f, f.source->revision() == 3);
+            TCHECK(&f, f.source->revision() == 4);
             // No waiter was held: a fresh matching Wait holds again.
-            auto *probe = asyncWait(*scriptCaller, waitRequest(f.instance, QStringLiteral("3"), 20000));
+            auto *probe = asyncWait(*scriptCaller, waitRequest(f.instance, QStringLiteral("4"), 20000));
             QTimer::singleShot(200, &app, [&, probe]() {
                 TCHECK(&f, !probe->isFinished());
                 probe->deleteLater();
@@ -471,7 +497,7 @@ TCHECK(&f, f.effect->isConnected() && f.script->isConnected() && f.foreign->isCo
     // then that named connection disconnects; the script connection is
     // never unregistered from here.
     f.steps.push_back([&]() {
-        auto *watcher = asyncWait(*scriptCaller, waitRequest(f.instance, QStringLiteral("3"), 20000));
+        auto *watcher = asyncWait(*scriptCaller, waitRequest(f.instance, QStringLiteral("4"), 20000));
         QTimer::singleShot(100, &app, [&, watcher]() {
             delete f.source;
             f.source = nullptr;

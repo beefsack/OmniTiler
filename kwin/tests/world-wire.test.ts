@@ -386,14 +386,18 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
     });
 
     // ReadWorldPresentation projection: the exact cached-projection key
-    // set ({v,outcome,gen,req,rev,obs,scopes,workspaces,outputs,windows,
-    // presentation,preview}) parses directly, never through a fabricated core
-    // envelope. Write tokens, one-shot lanes, and transport bindings
-    // refuse here. `preview` is the trimmed renderer-only drop preview
-    // (paint rect, mover-home source, insertion-neighbor win) or null.
+    // set ({v,outcome,gen,req,rev,obs,coveredInstance,coveredInvalid,
+    // scopes,workspaces,outputs,windows,presentation,preview}) parses
+    // directly, never through a fabricated core envelope. Write tokens,
+    // one-shot lanes, and transport bindings refuse here. `preview` is the
+    // trimmed renderer-only drop preview (paint rect, mover-home source,
+    // insertion-neighbor win, producing-gesture identity or nulls when
+    // unproven) or null. `coveredInstance`/`coveredInvalid` name the causal
+    // coverage the cached capture covered (nulls when unproven).
     function projectPresentation(gen: string, req: string, rev: string, obs: string): string {
         return JSON.stringify({
             v: 2, outcome: "presentation", gen, req, rev, obs,
+            coveredInstance: "effect-1", coveredInvalid: "5",
             scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
             workspaces: [{ id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
             outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
@@ -420,22 +424,40 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.equal((parsed as { req?: unknown }).req, "req-9");
         assert.deepEqual(
             [...Object.keys(JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")))].sort(),
-            ["gen", "obs", "outcome", "outputs", "presentation", "preview", "req", "rev", "scopes", "v", "windows", "workspaces"].sort(),
+            ["gen", "obs", "outcome", "outputs", "presentation", "preview", "req", "rev", "coveredInstance", "coveredInvalid", "scopes", "v", "windows", "workspaces"].sort(),
         );
         assert.deepEqual((parsed as { preview?: unknown }).preview, null);
+        const covered = parsed as { coveredInstance?: unknown; coveredInvalid?: unknown };
+        assert.equal(covered.coveredInstance, "effect-1");
+        assert.equal(covered.coveredInvalid, "5");
         // The trimmed renderer-only drop preview parses (paint rect plus
-        // subject proof); issuer/provenance extras refuse. `win` is the
-        // insertion neighbor, never the mover identity.
+        // subject proof plus the producing identity); issuer/provenance
+        // extras refuse. `win` is the insertion neighbor, never the mover
+        // identity.
         const withPreview = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
-        withPreview["preview"] = { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a" };
+        withPreview["preview"] = {
+            rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a",
+            producerInstance: "gesture-1", producerSerial: "1",
+        };
         const parsedPreview = parseWorldReply(JSON.stringify(withPreview));
         assert.ok(parsedPreview !== null && !isWorldRejection(parsedPreview) && !isCoreWorldReply(parsedPreview) && !isWorldQueueReply(parsedPreview));
         assert.deepEqual((parsedPreview as { preview?: unknown }).preview, withPreview["preview"]);
+        // An unproven preview (null producer) parses too: the geometry
+        // rides the projection while the renderer hides it.
+        const unproven = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        unproven["preview"] = {
+            rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a",
+            producerInstance: null, producerSerial: null,
+        };
+        assert.ok(parseWorldReply(JSON.stringify(unproven)) !== null, "null producer parses");
         for (const bad of [
             { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1" },
-            { rect: [0, 0, 396], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a" },
-            { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", op: "drag-preview" },
-            { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", hover: null },
+            { rect: [0, 0, 396], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "gesture-1", producerSerial: "1" },
+            { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "gesture-1", producerSerial: "1", op: "drag-preview" },
+            { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "gesture-1", producerSerial: null },
+            { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "gesture-1", producerSerial: "0" },
+            { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "", producerSerial: "1" },
+            { rect: [0, 0, 396, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "gesture-1", producerSerial: "1", hover: null },
         ]) {
             const badReply = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
             badReply["preview"] = bad;

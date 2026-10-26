@@ -13,12 +13,13 @@
   N6 birth-clear is accepted offline with neutral opt-in: KDE enables it,
   Windows preserves its existing birth route. Deleted raw windows close and
   unmanaged host windows are absent before core admission.
-  Role, gesture and remaining local-fixed policy remain. N6 KDE JS tests
-  pass 737/737; the subsequent Stage 5 draft passes 750/750. Native acceptance remains TBD
-  and this record stays active for the whole port. Stage 5 has an unaccepted
-  renderer cutover with three unresolved freshness counterexamples; passing
-  offline gates do not close that boundary. Host integration and the documented
-  unknown host facts remain later work.
+  Role and remaining local-fixed policy remain; gesture transport is accepted
+  offline with physical input still pending. Stage 5 remains unaccepted: its
+  causal-witness draft has disconnected native fact publication and incomplete
+  cross-surface hide routing. Current service 312, JS 720 and native CTest 34
+  pass, but do not prove that production boundary. Native acceptance remains
+  TBD and this record stays active for the whole port. Host integration and the
+  documented unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -41,7 +42,7 @@
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
 | 4. Shared policy only | Partial offline: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear accepted offline. Role, local-fixed and gesture policy remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
-| 5. Pure presentation and coordinates | Unaccepted draft renders core border/underlay/drop bounds and deletes legacy renderer policy/forwarding; geometry, cross-gesture and focus-clear freshness remain blocking. No KDE pager renderer | Service 281, JS 750, native CTest 33 and acceptance 6 pass; coordinate proof below. These do not establish the missing causal freshness or native rendering acceptance |
+| 5. Pure presentation and coordinates | Unaccepted causal-witness draft over the earlier renderer cutover; native counter publication and cross-surface hide routing remain blocking. No KDE pager renderer | Latest service 312, JS 720, native CTest 34 and acceptance 6 pass; component/entry regressions do not establish the complete native event/facts/draw route. See the 2026-10-27 outcome |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; active-border color with default system accent; KDE uses the native Plasma pager, so core pager-focused-window color does not apply | Declaration/source checks and adapter tests; border override; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
@@ -1514,9 +1515,8 @@
   native build/CTest. Verify the service, full JS suite and exact world acceptance
   through the declared development environment. Shared core remains unchanged.
 - Prove KWin-logical geometry end-to-end at the conversion/render use sites and
-  in the port notes. Assess the currently absent pager renderer separately from
-  consuming its published content; do not invent workspace/pager placement policy.
-  Independent pager-highlight styling belongs with the pager rendering surface.
+  in the port notes. KDE uses the native Plasma pager; no OmniTiler pager
+  renderer or core pager-focused-window styling applies here.
 - Native acceptance remains distinct from offline gates; a live check requires
   fixture-only scope and independent frame/visibility/foreground readback.
 - The initial broker draft projected a `drag-preview` result into a separate
@@ -1608,6 +1608,67 @@
   for all three rows before further renderer changes. Any shared-core extension
   needs a separate decision. N5, cancellation evidence, game/fullscreen
   suspension, race-audit items and native acceptance remain parked.
+
+### Stage 5 causal-witness draft: unaccepted (2026-10-27)
+
+- **Not accepted.** This draft does not supersede `92010762` as accepted Stage 5
+  delivery. The approved causal contract needs no shared-core/protocol change,
+  but native routing still violates it. No live load or fixture mutation was
+  performed. Fullscreen, N5, float/output command changes and later stages are
+  not implemented.
+- Draft vocabulary, not an accepted final contract:
+  - Effect facts carry decimal-u64 `invalidation` in their own `instance`
+    namespace. `PresentationRouter` retains the effect-owned counter separately
+    from paint order; missing, foreign or nonmatching coverage refuses.
+  - Raw KDE-only `nativeInvalidWitness:{instance,counter}|null` strips before
+    strict core decoding. Accepted broker captures publish
+    `coveredInstance`/`coveredInvalid` on the read-only projection. This is
+    separate from the existing JS-owned envelope `nativeInvalid` watermark.
+  - Preview adds `producerInstance`/`producerSerial`, matched against the live
+    native gesture at subscriber and endpoint. Unproven command-produced
+    previews have null producers and cannot draw; issuer result collection is
+    unchanged. `HidePresentation` retains evidence; `ClearPresentation` resets
+    paint order only for explicit stream replacement, retaining source truth.
+- Failing-first component/entry cases reproduced all three original
+  interleavings. An initial correction was insufficient: coverage at apply time
+  did not protect a held preview, geometry depended on visible membership, and
+  incoming paint could establish the native latest value. The subsequent
+  source-owned router/equality-gate correction passes those component cases but
+  remains semantically unsuccessful at the production wiring boundary below.
+
+| Remaining blocker | Minimal discriminating sequence and source evidence | Required proof |
+| --- | --- | --- |
+| Native counter is not published after startup | Seed facts/counter at 0; move a native member; router advances to 1. `noteFactsInvalidation` is called only when the facts object is created, not by the native bump routes. Later captures still cover 0 and the native endpoint refuses indefinitely, even after unrelated chord/style wakes | Execute native event -> actual facts publication -> broker capture -> endpoint, proving immediate stale hide and eventual covering repaint without reset |
+| Native visibility predicates are not re-evaluated together | Show border/underlay/preview; move tracked window/member or cross a gesture boundary. Router latest advances, but frame handlers refresh only border or underlay and gesture routes refresh only preview. Other native items can remain visible despite failing covered-current | Exercise actual invalidation-to-item visibility routing for all three surfaces, not only the coverage predicate or source-name checks |
+
+- Coverage limitation: `stage5-causal-freshness.rs` exercises `WorldService`;
+  `world-entry-freshness.test.ts` exercises entry/facts callbacks and renderer
+  calls; `world-presentation-freshness.test.ts` exercises subscriber routing.
+  Native consumer/router tests and metadata/static checks do not execute the
+  complete effect-to-facts publication and item-visibility side effects. Their
+  green results cannot substitute for the missing full-interleaving regressions.
+- Latest declared-environment gates: locked service build/all-target tests
+  **312/312** and strict clippy; core/protocol build/tests **1,422/1,422** and
+  strict clippy; Windows Linux-available tests **725/725** and strict clippy;
+  JS typecheck/build/tests **720/720**; host-matched effect build and native
+  CTest **34/34**; exact world acceptance **6/6**; workspace fmt, whitespace and
+  KWin API guard pass. Obsolete effect FFI crate was removed earlier; its gate
+  is inapplicable, not newly passing. Known macOS-on-Linux limitations were not
+  changed or reclassified. No dependency or other-platform source changes.
+- Integration with the concurrent no-focus directional work preserves this
+  KDE-only diff. The counts above include its additional core/protocol tests;
+  fresh integrated build, tests, strict clippy, JS and host-matched native gates
+  pass without changing the unaccepted renderer verdict.
+- Tentative technical choices: witness/producer field names, null unproven
+  coverage, and private Qt-only event routing preserve the selected causal
+  contract but are not accepted implementation evidence.
+- **Exact next action:** reproduce both remaining blockers through a faithful
+  native event/facts/item test route, reconnect counter publication and refresh
+  every drawn surface on invalidation, then rerun the complete three-row
+  interleavings and all gates. Do not deploy or claim Stage 5 accepted meanwhile.
+  No new shared-core decision is currently identified. Physical fixture drag,
+  release, delivered Esc, rapid consecutive gestures, focus return and native
+  stale-hide/fresh-repaint checks follow offline correction, with exact teardown.
 
 <a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
 ## N6 core-intents outcome (2026-10-26)

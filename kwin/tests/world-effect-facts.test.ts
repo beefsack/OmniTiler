@@ -26,6 +26,7 @@ function factsReply(snapshot: Record<string, unknown>): string {
 const SNAP_A = {
     instance: "effect-1",
     rev: "3",
+    invalidation: "7",
     chord: 0,
     chordKnown: 1,
     gap: 0.0,

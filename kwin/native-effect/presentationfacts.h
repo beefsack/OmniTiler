@@ -44,9 +44,13 @@ public:
 
     // Fact pushes from the effect (level observations, never verdicts). Each
     // material change bumps the revision and completes a held waiter with
-    // the fresh snapshot.
+    // the fresh snapshot. The invalidation counter is the Stage 5 causal
+    // witness: the effect advances it on geometry, activation/focus, and
+    // gesture boundaries, and the script carries each capture's covered
+    // value so the renderer only draws what covers the latest.
     void noteChord(bool held, bool known);
     void noteStyle(double gap, double width, double extension);
+    void noteInvalidation(quint64 counter);
 
     // Held waiter logic shared by the production forwarder and test-owned
     // objects. The caller owns the delayed reply: every D-Bus slot must
@@ -57,6 +61,7 @@ public:
 
     QString instance() const;
     quint64 revision() const;
+    quint64 invalidation() const;
 
 private:
     void bumpRevision();
@@ -68,6 +73,7 @@ private:
     QDBusConnection m_connection;
     const QString m_instance;
     quint64 m_rev = 0;
+    quint64 m_invalidation = 0;
     bool m_chordHeld = false;
     bool m_chordKnown = false;
     double m_gap = 0.0;

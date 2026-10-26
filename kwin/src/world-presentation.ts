@@ -23,14 +23,18 @@
 // Fencing: every read carries a caller-minted `{v:2,req}` correlation; the
 // serving generation binds server-side. Only the latest issued request may
 // paint (older or rotated completions never resurrect or clear newer
-// state), replies invalidated during flight never paint, and identical
-// (gen, rev, obs) repeats never re-send. A preview that crosses a native
-// gesture boundary (read issued before the latest gesture start/finish,
-// completing after) paints border/underlay only: the preview is dropped
-// (fail-closed hide) because its insertion-neighbor rect belongs to the
-// old gesture. Malformed replies hide; transport silence (lost callback)
-// hides via the watchdog. The renderer remains the native effect; this
-// module never derives geometry, eligibility, or policy.
+// state), replies invalidated during flight never paint, and identical or
+// older (gen, rev, obs) repeats never re-send: the last painted (or hidden)
+// point is retained across error hides, so a stale retransmit can never
+// resurrect. A paint applies only when its causal coverage equals the
+// renderer's latest known witness (same instance, equal counter): reads
+// that predate a native invalidation skip and refetch current instead
+// (fail-closed hide, never guessed truth). A preview paints only when its
+// producing native identity matches the live open gesture; otherwise the
+// subscriber paints border/underlay only (fail-closed strip). Malformed
+// replies hide; transport silence (lost callback) hides via the watchdog.
+// The renderer remains the native effect; this module never derives
+// geometry, eligibility, or policy.
 
 import {
     buildPresentationReadRequest,
@@ -38,7 +42,7 @@ import {
     parseWorldReply,
     type WorldPresentationReply,
 } from "./world-report";
-import { isOpaqueId, utf8ByteLength, WORLD_MAX_REPLY_BYTES } from "./world-seq";
+import { isCanonicalU64, isOpaqueId, utf8ByteLength, WORLD_MAX_REPLY_BYTES } from "./world-seq";
 
 export const PRESENTATION_SERVICE = "com.omnitiler.Planner";
 export const PRESENTATION_OBJECT = "/com/omnitiler/Planner";
@@ -63,11 +67,20 @@ export const PRESENTATION_EFFECT_OBJECT = "/com/omnitiler/ActiveBorder";
 export const PRESENTATION_EFFECT_INTERFACE = "com.omnitiler.ActiveBorder1";
 export const PRESENTATION_EFFECT_SET_METHOD = "SetPresentation";
 export const PRESENTATION_EFFECT_CLEAR_METHOD = "ClearPresentation";
+export const PRESENTATION_EFFECT_HIDE_METHOD = "HidePresentation";
 
 export interface WorldPresentationRenderer {
     // Paint one accepted projection. Returns false when the bus is
     // unavailable (fail closed); the subscriber retries on the next event.
     readonly renderPresentation: (payload: string) => boolean;
+    // Display-only hide: clears the visible paint while retaining
+    // order/invalidation evidence. Used by the error/watchdog path and
+    // same-generation reconnect seeds; stream replacement (rotation,
+    // unbind, stop, effect-instance replacement) uses the resetting clear.
+    readonly hidePresentation: () => void;
+    // Stream-resetting clear: display, ordering fence, and witness floors
+    // all reset. Only generation rotation, unbind, stop, and explicit
+    // stream replacement use this.
     readonly clearPresentation: () => void;
 }
 
@@ -77,14 +90,15 @@ export interface WorldPresentationSubscriberEnv {
         payload: string, callback: (reply: unknown) => void,
     ) => void;
     readonly getGeneration: () => string | null;
-    // Monotonic native gesture boundary counter (finding D): bumped by
-    // the entry on every authoritative native gesture boundary (a new
-    // native identity adoption or a terminal adoption). A preview painted
-    // from a read issued in an older epoch is dropped (fail-closed hide).
-    readonly getGestureEpoch: () => number;
-    // Read-only authoritative gesture identity (NEXT package): the mapped
-    // native lifecycle identity behind the current snapshot, or null when
-    // no gesture is open. No freshness enforcement in this package.
+    // Latest known causal witness (Stage 5): the native-invalidation
+    // source instance plus counter from the latest fetched effect facts,
+    // or null when unknown (effect absent/stale/malformed). A served
+    // projection paints only when its coverage equals this value.
+    readonly getInvalidation: () => { instance: string; counter: string } | null;
+    // Live open native gesture identity: the mapped native lifecycle
+    // identity behind the current snapshot with its proven core id, or
+    // null when no gesture is open (a terminal is not open). A served
+    // preview paints only when its producer matches this identity.
     readonly getGestureIdentity?: () => { instance: string; serial: string; coreId: string } | null;
     readonly isStopped: () => boolean;
     readonly log: (message: string) => void;
@@ -99,30 +113,42 @@ export interface WorldPresentationSubscriber {
     readonly notifyGeneration: (gen: string | null) => void;
     readonly notifyInvalidated: () => void;
     readonly notifyEffectReset: () => void;
+    // Unknown facts (unavailable/malformed/timeout, not a proven stream
+    // replacement): hide display-only, retain order/invalidation evidence
+    // and the painted point, and re-read. Only a proven instance or
+    // generation replacement resets the stream.
+    readonly notifyEffectUnknown: () => void;
     readonly stop: () => void;
 }
 
 // Strict effect payload formatter: the exact JSON the native `SetPresentation`
 // endpoint parses. Carries only accepted core shapes plus the serving
-// generation/revision/observation for native order fencing:
-//   {v:1,gen,rev,obs,foreground,
+// generation/revision/observation for native order fencing and the causal
+// coverage witness:
+//   {v:1,gen,rev,obs,coveredInstance,coveredInvalid,foreground,
 //    border:{visible:0/1,inner:[x,y,w,h]|null,outer:[x,y,w,h]|null},
 //    underlay:{status:"found",win,outer:[x,y,w,h],members:[win,...]}|
 //             {status:"hidden"},
-//    preview:{rect,sourceOut,sourceWs,win}|null}
+//    preview:{rect,sourceOut,sourceWs,win,producerInstance,producerSerial}|null}
 // Member rects never cross: anchoring matches member window ids in native
 // stacking order against the already-verbatim core outer rect. `preview.win`
-// is the insertion neighbor, never the mover identity. All coordinates ride
+// is the insertion neighbor, never the mover identity; the producer
+// identity names the actual producing native gesture. All coordinates ride
 // through verbatim in KWin logical units: no rounding, outset, DPI, or
 // device scaling at this site (fractional rounding happened once at
 // capture with TS Math.round, halves toward +inf; style units converted
 // once at ingress). `includePreview=false` paints border/underlay only
-// (finding D cross-gesture strip): hiding, never fabrication.
+// (cross-gesture or unproven-producer strip): hiding, never fabrication.
+// Missing or invalid coverage fails closed to null (never sent: no
+// drawable coverage without proof).
 // Returns null on any unexpected shape (the caller hides instead of
 // sending).
 export function formatPresentationPayload(reply: WorldPresentationReply, includePreview = true): string | null {
     try {
         if (!isOpaqueId(reply.gen)) {
+            return null;
+        }
+        if (reply.coveredInstance === null || reply.coveredInvalid === null) {
             return null;
         }
         const border = reply.presentation.border;
@@ -166,8 +192,18 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
                 sourceOut: reply.preview.sourceOut,
                 sourceWs: reply.preview.sourceWs,
                 win: reply.preview.win,
+                producerInstance: reply.preview.producerInstance,
+                producerSerial: reply.preview.producerSerial,
             };
         if (preview !== null && (!ints(preview.rect) || !isOpaqueId(preview.sourceOut) || !isOpaqueId(preview.sourceWs) || !isOpaqueId(preview.win))) {
+            return null;
+        }
+        if (
+            preview !== null &&
+            ((preview.producerInstance !== null && !isOpaqueId(preview.producerInstance)) ||
+                (preview.producerSerial !== null &&
+                    (typeof preview.producerSerial !== "string" || !isCanonicalU64(preview.producerSerial))))
+        ) {
             return null;
         }
         return JSON.stringify({
@@ -175,6 +211,8 @@ export function formatPresentationPayload(reply: WorldPresentationReply, include
             gen: reply.gen,
             rev: reply.rev,
             obs: reply.obs,
+            coveredInstance: reply.coveredInstance,
+            coveredInvalid: reply.coveredInvalid,
             foreground: reply.presentation.foreground,
             border: borderOut,
             underlay: underlayOut,
@@ -202,7 +240,7 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
     // rotated completions never resurrect or clear newer state.
     let reqCounter = 0;
     let reqNonce = 0;
-    let inFlight: { gen: string; req: string; nonce: number; gestureEpoch: number } | null = null;
+    let inFlight: { gen: string; req: string; nonce: number } | null = null;
     let watchdogCancel: (() => void) | null = null;
     const cancelWatchdog = (): void => {
         try {
@@ -213,15 +251,57 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
         watchdogCancel = null;
     };
     let dirty = false;
-    // Last painted projection identity: identical (gen, rev, obs) repeats
-    // never re-send. Cleared with the renderer on generation changes,
-    // effect resets, and malformed replies so the next good read repaints.
-    let painted: string | null = null;
+    // Last painted-or-hidden projection point per generation: equal or
+    // older (rev, obs) repeats never re-send, so a stale retransmit can
+    // never resurrect after a display-only hide. Retained across
+    // error/watchdog hides; nulled only on stream replacement (generation
+    // rotation, unbind, effect-instance replacement, reconnect seed, stop)
+    // so the next good read repaints.
+    let painted: { rev: string; obs: string } | null = null;
 
+    // Canonical decimal u64 ordering without precision loss: longer is
+    // bigger, equal length compares lexicographically.
+    const orderCovered = (a: string, b: string): number => {
+        if (a.length !== b.length) {
+            return a.length < b.length ? -1 : 1;
+        }
+        if (a === b) {
+            return 0;
+        }
+        return a < b ? -1 : 1;
+    };
+    const paintedCovers = (rev: string, obs: string): boolean => {
+        if (painted === null) {
+            return false;
+        }
+        const revOrder = orderCovered(painted.rev, rev);
+        if (revOrder !== 0) {
+            return revOrder > 0;
+        }
+        return orderCovered(painted.obs, obs) >= 0;
+    };
+
+    // Stream-resetting clear: display, ordering fence, and witness floors
+    // all reset. Only generation rotation, unbind, stop, and explicit
+    // stream replacement use this; every legitimate new stream starts
+    // from an empty fence.
     const clearRendered = (): void => {
         painted = null;
         try {
             env.renderer.clearPresentation();
+        } catch (error) {
+            void error;
+        }
+    };
+
+    // Display-only hide: clears the visible paint while retaining the
+    // ordering fence, the causal witness, and the geometry floors, so a
+    // stale retransmit still cannot resurrect. Used by the error/watchdog
+    // path and same-generation reconnect seeds: the last painted-or-hidden
+    // point is retained, so only strictly newer (rev, obs) repaints.
+    const hideRendered = (): void => {
+        try {
+            env.renderer.hidePresentation();
         } catch (error) {
             void error;
         }
@@ -253,29 +333,20 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             return;
         }
         const nonce = reqNonce;
-        let gestureEpoch = Number.MIN_SAFE_INTEGER;
-        try {
-            gestureEpoch = env.getGestureEpoch();
-        } catch (error) {
-            void error;
-            // A throwing epoch getter fails closed downstream (every
-            // preview strips); the counter read itself never throws in
-            // production.
-            gestureEpoch = Number.MIN_SAFE_INTEGER;
-        }
-        inFlight = { gen, req, nonce, gestureEpoch };
+        inFlight = { gen, req, nonce };
         dirty = false;
         try {
             env.callDbus(
                 PRESENTATION_SERVICE, PRESENTATION_OBJECT, PRESENTATION_INTERFACE,
                 PRESENTATION_READ_METHOD, payload, (reply: unknown) => {
-                    onReadReply(nonce, gen, req, gestureEpoch, reply);
+                    onReadReply(nonce, gen, req, reply);
                 },
             );
         } catch (error) {
             void error;
             // Synchronous transport throw: drop the flight, hide any
-            // possibly-stale paint, and stay dirty so the next event
+            // possibly-stale paint (display-only: order/invalidation
+            // evidence is preserved), and stay dirty so the next event
             // retries. Never a hot loop: no watchdog is armed on a
             // synchronous throw; recovery rides the next event or the
             // entry's existing host-deadline chains.
@@ -283,7 +354,7 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
                 inFlight = null;
             }
             cancelWatchdog();
-            clearRendered();
+            hideRendered();
             dirty = true;
             env.log("omnitiler:world:presentation-transport recovery=on-next-event");
             return;
@@ -311,8 +382,9 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
     };
 
     // Host-deadline recovery for a lost read reply (finding A): drop the
-    // wedged flight, hide the possibly-stale paint (never retain visible
-    // stale shapes after transport failure), and re-drive exactly one read.
+    // wedged flight, hide the possibly-stale paint display-only (never
+    // retain visible stale shapes after transport failure, never reset
+    // the ordering evidence), and re-drive exactly one read.
     // Host-deadline cadence bounds the retry (no hot loop on permanent
     // failure); recovery needs no native event beyond the deadline itself.
     // A stale timeout (superseded flight, rotation, or stop) never clears a
@@ -327,12 +399,12 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
         }
         inFlight = null;
         env.log(`omnitiler:world:presentation-host-timeout req=${token(req)} recovery=hide-and-retry`);
-        clearRendered();
+        hideRendered();
         dirty = true;
         pump();
     };
 
-    const onReadReply = (nonce: number, gen: string, req: string, issuedGestureEpoch: number, reply: unknown): void => {
+    const onReadReply = (nonce: number, gen: string, req: string, reply: unknown): void => {
         if (stopped || inFlight === null || nonce !== inFlight.nonce) {
             // Stale completion (superseded read or rotated generation):
             // never paints, never clears newer state.
@@ -361,11 +433,13 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
         const parsed = parseWorldReply(reply);
         if (parsed === null || !isWorldPresentationReply(parsed) || parsed.gen !== boundGen || parsed.req !== req) {
             // Malformed, foreign-lane, rotated-generation, or mismatched
-            // correlation: hide instead of painting anything stale, then
-            // stand down to the next event (no self re-arm, no polling;
-            // the armed watchdog was already cancelled above).
+            // correlation: hide display-only instead of painting anything
+            // stale, then stand down to the next event (no self re-arm,
+            // no polling; the armed watchdog was already cancelled above).
+            // The last painted-or-hidden point is retained, so a stale
+            // retransmit of the same bytes can never resurrect.
             env.log(`omnitiler:world:presentation-malformed req=${token(req)} recovery=hide`);
-            clearRendered();
+            hideRendered();
             dirty = true;
             return;
         }
@@ -377,26 +451,60 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             pump();
             return;
         }
-        const signature = `${parsed.gen}|${parsed.rev}|${parsed.obs}`;
-        if (painted !== null && painted === signature) {
+        if (paintedCovers(parsed.rev, parsed.obs)) {
+            // Equal or older (rev, obs): the last painted-or-hidden point
+            // already covers this content (including a display-only hide
+            // after an error). Never re-sends, never resurrects.
             return;
         }
-        // Finding D: a preview that crosses a native gesture boundary
-        // belongs to the old gesture. Paint border/underlay from this
-        // accepted projection, but drop the preview (fail-closed hide);
-        // the live gesture's own preview arrives with a newer projection.
-        let gestureEpoch = issuedGestureEpoch;
+        // Causal coverage gate (Stage 5): this read paints only when it
+        // covers the renderer's latest known witness exactly. A read that
+        // predates a native invalidation skips (its paint could not cover
+        // current) and the covering capture's own notification re-drives a
+        // fresh read; without a covering capture nothing new can paint.
+        // Missing proof on either side hides: no drawable coverage is ever
+        // guessed. No self re-arm here (finding E already refetches while
+        // dirty): a persistently stale read waits for the next event.
+        let latest: { instance: string; counter: string } | null = null;
         try {
-            gestureEpoch = env.getGestureEpoch();
+            latest = env.getInvalidation();
         } catch (error) {
             void error;
-            gestureEpoch = issuedGestureEpoch + 1;
+            latest = null;
         }
-        const previewOk = parsed.preview === null || gestureEpoch === issuedGestureEpoch;
+        if (
+            latest === null || parsed.coveredInstance === null || parsed.coveredInvalid === null ||
+            parsed.coveredInstance !== latest.instance || parsed.coveredInvalid !== latest.counter
+        ) {
+            env.log(`omnitiler:world:presentation-stale-coverage req=${token(req)} recovery=refetch-or-next-event`);
+            if (dirty) {
+                pump();
+            }
+            return;
+        }
+        // Producing-gesture match (Stage 5): a preview paints only when
+        // its producing native identity is the live open gesture. A null
+        // producer (unproven), a missing live identity, or any mismatch
+        // paints border/underlay only (fail-closed strip); the live
+        // gesture's own preview arrives with its own covering projection.
+        let live: { instance: string; serial: string; coreId: string } | null = null;
+        try {
+            live = env.getGestureIdentity?.() ?? null;
+        } catch (error) {
+            void error;
+            live = null;
+        }
+        const previewOk = parsed.preview === null || (
+            parsed.preview.producerInstance !== null &&
+            parsed.preview.producerSerial !== null &&
+            live !== null &&
+            parsed.preview.producerInstance === live.instance &&
+            parsed.preview.producerSerial === live.serial
+        );
         const payload = formatPresentationPayload(parsed, previewOk);
         if (payload === null) {
             env.log(`omnitiler:world:presentation-malformed req=${token(req)} recovery=hide`);
-            clearRendered();
+            hideRendered();
             dirty = true;
             return;
         }
@@ -412,13 +520,13 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
         }
         if (!ok) {
             // Bus unavailable (fail closed): stay dirty so the next event
-            // retries; the last painted signature is untouched so no stale
-            // state is asserted.
+            // retries; the last painted-or-hidden point is untouched so no
+            // stale state is asserted.
             dirty = true;
             env.log(`omnitiler:world:presentation-unavailable req=${token(req)} recovery=on-next-event`);
             return;
         }
-        painted = signature;
+        painted = { rev: parsed.rev, obs: parsed.obs };
         env.log(`omnitiler:world:presentation-painted rev=${token(parsed.rev)} obs=${token(parsed.obs)} preview=${parsed.preview === null || !previewOk ? "null" : "rect"}`);
     };
 
@@ -432,8 +540,16 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             // Reconnect seed on the same generation (service owner change
             // or rediscovery): force one fresh read even though nothing
             // rotated, so a restarted service with an empty cache hides
-            // instead of holding a paint from before the restart.
+            // instead of holding a paint from before the restart. The
+            // hide is display-only (order/invalidation evidence is
+            // preserved); the painted point resets so the fresh read
+            // re-sends even for an identical projection.
             painted = null;
+            try {
+                env.renderer.hidePresentation();
+            } catch (error) {
+                void error;
+            }
             inFlight = null;
             dirty = true;
             pump();
@@ -462,9 +578,9 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
     };
 
     const notifyEffectReset = (): void => {
-        // Finding H: the raw presentation-facts instance changed or went
-        // unavailable (effect restart/teardown, already read by the entry).
-        // The fire-and-forget renderer call succeeds vacuously while the
+        // Finding H: the raw presentation-facts instance was replaced by a
+        // proven new one (effect restart with a new instance). The
+        // fire-and-forget renderer call succeeds vacuously while the
         // endpoint is down and the same-projection dedupe would never
         // resend, so forget the painted projection and re-read. The clear
         // precedes the seed (same ordered channel), so no old-generation
@@ -485,6 +601,20 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
         pump();
     };
 
+    const notifyEffectUnknown = (): void => {
+        // Unknown facts (unavailable, malformed, timeout, or teardown):
+        // NOT an explicit stream replacement. Hide display-only, retain
+        // order/invalidation evidence and the painted point (a stale
+        // retransmit of hidden bytes still cannot resurrect), then re-read;
+        // the next read skips until facts return, with no reset anywhere.
+        if (stopped || boundGen === null) {
+            return;
+        }
+        hideRendered();
+        dirty = true;
+        pump();
+    };
+
     const stop = (): void => {
         stopped = true;
         inFlight = null;
@@ -493,5 +623,5 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
         clearRendered();
     };
 
-    return { notifyGeneration, notifyInvalidated, notifyEffectReset, stop };
+    return { notifyGeneration, notifyInvalidated, notifyEffectReset, notifyEffectUnknown, stop };
 }

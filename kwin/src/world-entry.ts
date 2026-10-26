@@ -20,6 +20,7 @@ import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
 import {
     createWorldPresentationSubscriber,
     PRESENTATION_EFFECT_CLEAR_METHOD,
+    PRESENTATION_EFFECT_HIDE_METHOD,
     PRESENTATION_EFFECT_INTERFACE,
     PRESENTATION_EFFECT_OBJECT,
     PRESENTATION_EFFECT_SERVICE,
@@ -58,6 +59,7 @@ import {
     WORLD_MAX_REPLY_BYTES,
     WORLD_MAX_REQUEST_BYTES,
     incrementU64,
+    isCanonicalU64,
     isOpaqueId,
     utf8ByteLength,
 } from "./world-seq";
@@ -141,8 +143,9 @@ export const WORLD_WAIT_METHOD = "WaitWorldWake";
 // The request and reply are single JSON strings (the same callDBus shape
 // as every other route): request
 // {"instance":"...","rev":"...","leaseMs":20000}, reply
-// {"v":1,"instance":"...","rev":"...","chord":0/1,"chordKnown":0/1,
-//  "gap":f64,"width":f64,"extension":f64,"changed":0/1}. A mismatched
+// {"v":1,"instance":"...","rev":"...","invalidation":"...",
+//  "chord":0/1,"chordKnown":0/1,"gap":f64,"width":f64,"extension":f64,
+//  "changed":0/1,"superseded":0/1,"available":0/1}. A mismatched
 // identity completes immediately with the fresh snapshot; otherwise the
 // effect holds the call until a fact changes or the bounded lease expires.
 export const EFFECT_FACTS_SERVICE = "com.omnitiler.ActiveBorder";
@@ -1143,32 +1146,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // accepted captures, on wait wakes (a foreign accepted capture may
     // have advanced the projection), and on effect resets; a lost reply
     // retries on the shared host deadline. No polling, no self re-arm.
-    // Gesture-boundary fencing for the preview (finding D): bumped on
-    // every authoritative native gesture boundary (a new native
-    // identity adoption or a terminal adoption), never on script
-    // signals. Read-only observation for the presentation subscriber.
-    let gestureBoundaryCounter = 0;
-    let lastBoundaryKey: string | null = null;
-    const noteGestureBoundary = (
-        next: { instance: string; serial: string; phase: string } | null,
-    ): void => {
-        if (next === null) {
-            return;
-        }
-        const key = `${next.instance} ${next.serial}`;
-        if (next.phase === "released" || next.phase === "cancelled") {
-            lastBoundaryKey = key;
-            gestureBoundaryCounter += 1;
-            return;
-        }
-        if (next.phase !== "started" && next.phase !== "updated") {
-            return;
-        }
-        if (lastBoundaryKey !== key) {
-            lastBoundaryKey = key;
-            gestureBoundaryCounter += 1;
-        }
-    };
+    // Preview gating is causal, not epoch-based: the producing native
+    // identity must match the live open gesture identity, and every paint
+    // must cover the latest native-invalidation witness. Read-only
+    // observation for the presentation subscriber.
     const presentationSubscriber: WorldPresentationSubscriber = createWorldPresentationSubscriber({
         callDbus: (service, path, iface, method, payload, callback) => {
             try {
@@ -1181,10 +1162,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         },
         getGeneration: () => state.boundGen,
-        getGestureEpoch: () => gestureBoundaryCounter,
-        // Read-only authoritative gesture identity for the NEXT package:
-        // the mapped native lifecycle identity behind the current snapshot,
-        // or null when no gesture is open. No freshness enforcement here.
+        // Latest known causal witness for the subscriber's coverage gate:
+        // the native-invalidation instance plus counter from the latest
+        // fetched effect facts, or null when unknown (fail closed: no
+        // drawable coverage without proof).
+        getInvalidation: () => effectSnapshot === null
+            ? null
+            : { instance: effectSnapshot.instance, counter: effectSnapshot.invalidation },
+        // Live open native gesture identity for the subscriber's preview
+        // gate: the mapped native lifecycle identity behind the current
+        // snapshot, or null when no gesture is open (a terminal is not
+        // open). Exact identity match, never epoch or geometry inference.
         getGestureIdentity: () => gestureIdentityForPresentation(),
         isStopped: () => stopped,
         log,
@@ -1192,6 +1180,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         scheduleOnce,
         renderer: {
             renderPresentation: (payload) => highlightCall(PRESENTATION_EFFECT_SET_METHOD, payload),
+            hidePresentation: () => {
+                highlightCall(PRESENTATION_EFFECT_HIDE_METHOD);
+            },
             clearPresentation: () => {
                 highlightCall(PRESENTATION_EFFECT_CLEAR_METHOD);
             },
@@ -1326,7 +1317,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     // A fresh generation drops the old effect identity
                     // before the post-discovery observation: stale snapshots
-                    // and replaced waiters never cross the rotation.
+                    // and replaced waiters never cross the rotation. The
+                    // proven new instance arrives with fresh facts; the
+                    // unknown gap itself never resets the stream.
+                    lastKnownEffectInstance = null;
                     setEffectSnapshot(null);
                     effectWaiterOutstanding = false;
                     effectWaiterGen = null;
@@ -1349,7 +1343,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         gestureSnapshot = null;
                         gestureTerminalPending = null;
                         gestureBoundAssoc = null;
-                        lastBoundaryKey = null;
                         clearGestureAck();
                         clearTerminalCaptureRetry();
                         lastResolvedCaptureSource = null;
@@ -1602,17 +1595,44 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // polling; the identity folds instance only (rev bumps already flow
     // through capture invalidation).
     let lastEffectIdentityForPresentation = "unknown";
+    // Last proven non-null facts instance. Unknown intervals never clear
+    // this: only a proven different instance is a stream replacement.
+    // Reset on generation rotation and stop.
+    let lastKnownEffectInstance: string | null = null;
     const setEffectSnapshot = (next: PresentationSnapshot | null): void => {
         effectSnapshot = next;
-        const identity = next === null ? "unknown" : `known:${next.instance}`;
+        if (next === null) {
+            // Unknown facts (unavailable/malformed/timeout/teardown, or a
+            // generation rotation whose reset rides the generation lane):
+            // hide display-only. Unknown is not a proven stream
+            // replacement, so the painted point and the last known
+            // instance are retained.
+            const identity = "unknown";
+            if (identity !== lastEffectIdentityForPresentation) {
+                lastEffectIdentityForPresentation = identity;
+                try {
+                    presentationSubscriber.notifyEffectUnknown();
+                } catch (error) {
+                    void error;
+                }
+            }
+            return;
+        }
+        const identity = `known:${next.instance}`;
         if (identity !== lastEffectIdentityForPresentation) {
             lastEffectIdentityForPresentation = identity;
+        }
+        // Only a proven different instance resets the stream (effect
+        // restart with a new instance). A same-instance return after an
+        // unknown interval recovers without reset.
+        if (lastKnownEffectInstance !== null && next.instance !== lastKnownEffectInstance) {
             try {
                 presentationSubscriber.notifyEffectReset();
             } catch (error) {
                 void error;
             }
         }
+        lastKnownEffectInstance = next.instance;
     };
 
     // Strict versioned parse of one effect facts reply: v:1 with an
@@ -1647,6 +1667,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         const instance = r["instance"];
         const rev = r["rev"];
+        const invalidation = r["invalidation"];
         const chord = r["chord"];
         const chordKnown = r["chordKnown"];
         const gap = r["gap"];
@@ -1658,6 +1679,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (
             typeof instance !== "string" || instance === "" || instance.length > 128 ||
             typeof rev !== "string" || rev === "" || rev.length > 128 ||
+            typeof invalidation !== "string" || !isCanonicalU64(invalidation) ||
             (chord !== 0 && chord !== 1) || (chordKnown !== 0 && chordKnown !== 1) ||
             (chord === 1 && chordKnown !== 1) ||
             typeof gap !== "number" || !Number.isFinite(gap) ||
@@ -1670,7 +1692,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return null;
         }
         return {
-            instance, rev, chord: chord === 1 && chordKnown === 1,
+            instance, rev, invalidation, chord: chord === 1 && chordKnown === 1,
             borderGap: gap, borderWidth: width, underlayExtension: extension,
             changed: changed === 1, superseded: superseded === 1, available: available === 1,
         };
@@ -1833,7 +1855,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         setEffectSnapshot({
-            instance: parsed.instance, rev: parsed.rev, chord: parsed.chord,
+            instance: parsed.instance, rev: parsed.rev, invalidation: parsed.invalidation,
+            chord: parsed.chord,
             borderGap: parsed.borderGap, borderWidth: parsed.borderWidth,
             underlayExtension: parsed.underlayExtension,
         });
@@ -2038,7 +2061,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         gestureSnapshot = parsed;
-        noteGestureBoundary({ instance: parsed.instance, serial: parsed.serial, phase: parsed.phase });
         const terminal = parsed.phase === "released" || parsed.phase === "cancelled";
         if (terminal) {
             gestureTerminalPending = { instance: parsed.instance, serial: parsed.serial };
@@ -2250,7 +2272,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         gestureSnapshot = parsed;
-        noteGestureBoundary({ instance: parsed.instance, serial: parsed.serial, phase: parsed.phase });
         gestureTerminalPending = null;
         const terminal = parsed.phase === "released" || parsed.phase === "cancelled";
         if (terminal) {
@@ -4320,6 +4341,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // (if any) completes into a cleared slot.
             effectWaiterOutstanding = false;
             effectWaiterGen = null;
+            lastKnownEffectInstance = null;
             setEffectSnapshot(null);
             try {
                 effectWatchdogCancel?.();
@@ -4335,7 +4357,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             gestureTerminalPending = null;
             gestureSnapshot = null;
             gestureBoundAssoc = null;
-            lastBoundaryKey = null;
             clearGestureAck();
             clearTerminalCaptureRetry();
             lastResolvedCaptureSource = null;

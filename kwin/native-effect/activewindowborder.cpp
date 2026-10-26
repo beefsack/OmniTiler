@@ -82,6 +82,12 @@ public Q_SLOTS:
             m_effect->clearPresentation();
         }
     }
+    Q_SCRIPTABLE void HidePresentation()
+    {
+        if (m_effect) {
+            m_effect->hidePresentation();
+        }
+    }
     // Versioned raw presentation facts for the KWin script route (Stage 3
     // ingress, read-only, no policy). The request carries the
     // script-known identity as JSON
@@ -301,7 +307,7 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     updateOutline();
     updateGroupUnderlayFill();
 
-    clearPresentationPaint(&m_presentation);
+    m_router.onStreamReset();
     // Fail closed with no false endpoint expectation: the paint stays
     // unavailable/clear unless both the well-known service and object
     // register. A transient failure retries on later activation/reconfigure
@@ -309,7 +315,7 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     // effect-owned dedicated connection (cross-connection held replies).
     ensureEndpointsRegistered();
     if (!m_groupDbusAvailable) {
-        clearPresentationPaint(&m_presentation);
+        m_router.onStreamReset();
     }
 
     // Gesture observation is independent of rendering. Keep this one shared
@@ -382,15 +388,7 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
         if (!m_isOpenGL) {
             return;
         }
-        // Focus activation clears the old paint immediately before any
-        // asynchronous script refresh, so no stale paint renders under the
-        // new focus. The subscriber repaints from the next accepted
-        // projection.
-        clearPresentation();
-        setTrackedWindow(effects->activeWindow());
-        updateBorder();
-        updateGroupVisibility();
-        emitPresentationTransitionDiag();
+        onWindowActivated();
     });
 
     if (!m_isOpenGL) {
@@ -504,7 +502,7 @@ void ActiveWindowBorderEffect::updateGroupAnchorAndGeometry()
     // already happened core-side in KWin logical units). Item anchoring
     // translates coordinate spaces (scene to anchor-local) without a second
     // outset, DPI factor, or device scaling.
-    const bool hasPaint = m_presentation.has && m_presentation.underlayFound && !m_presentation.underlayMembers.isEmpty()
+    const bool hasPaint = m_router.paint.has && m_router.paint.underlayFound && !m_router.paint.underlayMembers.isEmpty()
         && m_groupDbusAvailable;
     EffectWindow *anchor = nullptr;
     bool sawMember = false;
@@ -520,22 +518,22 @@ void ActiveWindowBorderEffect::updateGroupAnchorAndGeometry()
                 continue;
             }
             const QString bare = candidate->internalId().toString(QUuid::WithoutBraces);
-            if (m_presentation.underlayMembers.contains(bare)) {
+            if (m_router.paint.underlayMembers.contains(bare)) {
                 sawMember = true;
             }
             WindowItem *candidateItem = candidate->windowItem();
             if (candidateItem == nullptr || !candidateItem->isVisible()) {
                 continue;
             }
-            if (m_presentation.underlayMembers.contains(bare)) {
+            if (m_router.paint.underlayMembers.contains(bare)) {
                 anchor = candidate;
                 break;
             }
         }
     }
-    m_presentationAnchorDiag = !m_presentation.has ? "no-presentation"
-        : (!m_presentation.underlayFound ? "underlay-hidden"
-            : (m_presentation.underlayMembers.isEmpty() ? "no-members"
+    m_presentationAnchorDiag = !m_router.paint.has ? "no-presentation"
+        : (!m_router.paint.underlayFound ? "underlay-hidden"
+            : (m_router.paint.underlayMembers.isEmpty() ? "no-members"
                 : (anchor != nullptr ? "selected" : (sawMember ? "all-items-hidden" : "no-member-match"))));
     EffectWindow *oldAnchor = m_groupAnchor;
     if (oldAnchor != anchor && oldAnchor != nullptr) {
@@ -567,9 +565,9 @@ void ActiveWindowBorderEffect::updateGroupAnchorAndGeometry()
     // Consumed verbatim: the core outer rect already includes the border
     // gap, border width, and resolved extension in KWin logical units. Only
     // the space translation (scene to anchor-local) happens here.
-    const QRectF outerRect(static_cast<qreal>(m_presentation.underlayOuter.x()),
-        static_cast<qreal>(m_presentation.underlayOuter.y()), static_cast<qreal>(m_presentation.underlayOuter.width()),
-        static_cast<qreal>(m_presentation.underlayOuter.height()));
+    const QRectF outerRect(static_cast<qreal>(m_router.paint.underlayOuter.x()),
+        static_cast<qreal>(m_router.paint.underlayOuter.y()), static_cast<qreal>(m_router.paint.underlayOuter.width()),
+        static_cast<qreal>(m_router.paint.underlayOuter.height()));
     const RectF mapped = anchorItem->mapFromScene(outerRect);
     m_groupItem.setParentItem(anchorItem);
     m_groupItem.setZ(-2);
@@ -711,19 +709,18 @@ void ActiveWindowBorderEffect::unsubscribeGroupVisibility(EffectWindow *window)
 
 void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow *window)
 {
-    // Any held member frame change dirties the underlay paint: the stored
-    // scene outer may be stale, so it hides until a strictly newer accepted
-    // paint arrives. Remapping continues (hidden) so a fresh paint shows
-    // coherent geometry immediately. Bare-UUID compare only against the
-    // held paint list; never logged.
-    if (!m_isOpenGL || window == nullptr || !m_presentation.has || m_presentation.underlayMembers.isEmpty()) {
+    // Any subscribed window frame change bumps the causal witness: the
+    // published outer depends on every member, so relevance is observed
+    // facts, never held display state. A hidden member, a cleared list,
+    // or a pre-first-paint frame all count; a skipped bump would let an
+    // in-flight older-covered paint resurrect stale underlay.
+    if (window == nullptr || window->isDeleted()) {
         return;
     }
-    const QString bare = window->internalId().toString(QUuid::WithoutBraces);
-    if (!m_presentation.underlayMembers.contains(bare)) {
+    m_router.onMemberFrame(factsInstance());
+    if (!m_isOpenGL) {
         return;
     }
-    KWin::markUnderlayGeometryDirty(&m_presentation);
     updateGroupAnchorAndGeometry();
     updateGroupVisibility();
     emitPresentationTransitionDiag();
@@ -734,11 +731,11 @@ void ActiveWindowBorderEffect::onGroupMemberVisibilityChanged(EffectWindow *wind
     // Member minimize/restore or hide/show re-anchors to the lowest-stacked
     // renderable member, preserving the underlay without timers or polling.
     // Bare-UUID compare only against the held paint list; never logged.
-    if (!m_isOpenGL || window == nullptr || m_presentation.underlayMembers.isEmpty()) {
+    if (!m_isOpenGL || window == nullptr || m_router.paint.underlayMembers.isEmpty()) {
         return;
     }
     const QString bare = window->internalId().toString(QUuid::WithoutBraces);
-    if (!m_presentation.underlayMembers.contains(bare)) {
+    if (!m_router.paint.underlayMembers.contains(bare)) {
         return;
     }
     updateGroupAnchorAndGeometry();
@@ -809,16 +806,20 @@ void ActiveWindowBorderEffect::forgetGestureWindow(EffectWindow *window)
     // identity (never read a possibly deleted window) without inventing a
     // terminal. No-op when nothing was open. Removal also clears the exact
     // tracked move window plus the held drop-preview latch, so no later
-    // paint may arrive to clear a stale preview for a dead window.
+    // paint may arrive to clear a stale preview for a dead window. Every
+    // dropped lifecycle is a gesture boundary: the counter is native facts
+    // lifecycle, not the renderer move latch.
     if (m_groupMoveWindow == window) {
         m_groupMoveWindow.clear();
-        KWin::clearPaintPreview(&m_presentation);
+        m_router.onGestureBoundary(factsInstance());
         updateDragPreview();
         emitPresentationTransitionDiag();
     }
     if (m_gestureSource != nullptr) {
         const QString id = m_gestureWinIds.take(window);
         if (!id.isEmpty() && m_gestureSource->gestureAborted(id)) {
+            m_router.onGestureBoundary(factsInstance());
+            updateDragPreview();
             emitGestureDiag("aborted", "dropped");
         }
     } else {
@@ -843,10 +844,13 @@ void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
         // Not a tracked move/resize start: a refused/unsupported new start
         // must not leave an older same-window open lifecycle to receive a
         // later Esc/finish. Drop it without a terminal: the missed finish
-        // is an observation gap, never a fabricated outcome.
+        // is an observation gap, never a fabricated outcome. A dropped
+        // older lifecycle is still a gesture boundary for the witness.
         const QString unsupportedId =
             QString::fromUtf8(window->internalId().toString(QUuid::WithoutBraces).toUtf8());
         if (!unsupportedId.isEmpty() && m_gestureSource->gestureAborted(unsupportedId)) {
+            m_router.onGestureBoundary(factsInstance());
+            updateDragPreview();
             emitGestureDiag("refused", "idle");
         }
         return;
@@ -854,7 +858,7 @@ void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
     // A new gesture drops any held drop-preview latch immediately: the
     // latch belongs to exactly one live gesture, and a late
     // previous-gesture paint must not reseed the new one.
-    KWin::clearPaintPreview(&m_presentation);
+    m_router.onGestureBoundary(factsInstance());
     updateDragPreview();
     updateGroupMoveArm(window);
     const QString id =
@@ -867,8 +871,12 @@ void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
     if (serial == 0) {
         // Refused (bad window identity, unknown kind, out-of-bound frame,
         // or serial exhaustion): same fail-closed drop of the older
-        // same-window open lifecycle, never a terminal.
-        m_gestureSource->gestureAborted(id);
+        // same-window open lifecycle, never a terminal. A dropped older
+        // lifecycle is still a gesture boundary for the witness.
+        if (m_gestureSource->gestureAborted(id)) {
+            m_router.onGestureBoundary(factsInstance());
+            updateDragPreview();
+        }
         m_gestureWinIds.remove(window);
         emitGestureDiag("refused", "idle");
         return;
@@ -891,30 +899,35 @@ void ActiveWindowBorderEffect::onGestureDragStep(EffectWindow *window)
 
 void ActiveWindowBorderEffect::onGestureDragFinish(EffectWindow *window)
 {
-    // Finish/cancel clears the exact tracked move window plus the held
-    // drop-preview latch first, from the authoritative gesture callback:
-    // preview hiding never depends on verdict success or readable
-    // geometry.
+    // Finish/cancel always ends the authoritative gesture lifecycle when
+    // one names this window (move and resize alike): preview hiding never
+    // depends on verdict success or readable geometry, and the counter is
+    // native facts lifecycle, not the renderer move latch. Pending
+    // cancellation semantics are untouched (the finish below is unchanged).
+    bool boundary = false;
     if (window != nullptr && m_groupMoveWindow == window) {
         m_groupMoveWindow.clear();
-        KWin::clearPaintPreview(&m_presentation);
+        boundary = true;
+    }
+    if (window != nullptr && !window->isDeleted() && m_gestureSource != nullptr) {
+        const QString id = m_gestureWinIds.value(window);
+        if (!id.isEmpty()) {
+            // The fence arm (if an Esc reached InteractiveMoveResize during
+            // this gesture) is consumed synchronously here, in the same
+            // dispatch the builtin filter ended: armed finishes Cancelled,
+            // all others Released.
+            const GesturePointer pointer = gesturePointerNow();
+            const GesturePhase phase = m_gestureSource->gestureFinished(id, pointer.has, pointer.point);
+            if (phase != GesturePhase::Idle) {
+                boundary = true;
+                emitGestureDiag("finished", gesturePhaseName(phase));
+            }
+        }
+    }
+    if (boundary) {
+        m_router.onGestureBoundary(factsInstance());
         updateDragPreview();
         emitPresentationTransitionDiag();
-    }
-    if (window == nullptr || window->isDeleted() || m_gestureSource == nullptr) {
-        return;
-    }
-    const QString id = m_gestureWinIds.value(window);
-    if (id.isEmpty()) {
-        return;
-    }
-    // The fence arm (if an Esc reached InteractiveMoveResize during this
-    // gesture) is consumed synchronously here, in the same dispatch the
-    // builtin filter ended: armed finishes Cancelled, all others Released.
-    const GesturePointer pointer = gesturePointerNow();
-    const GesturePhase phase = m_gestureSource->gestureFinished(id, pointer.has, pointer.point);
-    if (phase != GesturePhase::Idle) {
-        emitGestureDiag("finished", gesturePhaseName(phase));
     }
 }
 
@@ -960,16 +973,32 @@ void ActiveWindowBorderEffect::noteGestureEsc()
     m_gestureSource->armEsc();
 }
 
+void ActiveWindowBorderEffect::onWindowActivated()
+{
+    // Production activation route: display-only hide preserving
+    // order/invalidation evidence, then the causal bump, then tracked
+    // window plus visibility refresh including the drag preview (a stale
+    // preview must hide immediately, not on the next paint). The
+    // windowActivated signal delegates here directly; the offline gate
+    // pins this exact body.
+    m_router.onActivation(factsInstance());
+    setTrackedWindow(effects->activeWindow());
+    updateBorder();
+    updateGroupVisibility();
+    updateDragPreview();
+    emitPresentationTransitionDiag();
+}
+
 void ActiveWindowBorderEffect::onTrackedFrameChanged()
 {
-    // The tracked (active) window frame moved: the stored border scene
-    // rect may be stale, so the ring hides until a strictly newer accepted
-    // paint arrives. No live-frame comparison: a move that returns to its
-    // start stays hidden without a fresh paint.
+    // The tracked (active) window frame moved: bump the causal witness
+    // first (observed facts, never display state), then hide the ring
+    // until fresh covering paint arrives. No live-frame comparison: a move
+    // that returns to its start stays hidden without a fresh paint.
+    m_router.onTrackedFrame(factsInstance());
     if (!m_isOpenGL) {
         return;
     }
-    KWin::markBorderGeometryDirty(&m_presentation);
     updateBorder();
     emitPresentationTransitionDiag();
 }
@@ -1166,11 +1195,14 @@ bool ActiveWindowBorderEffect::ensureGroupEndpointRegistered()
     if (m_groupDbusObject == nullptr) {
         m_groupDbusObject = new GroupHighlightObject(this, m_groupBus, this);
         // Seed the fresh source before registration/first call: the actual
-        // rendered style triple and the current observed chord. Config is
-        // instantiated before construction ensures endpoints; an unseeded
-        // source serves available:false (no guessed defaults).
+        // rendered style triple, the current observed chord, and the
+        // current invalidation witness. An unseeded source serves
+        // available:false (no guessed defaults). The router namespace is
+        // seeded from the same live facts object.
         noteFactsStyle();
         noteFactsChord();
+        noteFactsInvalidation();
+        m_router.setSourceInstance(factsInstance());
     }
     bool serviceOk = false;
     bool objectOk = false;
@@ -1235,13 +1267,13 @@ void ActiveWindowBorderEffect::emitPresentationSetterDiag(const char *outcome)
     // Every SetPresentation receipt: outcome plus bounded scalars. Fixed
     // tokens and bits, no identities, payload, geometry, or revision.
     try {
-        const int members = m_presentation.underlayMembers.size() > 9999 ? 9999 : static_cast<int>(m_presentation.underlayMembers.size());
+        const int members = m_router.paint.underlayMembers.size() > 9999 ? 9999 : static_cast<int>(m_router.paint.underlayMembers.size());
         logActiveBorderDiag(QStringLiteral("omnitiler:presentation:setter outcome=%1 has=%2 bvis=%3 uvis=%4 pvis=%5 members=%6 anchor=%7 fmatch=%8 move=%9 elig=%10 ep=%11")
                 .arg(QString::fromUtf8(outcome))
-                .arg(m_presentation.has ? 1 : 0)
-                .arg((m_presentation.has && m_presentation.borderVisible) ? 1 : 0)
-                .arg((m_presentation.has && m_presentation.underlayFound) ? 1 : 0)
-                .arg((m_presentation.has && m_presentation.previewHas) ? 1 : 0)
+                .arg(m_router.paint.has ? 1 : 0)
+                .arg((m_router.paint.has && m_router.paint.borderVisible) ? 1 : 0)
+                .arg((m_router.paint.has && m_router.paint.underlayFound) ? 1 : 0)
+                .arg((m_router.paint.has && m_router.paint.previewHas) ? 1 : 0)
                 .arg(members)
                 .arg(QString::fromUtf8(m_presentationAnchorDiag))
                 .arg(foregroundMatchesNow() ? 1 : 0)
@@ -1271,7 +1303,7 @@ void ActiveWindowBorderEffect::emitPresentationTransitionDiag()
         m_presentationTransDiagAnchor = m_presentationAnchorDiag;
         m_presentationTransDiagVisible = m_groupVisible;
         m_presentationTransDiagEmitted = true;
-        const int members = m_presentation.underlayMembers.size() > 9999 ? 9999 : static_cast<int>(m_presentation.underlayMembers.size());
+        const int members = m_router.paint.underlayMembers.size() > 9999 ? 9999 : static_cast<int>(m_router.paint.underlayMembers.size());
         logActiveBorderDiag(QStringLiteral("omnitiler:presentation:transition anchor=%1 members=%2 fmatch=%3 move=%4 elig=%5 ep=%6 vis=%7")
                 .arg(curAnchor)
                 .arg(members)
@@ -1297,7 +1329,7 @@ bool ActiveWindowBorderEffect::foregroundMatchesNow() const
     // Stale paints never render under a new focus: the live active
     // window's bare-UUID identity must equal the published foreground
     // token, and the token must be non-empty.
-    if (!m_presentation.has || m_presentation.foreground.isEmpty()) {
+    if (!m_router.paint.has || m_router.paint.foreground.isEmpty()) {
         return false;
     }
     EffectWindow *active = effects->activeWindow();
@@ -1305,7 +1337,7 @@ bool ActiveWindowBorderEffect::foregroundMatchesNow() const
         return false;
     }
     const QByteArray activeId = active->internalId().toString(QUuid::WithoutBraces).toUtf8();
-    return !activeId.isEmpty() && activeId == m_presentation.foreground;
+    return !activeId.isEmpty() && activeId == m_router.paint.foreground;
 }
 
 bool ActiveWindowBorderEffect::isLiveEligibleNow() const
@@ -1331,13 +1363,14 @@ void ActiveWindowBorderEffect::updateBorder()
     }
 
     // Pure renderer: the held accepted border shape paints only on a live
-    // foreground match, a fresh (geometry-clean) paint, plus the hide-only
-    // vetoes. No eligibility or geometry derivation: inner/outer arrive
-    // complete in KWin logical units. The ring replays the published outer
-    // exactly: its stroke is derived strictly from the published pair
-    // (finding C), so capture-vs-live config drift cannot move the drawn
-    // edge; color and radius stay live host styling.
-    const bool hasPaint = m_presentation.has && m_presentation.borderVisible && m_groupDbusAvailable;
+    // foreground match, a fresh (geometry-clean) paint, held coverage
+    // equal to the actual latest witness, plus the hide-only vetoes. No
+    // eligibility or geometry derivation: inner/outer arrive complete in
+    // KWin logical units. The ring replays the published outer exactly:
+    // its stroke is derived strictly from the published pair (finding C),
+    // so capture-vs-live config drift cannot move the drawn edge; color
+    // and radius stay live host styling.
+    const bool hasPaint = m_router.paint.has && m_router.paint.borderVisible && m_groupDbusAvailable;
     EffectWindow *window = effects->activeWindow();
     const bool foregroundMatches = foregroundMatchesNow();
     const bool nativeMaximized = window ? m_maximizedWindows.contains(window) : false;
@@ -1347,13 +1380,14 @@ void ActiveWindowBorderEffect::updateBorder()
     double stroke = 0.0;
     bool strokeOk = false;
     if (hasPaint) {
-        if (const auto derived = KWin::borderStrokeFromPublished(m_presentation.borderInner, m_presentation.borderOuter)) {
+        if (const auto derived = KWin::borderStrokeFromPublished(m_router.paint.borderInner, m_router.paint.borderOuter)) {
             stroke = *derived;
             strokeOk = true;
         }
     }
-    const bool fresh = KWin::presentationBorderFresh(&m_presentation);
-    const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh;
+    const bool fresh = KWin::presentationBorderFresh(&m_router.paint);
+    const bool current = KWin::presentationCoveredCurrent(&m_router.paint);
+    const bool visible = hasPaint && foregroundMatches && liveEligible && strokeOk && fresh && current;
     // Transition diagnostic only: first evaluation plus visibility flips.
     // Never affects the border or repaint decision below.
     emitActiveBorderVisible(visible,
@@ -1367,8 +1401,8 @@ void ActiveWindowBorderEffect::updateBorder()
         // gap, width, DPI, or device scaling is applied here. The outline
         // replays the published stroke so the drawn outer edge equals the
         // published outer rect exactly.
-        const QRectF innerRect(static_cast<qreal>(m_presentation.borderInner.x()), static_cast<qreal>(m_presentation.borderInner.y()),
-            static_cast<qreal>(m_presentation.borderInner.width()), static_cast<qreal>(m_presentation.borderInner.height()));
+        const QRectF innerRect(static_cast<qreal>(m_router.paint.borderInner.x()), static_cast<qreal>(m_router.paint.borderInner.y()),
+            static_cast<qreal>(m_router.paint.borderInner.width()), static_cast<qreal>(m_router.paint.borderInner.height()));
         m_borderItem.setOutline(ringOutlineForWidth(stroke));
         m_borderItem.setInnerRect(window ? window->windowItem()->mapFromScene(innerRect) : RectF());
     }
@@ -1380,15 +1414,30 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
 {
     // Unavailable endpoint never displays: fail closed.
     if (!m_groupDbusAvailable) {
-        clearPresentation();
+        // Unavailable endpoint never displays: hide display-only (fail
+        // closed) while retaining order/invalidation evidence, so a later
+        // stream does not resurrect through a reset fence.
+        hidePresentation();
         emitPresentationSetterDiag("endpoint-unavailable");
         syncPresentationTransitionDiag();
         return;
     }
-    const PresentationApply result = applyPresentationPaint(&m_presentation, payload);
+    // The exact live open native gesture identity at the endpoint: a
+    // proven preview arms only when its producer matches it. The router
+    // re-seeds the order-independent latest witness from effect authority
+    // first, so no arriving paint can establish it.
+    QString liveGestureInstance;
+    QString liveGestureSerial = QStringLiteral("0");
+    if (m_gestureSource != nullptr) {
+        liveGestureInstance = m_gestureSource->instance();
+        liveGestureSerial = m_gestureSource->openSerial();
+    }
+    const PresentationApply result =
+        m_router.applyEndpointPaint(payload, liveGestureInstance, liveGestureSerial);
     if (result == PresentationApply::StaleIgnored) {
-        // Same-generation older revision: ignored without touching the
-        // newer held display.
+        // Older revision, no live source, or coverage that is not exactly
+        // the live source plus counter: ignored without touching the newer
+        // held display.
         emitPresentationSetterDiag("stale");
         syncPresentationTransitionDiag();
         return;
@@ -1421,15 +1470,34 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
 
 void ActiveWindowBorderEffect::clearPresentation()
 {
-    // The held paint clears (generation rotation, focus activation,
-    // malformed reads, or an explicit clear). Order fencing lives in the
-    // held (gen, rev): a cleared paint accepts the next newer-or-equal
-    // revision, never resurrecting older state through a late callback
-    // (the subscriber fences requests; native fences revisions).
-    const bool hadPaint = m_presentation.has;
-    clearPresentationPaint(&m_presentation);
+    // The held paint resets (generation rotation, unbind, stop, or an
+    // explicit effect-instance stream replacement). The router owns the
+    // reset; the live source truth is NOT forgotten and is re-seeded from
+    // effect authority at the next endpoint dispatch, so no arriving
+    // paint can establish it.
+    const bool hadPaint = m_router.paint.has;
+    m_router.onStreamReset();
     // Leave m_groupAnchor for updateGroupAnchorAndGeometry so the old anchor
     // disconnects its frame remap; the update nulls it.
+    updateGroupAnchorAndGeometry();
+    updateGroupVisibility();
+    updateBorder();
+    updateDragPreview();
+    if (hadPaint && m_isOpenGL) {
+        effects->addRepaintFull();
+        emitPresentationTransitionDiag();
+    }
+}
+
+void ActiveWindowBorderEffect::hidePresentation()
+{
+    // Display-only hide (focus activation is native-side; this serves the
+    // subscriber's error/watchdog/unknown path): clears the visible paint
+    // while retaining the ordering fence, the causal witness, and the
+    // geometry floors, so a stale retransmit still cannot resurrect.
+    // Stream replacement still uses the resetting clear above.
+    const bool hadPaint = m_router.paint.has;
+    m_router.onDisplayHide();
     updateGroupAnchorAndGeometry();
     updateGroupVisibility();
     updateBorder();
@@ -1443,10 +1511,10 @@ void ActiveWindowBorderEffect::clearPresentation()
 QString ActiveWindowBorderEffect::presentationStatus() const
 {
     return QStringLiteral("v=1;has=%1;bvis=%2;uvis=%3;pvis=%4;ep=%5;gl=%6;vis=%7")
-        .arg(m_presentation.has ? 1 : 0)
-        .arg((m_presentation.has && m_presentation.borderVisible) ? 1 : 0)
-        .arg((m_presentation.has && m_presentation.underlayFound) ? 1 : 0)
-        .arg((m_presentation.has && m_presentation.previewHas) ? 1 : 0)
+        .arg(m_router.paint.has ? 1 : 0)
+        .arg((m_router.paint.has && m_router.paint.borderVisible) ? 1 : 0)
+        .arg((m_router.paint.has && m_router.paint.underlayFound) ? 1 : 0)
+        .arg((m_router.paint.has && m_router.paint.previewHas) ? 1 : 0)
         .arg(m_groupDbusAvailable ? 1 : 0)
         .arg(m_isOpenGL ? 1 : 0)
         .arg(m_groupVisible ? 1 : 0);
@@ -1492,6 +1560,25 @@ void ActiveWindowBorderEffect::noteFactsChord()
     }
 }
 
+void ActiveWindowBorderEffect::noteFactsInvalidation()
+{
+    if (auto *dbusObject = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
+        if (PresentationFactsSource *facts = dbusObject->facts()) {
+            facts->noteInvalidation(m_router.counter);
+        }
+    }
+}
+
+QString ActiveWindowBorderEffect::factsInstance() const
+{
+    if (auto *dbusObject = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
+        if (PresentationFactsSource *facts = dbusObject->facts()) {
+            return facts->instance();
+        }
+    }
+    return QString();
+}
+
 void ActiveWindowBorderEffect::noteFactsStyle()
 {
     if (auto *dbusObject = static_cast<GroupHighlightObject *>(m_groupDbusObject)) {
@@ -1508,16 +1595,18 @@ void ActiveWindowBorderEffect::updateGroupVisibility()
         return;
     }
     // Pure renderer: the held accepted underlay Found paints only on a live
-    // foreground match, a fresh (geometry-clean) paint, plus the hide-only
-    // vetoes. The core Found already encodes the trigger (chord or matching
-    // move); native code performs no trigger, eligibility, or geometry
+    // foreground match, a fresh (geometry-clean) paint, held coverage
+    // equal to the actual latest witness, plus the hide-only vetoes. The
+    // core Found already encodes the trigger (chord or matching move);
+    // native code performs no trigger, eligibility, or geometry
     // derivation. A missing anchor (no live member window) keeps the
     // underlay hidden. The underlay depends on ALL held members, not just
     // the anchor: any member frame change dirties it via
     // onGroupMemberFrameChanged.
-    const bool underlayShow = m_presentation.has && m_presentation.underlayFound && foregroundMatchesNow() && isLiveEligibleNow()
-        && m_groupDbusAvailable && KWin::presentationUnderlayFresh(&m_presentation);
-    const bool anchorOk = !m_groupAnchor.isNull() && m_groupAnchor->windowItem() != nullptr && !m_presentation.underlayMembers.isEmpty();
+    const bool underlayShow = m_router.paint.has && m_router.paint.underlayFound && foregroundMatchesNow() && isLiveEligibleNow()
+        && m_groupDbusAvailable && KWin::presentationUnderlayFresh(&m_router.paint)
+        && KWin::presentationCoveredCurrent(&m_router.paint);
+    const bool anchorOk = !m_groupAnchor.isNull() && m_groupAnchor->windowItem() != nullptr && !m_router.paint.underlayMembers.isEmpty();
     const bool show = underlayShow && anchorOk;
     if (show != m_groupVisible) {
         m_groupVisible = show;
@@ -1533,19 +1622,31 @@ void ActiveWindowBorderEffect::updateDragPreview()
     if (!m_isOpenGL) {
         return;
     }
-    // Pure renderer: the held accepted preview rect paints only with live
-    // interactive-move liveness (a gesture is actually in flight) plus the
-    // endpoint gate. The published `win` is the insertion neighbor, never
-    // the mover, so no identity match is performed: liveness plus the
-    // subscriber's generation/request fencing (and the Finish-time liveness
+    // Pure renderer: the held accepted preview rect paints only with a
+    // proven producer matching the live open native gesture, live
+    // interactive-move liveness, held coverage equal to the actual latest
+    // witness, and the endpoint gate. The published `win`
+    // is the insertion neighbor, never the mover, so no identity match is
+    // performed against it: the producer match plus the subscriber's
+    // generation/request/coverage fencing (and the Finish-time liveness
     // drop above) keep stale previews from ever showing.
-    const bool show = m_presentation.has && m_presentation.previewHas && groupMoveLiveNow() && m_groupDbusAvailable;
+    QString liveGestureInstance;
+    QString liveGestureSerial = QStringLiteral("0");
+    if (m_gestureSource != nullptr) {
+        liveGestureInstance = m_gestureSource->instance();
+        liveGestureSerial = m_gestureSource->openSerial();
+    }
+    const bool producerLive =
+        KWin::previewProducerMatchesLive(&m_router.paint, liveGestureInstance, liveGestureSerial);
+    const bool show =
+        m_router.paint.has && m_router.paint.previewHas && producerLive && groupMoveLiveNow() && m_groupDbusAvailable
+        && KWin::presentationCoveredCurrent(&m_router.paint);
     if (show != m_dragPreviewVisible) {
         m_dragPreviewVisible = show;
         if (show) {
             // Consumed verbatim in overlay (scene) space: KWin logical
             // pixels, no outset or scaling.
-            m_dragPreviewRect = m_presentation.previewRect;
+            m_dragPreviewRect = m_router.paint.previewRect;
             m_dragPreviewItem.setPosition(
                 QPointF(static_cast<qreal>(m_dragPreviewRect.x()), static_cast<qreal>(m_dragPreviewRect.y())));
             m_dragPreviewItem.setSize(

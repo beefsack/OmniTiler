@@ -19,22 +19,31 @@ namespace KWin
 {
 
 // Versioned raw presentation facts for the KWin script route (Stage 3
-// ingress, read-only, no policy): the facts the script cannot observe
-// itself (native modifier chord level, actual effect style configuration)
-// plus effect instance/revision identity for stale-snapshot fencing.
+// ingress, read-only, no policy) plus the Stage 5 causal invalidation
+// witness: the facts the script cannot observe itself (native modifier
+// chord level, actual effect style configuration, and the effect-owned
+// monotonic invalidation counter) plus effect instance/revision identity
+// for stale-snapshot fencing.
 // The script holds one WaitPresentationFacts call per adapter generation;
 // the effect completes it immediately when the known identity mismatches
 // and otherwise holds it until a fact changes or the bounded lease
 // expires. Wire JSON (v:1):
-// {"v":1,"instance":"<uuid>","rev":"<n>","chord":0/1,"chordKnown":0/1,
-//  "gap":<f64>,"width":<f64>,"extension":<f64>,"changed":0/1,
-//  "superseded":0/1,"available":0/1}
+// {"v":1,"instance":"<uuid>","rev":"<n>","invalidation":"<n>","chord":0/1,
+//  "chordKnown":0/1,"gap":<f64>,"width":<f64>,"extension":<f64>,
+//  "changed":0/1,"superseded":0/1,"available":0/1}
 // Doubles ride full round-trip precision; the adapter clamps to its own
 // style bound. The extension sentinel (< 0) resolves adapter-side.
+// `invalidation` is the effect-owned monotonic native-invalidation
+// counter (decimal u64, same instance namespace): the effect advances it
+// on geometry, activation/focus, and gesture boundaries. The broker
+// records each capture's covered value and rendering requires covering
+// the latest; never compared across instances, never inferred from
+// timing, geometry, or age.
 struct PresentationFactsSnapshot
 {
     QString instance;
     quint64 rev = 0;
+    quint64 invalidation = 0;
     bool chord = false;
     bool chordKnown = false;
     double gap = 0.0;
@@ -54,9 +63,10 @@ struct PresentationFactsSnapshot
 
 inline QString presentationFactsJson(const PresentationFactsSnapshot &facts)
 {
-    return QStringLiteral("{\"v\":1,\"instance\":\"%1\",\"rev\":\"%2\",\"chord\":%3,\"chordKnown\":%4,\"gap\":%5,\"width\":%6,\"extension\":%7,\"changed\":%8,\"superseded\":%9,\"available\":%10}")
+    return QStringLiteral("{\"v\":1,\"instance\":\"%1\",\"rev\":\"%2\",\"invalidation\":\"%3\",\"chord\":%4,\"chordKnown\":%5,\"gap\":%6,\"width\":%7,\"extension\":%8,\"changed\":%9,\"superseded\":%10,\"available\":%11}")
         .arg(facts.instance)
         .arg(QString::number(facts.rev))
+        .arg(QString::number(facts.invalidation))
         .arg(facts.chord ? 1 : 0)
         .arg(facts.chordKnown ? 1 : 0)
         .arg(QString::number(facts.gap, 'g', 17))

@@ -238,6 +238,14 @@ QString GestureFactsSource::openWin() const
     return m_store.openWin();
 }
 
+QString GestureFactsSource::openSerial() const
+{
+    if (!m_store.hasOpen()) {
+        return QStringLiteral("0");
+    }
+    return QString::number(m_store.openSerial());
+}
+
 } // namespace KWin
 
 #include "gesturefacts.moc"

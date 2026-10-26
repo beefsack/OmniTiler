@@ -3,6 +3,7 @@
 #pragma once
 
 #include "presentation_consumer.h"
+#include "presentation_router.h"
 
 #include <effect/effect.h>
 #include <effect/effectwindow.h>
@@ -35,11 +36,17 @@ public:
 
     // Read-only presentation paint (Stage 5, pure renderer): replaces the
     // held paint with accepted core shapes only (border, underlay, drop
-    // preview) plus the serving generation/revision for order fencing.
-    // Malformed payloads clear the display; same-generation older revisions
+    // preview) plus the serving generation/revision for order fencing and
+    // the causal coverage witness. Malformed payloads hide the display;
+    // same-generation older revisions and older same-instance coverage
     // never resurrect it. Never derives geometry, eligibility, or policy.
     void applyPresentation(const QString &payload);
     void clearPresentation();
+    // Display-only presentation hide (Stage 5): clears the visible paint
+    // while retaining order/invalidation evidence. Serves the subscriber's
+    // error/watchdog path; stream replacement still uses the resetting
+    // clear above.
+    void hidePresentation();
     QString presentationStatus() const;
     // Versioned raw presentation facts for the script route (Stage 3
     // ingress, read-only): pushes the observed chord level and the actual
@@ -47,10 +54,21 @@ public:
     // object. The source bumps its revision only on material change.
     void noteFactsChord();
     void noteFactsStyle();
+    // Stage 5 causal invalidation: the effect-owned monotonic witness
+    // advances on geometry, activation/focus, and gesture boundaries. Each
+    // bump publishes into the facts snapshot (so the script carries the
+    // new covered value) and advances the renderer's latest witness.
+    void noteFactsInvalidation();
+    QString factsInstance() const;
 
 private:
     friend class GestureEscFence;
     void reconfigure(ReconfigureFlags flags) override;
+    // Production activation route (Stage 5): display-only hide plus the
+    // causal bump, then tracked-window and visibility refresh. The
+    // windowActivated signal delegates here directly; the offline gate
+    // pins this exact body.
+    void onWindowActivated();
     void setTrackedWindow(EffectWindow *window);
     void subscribeMaximize(EffectWindow *window);
     void unsubscribeMaximize(EffectWindow *window);
@@ -160,11 +178,15 @@ private:
     // members occlude it normally. Detached (null parent) with no valid
     // anchor so it can never draw as a screen overlay; stays hidden there.
     ImageItem m_groupItem;
-    // Held accepted presentation paint: complete core shapes plus the
-    // serving generation/revision for order fencing. The member id list
-    // feeds the lowest-stacked anchor choice only; geometry is consumed
-    // verbatim. Never logged.
-    PresentationPaint m_presentation;
+    // Held accepted presentation plus the single-owner causal routing:
+    // the complete core shapes with the serving generation/revision for
+    // order fencing, the production router for every paint-state
+    // transition (frames, activation, gesture boundaries, endpoint
+    // paints, hides, resets), and the effect-owned monotonic witness the
+    // facts snapshot publishes. The member id list feeds the
+    // lowest-stacked anchor choice only; geometry is consumed verbatim.
+    // Never logged. Signal handlers delegate to the router directly.
+    PresentationRouter m_router;
     QPointer<EffectWindow> m_groupAnchor;
     // Exact interactive-move window captured at Started (latest gesture
     // wins). The preview needs this liveness plus the held paint, so a
