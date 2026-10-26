@@ -2214,14 +2214,14 @@ mod stress_tests {
         let command_ops = case.actions.iter().filter(|a| a.seq.is_some()).count();
         assert!(command_ops >= 100, "stress volume {command_ops} < 100");
         let (lines, stats) = run_stress(&case, StressSchedule::Ordered).expect("ordered");
-        assert_eq!(stats.reports, 189);
+        assert_eq!(stats.reports, 190);
         assert_eq!(stats.checkpoints, 19);
         assert!(lines.iter().any(|l| l.contains("final members=3")));
         let (_, stats) = run_stress(&case, StressSchedule::Batched).expect("batched");
-        assert_eq!(stats.reports, 155);
+        assert_eq!(stats.reports, 156);
         assert_eq!(stats.checkpoints, 19);
         let (_, stats) = run_stress(&case, StressSchedule::Reordered).expect("reordered");
-        assert_eq!(stats.reports, 157);
+        assert_eq!(stats.reports, 158);
         assert_eq!(stats.checkpoints, 19);
     }
 
@@ -2548,5 +2548,59 @@ mod stress_tests {
         assert_eq!(doubled["win-a"], [800, 0, 800, 1120]);
         assert_eq!(doubled["win-b"], [0, 0, 800, 1120]);
         assert!(normalize_tiles_to_work(&tiles, work, [0, 0, 801, 560]).is_err());
+    }
+
+    #[test]
+    fn trio_admit_carries_explicit_anchor_precondition() {
+        // Shared-definition anchor guard: the first admit-c must carry an
+        // explicit focus-window win-a immediately before it. Native
+        // bootstrap retains no focused managed window, so without this
+        // observation the admission anchor falls back to enumeration order
+        // while the core simulation retains its own order; the explicit
+        // foreground pins the retained-focus anchor (win-a's leaf) under
+        // the unchanged policy on both legs. Removing the precondition
+        // fails this load guard, and the locked-counts test above fails on
+        // the missing report. Core precedent: an explicit refocus pins the
+        // next admission at the refocused leaf (session
+        // `close_then_reopen_is_fresh_admission_at_refocus_not_old_slot`);
+        // the focus-only report latches retained focus without a revision
+        // bump, and `fresh_admit_anchor` prefers that remembered leaf.
+        let text = std::fs::read_to_string(trio_path()).expect("read trio fixture");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("parse trio");
+        let actions = value["actions"].as_array().expect("actions");
+        let admit = actions
+            .iter()
+            .position(|a| a["op"] == "admit")
+            .expect("trio opens with an admit");
+        assert!(
+            admit >= 1
+                && actions[admit - 1]["op"] == "focus-window"
+                && actions[admit - 1]["window"] == "win-a",
+            "first admit must be pinned by an explicit focus-window win-a"
+        );
+        // Anchor equivalence: the precondition adds exactly one observation
+        // report per schedule and the full hand-authored oracle (all 19
+        // checkpoints plus final) holds identically with and without it.
+        // The +1 delta is the focus report itself; any other drift fails.
+        let with = load_value(&value).expect("trio loads");
+        let mut without_value = value.clone();
+        without_value["actions"]
+            .as_array_mut()
+            .expect("actions")
+            .remove(admit - 1);
+        let without = load_value(&without_value).expect("trio loads without precondition");
+        for schedule in StressSchedule::all() {
+            let (_, with_stats) = run_stress(&with, schedule).expect("trio with precondition");
+            let (_, without_stats) =
+                run_stress(&without, schedule).expect("trio without precondition");
+            assert_eq!(with_stats.checkpoints, 19);
+            assert_eq!(without_stats.checkpoints, 19);
+            assert_eq!(
+                with_stats.reports,
+                without_stats.reports + 1,
+                "{} schedule: precondition must add exactly its own report",
+                schedule.as_str()
+            );
+        }
     }
 }

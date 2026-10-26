@@ -27,7 +27,7 @@ final oracle. Layout tiles are hand-authored from the positional split rule
 on the work area, never copied from engine output; coverage is re-proven
 from actual reply allocations per homed workspace, so any layout change
 fails loudly. Report counts are locked per schedule (duo 186/149/151, trio
-189/155/157); reordered strictly exceeds batched, so a degenerate reorder
+190/156/158); reordered strictly exceeds batched, so a degenerate reorder
 fails.
 
 ## Op reference
@@ -95,11 +95,12 @@ observed order fails loudly instead of being copied in.
 
 ## Native connector notes (Windows leg)
 
-The Windows connector is mechanically parked pending the
-[hidden-frame oracle decision](../docs/changes/platform-neutral-stress-acceptance.md#blocking-decision-and-next-acceptance-step).
-Delay-zero native testing repaired one adapter bug but has no complete pass;
-nonzero delays and trio-churn are unrun. The following describes the connector
-mapping, not native acceptance.
+The Windows connector is mechanically parked pending
+[exact pager/world proof binding](../docs/changes/platform-neutral-stress-acceptance.md#remaining-proof-binding-blocker).
+Hidden geometry follows the tentative retained-frame oracle: exact identity,
+hidden visibility and raw retained frame proof, then exact logical tile geometry
+on reveal. Native runs have no accepted complete pass. The following describes
+the connector mapping, not native acceptance.
 
 Each action maps 1:1 to the existing exact-owner CLI controls:
 `select-workspace`/`select-numbered` to `workspace --select INDEX`

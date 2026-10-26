@@ -202,10 +202,14 @@ const MAX_PAGER_CELLS_TRACE_MINIS: usize = 8;
 /// Trace-only cell-payload evidence over the actual frames sent to the
 /// renderer: one bounded `pager-cells` value per pump. Logs actual cell
 /// fields only (ordinals, workspace tokens, current/focus marks, cell rects,
-/// per-miniature rects and window tokens with honest omitted counts); never
-/// titles, paths, HWNDs, PIDs, creations, or raw input. Window tokens are the
-/// same opaque lifetime ids already carried by `world-apply` desired rows,
-/// never native identity. Focus marks ride the cells verbatim (never
+/// per-miniature rects, raw source rects and window tokens with honest
+/// omitted counts); never titles, paths, HWNDs, PIDs, creations, or raw
+/// input. Window tokens are the same opaque lifetime ids already carried by
+/// `world-apply` desired rows, never native identity. `mini_frames` carries
+/// the exact content source rect each miniature was projected from, parallel
+/// to `mini_rects`/`mini_windows`, so an exact frame proof survives
+/// miniature rounding (a 1px source change re-logs even when the projected
+/// miniature is identical). Focus marks ride the cells verbatim (never
 /// recomputed here: no second projection). Tick and reply identity ride the
 /// line for correlation only.
 fn pager_cells_trace_value(
@@ -247,6 +251,19 @@ fn pager_cells_trace_value(
                     })
                 })
                 .collect();
+            let mini_frames: Vec<serde_json::Value> = cell
+                .mini_sources
+                .iter()
+                .take(MAX_PAGER_CELLS_TRACE_MINIS)
+                .map(|rect| {
+                    serde_json::json!({
+                        "x": rect.x,
+                        "y": rect.y,
+                        "w": rect.w,
+                        "h": rect.h,
+                    })
+                })
+                .collect();
             let mini_windows: Vec<serde_json::Value> = cell
                 .mini_keys
                 .iter()
@@ -266,6 +283,7 @@ fn pager_cells_trace_value(
                 "minis_total": cell.mini_focused.len(),
                 "minis_omitted": cell.mini_focused.len().saturating_sub(shown),
                 "mini_rects": mini_rects,
+                "mini_frames": mini_frames,
                 "mini_windows": mini_windows,
                 "focused_total": cell.mini_focused.iter().filter(|focused| **focused).count(),
             }));
@@ -292,10 +310,11 @@ fn pager_cells_trace_value(
 
 /// Full change signature over the logged cell payload: output tokens plus
 /// per-cell ordinal/workspace/current/rect/any-focused, per-miniature focus
-/// bits, rects and window tokens, every total, and the top-level output
-/// counts. Tick and reply identity ride the logged line but never the gate,
-/// so a new tick with identical cells stays silent - while omitted growth
-/// past the cap still re-logs.
+/// bits, rects, raw source rects and window tokens, every total, and the
+/// top-level output counts. Raw source rects ride the signature so a
+/// sub-miniature-quantum frame change still re-logs. Tick and reply identity
+/// ride the logged line but never the gate, so a new tick with identical
+/// cells stays silent - while omitted growth past the cap still re-logs.
 fn pager_cells_trace_signature(value: &serde_json::Value) -> String {
     let outputs = value
         .get("outputs")
@@ -1163,8 +1182,8 @@ mod pager_host_tests {
         foreground_pager_elevated, foreground_pager_elevated_detailed, inject_pending_elev_probe,
         inject_pending_elevated, inject_pending_fg_class, inject_pending_observe,
         inject_pending_suspend, inject_pending_zorder, note_pager_suppress,
-        pager_cells_trace_value, pager_fg_surface, pager_suppress_diag, pager_suppress_facts,
-        pager_suppress_signature, poll_pager_select,
+        pager_cells_trace_signature, pager_cells_trace_value, pager_fg_surface,
+        pager_suppress_diag, pager_suppress_facts, pager_suppress_signature, poll_pager_select,
     };
     use crate::tray_pager::SelectScope;
 
@@ -2856,6 +2875,18 @@ mod pager_host_tests {
             cells[0]["mini_windows"].as_array().expect("tokens").len(),
             super::MAX_PAGER_CELLS_TRACE_MINIS
         );
+        assert_eq!(
+            cells[0]["mini_frames"].as_array().expect("sources").len(),
+            super::MAX_PAGER_CELLS_TRACE_MINIS
+        );
+        // Raw source rects ride the payload verbatim: the exact content
+        // rects the miniatures were projected from.
+        for frame in cells[0]["mini_frames"].as_array().expect("sources") {
+            assert_eq!(frame["x"], serde_json::json!(0));
+            assert_eq!(frame["y"], serde_json::json!(0));
+            assert_eq!(frame["w"], serde_json::json!(480));
+            assert_eq!(frame["h"], serde_json::json!(270));
+        }
         // Miniature rects carry real cell-space geometry: non-degenerate and
         // contained in the logged cell rect.
         let cell_rect = cells[0]["rect"].as_object().expect("cell rect");
@@ -2989,6 +3020,7 @@ mod pager_host_tests {
                     minis: Vec::new(),
                     mini_focused: Vec::new(),
                     mini_keys: Vec::new(),
+                    mini_sources: Vec::new(),
                     mini_icons: Vec::new(),
                 }],
                 active_index: 0,
@@ -3024,6 +3056,148 @@ mod pager_host_tests {
         );
         assert_eq!(gate_lines(&log).len(), 5, "trace off stays silent");
         assert_eq!(gate_state.pager_cells_last, None);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn pager_cells_trace_relogs_on_sub_quantum_source_change() {
+        use crate::pager::{
+            PagerContentMiniature, PagerContentWorkspace, build_output_pager_from_content,
+            miniature,
+        };
+        use std::collections::HashMap;
+        // A 1px source change that quantizes to the identical miniature must
+        // still re-log: hidden-frame proof reads `mini_frames`, never the
+        // lossy miniature.
+        let key = crate::native_guards::WindowKey {
+            hwnd: 901,
+            pid: 7,
+            creation: "creation-x".to_owned(),
+        };
+        let cell = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 40,
+        };
+        let monitor = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let before = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 960,
+            h: 540,
+        };
+        let after = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 961,
+            h: 540,
+        };
+        assert_eq!(
+            miniature(cell, monitor, before, 96),
+            miniature(cell, monitor, after, 96),
+            "test needs a sub-quantum 1px change"
+        );
+        let content_of = |rect: tiler_core::geometry::Rect| {
+            vec![PagerContentWorkspace {
+                id: "ws-1".to_owned(),
+                ordinal: 1,
+                current: true,
+                windows: vec![PagerContentMiniature {
+                    key: key.clone(),
+                    rect,
+                    focused: false,
+                }],
+            }]
+        };
+        let frame_of = |rect: tiler_core::geometry::Rect| {
+            build_output_pager_from_content(
+                &content_of(rect),
+                &HashMap::new(),
+                "mon-a",
+                monitor,
+                &pager_bar(),
+                (0xbd, 0x93, 0xf9),
+            )
+            .expect("fits")
+        };
+        let first = frame_of(before);
+        let second = frame_of(after);
+        assert_eq!(first.cells[0].minis, second.cells[0].minis);
+        assert_ne!(first.cells[0].mini_sources, second.cells[0].mini_sources);
+        let token_of = |_: &crate::native_guards::WindowKey| Some("tok-x".to_owned());
+        let a = pager_cells_trace_value(
+            std::slice::from_ref(&first),
+            &|device| format!("wire-{device}"),
+            &|_, workspace| workspace.to_owned(),
+            &token_of,
+            7,
+            42,
+            43,
+        );
+        let b = pager_cells_trace_value(
+            std::slice::from_ref(&second),
+            &|device| format!("wire-{device}"),
+            &|_, workspace| workspace.to_owned(),
+            &token_of,
+            7,
+            42,
+            43,
+        );
+        assert_eq!(
+            a["outputs"][0]["cells"][0]["mini_rects"],
+            b["outputs"][0]["cells"][0]["mini_rects"]
+        );
+        assert_ne!(
+            a["outputs"][0]["cells"][0]["mini_frames"],
+            b["outputs"][0]["cells"][0]["mini_frames"]
+        );
+        assert_eq!(
+            b["outputs"][0]["cells"][0]["mini_frames"][0]["w"],
+            serde_json::json!(961)
+        );
+        assert_ne!(
+            pager_cells_trace_signature(&a),
+            pager_cells_trace_signature(&b),
+            "raw source rides the change gate"
+        );
+        let mut gate_state = test_state();
+        gate_state.trace = true;
+        static RAW_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = RAW_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-pager-raw-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("trace log dir");
+        let log = dir.join("run.log");
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&first),
+            &log,
+            7,
+            42,
+            43,
+        );
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&second),
+            &log,
+            7,
+            42,
+            43,
+        );
+        assert_eq!(gate_lines(&log).len(), 2, "1px source change re-logs");
         clear_pending_seams();
     }
 

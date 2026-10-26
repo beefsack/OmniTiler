@@ -27,7 +27,7 @@ trivially different start state.
 
 | Minimal action sequence | Windows observation | Decision / unsupported outcomes |
 | --- | --- | --- |
-| Tile A/B side by side on WS1; send B without follow to empty WS2; observe hidden B's native frame and logical tile; reveal WS2 | B hides at its prior half-width native frame while WS2's logical allocation is full width; automatic writes are fenced while hidden. The stress oracle currently requires equality and times out | Immediate hidden-frame equality versus equality only after reveal is undecided. Recommendation in the [stress record](../changes/platform-neutral-stress-acceptance.md#blocking-decision-and-next-acceptance-step) is not adopted. Reveal proof and reference-WM outcomes TBD |
+| Tile A/B side by side on WS1; send B without follow to empty WS2; observe hidden B's native frame and logical tile; reveal WS2 | B hides at its prior half-width native frame while WS2's logical allocation is full width; automatic writes are fenced while hidden | Tentative (pending user review): hidden identity, visibility and retained frame proof; exact geometry against logical allocation on reveal. Existing hidden-write fence and product behavior unchanged. [Record](../changes/platform-neutral-stress-acceptance.md#hidden-frame-decision-and-next-acceptance-step). Reveal proof and reference-WM outcomes TBD |
 
 <a id="cursor-first-output-targeting-discriminators"></a>
 ### Cursor-first output-targeting discriminators

@@ -838,6 +838,7 @@ mod tests {
                     minis: Vec::new(),
                     mini_focused: Vec::new(),
                     mini_keys: Vec::new(),
+                    mini_sources: Vec::new(),
                     mini_icons: Vec::new(),
                 })
                 .collect(),

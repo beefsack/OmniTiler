@@ -17,6 +17,7 @@
     "win-b": [ 0, 0, 400, 560 ]
   },
   "actions": [
+    {"op": "focus-window", "window": "win-a"},
     {"op": "admit", "window": "win-c", "rect": [ 100, 100, 200, 150 ]},
     {"op": "focus-window", "window": "win-c"},
     {"op": "checkpoint", "name": "admit-3", "view": "home", "members": [ "win-a", "win-b", "win-c" ], "homing": {"win-a": "home", "win-b": "home", "win-c": "home"}, "tiles": {"win-a": [ 400, 0, 400, 280 ], "win-b": [ 0, 0, 400, 560 ], "win-c": [ 400, 280, 400, 280 ]}, "focus": "win-c", "foreground": "win-c", "pager_current": "home", "pager_occupied": [ "home" ]},

@@ -64,14 +64,35 @@
   exact-lifetime physical frame proof at successful hide commit; never from
   desired geometry or setter acceptance. Unreadable proof retains the existing
   conservative fallback. Core frame-evidence precedence remains unchanged.
+- Tentative (pending user review): hidden-window acceptance checks exact
+  identity, hidden visibility and retained frame proof. Require exact native
+  geometry against logical allocation only on reveal. This follows the
+  existing adapter safety fence against hidden frame writes; product behavior
+  and that safety fence remain unchanged.
+- Tentative (pending user review): expose exact raw miniature source frames in
+  the existing bounded pager trace. Hidden native frames must match that
+  token/revision-bound retained proof; miniature quantization alone cannot
+  establish exact retained geometry. Track stability per hide epoch, reset on
+  actual reveal, close or replacement lifetime.
+- Tentative (pending user review): emit the existing bounded accepted-world
+  trace snapshot when fresh pager content or foreground changes, even without
+  an actuation attempt. Unchanged/duplicate presentations remain quiet. Retain
+  strict renderer/world revision joins; never mix a newer pager with old world
+  proof. Final re-verification inspects any newer world progress before reuse.
+- Tentative (pending user review): explicitly focus the bootstrap anchor before
+  the trio case's first admission. This removes unspecified bootstrap foreground
+  without changing authored layouts, product admission policy or safety gates.
+- Tentative (pending user review): fence observation checkpoints on exact
+  lifetime-bound admission ticks as well as command-dispatch ticks. Reject
+  missing caller/token mappings before roster sorting; never drop them silently.
 
 ## Evidence and outcome
 
 - Existing ordered baseline and native connector limitations inspected. Prior
   withdrawn connector drafts are not reused as accepted evidence.
-- Current `mise exec -- cargo test --locked -p tiler-protocol` passes 29 library
-  tests (27 stress tests) plus 33 codec tests. Both cases accept all schedules;
-  report counts are duo 186/149/151 and trio 189/155/157 for
+- Current `mise exec -- cargo test --locked -p tiler-protocol` passes 30 library
+  tests (28 stress tests) plus 33 codec tests. Both cases accept all schedules;
+  report counts are duo 186/149/151 and trio 190/156/158 for
   ordered/batched/reordered. These are simulated-host proofs only.
 - Current `mise exec -- just world-stress-check`, `world-stress-mock` and
   `git diff --check` pass. Offline evidence does not establish native acceptance.
@@ -80,17 +101,29 @@
   bootstrap windows, width/edge confusion, per-command convergence and
   success-only cleanup. Source-informed corrections addressed those defects;
   current remaining acceptance is real execution, not relaxed oracles.
-- Fixture-only native runs at delay zero reached the hide/reveal checkpoints
-  but no complete case passed. Nonzero delays and the trio case remain unrun.
-- The connector was enabled after independent recovery/oracle review. It is
-  now mechanically parked before effects at both entries pending the hidden
-  frame decision below; the offline seam check executes the refusal.
+- Fixture-only native runs reached hide/reveal checkpoints, but no complete
+  native pass is accepted. Latest strict results are tabulated below.
+- The original connector was parked for the hidden-frame decision below.
+  The revised oracle now passes independent review for native validation:
+  exact raw renderer source frames replace the rejected self-seeded hidden
+  frame draft, with sub-quantum corruption and hide-lifecycle regression tests.
+- Initial revised-oracle runs produced apparent home-away passes, but review
+  rejected a runner fallback that joined newer pager evidence to an older world
+  row. Those passes are withdrawn. The fallback is removed; fresh pager-content
+  changes now trigger accepted-world trace rows, but native reruns still expose
+  a proof gap: an unchanged subsequent accepted reply can stamp the pager with
+  a newer revision before the next pump. Final idle re-verification rejects newer
+  pending/corrupt progress. No future-pager/old-world fallback remains.
+- Initial trio runs at each delay exposed an unspecified bootstrap admission
+  anchor. An explicit existing focus observation now pins that precondition;
+  authored expected layouts are unchanged, with exactly one extra core report.
 - Recovery repair passes 65 offline fault steps, including actual cleanup
   calls under effect shadows for partial settings writes, unready startup,
   post-dispatch failure, foreign owner, same-executable PID reuse, gone fixture,
   malformed ledger and nonzero detached stop failure. Independent review
   accepted the bounded repair after correcting fail-open ready queries and
-  the mock's stop-versus-restore ledger lifetime. Live timing remains unproven.
+  the mock's stop-versus-restore ledger lifetime. All attempted native recoveries
+  passed; injected failure coverage remains offline evidence.
 - Native evidence repair adds real JSON roundtrip faults, strict omission
   checks, ordered cross-family transport fencing, independent dispatch/apply
   cursors, fresh native lifetime joins and a real checkpoint-loop simulation
@@ -98,9 +131,13 @@
 - Miniature faults reject duplicates, omitted nonfocused windows, swapped
   positions and inside-cell layout errors. Midpoint cases distinguish Rust's
   away-from-zero rounding from PowerShell's default ties-to-even rounding.
-- Windows library tests pass 1071 cases, including 39 pager tests and four
-  hidden-snapshot regressions; core tests pass 925 cases. Strict
+- Current Windows library tests pass 1074 cases (one ignored), including four
+  hidden-snapshot regressions plus exact raw-source and presentation trace
+  tests; core tests pass 925 cases. Strict
   clippy and formatting pass. Trace remains bounded and omits native identity.
+- Latest PowerShell seam check and 171 offline fault steps pass, including
+  strict revision rejection, final reuse/newer-progress rejection and the
+  admission fence. Both live entries execute a pre-effect parked refusal.
 - Live interface corrections: bounded owner duration now honors the product's
   600-second maximum; concurrent trace reads tolerate only a torn final line;
   directional dispatch uses `dispatched`, unlike workspace dispatch's `ok`.
@@ -112,11 +149,15 @@
 - Two further harness corrections have discriminating offline regressions:
   re-settle after pager/ring revision lag and retain the last dispatch tick
   across explicit focus observations. Neither changes the expected world.
-- Latest delay-zero run fails `hide-S1`: the sent hidden member remains at
+- Before the revised oracle, delay-zero testing failed `hide-S1`: the sent hidden member remained at
   its prior half-width native frame while its logical destination allocation
   is full width. No frame write is attempted after hiding, consistent with
-  `world_diff.rs`'s hidden-window safety fence. This is an unresolved oracle
-  contract question, not a claimed second product defect.
+  `world_diff.rs`'s hidden-window safety fence. The tentative oracle decision
+  below resolves this mismatch without a product change.
+- Strict trio runs then exposed a stale pre-admission world-row join. The
+  harness now fences bootstrap and subsequent admission observations using the
+  exact token/HWND/PID/creation-bound event tick; checkpoint tests prove the
+  pre-admission row cannot pass. The repaired fence has not run live yet.
 - All native attempts ended with independently checked owner/fixture and
   request/ledger absence and settings restored byte-for-byte. Recovery baseline
   checks passed. One earlier run received a stop request of unknown origin;
@@ -125,11 +166,25 @@
   transport queue wait in that sample. CLI process overhead limits this native
   route; zero delay does not mean physical keyboard-rate ingress.
 
-| Case | Delay (ms) | Result |
-| --- | --- | --- |
-| home-away | 0 | No full pass; hide-F1/show-F1 pass after cache fix; hide-S1 blocked on hidden-frame oracle |
-| home-away | 10, 50 | Not run after the contract blocker |
-| trio-churn | 0, 10, 50 | Not run after the contract blocker |
+| Case | Delay (ms) | Latest strict result | Publication sample |
+| --- | --- | --- | --- |
+| home-away | 0 | Fail at hide-S1: pager/world proof gap | 5 commands / 1.455s = 3.436/s |
+| home-away | 10 | Same proof-gap failure | 5 commands / 1.690s = 2.959/s |
+| home-away | 50 | Same proof-gap failure | 5 commands / 1.933s = 2.587/s |
+| trio-churn | 0 | Fail at admit-3: stale pre-admission proof; repaired offline | No product commands reached |
+| trio-churn | 10 | Same admission-fence failure; repaired offline | No product commands reached |
+| trio-churn | 50 | Not rerun after the same deterministic fence failure twice | No strict result with revised oracle |
+
+- These are partial-run rates, including fixture focus/checkpoint overhead,
+  not sustained burst rates. The zero-delay contiguous-command interval was
+  101.231ms (about 9.88 actions/s); the 43-93ms CLI service sample above is a
+  separate earlier measurement. This route cannot prove true unpaced input
+  starvation resistance. No persistent product-control route was found and
+  no new product IPC was added.
+- An earlier 10ms run left a workspace transfer pending for 60s with one
+  fixture member still visible. The hide race is backlogged, not silently
+  repaired or classified as a passing retry. Later strict runs stop earlier
+  and do not reproduce or disprove it.
 
 ## Remaining native acceptance
 
@@ -149,16 +204,39 @@
   HWND/process-lifetime joins still need end-to-end validation against the
   actual configured owner before native evidence can be accepted.
 
-## Blocking decision and next acceptance step
+## Hidden-frame decision and next acceptance step
 
-- Decide whether hidden native frames must immediately equal logical allocation.
-  The runner currently requires equality; the adapter deliberately forbids
-  automatic hidden-window frame writes. Changing that fence is not authorized
-  by this test work. Recommendation: distinguish logical allocation from hidden
-  native geometry, assert hidden identity/visibility and retained frame proof,
-  and require exact tile geometry on reveal. This recommendation is not adopted.
+- Tentative (pending user review): adopt hidden identity/visibility and retained
+  frame proof, with exact geometry against logical allocation checked on reveal.
+  Do not change product behavior or weaken the hidden-window write fence.
   [Minimal discriminator](../spec/reference-outcomes.md#hidden-frame-stress-discriminator).
-- After that decision, revise the oracle or product only as authorized, review
-  the correction, and resume both cases at delays 0, 10 and 50.
+- The oracle correction is applied and independently reviewed. Resume both
+  cases at delays 0, 10 and 50 only after closing the proof-binding gap below.
+- Existing transport inspection found no persistent product control route.
+  Fixture batching controls fixture windows only. Direct request-file writes
+  would skip the CLI's same-path medium-caller gate, so they are not used.
+  Retain the existing CLI route and report its measured effective rate; a
+  faster persistent exact-owner product transport requires separate approval.
 - Keep this note active and the backlog open until real execution establishes
   native acceptance or reports a concrete tiler defect.
+
+## Remaining proof-binding blocker
+
+- Latest strict home-away runs all show an accepted world row at revision 39
+  and a three-cell pager payload at revision 40 on the same owner tick, with
+  no world row for revision 40 or later. The strict runner correctly refuses
+  the newer payload against old world proof; the two-cell retained payload
+  cannot describe the three-workspace ring.
+- Two approaches have failed: widening the pager cap was rejected for mixing
+  unbound evidence; logging only changed fresh pager presentations still misses
+  a later unchanged accepted reply's stamp before the renderer pump. Preserve
+  the strict cap; the native runner is mechanically parked before effects.
+- Recommendation, not adopted: emit an exact accepted-world proof paired to
+  the snapshot actually used whenever the pager payload trace emits, retaining
+  the corresponding report/reply provenance. This closes observability without
+  changing tiling or hidden-write safety, and avoids logging every accepted
+  observation. The required snapshot lifetime/correlation design needs review
+  before another implementation attempt. No new product IPC is proposed.
+- Next: resolve that trace-proof design, verify admission fencing live, then
+  rerun all six legs and the incomplete-hide regression. Full native acceptance
+  and true burst-rate starvation coverage remain open.

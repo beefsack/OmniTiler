@@ -54,12 +54,13 @@ foreach ($fn in @(
     "Wait-StressHwnd", "Wait-StressAdmitted", "Wait-StressDeparted",
     "Invoke-StressFocus", "Get-StressGeometry", "Get-StressRing",
     "Initialize-StressTopology", "Refresh-StressRing",
-    "Invoke-StressCheckpoint", "Wait-StressPager", "Invoke-StressCleanup",
-    "Invoke-Mock", "Invoke-LiveJourney"
+    "Invoke-StressCheckpoint", "Wait-StressReady", "Wait-StressPager", "Invoke-StressCleanup",
+    "Test-StressStalePager",
+    "Invoke-Mock", "Invoke-LiveJourney", "Get-StressPubSummary"
   )) {
   if ($src -notmatch ("function " + $fn)) { throw "missing function $fn" }
 }
-Write-Output "required functions present=55"
+Write-Output "required functions present=58"
 
 # Required seams are matched against comment-stripped code: real call-site
 # literals, not prose. Freshness uses accepted/command-consumed (duplicate
@@ -77,7 +78,14 @@ foreach ($must in @("scope-exe tiler-live-fixture.exe", '"workspace", "--select"
     "desired_geometry_omitted", "geometry_status", "desired_transfers",
     '"accepted"', '"command-consumed"', '"duplicate"', '"dispatched"',
     "pager-cells", "minis_total", "minis_omitted", "focused_total",
-    "mini_rects", "mini_windows", "command-queued",
+    "mini_rects", "mini_frames", "mini_windows", "command-queued",
+    "unknown pager raw frame", "pager hidden", "hide epoch drift",
+    "hidden outer", "HideEpoch", "pager raw",
+    "raw revision", "older than checkpoint",
+    "ReuseSettled", "no committed settled row", "committed row",
+    "newer pending row not settled",
+    "Stopwatch", "start_ms", "accepted_ms", "burst_intervals_ms",
+    "publication count=", "added_delay_ms", "delay_each_ms",
     "transport cannot preserve burst order", "DispatchMark",
     "mini token multiset", "miniature layout", "DispatchMark", "not settled",
     "creation mismatch", "fixture process",
@@ -113,17 +121,20 @@ foreach ($fn in @("Get-StressCliArgs", "Convert-StressTiles",
     "Test-StressOwnerSame", "Read-StressLedgerOwner", "Wait-StressLedgerOwner",
     "Write-StressLeg",
     "Assert-StressOwnerUnreplaced", "Test-StressShouldRestoreSettings",
-    "Invoke-Mock")) {
+    "Invoke-Mock", "Get-StressPubSummary", "Wait-StressReady", "Test-StressStalePager")) {
   if ($null -eq (Get-Command $fn -ErrorAction SilentlyContinue)) {
     throw "dot-sourced command missing: $fn"
   }
 }
 Write-Output "dot-source commands present"
-# Preserve the connector without running an unresolved hidden-frame oracle.
-# Execute its refusal before any build, settings write or desktop effect.
-$liveOut = (& pwsh -NoProfile -File $Lib -Live 2>&1 | Out-String)
-if ($LASTEXITCODE -eq 0 -or "$liveOut" -notmatch "refuse: world-stress native leg parked") {
-  throw "Live leg pre-effect refusal missing: exit=$LASTEXITCODE out=$liveOut"
+# Preserve strict evidence gates while the pager/world proof gap is unresolved.
+$badOut = (& pwsh -NoProfile -File $Lib -Live 2>&1 | Out-String)
+if ($LASTEXITCODE -eq 0 -or "$badOut" -notmatch "refuse: world-stress native leg parked") {
+  throw "Live pre-effect refusal missing: exit=$LASTEXITCODE out=$badOut"
 }
 Write-Output "live pre-effect refusal present"
+$dGate = $code.IndexOf("DelayMs must be 0..60000")
+$dBuild = $code.IndexOf("cargo build")
+if ($dGate -lt 0 -or $dBuild -lt 0 -or $dGate -gt $dBuild) { throw "range gate not pre-effect" }
+Write-Output "range gate pre-effect"
 Write-Output "WORLD-STRESS-CHECK-OK"

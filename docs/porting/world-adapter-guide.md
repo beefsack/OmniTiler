@@ -26,8 +26,10 @@ live in `crates/tiler-core/src/`; the JSON codec lives in
   explicit observation barriers; report transport overhead separately.
 - Join the host's real membership/view and renderer evidence without inventing
   freshness or silent focus repairs. KDE uses its native Plasma pager, not a
-  replacement OmniTiler pager. The hidden-native-frame discriminator remains
-  undecided; [current status](../changes/platform-neutral-stress-acceptance.md).
+  replacement OmniTiler pager. Tentative (pending user review): hidden native
+  geometry is corroborated against retained raw frame proof, not the logical
+  tile; require exact tile geometry on reveal. Preserve the hidden-write fence.
+  [Current status](../changes/platform-neutral-stress-acceptance.md).
 
 ## 1. One core model and policy
 

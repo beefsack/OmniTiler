@@ -276,6 +276,26 @@ fn should_log_apply(
         > 0
 }
 
+/// Trace-only pager-presentation change oracle for the `world-apply` diag:
+/// true when a freshly incorporated reply's pager renderer content differs
+/// from the previously incorporated reply. The pump renders exactly
+/// `reply.presentation.pager` plus `reply.presentation.foreground`, so only
+/// those two ride the gate: raw source-rect changes inside pager windows,
+/// focus-token changes, and workspace/current marks all compare here, while
+/// border/underlay shapes (never rendered by the pager) stay out. No
+/// previous reply (boot baseline) counts as changed so the first pager
+/// baseline always pairs with its world proof. Pure comparison over already
+/// owned replies: no native reads, no actuation, no policy.
+fn pager_presentation_changed(previous: Option<&WorldReply>, next: &WorldReply) -> bool {
+    match previous {
+        None => true,
+        Some(prev) => {
+            prev.presentation.pager != next.presentation.pager
+                || prev.presentation.foreground != next.presentation.foreground
+        }
+    }
+}
+
 /// Bounded fresh-focus trace row for the `world-apply` diag (TRACE-ONLY).
 /// The token/cursor/settings describe the CURRENT report; the nested
 /// `last_focused_leg` is the core's cached historical leg decision (last
@@ -897,10 +917,11 @@ fn apply_diag_value(
 /// no input-hook cost, no native re-read, no per-window dump. Returns true
 /// when a row was emitted (the caller records the hover triple then, never
 /// on quiet ticks).
-// Sixteen inputs are the disjoint trace context plus the pass products
+// Seventeen inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, cursor-hit/FFC,
-// dispatched-report geometry basis, hover-change); bundling would hide the
-// call-site borrow split the tick relies on.
+// dispatched-report geometry basis, hover-change, fresh-presentation
+// change); bundling would hide the call-site borrow split the tick relies
+// on.
 #[allow(clippy::too_many_arguments)]
 fn log_apply_diag(
     log_path: &std::path::Path,
@@ -919,6 +940,7 @@ fn log_apply_diag(
     ffc_enabled: bool,
     report: &tiler_core::world_report::WorldReport,
     hover_changed: bool,
+    fresh_presentation_changed: bool,
 ) -> bool {
     if !trace
         || !(should_log_apply(
@@ -929,7 +951,8 @@ fn log_apply_diag(
             clear_attempts,
             frame_attempts,
             reply,
-        ) || hover_changed)
+        ) || hover_changed
+            || fresh_presentation_changed)
     {
         return false;
     }
@@ -1444,6 +1467,15 @@ pub(super) fn run_observation_tick(
         &captured.focused_global,
         captured.focus_follows_cursor,
     );
+    // Fresh-presentation pairing (TRACE-ONLY): a freshly incorporated
+    // Accepted reply whose pager renderer content changed since the
+    // previously incorporated reply must emit its bounded world-apply
+    // snapshot even with no writes/hover/settlement, so every pager
+    // revision advance pairs with an accepted world proof. Duplicate
+    // deliveries never incorporate, so they never force; unchanged
+    // presentations stay quiet. Pure comparison over owned replies.
+    let fresh_presentation_changed =
+        delivery != "duplicate" && pager_presentation_changed(world.last_reply(), &reply);
     let emitted = log_apply_diag(
         &log_path,
         trace,
@@ -1467,6 +1499,7 @@ pub(super) fn run_observation_tick(
         captured.focus_follows_cursor,
         &report,
         hover_changed,
+        fresh_presentation_changed,
     );
     // Record the hover triple only for an emitted row, never on quiet
     // ticks, so a changed hover keeps triggering until it is on the trace.
@@ -1945,6 +1978,11 @@ pub(super) fn run_world_command(
         &captured.focused_global,
         captured.focus_follows_cursor,
     );
+    // Same fresh-presentation pairing as the observation path (see above):
+    // command-consumed replies incorporate like accepted ones, so a pager
+    // content change there pairs too; duplicates never force.
+    let fresh_presentation_changed =
+        delivery != "duplicate" && pager_presentation_changed(world.last_reply(), &reply);
     let emitted = log_apply_diag(
         &log_path,
         trace,
@@ -1968,6 +2006,7 @@ pub(super) fn run_world_command(
         captured.focus_follows_cursor,
         &report,
         hover_changed,
+        fresh_presentation_changed,
     );
     if emitted {
         world.note_hover_traced(
@@ -2942,6 +2981,189 @@ mod apply_diag_tests {
             &frame_only,
             &idle_reply,
         ));
+    }
+
+    fn pager_reply_with(foreground: &str, frame: tiler_core::geometry::Rect) -> WorldReply {
+        use tiler_core::world_presentation::{PagerScreen, PagerWindow, PagerWorkspace};
+        let mut reply = reply_shell();
+        reply.presentation.foreground = foreground.to_owned();
+        reply.presentation.pager = vec![PagerScreen {
+            output: "out-a".to_owned(),
+            workspaces: vec![PagerWorkspace {
+                id: "ws-1".to_owned(),
+                ordinal: 1,
+                label: "Workspace 1".to_owned(),
+                current: true,
+                occupied: true,
+                contains_focused: true,
+                windows: vec![PagerWindow {
+                    window: WindowId("w1".to_owned()),
+                    frame,
+                }],
+            }],
+        }];
+        reply
+    }
+
+    #[test]
+    fn pager_presentation_changed_gates_on_pager_content_only() {
+        use tiler_core::geometry::Rect;
+        let base_frame = Rect {
+            x: 0,
+            y: 0,
+            w: 960,
+            h: 540,
+        };
+        let base = pager_reply_with("w1", base_frame);
+        // Boot baseline always pairs: the first pager baseline needs its
+        // world proof even when the first pass carries no other evidence.
+        assert!(pager_presentation_changed(None, &base));
+        // Identical re-presentation stays quiet: no new pager revision, no
+        // forced row, no log-per-wake flood.
+        assert!(!pager_presentation_changed(Some(&base), &base));
+        // Foreground-only change re-logs: the pump marks focus from this
+        // token, so the revision advance needs its world proof.
+        let fg_moved = pager_reply_with("w2", base_frame);
+        assert!(pager_presentation_changed(Some(&base), &fg_moved));
+        // Subquantum raw-source change re-logs: a 1px frame shift that the
+        // miniature projection would round away still changes the exact
+        // content source the pager renders from.
+        let shifted = pager_reply_with(
+            "w1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 961,
+                h: 540,
+            },
+        );
+        assert!(pager_presentation_changed(Some(&base), &shifted));
+        // Border/underlay shapes never ride the pager gate: mutating them
+        // alone must not force a row.
+        let mut bordered = base.clone();
+        bordered.presentation.border.visible = true;
+        assert!(!pager_presentation_changed(Some(&base), &bordered));
+    }
+
+    #[test]
+    fn fresh_presentation_pairs_quiet_accepted_row() {
+        use tiler_core::geometry::Rect;
+        use tiler_core::world_report::FrameAttempt;
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_frames: Vec<FrameAttempt> = Vec::new();
+        let idle = reply_shell();
+        let moved = pager_reply_with(
+            "w1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 961,
+                h: 540,
+            },
+        );
+        let route = fresh_route_value(
+            "",
+            None,
+            "focused-output-last-focused",
+            "cursor-output",
+            (None, None, None, "retained"),
+        );
+        let report = report_shell(vec![]);
+        static PAIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = PAIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-world-pair-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("trace log dir");
+        // A quiet Accepted pass whose pager content changed emits its
+        // bounded world-apply snapshot: the pager revision advance pairs
+        // with an accepted world proof carrying the same revision.
+        let paired_log = dir.join("paired.log");
+        assert!(log_apply_diag(
+            &paired_log,
+            true,
+            41,
+            &moved,
+            "accepted",
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            route.clone(),
+            None,
+            false,
+            &report,
+            false,
+            true,
+        ));
+        let paired_text = std::fs::read_to_string(&paired_log).expect("paired row");
+        let paired: serde_json::Value =
+            serde_json::from_str(paired_text.lines().next().expect("one row")).expect("row parses");
+        assert_eq!(paired["event"], serde_json::json!("world-apply"));
+        assert_eq!(paired["delivery"], serde_json::json!("accepted"));
+        assert_eq!(paired["revision"], serde_json::json!(moved.state_revision));
+        // The identical no-op stays quiet: same presentation, no attempts,
+        // no hover, no settlement forces nothing.
+        let quiet_log = dir.join("quiet.log");
+        assert!(!log_apply_diag(
+            &quiet_log,
+            true,
+            42,
+            &idle,
+            "accepted",
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            route,
+            None,
+            false,
+            &report,
+            false,
+            pager_presentation_changed(Some(&idle), &idle),
+        ));
+        assert!(!quiet_log.exists());
+        // The trace gate still dominates: no row when trace is off, even
+        // with a real presentation change.
+        let dark_log = dir.join("dark.log");
+        assert!(!log_apply_diag(
+            &dark_log,
+            false,
+            43,
+            &moved,
+            "accepted",
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            fresh_route_value(
+                "",
+                None,
+                "focused-output-last-focused",
+                "cursor-output",
+                (None, None, None, "retained"),
+            ),
+            None,
+            false,
+            &report,
+            false,
+            true,
+        ));
+        assert!(!dark_log.exists());
     }
 
     #[test]

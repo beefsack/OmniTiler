@@ -101,10 +101,18 @@ decisions of 2026-09-24 are under
   the native acceptance connector items below. Shared stress definitions and
   three simulated-host schedules pass offline. Windows delay-zero testing found
   and repaired stale hidden-frame facts; hide/reveal now passes that checkpoint.
-  Full acceptance remains blocked on whether hidden native geometry must match
-  logical allocation (existing safety fences forbid hidden writes). Native
-  runner is parked; nonzero delays and trio case remain unrun
+  Hidden-oracle semantics now follow the existing no-hidden-write safety fence
+  (tentative, pending user review). Strict native runs at 0/10/50ms expose a
+  pager/world trace-proof gap; earlier apparent passes were withdrawn. Trio
+  admission-anchor and observation-fence harness defects are repaired offline.
+  Runner remains parked pending exact proof binding; no full native pass
   ([active record](changes/platform-neutral-stress-acceptance.md)).
+- P2 | Windows intermittent incomplete workspace hide | Stress home-away at
+  10ms once left a view transfer pending for 60s with one fixture member still
+  visible; a retry passed under the then-current harness, whose acceptance was
+  later withdrawn for unrelated trace-proof mixing. Preserve native failure
+  evidence, reproduce with the corrected harness, and fix without weakening
+  lifetime/visibility fences ([record](changes/platform-neutral-stress-acceptance.md)).
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every

@@ -56,6 +56,27 @@ if ($scaled['win-b'][0] -ne 0 -or $scaled['win-b'][2] -ne 800) { Fail-Mock "norm
 Expect-Throw { Convert-StressTiles $tiles @(0, 0, 800, 560) @(0, 0, 801, 560) } "integrally" "non-integral-scale"
 Rec-Mock "normalize" @{ rows = 3 }
 
+# Publication timing summary: pure helper over monotonic queue records.
+# Gaps use accepted stamps; only contiguous burst-to-burst gaps join the
+# burst set, focus/checkpoint overhead gaps stay in the full set only.
+$pubRows = @(
+  @{ seq = 1; op = "select-workspace"; start_ms = 1000.0; accepted_ms = 1005.0; burst = $false },
+  @{ seq = 2; op = "send"; start_ms = 1010.0; accepted_ms = 1012.0; burst = $true },
+  @{ seq = 3; op = "select-workspace"; start_ms = 1500.0; accepted_ms = 1503.0; burst = $false }
+)
+$pubSum = Get-StressPubSummary $pubRows 10 4
+if ([int]$pubSum.count -ne 3) { Fail-Mock "pub count" }
+if ([int]$pubSum.added_delay_ms -ne 40) { Fail-Mock "pub added delay" }
+if ([double]$pubSum.span_ms -ne 503.0) { Fail-Mock "pub span" }
+if (([Math]::Abs([double]$pubSum.rate_per_sec - 5.964)) -gt 0.001) { Fail-Mock "pub rate" }
+if (@($pubSum.intervals_ms).Count -ne 2) { Fail-Mock "pub intervals" }
+if (@($pubSum.burst_intervals_ms).Count -ne 1) { Fail-Mock "pub burst filter" }
+if ([double]$pubSum.burst_intervals_ms[0] -ne 7.0) { Fail-Mock "pub burst gap" }
+$emptySum = Get-StressPubSummary @() 0 0
+if ([int]$emptySum.count -ne 0) { Fail-Mock "pub empty" }
+if ($null -ne $emptySum.rate_per_sec) { Fail-Mock "pub empty rate" }
+Rec-Mock "publication-summary" @{ count = 3; burst_gaps = 1 }
+
 function New-GoodRow([string]$Tok, [string]$Out, [string]$Ws, [int]$X, [int]$Y, [int]$W, [int]$H) {
   return @{
     window = $Tok; out = $Out; ws = $Ws
@@ -90,8 +111,8 @@ function New-GoodEvidence {
       }
       ForegroundHwnd = [uint64]111; ManagedHwnds = @{ 'win-a' = [uint64]111; 'win-b' = [uint64]222 }
       Pager = @{ output = 'o1'; revision = 9; dpi = 96; active = 0; cells_total = 2; cells_omitted = 0; cells = @(
-        @{ ord = 1; ws = 'ws-home'; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $true; minis = @($true, $false); minis_total = 2; minis_omitted = 0; focused_total = 1; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }, @{ x = 24; y = 4; w = 20; h = 28 }); mini_windows = @('tok-a', 'tok-b') },
-        @{ ord = 2; ws = 'ws-away'; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_windows = @() }
+        @{ ord = 1; ws = 'ws-home'; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $true; minis = @($true, $false); minis_total = 2; minis_omitted = 0; focused_total = 1; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }, @{ x = 24; y = 4; w = 20; h = 28 }); mini_frames = @(@{ x = 0; y = 0; w = 400; h = 560 }, @{ x = 400; y = 0; w = 400; h = 560 }); mini_windows = @('tok-a', 'tok-b') },
+        @{ ord = 2; ws = 'ws-away'; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() }
       ) }
       PagerOutputsTotal = 1; PagerOutputsOmitted = 0
       Revision = 9
@@ -126,6 +147,7 @@ Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "foreground"
 $bad = New-GoodEvidence
 $bad.Actual.Pager.cells[1].minis = @($false)
 $bad.Actual.Pager.cells[1].mini_rects = @(@{ x = 204; y = 4; w = 20; h = 12 })
+$bad.Actual.Pager.cells[1].mini_frames = @(@{ x = 400; y = 0; w = 400; h = 560 })
 $bad.Actual.Pager.cells[1].mini_windows = @('tok-a')
 $bad.Actual.Pager.cells[1].minis_total = 1
 Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "occupied" "pager-occupied"
@@ -174,6 +196,7 @@ Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "multiset" "
 $bad = New-GoodEvidence
 $bad.Actual.Pager.cells[0].minis = @($true)
 $bad.Actual.Pager.cells[0].mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 })
+$bad.Actual.Pager.cells[0].mini_frames = @(@{ x = 0; y = 0; w = 400; h = 560 })
 $bad.Actual.Pager.cells[0].mini_windows = @('tok-a')
 $bad.Actual.Pager.cells[0].minis_total = 1
 Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "multiset" "pager-mini-omitted-nonfocused"
@@ -190,6 +213,105 @@ $bad = New-GoodEvidence
 $bad.Actual.Pager.cells[0].mini_windows = @('tok-a', 'tok-zzz')
 Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "multiset" "pager-mini-unknown-token"
 
+# Hidden oracle: win-b hides on away while its logical allocation stays full.
+# Native outer stays at the owner raw half (never the logical tile); the
+# pager carries the raw half plus its projected miniature. Desired rows stay
+# exact. No frozen earlier proof: the owner raw at this revision is the
+# fresh hide evidence.
+function New-HiddenEvidence {
+  $desired = @{}
+  $desired['tok-a'] = New-GoodRow 'tok-a' 'o1' 'ws-home' 0 0 800 560
+  $desired['tok-b'] = New-GoodRow 'tok-b' 'o1' 'ws-away' 0 0 800 560
+  $cellHome = @{ x = 0; y = 0; w = 200; h = 40 }
+  $cellAway = @{ x = 200; y = 0; w = 200; h = 40 }
+  $monFull = @(0, 0, 800, 560)
+  $miniShown = Get-StressExpectedMini $cellHome $monFull @(0, 0, 800, 560) 96
+  $miniHidden = Get-StressExpectedMini $cellAway $monFull @(0, 0, 400, 560) 96
+  return @{
+    Expected = @{
+      View = 'home'; Members = @('win-a', 'win-b')
+      Homing = @{ 'win-a' = 'home'; 'win-b' = 'away' }
+      Tiles = @{ 'win-a' = @(0, 0, 800, 560); 'win-b' = @(0, 0, 800, 560) }
+      Foreground = 'win-a'; PagerCurrent = 'home'; PagerOccupied = @('home', 'away')
+    }
+    Actual = @{
+      NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'
+      Ring = @('ws-home', 'ws-away')
+      Tokens = @{ 'win-a' = 'tok-a'; 'win-b' = 'tok-b' }
+      Desired = $desired; DesiredView = 'ws-home'; MonitorFull = $monFull
+      Frames = @{
+        'win-a' = @{ outer = @(0, 0, 800, 560); visible = @(0, 0, 800, 560); flag = $true; alive = $true; ok_outer = $true; ok_visible = $true }
+        'win-b' = @{ outer = @(0, 0, 400, 560); visible = @(0, 0, 400, 560); flag = $false; alive = $true; ok_outer = $true; ok_visible = $true }
+      }
+      ForegroundHwnd = [uint64]111; ManagedHwnds = @{ 'win-a' = [uint64]111; 'win-b' = [uint64]222 }
+      Pager = @{ output = 'o1'; revision = 9; dpi = 96; active = 0; cells_total = 2; cells_omitted = 0; cells = @(
+        @{ ord = 1; ws = 'ws-home'; cur = $true; rect = $cellHome; focused = $true; minis = @($true); minis_total = 1; minis_omitted = 0; focused_total = 1; mini_rects = @(@{ x = $miniShown[0]; y = $miniShown[1]; w = $miniShown[2]; h = $miniShown[3] }); mini_frames = @(@{ x = 0; y = 0; w = 800; h = 560 }); mini_windows = @('tok-a') },
+        @{ ord = 2; ws = 'ws-away'; cur = $false; rect = $cellAway; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = $miniHidden[0]; y = $miniHidden[1]; w = $miniHidden[2]; h = $miniHidden[3] }); mini_frames = @(@{ x = 0; y = 0; w = 400; h = 560 }); mini_windows = @('tok-b') }
+      ) }
+      PagerOutputsTotal = 1; PagerOutputsOmitted = 0
+      Revision = 9
+    }
+  }
+}
+
+$hid = New-HiddenEvidence
+$null = Compare-StressCheckpoint $hid.Expected $hid.Actual
+Rec-Mock "hidden-half-vs-full-accept" @{ ok = $true }
+
+# 1px owner drift inside one miniature quantum still rejects: the shifted
+# raw projects to the identical miniature, proving exactness lives in the
+# raw source, never the lossy projection.
+$bad = New-HiddenEvidence
+$shiftedMini = Get-StressExpectedMini @{ x = 200; y = 0; w = 200; h = 40 } @(0, 0, 800, 560) @(1, 0, 400, 560) 96
+$hidMini = @($bad.Actual.Pager.cells[1].mini_rects[0].x, $bad.Actual.Pager.cells[1].mini_rects[0].y, $bad.Actual.Pager.cells[1].mini_rects[0].w, $bad.Actual.Pager.cells[1].mini_rects[0].h)
+if (($shiftedMini -join ",") -ne ($hidMini -join ",")) { Fail-Mock "1px fixture not sub-quantum" }
+$bad.Actual.Pager.cells[1].mini_frames[0] = @{ x = 1; y = 0; w = 400; h = 560 }
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "pager raw" "hidden-subquantum-raw-reject"
+
+$bad = New-HiddenEvidence
+$bad.Actual.Pager.cells[1].mini_windows = @('tok-zzz')
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "unknown pager raw frame" "hidden-wrong-token"
+
+$bad = New-HiddenEvidence
+$bad.Actual.Frames['win-b'].flag = $true
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "visible while hidden" "hidden-visible-reject"
+
+$bad = New-HiddenEvidence
+$bad.Actual.Pager.cells[1].mini_windows = @()
+$bad.Actual.Pager.cells[1].mini_rects = @()
+$bad.Actual.Pager.cells[1].mini_frames = @()
+$bad.Actual.Pager.cells[1].minis = @()
+$bad.Actual.Pager.cells[1].minis_total = 0
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "unknown pager raw frame" "hidden-unknown-proof"
+
+$bad = New-HiddenEvidence
+$bad.Actual.Pager.cells[1].mini_frames = @()
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "parallel arrays" "hidden-missing-raw-frame"
+
+$bad = New-HiddenEvidence
+$bad.Actual.Frames['win-a'].outer = @(0, 0, 400, 560)
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "outer" "reveal-stale-geometry"
+
+$bad = New-HiddenEvidence
+$fromTile = Get-StressExpectedMini @{ x = 200; y = 0; w = 200; h = 40 } @(0, 0, 800, 560) @(0, 0, 800, 560) 96
+$bad.Actual.Pager.cells[1].mini_rects[0] = @{ x = $fromTile[0]; y = $fromTile[1]; w = $fromTile[2]; h = $fromTile[3] }
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "miniature layout wrong" "pager-hidden-tile-assumption"
+
+# Stale owner payload (older revision) with a mismatching raw retries for
+# the late payload instead of failing closed; the same mismatch at the
+# checkpoint revision fails closed.
+$bad = New-HiddenEvidence
+$bad.Actual.Pager.revision = 8
+$bad.Actual.Pager.cells[1].mini_frames[0] = @{ x = 1; y = 0; w = 400; h = 560 }
+if (-not (Test-StressTransientMismatch "pager hidden win-b raw revision 8 older than checkpoint 9")) { Fail-Mock "stale raw not transient" }
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "older than checkpoint" "hidden-stale-raw-retries"
+$bad.Actual.Pager.revision = 9
+Expect-Throw { Compare-StressCheckpoint $bad.Expected $bad.Actual } "pager raw" "hidden-current-raw-fail-closed"
+
+if (Test-StressTransientMismatch "win-b visible while hidden") { Fail-Mock "hidden-visible retried" }
+if (-not (Test-StressTransientMismatch "win-a outer [0,0,400,560] != tile [0,0,800,560]")) { Fail-Mock "reveal stale not retried" }
+Rec-Mock "hidden-classifier" @{ fatal_hidden_visible = $true; transient_reveal = $true; transient_stale_raw = $true }
+
 $rebind = New-GoodEvidence
 $rebind.Actual.Ring = @('ws-home', 'ws-new-away')
 $rebind.Actual.AwayId = 'ws-new-away'
@@ -199,7 +321,7 @@ Rec-Mock "alias-rebind-accept" @{ away = 'ws-new-away' }
 
 $trailing = New-GoodEvidence
 $trailing.Actual.Ring = @('ws-home', 'ws-away', 'ws-spare')
-$trailing.Actual.Pager.cells += @(@{ ord = 3; ws = 'ws-spare'; cur = $false; rect = @{ x = 400; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_windows = @() })
+$trailing.Actual.Pager.cells += @(@{ ord = 3; ws = 'ws-spare'; cur = $false; rect = @{ x = 400; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() })
 $trailing.Actual.Pager.cells_total = 3
 $null = Compare-StressCheckpoint $trailing.Expected $trailing.Actual
 Rec-Mock "trailing-spare-accept" @{ cells = 3 }
@@ -375,8 +497,8 @@ function New-PagerLine([int]$Rev) {
   return @{
     event = "pager-cells"; tick = 12; observation = 9; revision = $Rev
     outputs = @(@{ output = "o1"; dpi = 96; cells = @(
-      @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $true; minis = @($true); minis_total = 1; minis_omitted = 0; focused_total = 1; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }); mini_windows = @('tok-a') },
-      @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_windows = @() }
+      @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $true; minis = @($true); minis_total = 1; minis_omitted = 0; focused_total = 1; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }); mini_frames = @(@{ x = 0; y = 0; w = 400; h = 560 }); mini_windows = @('tok-a') },
+      @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() }
     ); cells_total = 2; cells_omitted = 0; active = 0 })
     outputs_total = 1; outputs_omitted = 0
   }
@@ -464,8 +586,8 @@ function New-LoopPager([int]$Rev) {
   return @{
     event = "pager-cells"; tick = 6; observation = 6; revision = $Rev
     outputs = @(@{ output = "o1"; dpi = 96; cells = @(
-      @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }); mini_windows = @('tok-a') },
-      @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_windows = @() }
+      @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }); mini_frames = @(@{ x = 0; y = 0; w = 400; h = 560 }); mini_windows = @('tok-a') },
+      @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() }
     ); cells_total = 2; cells_omitted = 0; active = 0 })
     outputs_total = 1; outputs_omitted = 0
   }
@@ -559,11 +681,11 @@ function New-RingApply([int]$Tick, [int]$Rev) {
 }
 function New-RingPager([int]$Rev, [switch]$Spare) {
   $cells = @(
-    @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }); mini_windows = @('tok-a') },
-    @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_windows = @() }
+    @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 200; h = 40 }; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = 4; y = 4; w = 20; h = 28 }); mini_frames = @(@{ x = 0; y = 0; w = 400; h = 560 }); mini_windows = @('tok-a') },
+    @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 200; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() }
   )
   if ($Spare) {
-    $cells += @(@{ ord = 3; ws = "ws-spare"; cur = $false; rect = @{ x = 400; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_windows = @() })
+    $cells += @(@{ ord = 3; ws = "ws-spare"; cur = $false; rect = @{ x = 400; y = 0; w = 200; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() })
   }
   return @{
     event = "pager-cells"; tick = 6; observation = 6; revision = $Rev
@@ -576,7 +698,7 @@ $script:RGWriterCalls = 0
 $rgWriter = {
   param($i)
   $script:RGWriterCalls++
-  if ([int]$i -eq 2) {
+  if ([int]$i -eq 1) {
     ((New-RingApply 9 9) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $rgLog -Encoding utf8
     ((New-RingPager 9 -Spare) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $rgLog -Encoding utf8
   }
@@ -625,8 +747,8 @@ $dfFresh = (New-FenceApply 25 31 800 | ConvertTo-Json -Depth 8 -Compress)
 $dfPager = (@{
   event = "pager-cells"; tick = 25; observation = 25; revision = 31
   outputs = @(@{ output = "o1"; dpi = 96; cells = @(
-    @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 400; h = 40 }; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = 4; y = 4; w = 40; h = 28 }); mini_windows = @('tok-a') },
-    @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 400; y = 0; w = 400; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_windows = @() }
+    @{ ord = 1; ws = "ws-home"; cur = $true; rect = @{ x = 0; y = 0; w = 400; h = 40 }; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = 4; y = 4; w = 40; h = 28 }); mini_frames = @(@{ x = 0; y = 0; w = 800; h = 560 }); mini_windows = @('tok-a') },
+    @{ ord = 2; ws = "ws-away"; cur = $false; rect = @{ x = 400; y = 0; w = 400; h = 40 }; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() }
   ); cells_total = 2; cells_omitted = 0; active = 0 })
   outputs_total = 1; outputs_omitted = 0
 } | ConvertTo-Json -Depth 8 -Compress)
@@ -684,16 +806,21 @@ foreach ($fatal in @(
   "checkpoint-t1 no view row for o1",
   "pager mini token tok-a unknown at cell 0",
   "foreground pid mismatch",
-  "owner not ready at checkpoint t1"
+  "owner not ready at checkpoint t1",
+  "win-a visible while hidden",
+  "win-b unknown pager raw frame",
+  "win-b hidden outer [0,0,800,560] != pager raw [0,0,400,560]",
+  "pager hidden win-b mini_frames missing",
+  "pager mini parallel arrays mismatch at cell 1",
+  "checkpoint hid-loop-t1: win-b hide epoch drift [0,0,800,560] != [0,0,400,560]"
 )) {
   if (Test-StressTransientMismatch $fatal) { Fail-Mock "fatal retried: $fatal" }
 }
-Rec-Mock "classifier-fatal-fail-closed" @{ rows = 17 }
+Rec-Mock "classifier-fatal-fail-closed" @{ rows = 26 }
 foreach ($lag in @(
   "win-a outer [10,0,410,560] != tile [0,0,400,560]",
   "win-a visible [10,0,410,560] != outer [0,0,400,560]",
   "win-a not visible while shown",
-  "win-a visible while hidden",
   "foreground 111 != 222",
   "foreground 111 is managed while null expected",
   "pager t1 join timeout at or before revision 7",
@@ -712,7 +839,7 @@ foreach ($lag in @(
 )) {
   if (-not (Test-StressTransientMismatch $lag)) { Fail-Mock "lag not retried: $lag" }
 }
-Rec-Mock "classifier-lag-retries" @{ rows = 19 }
+Rec-Mock "classifier-lag-retries" @{ rows = 18 }
 
 # Drain consumes its own bound with no retry: an empty log and a pending
 # item fail fast instead of looping to an outer deadline.
@@ -753,6 +880,83 @@ Write-MockLog @((@{ event = "member-admitted"; window = "tok-y"; hwnd = 778; pid
 Expect-Throw { Wait-StressAdmitted $logPath @{} ([uint64]778) @{ pid = 4242; creation = "aaaabbbbccccdddd" } 2 "admit-pid" } "pid mismatch" "admission-pid-refused"
 Write-MockLog @((@{ event = "member-admitted"; window = "tok-z"; hwnd = 779; pid = 4242; creation = "ffffffffffffffff" } | ConvertTo-Json -Compress))
 Expect-Throw { Wait-StressAdmitted $logPath @{} ([uint64]779) @{ pid = 4242; creation = "aaaabbbbccccdddd" } 2 "admit-creation" } "creation mismatch" "admission-creation-refused"
+
+# Action-causal admission fence through the actual checkpoint barrier: a
+# settled pre-admit row at tick 2 missing the new token, then the real
+# member-admitted event at tick 6 for the exact HWND/PID/creation+token,
+# then the accepted full roster at tick 7. The checkpoint must settle on
+# tick 7, never the stale tick-2 row. No per-command convergence; the
+# explicit admission observation fences with no change to the oracle.
+$admRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-adm-" + $PID)
+New-Item -ItemType Directory -Force -Path $admRoot | Out-Null
+$admLog = Join-Path $admRoot "owner.log"
+$admPre = New-LoopApply 2 2
+$admPre.desired_windows = @()
+$admAdmit = @{ event = "member-admitted"; tick = 6; window = "tok-a"; hwnd = 111; pid = 4242; creation = "loopcreation" }
+$admFull = New-LoopApply 7 7
+$admPager = New-LoopPager 7
+@((($admPre) | ConvertTo-Json -Depth 8 -Compress), (($admAdmit) | ConvertTo-Json -Compress), (($admFull) | ConvertTo-Json -Depth 8 -Compress), (($admPager) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $admLog -Encoding utf8
+$admFence = @{ LastAdmitTick = 0; LastAdmitIndex = -1 }
+$admTokOf = @{}
+$admTok = Wait-StressAdmitted $admLog $admTokOf ([uint64]111) @{ pid = 4242; creation = "loopcreation" } 5 "admit-fence" $admFence
+if ("$admTok" -ne "tok-a") { Fail-Mock "admission fence token wrong" }
+if ([int]$admFence.LastAdmitTick -ne 6) { Fail-Mock "admission fence tick not recorded" }
+if ([int]$admFence.LastAdmitIndex -lt 0) { Fail-Mock "admission fence index not recorded" }
+Rec-Mock "admission-fence-recorded" @{ tick = 6 }
+$badFence = @{ LastAdmitTick = 0; LastAdmitIndex = -1 }
+Write-MockLog @((@{ event = "member-admitted"; window = "tok-w"; hwnd = 778; pid = 9999; creation = "loopcreation" } | ConvertTo-Json -Compress))
+Expect-Throw { Wait-StressAdmitted $logPath @{} ([uint64]778) @{ pid = 4242; creation = "loopcreation" } 2 "admit-bad-pid" $badFence } "pid mismatch" "admission-fence-pid-refused"
+if ([int]$badFence.LastAdmitTick -ne 0) { Fail-Mock "wrong admission fenced" }
+Write-MockLog @((@{ event = "member-admitted"; window = "tok-v"; hwnd = 779; pid = 4242; creation = "ffffffffffffffff" } | ConvertTo-Json -Compress))
+Expect-Throw { Wait-StressAdmitted $logPath @{} ([uint64]779) @{ pid = 4242; creation = "loopcreation" } 2 "admit-bad-creation" $badFence } "creation mismatch" "admission-fence-creation-refused"
+if ([int]$badFence.LastAdmitTick -ne 0) { Fail-Mock "wrong creation fenced" }
+Rec-Mock "admission-fence-refusal" @{ ok = $true }
+$admTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 2; Revision = 2; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  LastDispatchTick = 0; LastAdmitTick = 6; LastAdmitIndex = 1; HideEpoch = @{}
+}
+$admMark = 0
+$admPagerMark = 0
+Invoke-StressCheckpoint $loopAction $null @(0, 0, 800, 560) $admTopo $loopTok $loopHwnd $loopFix ([ref]$admMark) ([ref]$admPagerMark) $admLog "dummy-owner" $null 30
+if ([int]$admTopo.LastTick -ne 7) { Fail-Mock "admission fence not settled at tick 7" }
+if ([int]$admTopo.Revision -ne 7) { Fail-Mock "admission fence revision not 7" }
+Rec-Mock "checkpoint-admission-fence-settled" @{ tick = 7 }
+@((($admPre) | ConvertTo-Json -Depth 8 -Compress), (($admAdmit) | ConvertTo-Json -Compress)) | Set-Content -LiteralPath $admLog -Encoding utf8
+$admTopo2 = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 2; Revision = 2; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  LastDispatchTick = 0; LastAdmitTick = 6; LastAdmitIndex = 1; HideEpoch = @{}
+}
+$admMark2 = 0
+$admPagerMark2 = 0
+Expect-Throw { Invoke-StressCheckpoint $loopAction $null @(0, 0, 800, 560) $admTopo2 $loopTok $loopHwnd $loopFix ([ref]$admMark2) ([ref]$admPagerMark2) $admLog "dummy-owner" $null 5 } "settlement timeout" "admission-fence-no-stale"
+Rec-Mock "checkpoint-admission-fence-no-stale" @{ ok = $true }
+$admBootPre = New-LoopApply 2 2
+$admBootPre.desired_windows = @()
+$admBootFull = New-LoopApply 7 7
+$admBootPager = New-LoopPager 7
+@((($admBootPre) | ConvertTo-Json -Depth 8 -Compress), (($admBootFull) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $admLog -Encoding utf8
+$admBootMark = 0
+$admBootCase = @{ screens = @(@{}) }
+$admBootTok = @{ "win-a" = "tok-a" }
+$admBootTopo = Initialize-StressTopology $admLog ([ref]$admBootMark) $admBootCase $admBootTok @("win-a") @(0, 0, 800, 560) 6
+if ([int]$admBootTopo.LastTick -ne 7) { Fail-Mock "bootstrap fence not settled at tick 7" }
+if ([int]$admBootTopo.LastAdmitTick -ne 6) { Fail-Mock "bootstrap fence tick not kept" }
+Rec-Mock "topology-admission-fence-settled" @{ tick = 7 }
+@((($admBootPre) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $admLog -Encoding utf8
+$admBootMark3 = 0
+Expect-Throw { Initialize-StressTopology $admLog ([ref]$admBootMark3) $admBootCase $admBootTok @("win-a") @(0, 0, 800, 560) 6 } "settlement timeout" "topology-fence-no-preroster"
+Rec-Mock "topology-fence-no-preroster" @{ ok = $true }
+$badMap = New-GoodEvidence
+$badMap.Actual.Tokens.Remove('win-b')
+Expect-Throw { Compare-StressCheckpoint $badMap.Expected $badMap.Actual } "null token" "incomplete-mapping-refused"
+Rec-Mock "incomplete-mapping-refused" @{ ok = $true }
+Remove-Item -LiteralPath $admRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # Ordered burst join: two queued commands match in queue order from the
 # checkpoint-start cursor with no per-command wait. A refused outcome fails
@@ -943,6 +1147,7 @@ $script:MockMissingPid = 299999999
 try { $null = Microsoft.PowerShell.Management\Get-Process -Id $script:MockMissingPid -ErrorAction Stop; Fail-Mock "missing pid present" } catch {}
 $script:MockMissingPid2 = 299999998
 try { $null = Microsoft.PowerShell.Management\Get-Process -Id $script:MockMissingPid2 -ErrorAction Stop; Fail-Mock "missing pid2 present" } catch {}
+$script:MockReadyFalseRemaining = 0
 
 function Invoke-LiveNative([string]$Exe, [string[]]$CliArgs) {
   $null = $script:MockCalls.Add(@{ api = "native"; argv = @($CliArgs) })
@@ -967,6 +1172,10 @@ function Invoke-LiveNative([string]$Exe, [string[]]$CliArgs) {
     return '{"restored":true}'
   }
   if ($op -eq "ready") {
+    if ($script:MockReadyFalseRemaining -gt 0) {
+      $script:MockReadyFalseRemaining--
+      return '{"ready":false}'
+    }
     if ($script:MockReadyMode -eq "ready") { return '{"ready":true}' }
     return '{"ready":false}'
   }
@@ -1063,6 +1272,22 @@ $script:MockNativeThrow = @{}
 $script:MockIdentityLedgerDir = $null
 Remove-Item -LiteralPath $setD1.dir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $ledD1 -Recurse -Force -ErrorAction SilentlyContinue
+
+# Checkpoint ready probe waits out transient claim lag (burst publication
+# without per-command dispatch waits), then fails closed at the deadline; a
+# refused reply throws immediately, never as "not ready".
+$script:MockReadyMode = "ready"
+$script:MockReadyFalseRemaining = 2
+$null = Wait-StressReady "dummy-owner" "probe-flake" 10
+Rec-Mock "ready-transient-pass" @{ flakes = 2 }
+$script:MockReadyMode = "not-ready"
+Expect-Throw { Wait-StressReady "dummy-owner" "probe-dead" 2 } "owner not ready at checkpoint probe-dead" "ready-deadline-fail-closed"
+Rec-Mock "ready-deadline" @{ ok = $true }
+$script:MockNativeThrow = @{ ready = $true }
+Expect-Throw { Wait-StressReady "dummy-owner" "probe-refused" 5 } "simulated failure" "ready-refusal-fast"
+$script:MockNativeThrow = @{}
+Rec-Mock "ready-refusal" @{ ok = $true }
+$script:MockReadyMode = "not-ready"
 
 # Fresh fixture-process lifetime: the PID must exist with the bound creation
 # stamp. A reused PID (same number, new creation) or a gone PID fails
@@ -1232,6 +1457,440 @@ Expect-Throw { Invoke-StressCleanup $ctxH2 "mock-malformed-ledger" | Out-Null } 
 if ((Mock-NativeCalls "stop").Count -ne 0) { Fail-Mock "malformed ledger stopped owner" }
 Rec-Mock "cleanup-malformed-ledger" @{ stop = 0 }
 Remove-Item -LiteralPath $ledH2 -Recurse -Force -ErrorAction SilentlyContinue
+
+# Hidden epoch through the actual barrier: win-a shown full, win-b hidden
+# with owner raw half. The owner raw at the checkpoint revision is the fresh
+# hide evidence (never a frozen earlier proof): a shown resize to full
+# followed by hide before the next checkpoint accepts, records the epoch,
+# and enforces stability inside the same epoch afterwards.
+$hidRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidloop-" + $PID)
+New-Item -ItemType Directory -Force -Path $hidRoot | Out-Null
+$hidLog = Join-Path $hidRoot "owner.log"
+function New-HiddenLoopApply([int]$Tick, [int]$Rev) {
+  $base = New-CleanApply $Tick $Rev "accepted"
+  $base.desired_windows = @(
+    @{ window = "tok-a"; out = "o1"; ws = "ws-home"
+       allocation = @{ x = 0; y = 0; w = 800; h = 560 }
+       effective_frame = @{ x = 0; y = 0; w = 800; h = 560 }
+       frame_authority = "controlled"; membership_authority = "controlled"
+       frame_hold = $null; membership_hold = $null
+       floating = $false; float_origin = $null
+       frame_op = ""; clear_op = "" },
+    @{ window = "tok-b"; out = "o1"; ws = "ws-away"
+       allocation = @{ x = 0; y = 0; w = 800; h = 560 }
+       effective_frame = @{ x = 0; y = 0; w = 800; h = 560 }
+       frame_authority = "controlled"; membership_authority = "controlled"
+       frame_hold = $null; membership_hold = $null
+       floating = $false; float_origin = $null
+       frame_op = ""; clear_op = "" }
+  )
+  $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
+  $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  return $base
+}
+function New-HiddenLoopPager([int]$Rev, [int]$RawW) {
+  $cellHome = @{ x = 0; y = 0; w = 200; h = 40 }
+  $cellAway = @{ x = 200; y = 0; w = 200; h = 40 }
+  $mShown = Get-StressExpectedMini $cellHome @(0, 0, 800, 560) @(0, 0, 800, 560) 96
+  $mHid = Get-StressExpectedMini $cellAway @(0, 0, 800, 560) @(0, 0, $RawW, 560) 96
+  return @{
+    event = "pager-cells"; tick = 6; observation = 6; revision = $Rev
+    outputs = @(@{ output = "o1"; dpi = 96; cells = @(
+      @{ ord = 1; ws = "ws-home"; cur = $true; rect = $cellHome; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = $mShown[0]; y = $mShown[1]; w = $mShown[2]; h = $mShown[3] }); mini_frames = @(@{ x = 0; y = 0; w = 800; h = 560 }); mini_windows = @('tok-a') },
+      @{ ord = 2; ws = "ws-away"; cur = $false; rect = $cellAway; focused = $false; minis = @($false); minis_total = 1; minis_omitted = 0; focused_total = 0; mini_rects = @(@{ x = $mHid[0]; y = $mHid[1]; w = $mHid[2]; h = $mHid[3] }); mini_frames = @(@{ x = 0; y = 0; w = $RawW; h = 560 }); mini_windows = @('tok-b') }
+    ); cells_total = 2; cells_omitted = 0; active = 0 })
+    outputs_total = 1; outputs_omitted = 0
+  }
+}
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 7 800) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $hidLog -Encoding utf8
+function Get-StressTitles { return @(@{ hwnd = [uint64]111; title = "OmniTilerTestWindow:win-a:runx" }, @{ hwnd = [uint64]222; title = "OmniTilerTestWindow:win-b:runx" }) }
+$script:HidNativeB = @(0, 0, 800, 560)
+function Read-LivePaired([uint64]$H) {
+  if ([uint64]$H -eq [uint64]111) {
+    return @{ outer = @(0, 0, 800, 560); visible = @(0, 0, 800, 560); ok_outer = $true; ok_visible = $true; alive = $true; visible_flag = $true }
+  }
+  if ([uint64]$H -eq [uint64]222) {
+    return @{ outer = @($script:HidNativeB); visible = @($script:HidNativeB); ok_outer = $true; ok_visible = $true; alive = $true; visible_flag = $false }
+  }
+  throw "unexpected hwnd $H in hidden loop"
+}
+function Test-StressHwndOwner([uint64]$Hwnd, $FixtureState, [string]$Tag) { return $true }
+$script:MockReadyMode = "ready"
+$hidTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$hidAction = [pscustomobject]@{
+  op = "checkpoint"; name = "hid-loop-t1"; view = "home"; members = @("win-a", "win-b")
+  homing = [pscustomobject]@{ "win-a" = "home"; "win-b" = "away" }
+  tiles = [pscustomobject]@{ "win-a" = @(0, 0, 800, 560); "win-b" = @(0, 0, 800, 560) }
+  foreground = $null; pager_current = "home"; pager_occupied = @("home", "away")
+}
+$hidTok = @{ "win-a" = "tok-a"; "win-b" = "tok-b" }
+$hidHwnd = @{ "win-a" = [uint64]111; "win-b" = [uint64]222 }
+$hidFix = @{ pid = 4242; creation = "hidcreation" }
+$hidMark = 0
+$hidPagerMark = 0
+# Regression: shown resize to full followed by hide before the next
+# checkpoint accepts the owner raw full (no frozen earlier half proof).
+Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $hidTopo $hidTok $hidHwnd $hidFix ([ref]$hidMark) ([ref]$hidPagerMark) $hidLog "dummy-owner" $null 30
+if ($null -eq $hidTopo.HideEpoch['win-b']) { Fail-Mock "hidden loop did not record epoch" }
+if (($hidTopo.HideEpoch['win-b'].rect -join ",") -ne "0,0,800,560") { Fail-Mock "hidden epoch wrong frame" }
+Rec-Mock "checkpoint-hidden-resize-hide-accept" @{ epoch = "0,0,800,560" }
+# Same hidden epoch drift (native moves 1px, owner raw steady) fails closed
+# with no retry: the epoch, not a frozen earlier checkpoint, is the proof.
+$script:HidNativeB = @(0, 0, 801, 560)
+@(((New-HiddenLoopApply 8 8) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress)) | Add-Content -LiteralPath $hidLog -Encoding utf8
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $hidTopo $hidTok $hidHwnd $hidFix ([ref]$hidMark) ([ref]$hidPagerMark) $hidLog "dummy-owner" $null 10 } "hide epoch drift" "hidden-loop-epoch-drift-fail-closed"
+Rec-Mock "checkpoint-hidden-epoch-drift" @{ ok = $true }
+$script:HidNativeB = @(0, 0, 800, 560)
+# Owner-side 1px drift inside one miniature quantum fails closed: the mini
+# still matches, so only the exact raw comparison catches it.
+@(((New-HiddenLoopApply 8 8) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 8 801) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $hidLog -Encoding utf8
+$hidMark3 = 0
+$hidPagerMark3 = 0
+$hidTopo3 = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $hidTopo3 $hidTok $hidHwnd $hidFix ([ref]$hidMark3) ([ref]$hidPagerMark3) $hidLog "dummy-owner" $null 10 } "pager raw" "hidden-loop-owner-drift-fail-closed"
+Rec-Mock "checkpoint-hidden-owner-drift" @{ ok = $true }
+# Missing owner proof (no payload at all) fails closed, never accepted on
+# native self-agreement.
+$emptyRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidempty-" + $PID)
+New-Item -ItemType Directory -Force -Path $emptyRoot | Out-Null
+$emptyLog = Join-Path $emptyRoot "owner.log"
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $emptyLog -Encoding utf8
+$hidMark4 = 0
+$hidPagerMark4 = 0
+$hidTopo4 = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $hidTopo4 $hidTok $hidHwnd $hidFix ([ref]$hidMark4) ([ref]$hidPagerMark4) $emptyLog "dummy-owner" $null 5 } "join timeout" "hidden-loop-missing-proof"
+Rec-Mock "checkpoint-hidden-missing-proof" @{ ok = $true }
+Remove-Item -LiteralPath $emptyRoot -Recurse -Force -ErrorAction SilentlyContinue
+# Close/re-admit under a new token rebinds without the old epoch: the old
+# proof never constrains the new lifetime.
+$rebindRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidrebind-" + $PID)
+New-Item -ItemType Directory -Force -Path $rebindRoot | Out-Null
+$rebindLog = Join-Path $rebindRoot "owner.log"
+@(((New-HiddenLoopApply 9 9) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 9 800) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $rebindLog -Encoding utf8
+$hidMark5 = 0
+$hidPagerMark5 = 0
+$hidTopo5 = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{ 'win-b' = @{ rect = @(0, 0, 100, 100); token = 'tok-old'; creation = 'hidcreation' } }
+}
+$script:HidNativeB = @(0, 0, 800, 560)
+Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $hidTopo5 $hidTok $hidHwnd $hidFix ([ref]$hidMark5) ([ref]$hidPagerMark5) $rebindLog "dummy-owner" $null 30
+if ("$($hidTopo5.HideEpoch['win-b'].token)" -ne "tok-b") { Fail-Mock "re-admit did not rebind epoch" }
+if (($hidTopo5.HideEpoch['win-b'].rect -join ",") -ne "0,0,800,560") { Fail-Mock "re-admit epoch not fresh proof" }
+Rec-Mock "checkpoint-hidden-readmit-rebind" @{ token = "tok-b" }
+Remove-Item -LiteralPath $rebindRoot -Recurse -Force -ErrorAction SilentlyContinue
+$script:MockReadyMode = "not-ready"
+Remove-Item -LiteralPath $hidRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+# Stale retained pager under a pinned apply (observed live: change-gated
+# pager emits nothing for an identical-content revision, so the checkpoint
+# pins apply rev 7 with retained pager rev 6 while a newer settled apply is
+# still arriving). The probe finds the newer row on its next pass, drops
+# the pin and re-settles: the hook appends the rev-8 apply plus its payload
+# at iteration 2, and the checkpoint must pass on rev 8, never spinning
+# under the same revision cap and never mixing the newer payload with the
+# older pinned world. Without the probe this burns the deadline.
+$staleRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidstale-" + $PID)
+New-Item -ItemType Directory -Force -Path $staleRoot | Out-Null
+$staleLog = Join-Path $staleRoot "owner.log"
+$script:MockReadyMode = "ready"
+$script:HidNativeB = @(0, 0, 800, 560)
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 6 400) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $staleLog -Encoding utf8
+$script:StaleWriterCalls = 0
+$staleWriter = {
+  param($i)
+  $script:StaleWriterCalls++
+  if ([int]$i -eq 2) {
+    ((New-HiddenLoopApply 8 8) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $staleLog -Encoding utf8
+    ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $staleLog -Encoding utf8
+  }
+}
+$staleTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$staleMark = 0
+$stalePagerMark = 0
+Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $staleTopo $hidTok $hidHwnd $hidFix ([ref]$staleMark) ([ref]$stalePagerMark) $staleLog "dummy-owner" $staleWriter 30
+if ([int]$staleTopo.Revision -ne 8) { Fail-Mock "stale pager not re-settled to revision 8" }
+if ([int]$staleTopo.PagerRetained.entry.revision -ne 8) { Fail-Mock "stale pager not retained at 8" }
+if ([int]$script:StaleWriterCalls -lt 2) { Fail-Mock "stale pager passed without retry" }
+Rec-Mock "checkpoint-hidden-stale-resettled" @{ revision = 8 }
+Remove-Item -LiteralPath $staleRoot -Recurse -Force -ErrorAction SilentlyContinue
+$script:MockReadyMode = "not-ready"
+
+# Stale-pager family unit gates: every pager-lag transient routes to the
+# probe-or-keep decision, while native/identity/freshness bounds never do.
+foreach ($row in @(
+    "pager cells 2 != ring 3",
+    "pager hidden win-b raw revision 18 older than checkpoint 19",
+    "pager active 1 != 0",
+    "pager current mark wrong at cell 0",
+    "pager occupied mark wrong at cell 1",
+    "pager focus mark wrong at cell 0",
+    "pager focused mark mismatch at cell 0",
+    "pager focused while null foreground expected",
+    "pager miniature layout wrong at cell 0 mini 0 (win-a)",
+    "pager mini token multiset wrong at cell home",
+    "pager mini focus identity wrong at cell 0 mini 0",
+    "pager mini token missing at cell 0 mini 0",
+    "pager mini rect missing at cell 0 mini 0"
+  )) {
+  if (-not (Test-StressStalePager $row)) { Fail-Mock "stale family missed: $row" }
+}
+foreach ($row in @(
+    "pager revision 8 newer than checkpoint 7",
+    "pager retained revision newer than checkpoint",
+    "owner not ready at checkpoint t1",
+    "win-a outer [0,0,400,560] != tile [0,0,800,560]",
+    "foreground 111 != 222",
+    "checkpoint t1 not settled: pager t1 join timeout at or before revision 9"
+  )) {
+  if (Test-StressStalePager $row) { Fail-Mock "stale family overmatched: $row" }
+}
+Rec-Mock "stale-family" @{ members = 13; exclusions = 6 }
+
+# Pager-only emission is rejected (no corresponding settled apply exists:
+# the hook appends only the rev-8 payload, so the cap excludes it forever
+# and the pin can never advance). Mixing that newer payload with the older
+# pinned world is unsound: the checkpoint must fail at its bounded deadline
+# instead of passing on the unproven mix.
+$staleOnlyRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidstaleonly-" + $PID)
+New-Item -ItemType Directory -Force -Path $staleOnlyRoot | Out-Null
+$staleOnlyLog = Join-Path $staleOnlyRoot "owner.log"
+$script:MockReadyMode = "ready"
+$script:HidNativeB = @(0, 0, 800, 560)
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 6 400) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $staleOnlyLog -Encoding utf8
+$script:StaleOnlyWriterCalls = 0
+$staleOnlyWriter = {
+  param($i)
+  $script:StaleOnlyWriterCalls++
+  if ([int]$i -eq 2) {
+    ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $staleOnlyLog -Encoding utf8
+  }
+}
+$staleOnlyTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$staleOnlyMark = 0
+$staleOnlyPagerMark = 0
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $staleOnlyTopo $hidTok $hidHwnd $hidFix ([ref]$staleOnlyMark) ([ref]$staleOnlyPagerMark) $staleOnlyLog "dummy-owner" $staleOnlyWriter 6 } "not settled" "pager-only-rejected"
+Rec-Mock "checkpoint-hidden-pageronly-rejected" @{ ok = $true }
+Remove-Item -LiteralPath $staleOnlyRoot -Recurse -Force -ErrorAction SilentlyContinue
+$script:MockReadyMode = "not-ready"
+
+# Newer corrupt apply fails fast (the probe surfaces it instead of
+# re-settling onto corruption): the hook appends a corrupt rev-8 apply
+# whose omission fault must throw, never pass and never spin.
+$staleCorruptRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidstalecorrupt-" + $PID)
+New-Item -ItemType Directory -Force -Path $staleCorruptRoot | Out-Null
+$staleCorruptLog = Join-Path $staleCorruptRoot "owner.log"
+$script:MockReadyMode = "ready"
+$script:HidNativeB = @(0, 0, 800, 560)
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 6 400) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $staleCorruptLog -Encoding utf8
+$corruptApply8 = New-HiddenLoopApply 8 8
+$corruptApply8.desired_windows_omitted = 99
+$script:StaleCorruptWriterCalls = 0
+$staleCorruptWriter = {
+  param($i)
+  $script:StaleCorruptWriterCalls++
+  if ([int]$i -eq 2) {
+    (($corruptApply8) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $staleCorruptLog -Encoding utf8
+    ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $staleCorruptLog -Encoding utf8
+  }
+}
+$staleCorruptTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$staleCorruptMark = 0
+$staleCorruptPagerMark = 0
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $staleCorruptTopo $hidTok $hidHwnd $hidFix ([ref]$staleCorruptMark) ([ref]$staleCorruptPagerMark) $staleCorruptLog "dummy-owner" $staleCorruptWriter 30 } "omitted desired_windows_omitted" "corrupt-newer-fail-fast"
+Rec-Mock "checkpoint-hidden-corrupt-rejected" @{ ok = $true }
+Remove-Item -LiteralPath $staleCorruptRoot -Recurse -Force -ErrorAction SilentlyContinue
+$script:MockReadyMode = "not-ready"
+
+# Newer pending apply with a future matching pager cannot pass (the pin
+# stays, the future payload stays excluded, the pending row never settles
+# within the bound): the checkpoint must fail instead of mixing.
+$stalePendRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidstalepend-" + $PID)
+New-Item -ItemType Directory -Force -Path $stalePendRoot | Out-Null
+$stalePendLog = Join-Path $stalePendRoot "owner.log"
+$script:MockReadyMode = "ready"
+$script:HidNativeB = @(0, 0, 800, 560)
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 6 400) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $stalePendLog -Encoding utf8
+$pendApply8 = New-HiddenLoopApply 8 8
+$pendApply8.desired_transfers = @("win-b")
+$script:StalePendWriterCalls = 0
+$stalePendWriter = {
+  param($i)
+  $script:StalePendWriterCalls++
+  if ([int]$i -eq 2) {
+    (($pendApply8) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $stalePendLog -Encoding utf8
+    ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $stalePendLog -Encoding utf8
+  }
+}
+$stalePendTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$stalePendMark = 0
+$stalePendPagerMark = 0
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $stalePendTopo $hidTok $hidHwnd $hidFix ([ref]$stalePendMark) ([ref]$stalePendPagerMark) $stalePendLog "dummy-owner" $stalePendWriter 6 } "not settled" "pending-newer-cannot-pass"
+Rec-Mock "checkpoint-hidden-pending-rejected" @{ ok = $true }
+Remove-Item -LiteralPath $stalePendRoot -Recurse -Force -ErrorAction SilentlyContinue
+$script:MockReadyMode = "not-ready"
+
+# Committed-row reuse for the final checkpoint (no command is queued after
+# the last in-case checkpoint, so the idle owner emits no fresh row).
+# ReuseSettled inspects every newer row after the committed index: a newer
+# settled row repins (the checkpoint passes on rev 8, never reusing the
+# committed rev 7 while newer proof exists); a newer pending or corrupt row
+# fails fast (unproven world past the commit); with no newer rows at all it
+# re-verifies the committed row. An empty commit slot and a committed row
+# behind the dispatch fence also fail closed.
+$reuseRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-hidreuse-" + $PID)
+New-Item -ItemType Directory -Force -Path $reuseRoot | Out-Null
+$reuseLog = Join-Path $reuseRoot "owner.log"
+$script:MockReadyMode = "ready"
+$script:HidNativeB = @(0, 0, 800, 560)
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 7 800) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopApply 8 8) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $reuseLog -Encoding utf8
+$reuseTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$reuseMark = 1
+$reusePagerMark = 0
+Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $reuseTopo $hidTok $hidHwnd $hidFix ([ref]$reuseMark) ([ref]$reusePagerMark) $reuseLog "dummy-owner" $null 30 -ReuseSettled
+if ([int]$reuseTopo.Revision -ne 8) { Fail-Mock "reuse did not repin to the newer settled row" }
+if ([int]$reuseTopo.PagerRetained.entry.revision -ne 8) { Fail-Mock "reuse did not retain the newer payload" }
+if ([int]$reuseMark -ne 3) { Fail-Mock "reuse cursor did not advance past the repin" }
+Rec-Mock "checkpoint-reuse-repin" @{ revision = 8 }
+$reuseCommittedTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$reuseCommittedMark = 1
+$reuseCommittedPagerMark = 0
+$reuseCommittedLog = Join-Path $reuseRoot "committed.log"
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 7 800) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $reuseCommittedLog -Encoding utf8
+Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $reuseCommittedTopo $hidTok $hidHwnd $hidFix ([ref]$reuseCommittedMark) ([ref]$reuseCommittedPagerMark) $reuseCommittedLog "dummy-owner" $null 30 -ReuseSettled
+if ([int]$reuseCommittedTopo.Revision -ne 7) { Fail-Mock "reuse with no newer rows moved the pin" }
+if ([int]$reuseCommittedTopo.PagerRetained.entry.revision -ne 7) { Fail-Mock "reuse with no newer rows moved the pager" }
+if ([int]$reuseCommittedMark -ne 1) { Fail-Mock "reuse with no newer rows moved the cursor" }
+Rec-Mock "checkpoint-reuse-committed" @{ revision = 7 }
+$reuseEmptyTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$reuseEmptyMark = 0
+$reuseEmptyPagerMark = 0
+$reuseEmptyLog = Join-Path $reuseRoot "empty.log"
+@() | Set-Content -LiteralPath $reuseEmptyLog -Encoding utf8
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $reuseEmptyTopo $hidTok $hidHwnd $hidFix ([ref]$reuseEmptyMark) ([ref]$reuseEmptyPagerMark) $reuseEmptyLog "dummy-owner" $null 5 -ReuseSettled } "no committed settled row" "reuse-empty-fail-closed"
+Rec-Mock "checkpoint-reuse-empty" @{ ok = $true }
+$pendApply = New-HiddenLoopApply 6 7
+$pendApply.desired_transfers = @("win-b")
+$pendLog = Join-Path $reuseRoot "pending.log"
+@((($pendApply) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 7 800) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $pendLog -Encoding utf8
+$reusePendTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$reusePendMark = 1
+$reusePendPagerMark = 0
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $reusePendTopo $hidTok $hidHwnd $hidFix ([ref]$reusePendMark) ([ref]$reusePendPagerMark) $pendLog "dummy-owner" $null 5 -ReuseSettled } "committed row not settled" "reuse-pending-fail-closed"
+Rec-Mock "checkpoint-reuse-pending" @{ ok = $true }
+$newerPendApply = New-HiddenLoopApply 8 8
+$newerPendApply.desired_transfers = @("win-b")
+$newerPendLog = Join-Path $reuseRoot "newer-pending.log"
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 7 800) | ConvertTo-Json -Depth 8 -Compress), (($newerPendApply) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $newerPendLog -Encoding utf8
+$newerPendTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$newerPendMark = 1
+$newerPendPagerMark = 0
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $newerPendTopo $hidTok $hidHwnd $hidFix ([ref]$newerPendMark) ([ref]$newerPendPagerMark) $newerPendLog "dummy-owner" $null 5 -ReuseSettled } "newer pending row not settled" "reuse-newer-pending-fail-closed"
+Rec-Mock "checkpoint-reuse-newer-pending" @{ ok = $true }
+$newerCorruptApply = New-HiddenLoopApply 8 8
+$newerCorruptApply.desired_windows_omitted = 99
+$newerCorruptLog = Join-Path $reuseRoot "newer-corrupt.log"
+@(((New-HiddenLoopApply 6 7) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 7 800) | ConvertTo-Json -Depth 8 -Compress), (($newerCorruptApply) | ConvertTo-Json -Depth 8 -Compress), ((New-HiddenLoopPager 8 800) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $newerCorruptLog -Encoding utf8
+$newerCorruptTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 0; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$newerCorruptMark = 1
+$newerCorruptPagerMark = 0
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $newerCorruptTopo $hidTok $hidHwnd $hidFix ([ref]$newerCorruptMark) ([ref]$newerCorruptPagerMark) $newerCorruptLog "dummy-owner" $null 5 -ReuseSettled } "omitted desired_windows_omitted" "reuse-newer-corrupt-fail-closed"
+Rec-Mock "checkpoint-reuse-newer-corrupt" @{ ok = $true }
+$reuseFenceTopo = @{
+  NativeOut = 'o1'; HomeId = 'ws-home'; AwayId = 'ws-away'; Ring = @('ws-home', 'ws-away')
+  DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+  AliasOrd = @{ home = 1; away = 2 }; LastTick = 99; Revision = 0; Seen = @{}
+  Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+  HideEpoch = @{}
+}
+$reuseFenceMark = 1
+$reuseFencePagerMark = 0
+Expect-Throw { Invoke-StressCheckpoint $hidAction $null @(0, 0, 800, 560) $reuseFenceTopo $hidTok $hidHwnd $hidFix ([ref]$reuseFenceMark) ([ref]$reuseFencePagerMark) $reuseLog "dummy-owner" $null 5 -ReuseSettled } "committed row behind dispatch fence" "reuse-fence-fail-closed"
+Rec-Mock "checkpoint-reuse-fence" @{ ok = $true }
+Remove-Item -LiteralPath $reuseRoot -Recurse -Force -ErrorAction SilentlyContinue
+$script:MockReadyMode = "not-ready"
 
 # G. Functional -Stop: a failing stop run exits nonzero with leg.json kept.
 $stopLed = New-MockLedgerDir @{ pid = 1; process_creation = "0000000000000001"; exe_path = "C:\\nope\\tiler-windows.exe" }

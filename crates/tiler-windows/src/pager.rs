@@ -372,6 +372,11 @@ pub struct PagerCell {
     pub minis: Vec<Rect>,
     pub mini_focused: Vec<bool>,
     pub mini_keys: Vec<crate::native_guards::WindowKey>,
+    /// Raw miniature source rectangles in monitor-full coordinates, parallel
+    /// to `minis`/`mini_keys`: the exact content rect each miniature was
+    /// projected from. Evidence only (the painter uses `minis`); the trace
+    /// publishes these so an exact frame proof survives miniature rounding.
+    pub mini_sources: Vec<Rect>,
     pub mini_icons: Vec<Option<std::sync::Arc<crate::pager_icons::IconImage>>>,
 }
 
@@ -614,10 +619,12 @@ pub fn build_output_pager_from_content(
         let mut minis = Vec::new();
         let mut mini_focused = Vec::new();
         let mut mini_keys = Vec::new();
+        let mut mini_sources = Vec::new();
         let mut mini_icons = Vec::new();
         for entry in &content[index].windows {
             minis.push(miniature(cell_rect, monitor_full, entry.rect, taskbar.dpi));
             mini_focused.push(entry.focused);
+            mini_sources.push(entry.rect);
             mini_icons.push(icons.get(&entry.key).cloned());
             mini_keys.push(entry.key.clone());
         }
@@ -628,6 +635,7 @@ pub fn build_output_pager_from_content(
             minis,
             mini_focused,
             mini_keys,
+            mini_sources,
             mini_icons,
         });
     }
@@ -1980,8 +1988,10 @@ mod tests {
         assert_eq!(rendered, 24);
         assert_eq!(pager.cells.len(), ring_ids().len());
         // Icon lanes stay parallel to the miniatures (no artwork staged).
+        // Raw source rects stay parallel too: the exact evidence miniature.
         for cell in &pager.cells {
             assert_eq!(cell.mini_keys.len(), cell.minis.len());
+            assert_eq!(cell.mini_sources.len(), cell.minis.len());
             assert_eq!(cell.mini_icons.len(), cell.minis.len());
             assert_eq!(cell.mini_focused.len(), cell.minis.len());
             assert!(cell.mini_icons.iter().all(Option::is_none));

@@ -25,8 +25,11 @@ User-approved 2026-10-26 index (implementation status below):
 Tentative index (user review pending; not approved product rules):
 - Platform-neutral stress test schema, alias/focus oracles, simulated-host
   schedules, transport fencing, bounded observation barriers, retained pager
-  geometry/token traces, evidence separation, effect-aware recovery and fresh
-  hidden snapshot seeds,
+  geometry/token/raw-frame traces, paired accepted-world evidence, explicit
+  admission-anchor preconditions and causal admission fences, evidence separation,
+  effect-aware recovery and fresh
+  hidden snapshot seeds and hidden identity/visibility/retained-frame proof
+  with exact geometry on reveal,
   tentative (pending user review)
   ([record](changes/platform-neutral-stress-acceptance.md#tentative-technical-decisions))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))

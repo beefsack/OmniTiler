@@ -55,10 +55,14 @@ $Repo = Split-Path -Parent $PSScriptRoot
 # retained latest actually emitted payload at or before the checkpoint
 # revision is the evidence (keyed by revision and log index with
 # tick/observation provenance), never a required same-revision row.
-# Miniature geometry is projected independently from each expected tile
-# through the exact renderer contract (pager::miniature) and checked per
-# token plus per-cell multisets, alongside desired allocations and
-# independent native frames.
+# `mini_frames` carries the exact owner source rect per miniature, so hidden
+# proof survives miniature rounding. Miniature geometry is projected
+# independently from each visible tile (and from the owner raw source while
+# hidden) through the exact renderer contract (pager::miniature) and checked
+# per token plus per-cell multisets, alongside desired allocations and
+# independent native frames. Hidden members prove exact native geometry
+# against the owner raw source at this revision (hide-epoch stability inside
+# one continuous hide, reset on genuine reveal or re-admit).
 # Tentative live-pending points are marked TENTATIVE.
 
 $WS_STEPS = [System.Collections.ArrayList]@()
@@ -321,12 +325,15 @@ function Compare-StressCheckpoint($Expected, $Actual) {
   #   Desired (token -> accepted desired row), DesiredView, MonitorFull
   #   (full monitor rect [x,y,w,h] for miniature projection),
   #   Frames (caller -> outer/visible [l,t,r,b] + flag),
-  #   ForegroundHwnd, ManagedHwnds, Pager (retained renderer entry with dpi),
+  #   ForegroundHwnd, ManagedHwnds, Pager (retained renderer entry with dpi
+  #   and per-miniature raw source rects `mini_frames`),
   #   PagerOutputsTotal/Omitted, Revision.
-  # Miniature geometry is projected independently from each expected tile
-  # through the exact renderer contract (pager::miniature) and compared per
-  # token plus per-cell token multisets: duplicates, omissions and swaps
-  # fail, not just degenerate rects.
+  # Hidden members compare the native outer exactly against the owner raw
+  # source rect for their token (never the logical tile). Miniature geometry
+  # is projected independently from each visible tile (and from the owner raw
+  # source while hidden) through the exact renderer contract
+  # (pager::miniature) and compared per token plus per-cell token multisets:
+  # duplicates, omissions and swaps fail, not just degenerate rects.
   # Desired rects carry {x,y,w,h} widths (world_tick rect_value), never
   # right/bottom edges. Native outer/visible rects are [l,t,r,b].
   $ring = @($Actual.Ring)
@@ -335,7 +342,13 @@ function Compare-StressCheckpoint($Expected, $Actual) {
   if ("$($ring[1])" -ne "$($Actual.AwayId)") { Fail-Ws "away left ring position 2" }
   $viewId = if ($Expected.View -eq "home") { $Actual.HomeId } else { $Actual.AwayId }
   if ("$($Actual.DesiredView)" -ne "$viewId") { Fail-Ws "view $($Actual.DesiredView) != $viewId" }
-  $wantTokens = @($Expected.Members | ForEach-Object { $Actual.Tokens[$_] } | Sort-Object)
+  $wantList = @()
+  foreach ($mid in @($Expected.Members)) {
+    $mt = $Actual.Tokens[$mid]
+    if ($null -eq $mt -or "$mt" -eq "") { Fail-Ws "null token for $mid" }
+    $wantList += "$mt"
+  }
+  $wantTokens = @($wantList | Sort-Object)
   $gotTokens = @($Actual.Desired.Keys | Sort-Object)
   if (($wantTokens -join ",") -ne ($gotTokens -join ",")) {
     Fail-Ws "roster $($gotTokens -join ',') != $($wantTokens -join ',')"
@@ -372,13 +385,13 @@ function Compare-StressCheckpoint($Expected, $Actual) {
     if ($null -eq $fr -or $null -eq $fr.outer -or $null -eq $fr.visible) { Fail-Ws "no native frame for $id" }
     if (-not $fr.alive) { Fail-Ws "$id not alive" }
     if (-not $fr.ok_outer) { Fail-Ws "$id outer unreadable" }
-    if ([int]$fr.outer[0] -ne [int]$tile[0] -or [int]$fr.outer[1] -ne [int]$tile[1] -or
-        [int]$fr.outer[2] -ne ([int]$tile[0] + [int]$tile[2]) -or
-        [int]$fr.outer[3] -ne ([int]$tile[1] + [int]$tile[3])) {
-      Fail-Ws "$id outer [$($fr.outer -join ',')] != tile [$($tile -join ',')]"
-    }
     $shownHere = ($Expected.Homing[$id] -eq $Expected.View)
     if ($shownHere) {
+      if ([int]$fr.outer[0] -ne [int]$tile[0] -or [int]$fr.outer[1] -ne [int]$tile[1] -or
+          [int]$fr.outer[2] -ne ([int]$tile[0] + [int]$tile[2]) -or
+          [int]$fr.outer[3] -ne ([int]$tile[1] + [int]$tile[3])) {
+        Fail-Ws "$id outer [$($fr.outer -join ',')] != tile [$($tile -join ',')]"
+      }
       if (-not $fr.ok_visible) { Fail-Ws "$id visible unreadable while shown" }
       if ($fr.flag -ne $true) { Fail-Ws "$id not visible while shown" }
       if ([int]$fr.visible[0] -ne [int]$fr.outer[0] -or [int]$fr.visible[1] -ne [int]$fr.outer[1] -or
@@ -386,7 +399,46 @@ function Compare-StressCheckpoint($Expected, $Actual) {
         Fail-Ws "$id visible [$($fr.visible -join ',')] != outer [$($fr.outer -join ',')]"
       }
     } else {
+      # Hidden member: exact lifetime identity, hidden visibility, exact
+      # owner retained-frame proof. The adapter never writes hidden frames,
+      # so exact native geometry is proven only against the actual owner
+      # retained frame: the raw source rect the owner used for this token's
+      # miniature (`mini_frames` in the revision-stamped pager payload),
+      # corroborated by the independently observed native outer under fresh
+      # visibility/identity. Never against the logical tile, never copied
+      # from the logical target, and never seeded from the native outer
+      # itself. A shown resize followed by hide before the next checkpoint
+      # accepts: the owner raw at this checkpoint revision is the fresh hide
+      # evidence. Reveal reconverges through the shown branch above.
       if ($fr.flag -eq $true) { Fail-Ws "$id visible while hidden" }
+      $tok = "$($Actual.Tokens[$id])"
+      if ($null -eq $tok -or $tok -eq "") { Fail-Ws "$id null token" }
+      $raw = $null
+      foreach ($cell in @($Actual.Pager.cells)) {
+        $toks = @($cell.mini_windows)
+        if (-not (Test-StressHasField $cell "mini_frames")) {
+          Fail-Ws "pager hidden $id mini_frames missing"
+        }
+        $raws = @($cell.mini_frames)
+        if ($raws.Count -ne $toks.Count) {
+          Fail-Ws "pager mini parallel arrays mismatch at cell $($cell.ord)"
+        }
+        for ($m = 0; $m -lt $toks.Count; $m++) {
+          if ("$($toks[$m])" -eq "$tok") {
+            if ($null -ne $raw) { Fail-Ws "$id pager raw token duplicated" }
+            $raw = $raws[$m]
+          }
+        }
+      }
+      if ($null -eq $raw -or $null -eq $raw.x) { Fail-Ws "$id unknown pager raw frame" }
+      $re = @([int]$raw.x, [int]$raw.y, ([int]$raw.x + [int]$raw.w), ([int]$raw.y + [int]$raw.h))
+      if ([int]$fr.outer[0] -ne $re[0] -or [int]$fr.outer[1] -ne $re[1] -or
+          [int]$fr.outer[2] -ne $re[2] -or [int]$fr.outer[3] -ne $re[3]) {
+        if ([int]$Actual.Pager.revision -lt [int]$Actual.Revision) {
+          Fail-Ws "pager hidden $id raw revision $([int]$Actual.Pager.revision) older than checkpoint $([int]$Actual.Revision)"
+        }
+        Fail-Ws "$id hidden outer [$($fr.outer -join ',')] != pager raw [$($re -join ',')]"
+      }
     }
   }
   if ($null -eq $Expected.Foreground) {
@@ -410,6 +462,9 @@ function Compare-StressCheckpoint($Expected, $Actual) {
   # pixels and never native HWND/PID/creation bytes.
   $entry = $Actual.Pager
   if ($null -eq $entry) { Fail-Ws "no matched pager entry" }
+  # In pager-extended mode the checkpoint proved no newer settled apply
+  # exists, so a newer payload (pager-only emission, same owner moment) is
+  # the legitimate evidence; otherwise a postdating payload is incoherent.
   if ([int]$entry.revision -gt [int]$Actual.Revision) {
     Fail-Ws "pager revision $($entry.revision) newer than checkpoint $($Actual.Revision)"
   }
@@ -446,8 +501,12 @@ function Compare-StressCheckpoint($Expected, $Actual) {
     $marks = @($c.minis)
     $rects = @($c.mini_rects)
     $toks = @($c.mini_windows)
+    if (-not (Test-StressHasField $c "mini_frames")) {
+      Fail-Ws "pager mini parallel arrays mismatch at cell $i"
+    }
+    $raws = @($c.mini_frames)
     if ([int]$c.minis_total -ne $marks.Count) { Fail-Ws "pager minis_total mismatch at cell $i" }
-    if ($rects.Count -ne $marks.Count -or $toks.Count -ne $marks.Count) {
+    if ($rects.Count -ne $marks.Count -or $toks.Count -ne $marks.Count -or $raws.Count -ne $marks.Count) {
       Fail-Ws "pager mini parallel arrays mismatch at cell $i"
     }
     $trueCount = @($marks | Where-Object { $_ -eq $true }).Count
@@ -464,9 +523,11 @@ function Compare-StressCheckpoint($Expected, $Actual) {
     $cellAlias = if ($i -eq 0) { "home" } else { "away" }
     # Expected per-cell token multiset plus per-token projected geometry:
     # each member homed to this cell must appear exactly once with the
-    # miniature rect the renderer contract projects from its expected tile.
-    # Duplicates, omissions and swapped positions all fail here, not just
-    # degenerate/escaping rects.
+    # miniature rect the renderer contract projects from its frame source:
+    # the logical tile while visible, the owner raw source rect while
+    # hidden (proving the renderer used the claimed source, never the
+    # hidden logical tile). Duplicates, omissions and swapped positions
+    # all fail here, not just degenerate/escaping rects.
     $wantCellToks = @(@($Expected.Members | Where-Object { "$($Expected.Homing[$_])" -eq "$cellAlias" } | ForEach-Object { "$($Actual.Tokens[$_])" } | Sort-Object))
     $gotCellToks = @(@($toks | ForEach-Object { "$_" } | Sort-Object))
     if (($wantCellToks -join ",") -ne ($gotCellToks -join ",")) {
@@ -479,7 +540,13 @@ function Compare-StressCheckpoint($Expected, $Actual) {
       if ($null -eq $caller) { Fail-Ws "pager mini token $mt unknown at cell $i" }
       $tile = $Expected.Tiles[$caller]
       if ($null -eq $tile) { Fail-Ws "no normalized tile for $caller" }
-      $wantRect = Get-StressExpectedMini $c.rect $monFull $tile ([int]$dpi)
+      $srcTile = $tile
+      if ("$($Expected.Homing[$caller])" -ne "$($Expected.View)") {
+        $rf = $raws[$m]
+        if ($null -eq $rf -or $null -eq $rf.x) { Fail-Ws "pager hidden $caller raw frame missing at cell $i mini $m" }
+        $srcTile = @([int]$rf.x, [int]$rf.y, [int]$rf.w, [int]$rf.h)
+      }
+      $wantRect = Get-StressExpectedMini $c.rect $monFull $srcTile ([int]$dpi)
       $mr = $rects[$m]
       if ($null -eq $mr -or $null -eq $mr.x) { Fail-Ws "pager mini rect missing at cell $i mini $m" }
       if ([int]$mr.x -ne [int]$wantRect[0] -or [int]$mr.y -ne [int]$wantRect[1] -or
@@ -840,7 +907,8 @@ function Test-StressTransientMismatch([string]$Msg) {
   # closed.
   if ($Msg -match " outer \[.*\] != tile \[") { return $true }
   if ($Msg -match " visible \[.*\] != outer \[") { return $true }
-  if ($Msg -match "not visible while shown|visible while hidden") { return $true }
+  if ($Msg -match "not visible while shown") { return $true }
+  if ($Msg -match "raw revision \d+ older than checkpoint \d+") { return $true }
   if ($Msg -match "^foreground \d+ != \d+$") { return $true }
   if ($Msg -match "is managed while null expected") { return $true }
   if ($Msg -match "join timeout at or before revision") { return $true }
@@ -849,6 +917,28 @@ function Test-StressTransientMismatch([string]$Msg) {
   # by a revision). Retry re-settles to a newer row (see checkpoint catch),
   # never re-polls under the same revision cap.
   if ($Msg -match "^pager cells \d+ != ring \d+$") { return $true }
+  if ($Msg -match "pager active \d+ != \d+") { return $true }
+  if ($Msg -match "pager (current mark|occupied mark|focus mark) wrong") { return $true }
+  if ($Msg -match "pager focused mark mismatch") { return $true }
+  if ($Msg -match "pager focused while null foreground expected") { return $true }
+  if ($Msg -match "pager miniature layout wrong") { return $true }
+  if ($Msg -match "pager mini token multiset wrong") { return $true }
+  if ($Msg -match "pager mini focus identity wrong") { return $true }
+  if ($Msg -match "pager mini (token|rect) missing") { return $true }
+  return $false
+}
+
+function Test-StressStalePager([string]$Msg) {
+  # Pager-lag family for the probe-or-keep decision (subset of the retry
+  # classifier above): the retained payload predates the pinned apply while
+  # the resolving emission may ride a newer settled apply (probe must
+  # re-settle) or no newer proof at all (probe keeps the pin and the
+  # deadline decides). A newer payload without a corresponding settled apply
+  # row is never mixed with the pinned world. Native/identity/settlement
+  # bounds are excluded: re-polling already re-samples them and no probe
+  # can resolve them.
+  if ($Msg -match "^pager cells \d+ != ring \d+$") { return $true }
+  if ($Msg -match "raw revision \d+ older than checkpoint \d+") { return $true }
   if ($Msg -match "pager active \d+ != \d+") { return $true }
   if ($Msg -match "pager (current mark|occupied mark|focus mark) wrong") { return $true }
   if ($Msg -match "pager focused mark mismatch") { return $true }
@@ -1011,6 +1101,40 @@ function Get-StressDispatchKey($Argv) {
   return @{ event = $edgeEvent; op = "$op" }
 }
 
+function Get-StressPubSummary($PubTimes, [int]$DelayMs, [int]$SleepCount) {
+  # Pure publication-timing summary over per-command monotonic records.
+  # Each record carries seq/op plus Stopwatch start_ms/accepted_ms around
+  # queue publication; burst is true only when the previous loop action was
+  # also a burst command (no intervening admit/close/focus-window/checkpoint
+  # overhead). Per-command dispatch tick/outcome join later at explicit
+  # checkpoints in queue order; this summary is timings evidence only with
+  # bounded output, never a settlement claim.
+  $rows = @($PubTimes | Where-Object { $null -ne $_ })
+  $n = $rows.Count
+  if ($n -eq 0) {
+    return @{ count = 0; delay_ms_each = $DelayMs; added_delay_ms = ([int]$DelayMs * [int]$SleepCount);
+      span_ms = 0; rate_per_sec = $null; intervals_ms = @(); burst_intervals_ms = @() }
+  }
+  $starts = @($rows | ForEach-Object { [double]$_.start_ms })
+  $accs = @($rows | ForEach-Object { [double]$_.accepted_ms })
+  $span = $accs[$accs.Count - 1] - $starts[0]
+  if ($span -lt 0) { $span = 0 }
+  $rate = if ($span -gt 0) { [Math]::Round($n / ($span / 1000.0), 3) } else { $null }
+  $gaps = [System.Collections.ArrayList]@()
+  $bursts = [System.Collections.ArrayList]@()
+  for ($i = 1; $i -lt $n; $i++) {
+    $g = [Math]::Round($accs[$i] - $accs[$i - 1], 3)
+    $null = $gaps.Add($g)
+    if ($rows[$i].burst -eq $true) { $null = $bursts.Add($g) }
+  }
+  return @{
+    count = $n; delay_ms_each = $DelayMs
+    added_delay_ms = ([int]$DelayMs * [int]$SleepCount)
+    span_ms = [Math]::Round($span, 3); rate_per_sec = $rate
+    intervals_ms = @($gaps); burst_intervals_ms = @($bursts)
+  }
+}
+
 function Wait-StressDispatchOrdered([string]$LogPath, [ref]$Mark, $Pending, [int]$TimeoutSec, [string]$Tag) {
   # Checkpoint-ordered outcome join for burst publication: matches each queued
   # CLI request to the next dispatch log line with the same (event, op) key,
@@ -1115,20 +1239,36 @@ function Wait-StressHwnd([string]$Id, $FixtureState, [int]$TimeoutSec) {
   return $null
 }
 
-function Wait-StressAdmitted([string]$LogPath, $TokOf, [uint64]$Hwnd, $FixtureState, [int]$TimeoutSec, [string]$Tag) {
+function Wait-StressAdmitted([string]$LogPath, $TokOf, [uint64]$Hwnd, $FixtureState, [int]$TimeoutSec, [string]$Tag, $AdmitFence = $null) {
   # Fresh-admission join over production member-admitted rows
-  # {window,hwnd,pid,creation}: scans from the log start so bootstrap
+  # {window,hwnd,pid,creation,tick}: scans from the log start so bootstrap
   # admissions in any order all bind. Exact fixture PID/creation required.
+  # On success records the action-causal admission fence (event tick/index
+  # for the exact HWND/PID/creation+token) on the optional fence object
+  # (topology or bootstrap fence with LastAdmitTick/LastAdmitIndex keys),
+  # analogous to the Drain dispatch high-water mark. The next checkpoint
+  # must settle at or past that tick, never on a pre-admission row. Wrong
+  # PID/creation fails closed with no fence update. String return preserved.
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   while ((Get-Date) -lt $deadline) {
     $events = @(Read-StressOwnerLog $LogPath)
-    foreach ($e in $events) {
+    for ($idx = 0; $idx -lt $events.Count; $idx++) {
+      $e = $events[$idx]
       if ("$($e.event)" -ne "member-admitted") { continue }
       if ([uint64]$e.hwnd -ne $Hwnd) { continue }
       if ([int]$e.pid -ne [int]$FixtureState.pid) { Fail-Ws "admitted pid mismatch for $Tag" }
       if ("$($e.creation)" -ne "$($FixtureState.creation)") { Fail-Ws "admitted creation mismatch for $Tag" }
       $known = @($TokOf.Values)
       if ($known -contains "$($e.window)") { Fail-Ws "duplicate token for $Tag" }
+      if ($null -ne $AdmitFence) {
+        try {
+          $et = [int]$e.tick
+          $cur = 0
+          try { $cur = [int]$AdmitFence.LastAdmitTick } catch { $cur = 0 }
+          if ($et -gt $cur) { $AdmitFence.LastAdmitTick = $et }
+          $AdmitFence.LastAdmitIndex = [int]$idx
+        } catch {}
+      }
       return "$($e.window)"
     }
     Start-Sleep -Milliseconds 500
@@ -1228,19 +1368,28 @@ function Get-StressRing($ApplyEvent, [string]$NativeOut) {
   return @($ordered | ForEach-Object { "$($_.id)" })
 }
 
-function Initialize-StressTopology($LogPath, [ref]$Mark, $Case, $TokOf, $BootstrapIds, $AuthoredWork) {
+function Initialize-StressTopology($LogPath, [ref]$Mark, $Case, $TokOf, $BootstrapIds, $AuthoredWork, [int]$AdmitTick = 0) {
   # Baseline observation after bootstrap admissions, before the first
   # command: binds the single native output, the frozen home id, the current
   # away slot (rebinds on lifecycle pruning like the shared simulator), the
   # seen set, the discovered work area, and the current alias ordinals.
   # Verifies the configured zero gaps and the bootstrap roster, skipping
-  # earlier fresh rows until the full roster lands.
+  # earlier fresh rows until the full roster lands. The admission fence tick
+  # (max member-admitted tick over the bootstrap binds) is the minimum proof
+  # tick, so a pre-roster row can never satisfy the baseline.
   if (@($Case.screens).Count -ne 1) { Fail-Ws "refuse: multi-screen case" }
-  $want = @($BootstrapIds | ForEach-Object { $TokOf[$_] } | Sort-Object)
+  $wantList = @()
+  foreach ($bid in @($BootstrapIds)) {
+    $bt = $TokOf[$bid]
+    if ($null -eq $bt -or "$bt" -eq "") { Fail-Ws "topology-init: null token for $bid" }
+    $wantList += "$bt"
+  }
+  $want = @($wantList | Sort-Object)
+  $needInitTick = [int]$AdmitTick
   $deadline = (Get-Date).AddSeconds(60)
   $ev = $null
   while ($true) {
-    $r = Wait-StressFreshApply $LogPath $Mark 0 10 "topology-init"
+    $r = Wait-StressFreshApply $LogPath $Mark $needInitTick 10 "topology-init"
     $ev = $r.event
     $got = @($ev.desired_windows | ForEach-Object { "$($_.window)" } | Sort-Object)
     if (($got -join ",") -eq ($want -join ",")) { break }
@@ -1267,7 +1416,7 @@ function Initialize-StressTopology($LogPath, [ref]$Mark, $Case, $TokOf, $Bootstr
     NativeOut = $nativeOut; HomeId = $ring[0]; AwayId = $ring[1]
     DiscoveredWork = $work; MonitorFull = $full; AliasOrd = $ord
     LastTick = [int]$ev.tick; Revision = [int]$ev.revision; Ring = $ring; Seen = $seen
-    LastDispatchTick = 0
+    LastDispatchTick = 0; LastAdmitTick = $needInitTick; LastAdmitIndex = -1; HideEpoch = @{}
     Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
   }
 }
@@ -1298,7 +1447,24 @@ function Refresh-StressRing($ApplyEvent, $Topo) {
   return $ring
 }
 
-function Invoke-StressCheckpoint($Action, $Case, $AuthoredWork, $Topo, $TokOf, $HwndOf, $FixtureState, [ref]$Mark, [ref]$PagerMark, $LogPath, $OwnerCopy, [scriptblock]$OnRetry = $null, [int]$TimeoutSec = 60) {
+function Wait-StressReady([string]$OwnerCopy, [string]$Name, [int]$TimeoutSec) {
+  # Bounded-patience liveness probe: burst publication queues commands without
+  # per-command dispatch waits, so at checkpoint entry the owner may not yet
+  # have consumed/actuated them and `ready` (which verifies per-window claim
+  # snapshots including hidden state) can legitimately read false. Retry
+  # `ready:false` to the deadline; unreadable or refused replies throw
+  # immediately, and a still-not-ready owner fails closed with the same
+  # message (never transient, never a repair).
+  $deadline = (Get-Date).AddSeconds($TimeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    $candidate = Invoke-LiveNative $OwnerCopy @("ready") | ConvertFrom-Json
+    if ($candidate.ready -eq $true) { return $candidate }
+    Start-Sleep -Milliseconds 250
+  }
+  Fail-Ws "owner not ready at checkpoint $Name"
+}
+
+function Invoke-StressCheckpoint($Action, $Case, $AuthoredWork, $Topo, $TokOf, $HwndOf, $FixtureState, [ref]$Mark, [ref]$PagerMark, $LogPath, $OwnerCopy, [scriptblock]$OnRetry = $null, [int]$TimeoutSec = 60, [switch]$ReuseSettled) {
   # Bounded checkpoint loop: drain queued burst dispatches once (causal
   # delivery over the dedicated dispatch cursor; the apply cursor is never
   # consumed by dispatch joins), then repeat settled-apply join, fresh
@@ -1308,8 +1474,7 @@ function Invoke-StressCheckpoint($Action, $Case, $AuthoredWork, $Topo, $TokOf, $
   # row; corruption, missing evidence and identity mismatches fail closed
   # immediately. Commits the apply cursor and topology only on success, so a
   # retry never discards unconsumed evidence.
-  $probe = Invoke-LiveNative $OwnerCopy @("ready") | ConvertFrom-Json
-  if ($probe.ready -ne $true) { Fail-Ws "owner not ready at checkpoint $($Action.name)" }
+  $probe = Wait-StressReady $OwnerCopy "$($Action.name)" $TimeoutSec
   $tiles = Convert-StressTiles $Action.tiles $AuthoredWork $Topo.DiscoveredWork
   $expected = @{
     View = "$($Action.view)"; Members = @($Action.members); Homing = @{};
@@ -1330,31 +1495,87 @@ function Invoke-StressCheckpoint($Action, $Case, $AuthoredWork, $Topo, $TokOf, $
   # consumed dispatch high-water mark on the topology, so a checkpoint whose
   # queue was already drained still settles at or past actuation.
   if ([int]$Topo.LastDispatchTick -gt $needTick) { $needTick = [int]$Topo.LastDispatchTick }
+  # Action-causal admission fence, analogous to the dispatch high-water mark:
+  # every admit/close/focus observation binds before the next checkpoint, and
+  # the checkpoint world proof must cover the latest admission tick (from the
+  # real member-admitted event for the exact HWND/PID/creation+token), never
+  # a pre-admission row. No per-command convergence; the existing explicit
+  # observation action fences with no change to the expected oracle.
+  $admitFence = 0
+  try { if ($null -ne $Topo.LastAdmitTick) { $admitFence = [int]$Topo.LastAdmitTick } } catch { $admitFence = 0 }
+  if ($admitFence -gt $needTick) { $needTick = $admitFence }
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   $tMark = [int]$Mark.Value
   $ev = $null
+  $resettled = $false
   $lastErr = "no settled row yet"
   $iter = 0
   while ((Get-Date) -lt $deadline) {
     $iter++
     if ($null -ne $OnRetry) { & $OnRetry $iter }
     if ($null -eq $ev) {
-      $remain = [int](($deadline - (Get-Date)).TotalSeconds)
-      if ($remain -lt 2) { $remain = 2 }
-      try {
-        $tRef = [ref]$tMark
-        $r = Wait-StressFreshApply $LogPath $tRef $needTick $remain "checkpoint-$($Action.name)"
-        $tMark = $tRef.Value
-        $ev = $r.event
-      } catch {
-        $lastErr = "$($_.Exception.Message)"
-        if (-not (Test-StressTransientMismatch $lastErr)) { throw }
-        Start-Sleep -Milliseconds 200
-        continue
+      if ($ReuseSettled) {
+        # Final re-verification: inspect every newer accepted/
+        # command-consumed row after the committed index. Repin to the
+        # latest relevant settled proof; fail fast on any newer pending or
+        # corrupt row (unproven world past the commit); only with no newer
+        # rows at all, re-verify the committed row. Never ignores newer
+        # progress and never mixes unproven rows with the committed world.
+        $reuseIdx = $tMark - 1
+        $logEvents = @(Read-StressOwnerLog $LogPath)
+        if ($reuseIdx -lt 0 -or $reuseIdx -ge $logEvents.Count) { Fail-Ws "checkpoint $($Action.name): no committed settled row" }
+        $ev = $logEvents[$reuseIdx]
+        if ("$($ev.event)" -ne "world-apply") { Fail-Ws "checkpoint $($Action.name): committed row not settled" }
+        if ("$($ev.delivery)" -ne "accepted" -and "$($ev.delivery)" -ne "command-consumed") { Fail-Ws "checkpoint $($Action.name): committed row not settled" }
+        if ([int]$ev.tick -lt $needTick) { Fail-Ws "checkpoint $($Action.name): committed row behind dispatch fence" }
+        try {
+          $null = Test-StressApplyClean $ev "$($Action.name)-reuse"
+        } catch {
+          Fail-Ws "checkpoint $($Action.name): committed row not settled"
+        }
+        if (Test-StressApplyPending $ev) { Fail-Ws "checkpoint $($Action.name): committed row not settled" }
+        $repin = $null
+        for ($ri = $tMark; $ri -lt $logEvents.Count; $ri++) {
+          $cand = $logEvents[$ri]
+          if ("$($cand.event)" -ne "world-apply") { continue }
+          if ("$($cand.delivery)" -ne "accepted" -and "$($cand.delivery)" -ne "command-consumed") { continue }
+          if ([int]$cand.tick -lt $needTick) { continue }
+          try {
+            $null = Test-StressApplyClean $cand "$($Action.name)-reuse-newer"
+          } catch {
+            $msg = "$($_.Exception.Message)"
+            if ($msg -match "pending transfers|pending operations|held scopes|present|pending op|floating|authority not controlled|float origin") {
+              Fail-Ws "checkpoint $($Action.name): newer pending row not settled"
+            }
+            throw
+          }
+          if (Test-StressApplyPending $cand) { Fail-Ws "checkpoint $($Action.name): newer pending row not settled" }
+          $repin = @{ event = $cand; index = $ri }
+        }
+        if ($null -ne $repin) {
+          $ev = $repin.event
+          $tMark = $repin.index + 1
+          $resettled = $true
+        }
+      } else {
+        $remain = [int](($deadline - (Get-Date)).TotalSeconds)
+        if ($remain -lt 2) { $remain = 2 }
+        try {
+          $tRef = [ref]$tMark
+          $r = Wait-StressFreshApply $LogPath $tRef $needTick $remain "checkpoint-$($Action.name)"
+          $tMark = $tRef.Value
+          $ev = $r.event
+        } catch {
+          $lastErr = "$($_.Exception.Message)"
+          if (-not (Test-StressTransientMismatch $lastErr)) { throw }
+          Start-Sleep -Milliseconds 200
+          continue
+        }
       }
       if ([int]$ev.tick -lt $maxDispTick) {
         $lastErr = "apply tick $([int]$ev.tick) behind last dispatched tick $maxDispTick"
         $ev = $null
+        $resettled = $true
         continue
       }
     }
@@ -1389,6 +1610,34 @@ function Invoke-StressCheckpoint($Action, $Case, $AuthoredWork, $Topo, $TokOf, $
         }
         $frames[$id] = @{ outer = $pr.outer; visible = $pr.visible; flag = $pr.visible_flag; alive = $pr.alive; ok_outer = $pr.ok_outer; ok_visible = $pr.ok_visible }
       }
+      # Hide-epoch stability: while continuously hidden under the same exact
+      # token/lifetime, the native outer must still read the epoch frame
+      # (proves no hidden writes and no stale earlier proof). A new hide
+      # (revealed since, or re-admitted under a new token/creation) drops
+      # the old epoch: the fresh hide evidence (owner raw at this revision,
+      # proven in Compare) supersedes, so a shown resize followed by hide
+      # before the next checkpoint accepts the resized frame. Epoch updates
+      # commit only with the checkpoint below, so a retry never advances
+      # evidence. Close drops the epoch explicitly at the close site.
+      if ($null -eq $Topo.HideEpoch) { $Topo.HideEpoch = @{} }
+      foreach ($id in @($Action.members)) {
+        $tokHere = $TokOf[$id]
+        $isShown = ("$($expected.Homing[$id])" -eq "$($expected.View)")
+        if ($isShown) { continue }
+        $ep = $Topo.HideEpoch[$id]
+        if ($null -ne $ep -and $null -ne $ep.rect -and $null -ne $ep.token) {
+          if ("$($ep.token)" -ne "$tokHere" -or "$($ep.creation)" -ne "$($FixtureState.creation)") {
+            $Topo.HideEpoch.Remove($id)
+            continue
+          }
+          $er = @($ep.rect)
+          $co = @($frames[$id].outer)
+          if ([int]$co[0] -ne [int]$er[0] -or [int]$co[1] -ne [int]$er[1] -or
+              [int]$co[2] -ne [int]$er[2] -or [int]$co[3] -ne [int]$er[3]) {
+            Fail-Ws "checkpoint $($Action.name): $id hide epoch drift [$($co -join ',')] != [$($er -join ',')]"
+          }
+        }
+      }
       $fg = [StressNative]::GetForegroundWindow()
       $fgHwnd = [uint64]$fg.ToInt64()
       $fp = 0u
@@ -1414,19 +1663,47 @@ function Invoke-StressCheckpoint($Action, $Case, $AuthoredWork, $Topo, $TokOf, $
         Revision = $candRev
       }
       $null = Compare-StressCheckpoint $expected $actual
+      # Commit the hide epoch with the checkpoint: hidden members record the
+      # proven frame, revealed members leave the epoch. A re-admitted caller
+      # binds a new token/creation at admission, so no old proof carries.
+      foreach ($id in @($Action.members)) {
+        $isShown = ("$($expected.Homing[$id])" -eq "$($expected.View)")
+        if ($isShown) {
+          if ($Topo.HideEpoch.ContainsKey($id)) { $Topo.HideEpoch.Remove($id) }
+        } else {
+          $co = @($frames[$id].outer)
+          $Topo.HideEpoch[$id] = @{
+            rect = @([int]$co[0], [int]$co[1], [int]$co[2], [int]$co[3])
+            token = "$($TokOf[$id])"; creation = "$($FixtureState.creation)"
+          }
+        }
+      }
       $Mark.Value = $tMark
       $Topo.LastTick = [int]$ev.tick
       if ($candRev -gt [int]$Topo.Revision) { $Topo.Revision = $candRev }
-      Rec-Ws "checkpoint" @{ name = "$($Action.name)"; revision = $candRev; iterations = $iter }
+      Rec-Ws "checkpoint" @{ name = "$($Action.name)"; revision = $candRev; iterations = $iter; pager = [int]$pager.entry.revision; resettled = $resettled }
       return
     } catch {
       $lastErr = "$($_.Exception.Message)"
       if (-not (Test-StressTransientMismatch $lastErr)) { throw }
-      # Count mismatch pins a settled apply whose ring postdates the latest
-      # pager emission: the matching payload necessarily carries a higher
-      # revision, so drop the pinned row and re-wait for a newer settled
-      # apply instead of re-polling under the same revision cap.
-      if ($lastErr -match "^pager cells \d+ != ring \d+$") { $ev = $null }
+      # Stale retained pager under a pinned apply: the matching payload may
+      # ride a newer settled apply. Probe non-consumingly for one: when found,
+      # drop the pinned row and re-settle; otherwise keep the pin and re-poll
+      # under the same revision cap. A newer pager without a corresponding
+      # settled apply row is never evidence: re-polling never mixes it with
+      # the pinned world, and a genuinely late pair still fails at the
+      # deadline via settlement timeout. Non-timeout probe failures throw
+      # immediately.
+      if (Test-StressStalePager $lastErr) {
+        $probeMark = $tMark
+        $newer = $null
+        try {
+          $newer = Wait-StressFreshApply $LogPath ([ref]$probeMark) $needTick 2 "$($Action.name)-probe"
+        } catch {
+          if ("$($_.Exception.Message)" -notmatch "settlement timeout") { throw }
+        }
+        if ($null -ne $newer) { $ev = $null; $resettled = $true }
+      }
       Start-Sleep -Milliseconds 200
     }
   }
@@ -1444,7 +1721,9 @@ function Wait-StressPager([string]$LogPath, [ref]$PagerMark, [ref]$PagerRetained
   # freshness: returns the latest emitted entry at or below the revision
   # (updating the retained slot), or fails at the deadline when no payload
   # was ever emitted for the output. Ambiguous duplicate entries for the
-  # output fail loudly.
+  # output fail loudly. A newer payload without a corresponding settled
+  # apply row is never mixed with an older pinned world: the cap excludes
+  # it, and only a re-settle to its own settled row can admit it.
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   while ((Get-Date) -lt $deadline) {
     $events = @(Read-StressOwnerLog $LogPath)
@@ -1826,7 +2105,7 @@ function Invoke-Mock {
 }
 
 function Invoke-LiveJourney {
-  Fail-Ws "refuse: world-stress native leg parked pending hidden-frame oracle decision (see docs/changes/platform-neutral-stress-acceptance.md)"
+  Fail-Ws "refuse: world-stress native leg parked pending exact pager/world proof binding (see docs/changes/platform-neutral-stress-acceptance.md)"
   # Pre-effect validation: range gates run before any cargo build, settings
   # write, owner/fixture launch, or run-dir creation.
   if ($DelayMs -lt 0 -or $DelayMs -gt 60000) { Fail-Ws "refuse: DelayMs must be 0..60000" }
@@ -1952,29 +2231,35 @@ function Invoke-LiveJourney {
     Write-StressLeg $ctx $legPath $ownerCopy $OwnerSeconds
     $logPath = "$($ready.log_path)"
     Rec-Ws "owner-ready" @{ pid = $ownerBind.pid; log = $logPath; settings_changed = @($caseChanged) }
-    if ($DelayMs -gt 0) { Start-Sleep -Milliseconds $DelayMs }
+    $pubSleeps = 0
+    if ($DelayMs -gt 0) { Start-Sleep -Milliseconds $DelayMs; $pubSleeps++ }
     $mark = 0
     $pagerMark = 0
     $tokOf = @{}
     $hwndOf = @{}
+    $bootstrapFence = @{ LastAdmitTick = 0; LastAdmitIndex = -1 }
     foreach ($id in $boot.ids) {
       $hwnd = Wait-StressHwnd "$id" @{ pid = $serverPid; creation = $serverCreation } 30
       $hwndOf[$id] = $hwnd
     }
     foreach ($id in $boot.ids) {
-      $tok = Wait-StressAdmitted $logPath $tokOf $hwndOf[$id] @{ pid = $serverPid; creation = $serverCreation } 30 "$id"
+      $tok = Wait-StressAdmitted $logPath $tokOf $hwndOf[$id] @{ pid = $serverPid; creation = $serverCreation } 30 "$id" $bootstrapFence
       $tokOf[$id] = $tok
       Rec-Ws "admit" @{ id = $id; hwnd = "$($hwndOf[$id])"; token = $tok }
     }
-    $topo = Initialize-StressTopology $logPath ([ref]$mark) $case $tokOf $boot.ids $authoredWork
+    $topo = Initialize-StressTopology $logPath ([ref]$mark) $case $tokOf $boot.ids $authoredWork ([int]$bootstrapFence.LastAdmitTick)
     # Pager scan starts at zero: the matching line for the init revision may
     # precede the init row in the log; revisions only grow so the latest
     # match stays correct while checkpoints advance monotonically.
     $pagerMark = 0
+    $pubSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $pubTimes = [System.Collections.ArrayList]@()
+    $pubPrevBurst = $false
     foreach ($action in @($case.actions)) {
-      if ($DelayMs -gt 0) { Start-Sleep -Milliseconds $DelayMs }
+      if ($DelayMs -gt 0) { Start-Sleep -Milliseconds $DelayMs; $pubSleeps++ }
       switch ($action.op) {
         "admit" {
+          $pubPrevBurst = $false
           $id = "$($action.window)"
           $null = Drain-StressPending $logPath $topo 30 "admit-$id"
           $rect = @($action.rect)
@@ -1987,11 +2272,12 @@ function Invoke-LiveJourney {
           if ($entry.Count -ne 1 -or $entry[0].ok -ne $true) { Fail-Ws "spawn $id refused: $($r | ConvertTo-Json -Depth 4 -Compress)" }
           $hwnd = Wait-StressHwnd $id @{ pid = $serverPid; creation = $serverCreation } 30
           $hwndOf[$id] = $hwnd
-          $tok = Wait-StressAdmitted $logPath $tokOf $hwnd @{ pid = $serverPid; creation = $serverCreation } 30 $id
+          $tok = Wait-StressAdmitted $logPath $tokOf $hwnd @{ pid = $serverPid; creation = $serverCreation } 30 $id $topo
           $tokOf[$id] = $tok
           Rec-Ws "admit" @{ id = $id; hwnd = "$hwnd"; token = $tok }
         }
         "close" {
+          $pubPrevBurst = $false
           $id = "$($action.window)"
           $null = Drain-StressPending $logPath $topo 30 "close-$id"
           $r = Send-StressFixture $fixtureCopy $sock $nonce (@{ v = 1; request_id = (New-StressReqId "close-$id"); op = "close"; ids = @($id) } | ConvertTo-Json -Depth 6 -Compress)
@@ -2000,15 +2286,18 @@ function Invoke-LiveJourney {
           $topo.LastTick = Wait-StressDeparted $logPath ([ref]$mark) $tokOf[$id] $id 30
           $tokOf.Remove($id)
           $hwndOf.Remove($id)
+          if ($null -ne $topo.HideEpoch) { $topo.HideEpoch.Remove($id) }
           Rec-Ws "close" @{ id = $id }
         }
         "focus-window" {
+          $pubPrevBurst = $false
           $id = "$($action.window)"
           $null = Drain-StressPending $logPath $topo 30 "focus-$id"
           Invoke-StressFocus $fixtureCopy $sock $nonce $id $hwndOf @{ pid = $serverPid; creation = $serverCreation } 15
           Rec-Ws "focus" @{ id = $id }
         }
         "checkpoint" {
+          $pubPrevBurst = $false
           Invoke-StressCheckpoint $action $case $authoredWork $topo $tokOf $hwndOf @{ pid = $serverPid; creation = $serverCreation } ([ref]$mark) ([ref]$pagerMark) $logPath $ownerCopy
         }
         default {
@@ -2026,7 +2315,13 @@ function Invoke-LiveJourney {
           }
           $argv = Get-StressCliArgs $action $ord
           Wait-StressTransportIdle $ledgerDir "$($action.op)"
+          $pubStart = $pubSw.Elapsed.TotalMilliseconds
           $null = Invoke-StressCli $ownerCopy $argv $ledgerDir "$($action.op)"
+          $pubAccepted = $pubSw.Elapsed.TotalMilliseconds
+          $null = $pubTimes.Add(@{ seq = [int]$action.seq; op = "$($action.op)";
+            start_ms = [Math]::Round($pubStart, 3); accepted_ms = [Math]::Round($pubAccepted, 3);
+            burst = $pubPrevBurst })
+          $pubPrevBurst = $true
           $null = $topo.Pending.Add(@{ argv = $argv; op = "$($action.op)" })
           Rec-Ws "command-queued" @{ op = $action.op; argv = ($argv -join " ") }
         }
@@ -2039,15 +2334,20 @@ function Invoke-LiveJourney {
       foreground = $end.foreground; pager_current = "$($end.pager_current)";
       pager_occupied = @($end.pager_occupied)
     }
-    Invoke-StressCheckpoint $finalAction $case $authoredWork $topo $tokOf $hwndOf @{ pid = $serverPid; creation = $serverCreation } ([ref]$mark) ([ref]$pagerMark) $logPath $ownerCopy
+    Invoke-StressCheckpoint $finalAction $case $authoredWork $topo $tokOf $hwndOf @{ pid = $serverPid; creation = $serverCreation } ([ref]$mark) ([ref]$pagerMark) $logPath $ownerCopy -ReuseSettled
     Invoke-StressCleanup $ctx "world-stress"
     $cleaned = $true
-    $report = @{ status = "pass"; stage = "WorldStress"; started = (Get-Date).ToString("o"); provenance = $prov; steps = $WS_STEPS }
+    $pubSummary = Get-StressPubSummary $pubTimes $DelayMs $pubSleeps
+    $pubReport = @{ delay_ms = $DelayMs; summary = $pubSummary; commands = @($pubTimes) }
+    $report = @{ status = "pass"; stage = "WorldStress"; started = (Get-Date).ToString("o"); provenance = $prov; steps = $WS_STEPS; publication = $pubReport }
     $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath
     Write-Output "world-stress-report=$reportPath"
+    Write-Output "publication count=$($pubSummary.count) rate_per_sec=$($pubSummary.rate_per_sec) span_ms=$($pubSummary.span_ms) delay_each_ms=$DelayMs added_delay_ms=$($pubSummary.added_delay_ms) burst_gaps=$(@($pubSummary.burst_intervals_ms).Count)"
     Write-Output "status=pass"
   } catch {
-    $report = @{ status = "fail"; stage = "WorldStress"; provenance = $prov; steps = $WS_STEPS; error = "$($_.Exception.Message)" }
+    $pubSummary = $null
+    try { $pubSummary = Get-StressPubSummary $pubTimes $DelayMs $pubSleeps } catch { $pubSummary = @{ count = -1; error = "$($_.Exception.Message)" } }
+    $report = @{ status = "fail"; stage = "WorldStress"; provenance = $prov; steps = $WS_STEPS; publication = $pubSummary; error = "$($_.Exception.Message)" }
     try { $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath } catch {}
     Write-Output "world-stress-report=$reportPath"
     throw "WorldStress stage failed: $($_.Exception.Message)"
@@ -2119,6 +2419,6 @@ if ($Stop) {
   }
   exit 0
 }
-if ($Live) { Fail-Ws "refuse: world-stress native leg parked pending hidden-frame oracle decision (see docs/changes/platform-neutral-stress-acceptance.md)" }
+if ($Live) { Fail-Ws "refuse: world-stress native leg parked pending exact pager/world proof binding (see docs/changes/platform-neutral-stress-acceptance.md)" }
 if ("$($MyInvocation.InvocationName)" -eq ".") { return }
 Write-Output "windows-world-stress parsed (no action without -Mock/-Live/-Stop)"
