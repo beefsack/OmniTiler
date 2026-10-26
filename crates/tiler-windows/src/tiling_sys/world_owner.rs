@@ -144,6 +144,12 @@ impl WorldOwner {
         !self.diff.pending_foreground.is_empty()
     }
 
+    /// World-tick entry watermark. Advanced by invalidate before dispatch
+    /// fences, so Busy/CountersExhausted still move it. Unchanged fences.
+    pub(super) fn current_obs(&self) -> u64 {
+        self.seq.current_obs()
+    }
+
     /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
     /// ffc-enabled)` differs from the last emitted `world-apply` row.
     /// Pure comparison over already-captured values: no native reads.

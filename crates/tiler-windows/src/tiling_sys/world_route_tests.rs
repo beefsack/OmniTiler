@@ -1302,6 +1302,7 @@ fn drive_command_lane(
     store: &crate::storage::LedgerStore,
     areas: &[MonitorArea],
     batch: Vec<QueuedWorkspaceIntent>,
+    hook_drain_woke: bool,
 ) -> u64 {
     let before = state.tick;
     let mut monitor_areas = areas.to_vec();
@@ -1323,6 +1324,7 @@ fn drive_command_lane(
         false,
         false,
         true,
+        hook_drain_woke,
         &log_path,
         &mut owner_work,
         &ow_counts,
@@ -1385,7 +1387,15 @@ fn keyup_only_turn_owes_observation_for_pending_foreground() {
     inject_pending_suspend(Some(false));
     inject_pending_elevated(Some(false));
     inject_pending_observe(Vec::new(), Vec::new(), false);
-    let delta = drive_command_lane(&mut state, &me, &dir, &store, &areas, vec![keyup_intent()]);
+    let delta = drive_command_lane(
+        &mut state,
+        &me,
+        &dir,
+        &store,
+        &areas,
+        vec![keyup_intent()],
+        false,
+    );
     assert_eq!(
         delta, 1,
         "key-up-only turn with pending foreground owes one observation pass"
@@ -1406,7 +1416,15 @@ fn keyup_only_turn_without_pending_foreground_stays_quiet() {
     inject_pending_suspend(Some(false));
     inject_pending_elevated(Some(false));
     inject_pending_observe(Vec::new(), Vec::new(), false);
-    let delta = drive_command_lane(&mut state, &me, &dir, &store, &areas, vec![keyup_intent()]);
+    let delta = drive_command_lane(
+        &mut state,
+        &me,
+        &dir,
+        &store,
+        &areas,
+        vec![keyup_intent()],
+        false,
+    );
     assert_eq!(
         delta, 0,
         "settled-only turn with no pending foreground observes nothing"
@@ -1474,7 +1492,15 @@ fn real_command_turn_consumes_pending_without_extra_pass() {
         announce: true,
         tick: std::time::Instant::now(),
     };
-    let delta = drive_command_lane(&mut state, &me, &dir, &store, &areas, vec![select_down]);
+    let delta = drive_command_lane(
+        &mut state,
+        &me,
+        &dir,
+        &store,
+        &areas,
+        vec![select_down],
+        false,
+    );
     assert!(
         state.world.last_reply().is_some(),
         "real select dispatches through the owner"
@@ -1482,6 +1508,110 @@ fn real_command_turn_consumes_pending_without_extra_pass() {
     assert_eq!(
         delta, 1,
         "real command turn consumes the edge with no extra observation pass"
+    );
+    clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hook_drain_keyup_owes_exactly_one_observation() {
+    // Non-foreground hook drain + key-up owes one observation pass.
+    // (Existing quiet test covers the no-drain case.)
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    state.keyboard.takeover = true;
+    let (dir, store, areas, _) = route_dirs("hook-drain-keyup");
+    let me = route_me();
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_observe(Vec::new(), Vec::new(), false);
+    let delta = drive_command_lane(
+        &mut state,
+        &me,
+        &dir,
+        &store,
+        &areas,
+        vec![keyup_intent()],
+        true,
+    );
+    assert_eq!(
+        delta, 1,
+        "hook-drain wake + key-up owes one observation pass"
+    );
+    clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn real_command_with_hook_drain_needs_no_extra_pass() {
+    // A lane that entered a world tick already captured fresh inputs.
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    state.keyboard.takeover = true;
+    let key = crate::native_guards::WindowKey {
+        hwnd: 101,
+        pid: 202,
+        creation: "proc-1".to_owned(),
+    };
+    state.member_tokens.insert(key.clone(), "w1".to_owned());
+    state.member_tags.insert(key.clone(), "tag-1".to_owned());
+    state.member_identity.insert(
+        key,
+        crate::model::ProcessIdentity {
+            pid: 202,
+            process_creation: "proc-1".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        },
+    );
+    let observed = vec![observed_window()];
+    let (dir, store, areas, fulls) = route_dirs("real-cmd-hook-drain");
+    let me = route_me();
+    super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("seed converges");
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_foreground(Some(101));
+    let select_down = QueuedWorkspaceIntent {
+        op: WorkspaceOp::Select,
+        index: 1,
+        follow: false,
+        edge: SnapEdge::Down,
+        origin: None,
+        consumed: true,
+        announce: true,
+        tick: std::time::Instant::now(),
+    };
+    let delta = drive_command_lane(
+        &mut state,
+        &me,
+        &dir,
+        &store,
+        &areas,
+        vec![select_down],
+        true,
+    );
+    assert!(
+        state.world.last_reply().is_some(),
+        "real select dispatches through the owner"
+    );
+    assert_eq!(
+        delta, 1,
+        "real command with hook drain needs no extra observation pass"
     );
     clear_pending_seams();
     let _ = std::fs::remove_dir_all(&dir);

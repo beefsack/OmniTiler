@@ -1917,7 +1917,7 @@ platform API behavior.
     owner restart in the same intentional-float store, with recompute
     fallback if unavailable.
   - D7 status: Linux planner/KDE delivered offline ([record](changes/archive/fixed-window-tile-override-restart.md)); Windows fixed-origin tile marker delivered offline 2026-10-11 ([record](changes/archive/windows-fixed-size-admission.md)). Only settled tile wins over known automatic fixed origin write `OmniTiler.TileOverride.v1`; generic non-fixed unfloats do not. Hydration covers visible and retained/maximized admitted lifetimes before automatic classification, without requiring hints or granting write/recovery authority.
-  - Superseded Windows D3/D4/Q3 interim (2026-10-14), superseded
+  - Windows D3/D4/Q3 interim (2026-10-14): superseded
     by the User 2026-10-17 option A decision below: hydrated fixed-origin
     overrides keep the reserved tiled slot beneath maximize under both
     `core.born_maximized` values, including hint loss. Generic non-fixed

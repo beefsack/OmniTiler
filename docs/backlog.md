@@ -18,8 +18,11 @@ decisions of 2026-09-24 are under
 - P0 | Windows rapid send-follow arrival fails to retile | User physical dogfood
   2026-10-26: rapid alternating Win+Shift+1 / Win+Shift+2 with two ordinary apps
   rarely leaves the focused arrival at its singleton full-size frame beneath
-  the other window. Diagnose final core geometry/stack intent, native holds and
-  missing convergence; desired-behavior regression and event-driven repair pending.
+  the other window. Fixed consumed visibility-hook work lost on key-up-only
+  turns; paired scheduler/occupied-return regressions, offline gates and rapid
+  fixture send-follow/select/directional checks pass. User-owned ordinary-app
+  physical burst recheck remains.
+  [Record](changes/archive/windows-rapid-send-follow-convergence.md).
 - P2 | Pager shows stale source layout after send-follow | User dogfood
   2026-10-26: after sending a window away with follow, the source workspace's
   pager cell keeps the pre-send split until revisited. User wants to explore

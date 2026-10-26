@@ -260,6 +260,7 @@ pub(super) fn run_active_tick(
     monitor_check: bool,
     trace_emit: bool,
     mut woke: bool,
+    hook_drain_woke: bool,
     log_path: &Path,
     owner_work: &mut OwnerWorkGuard<'_>,
     ow_counts: &OwnerWaitCounts,
@@ -802,6 +803,7 @@ pub(super) fn run_active_tick(
             poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
             poll_migrate_workspace_cli_request(state, me, store, dir, &fulls, areas);
         } else {
+            let obs_before = state.world.current_obs();
             if !snap_events.is_empty() {
                 keyboard_tick(state, me, store, dir, &fulls, areas, snap_events, None);
             }
@@ -844,11 +846,11 @@ pub(super) fn run_active_tick(
             poll_directional_cli_request(state, me, store, dir, &fulls, areas);
             poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
             poll_migrate_workspace_cli_request(state, me, store, dir, &fulls, areas);
-            // Key-up-only turns run no world pass above, so a drained edge
-            // would strand in the owner with no further wake owed: one
-            // observation-only reconcile pass resolves it. Real command
-            // turns already consumed their edges at apply entry.
-            if state.world.has_pending_foreground() {
+            // Owe one observation when hook work drained and the lane never
+            // entered a world tick (capture runs at tick entry, before
+            // dispatch fences). Pending foreground edges owe it too.
+            let entered_world_tick = state.world.current_obs() != obs_before;
+            if state.world.has_pending_foreground() || (hook_drain_woke && !entered_world_tick) {
                 reconcile_tick(state, me, store, dir, &fulls, areas);
             }
         }

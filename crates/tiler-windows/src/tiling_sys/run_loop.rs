@@ -1065,6 +1065,10 @@ pub(super) fn run_tile_loop(
                 drain.foreground_detail,
                 drain.foreground_omitted,
             );
+            // Hook-drain wake covers any consumed non-overlay hook edge
+            // (foreground, visibility, taskbar, movesize): only such work
+            // owes the post-command observation below.
+            let hook_drain_woke = drain.woke;
             let mut woke = drain.woke;
             // Trace-only batch breakdown for the owner-work sample; default
             // runs skip the counting.
@@ -1181,6 +1185,7 @@ pub(super) fn run_tile_loop(
                 monitor_check,
                 trace_emit,
                 woke,
+                hook_drain_woke,
                 &log_path,
                 &mut owner_work,
                 &ow_counts,

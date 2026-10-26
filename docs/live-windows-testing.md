@@ -197,7 +197,7 @@ do not broaden cleanup or repeatedly restart the experiment.
   another output; the dispatch gate recognizes only proven admitted floats
   across that home/physical mismatch. Wrong-origin tiles and stale subjects
   still refuse. This is not permission to change output-targeting policy.
-- **Tentative, pending review (2026-10-22):** dev-only `migrate-workspace
+- **User-approved 2026-10-26:** dev-only `migrate-workspace
   --direction (left|right|up|down)` mirrors the exact-owner, normal-owner-only
   control boundary and invokes the production whole-workspace migration
   handler. Proof owners refuse; suspension, scope and topology fences remain.

@@ -3092,3 +3092,215 @@ fn world_first_exit_tiles_quietly() {
     );
     assert!(reply.ready);
 }
+
+/// Dropped-visibility arrival: the send tick moves membership while the
+/// frame converges on the next observation-only pass (the stranded pass).
+/// Extended with send-back to the now-occupied origin: both windows end
+/// visible in distinct split frames, flights settle, no replay.
+#[test]
+fn hook_drain_owed_observation_settles_send_follow_geometry() {
+    let mut env = env_with(202_061);
+    let out = env.state.output_token(DEV1);
+    let (mover, sibling) = admit_follow_pair(&mut env, 202_061);
+    let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+    let areas = one_area();
+    let fulls = env.fulls.clone();
+    let observed = live_visible_observed();
+    live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    let (current, target, index) = follow_target(&owner, &out);
+    // Follow send: membership moves now; the window flight stays
+    // ambiguous pre-switch while the follow view flight proves.
+    let observed = live_visible_observed();
+    let sent = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        mover.hwnd,
+        Some(WorldCommand::SendNumbered {
+            window: WindowId("w1".to_owned()),
+            source: SendSource::Explicit(OutputId(out.clone())),
+            index,
+            follow: true,
+        }),
+    );
+    let op = window_op(&sent.reply, "w1");
+    assert!(
+        has_ambiguous_member(&sent, &op, &out, &target),
+        "send leaves ambiguous member flight: {:?} {:?}",
+        sent.members,
+        sent.views
+    );
+    // Stranded-trigger shape: observation-only pass, no command.
+    let observed = live_visible_observed();
+    let settled = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    assert!(
+        settled.reply.transfers.is_empty(),
+        "owed observation settles: {:?}",
+        settled.reply.transfers
+    );
+    assert!(
+        !has_any_attempt(&settled, &op),
+        "no replay: {:?} {:?}",
+        settled.members,
+        settled.views
+    );
+    let slot = settled
+        .reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w1")
+        .and_then(|row| row.effective_frame)
+        .expect("settled publishes mover slot");
+    let live = live_visible_observed();
+    let placed = live
+        .iter()
+        .find(|w| w.hwnd == mover.hwnd)
+        .expect("mover still visible");
+    assert_eq!(
+        placed.visible, slot,
+        "owed pass places the mover frame at the published slot"
+    );
+    assert_eq!(
+        env.state.applied_homing.get("w1"),
+        Some(&(out.clone(), target.clone()))
+    );
+    assert_eq!(env.state.applied_views.get(&out), Some(&target));
+    assert_ne!(current, target);
+    assert!(
+        !S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
+        "sibling stays hidden"
+    );
+    // Send-back: mover returns to the now-occupied origin with follow.
+    // Both windows must end visible in distinct split frames (never
+    // full-size), with settled flights and no replay.
+    let ring = owner.engine().logical_ring(&out);
+    let index_back = ring
+        .iter()
+        .position(|id| id == &current)
+        .expect("origin in ring") as u8
+        + 1;
+    let observed = live_visible_observed();
+    let back = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        mover.hwnd,
+        Some(WorldCommand::SendNumbered {
+            window: WindowId("w1".to_owned()),
+            source: SendSource::Explicit(OutputId(out.clone())),
+            index: index_back,
+            follow: true,
+        }),
+    );
+    let back_op = window_op(&back.reply, "w1");
+    let back_view_op = back
+        .reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::View))
+        .expect("follow retains its view flight")
+        .operation_id
+        .clone();
+    assert!(
+        has_ambiguous_member(&back, &back_op, &out, &current),
+        "send-back leaves ambiguous member flight: {:?} {:?}",
+        back.members,
+        back.views
+    );
+    let observed = live_visible_observed();
+    let resettled = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    assert!(
+        resettled.reply.transfers.is_empty(),
+        "send-back settles: {:?}",
+        resettled.reply.transfers
+    );
+    assert!(
+        !has_any_attempt(&resettled, &back_op),
+        "no window replay: {:?} {:?}",
+        resettled.members,
+        resettled.views
+    );
+    assert!(
+        !has_any_attempt(&resettled, &back_view_op),
+        "no view replay: {:?} {:?}",
+        resettled.members,
+        resettled.views
+    );
+    let want_w1 = resettled
+        .reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w1")
+        .and_then(|row| row.effective_frame)
+        .expect("resettle publishes w1 slot");
+    let want_w2 = resettled
+        .reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w2")
+        .and_then(|row| row.effective_frame)
+        .expect("resettle publishes w2 slot");
+    assert_ne!(want_w1, want_w2, "split frames differ");
+    let work = rect(0, 0, 1920, 1040);
+    let full = rect(0, 0, 1920, 1080);
+    for slot in [want_w1, want_w2] {
+        assert_ne!(slot, work, "split, never full work area");
+        assert_ne!(slot, full, "split, never full monitor");
+    }
+    let live = live_visible_observed();
+    assert_eq!(live.len(), 2, "mover and sibling both visible");
+    for (hwnd, want) in [(mover.hwnd, want_w1), (sibling.hwnd, want_w2)] {
+        let row = live
+            .iter()
+            .find(|w| w.hwnd == hwnd)
+            .expect("both windows read back");
+        assert_eq!(row.visible, want, "native readback matches desired slot");
+    }
+    assert_eq!(
+        env.state.applied_homing.get("w1"),
+        Some(&(out.clone(), current.clone()))
+    );
+    assert_eq!(
+        env.state.applied_homing.get("w2"),
+        Some(&(out.clone(), current.clone()))
+    );
+    assert_eq!(env.state.applied_views.get(&out), Some(&current));
+}
