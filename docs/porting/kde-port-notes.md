@@ -150,8 +150,13 @@ JS adapter (`kwin/src/`):
   logical homing moves to core receipts.
 
 Native effect (`kwin/native-effect/`, `activewindowborder.*`,
+`activeborderlogic.*`, `presentation_consumer.h`, `drag_oracle_ffi.h`):
+the unaccepted Stage 5 draft consumes serialized core bounds and removes
+group-highlight/visual-policy FFI derivation and legacy result forwarding.
 Native styling (colors, anchoring, artwork) stays native. Geometry dirt,
 queued previews across gestures and focus-clear fence reset still permit
+stale paints; see the [blocking outcome](../changes/kde-world-v2-port.md#stage-5-unaccepted-renderer-outcome-2026-10-26).
+The drag oracle remains pending the cancellation decision. Pager/plasmoid
 work is future and separate.
 
 ## Host styling on KDE
@@ -165,6 +170,7 @@ work is future and separate.
   the other. The focused miniature paints a full-strength accent
   border over a dimmer accent fill of the same color; unfocused
   miniatures are unchanged. The pager active workspace cell keeps the
+  system accent with no theme switch. KDE has no pager renderer yet: its
   independent highlight settings and artwork are deferred with that surface,
   not implemented or coupled to the border by this port.
 
@@ -249,14 +255,18 @@ request fixtures pin the JS producer, including populated raw attempts.
   (core presentation math is unit-agnostic); see the corrected
   `PresentationIngress` docs in
   `crates/tiler-core/src/world_report.rs`.
+- Stage 5 draft render conversion: `world-observe.ts::toInt` and Rust raw
   `kde_raw.rs::math_round` agree on halves toward positive infinity
   (`-10.5 -> -10`); published integer rectangles pass through unchanged.
   Style values are converted once into the same logical units at ingress.
+  `presentation_consumer.h::borderStrokeFromPublished` accepts only equal
   positive insets between core inner/outer. Pinned KWin `v6.7.4`
   `src/scene/borderoutline.h` inflates each side by that thickness and
   `outlinedborderitem.cpp` sets geometry from that inflation, reproducing
   core outer independently of later config-width changes. Underlay/preview
+  use core outer/rect directly; `mapFromScene` only translates into the
   native item anchor. No additional DPI factor, outset or Windows frame
+  compensation is applied. This coordinate proof does not prove freshness
   or independently observed native draw bounds; those remain unaccepted.
 - KWin size hints are client sizes: project decorated frames with
   `clientGeometry`, never with Windows invisible-border compensation.
@@ -373,4 +383,5 @@ request fixtures pin the JS producer, including populated raw attempts.
 - The local `kwin-globals.d.ts` declares the pinned `windowAt` hit test;
   consumption remains Stage 6 work, not a claimed applied cursor route.
 - The renderer cutover deletes native geometry/presentation policy, but its
+  freshness counterexamples block Stage 5 acceptance; do not infer completion
   from a successful native build or helper tests.

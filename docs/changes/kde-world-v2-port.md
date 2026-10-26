@@ -9,13 +9,16 @@
 - Stages 0/1/1b/2/3 are complete offline. Stage 4 is partial: strict raw capture,
   Rust fixed-size wire classification and obsolete selector deletion are
   delivered offline; directional shortcuts and implicit workspace selection/send
-  and this record stays active for the whole port. Renderer, host integration
-  and the documented unknown host facts remain later work.
   now submit existing core commands only. N6 adds the neutral tiling toggle;
   N6 birth-clear is accepted offline with neutral opt-in: KDE enables it,
   Windows preserves its existing birth route. Deleted raw windows close and
   unmanaged host windows are absent before core admission.
   Role, gesture and remaining local-fixed policy remain. N6 KDE JS tests
+  pass 737/737; the subsequent Stage 5 draft passes 750/750. Native acceptance remains TBD
+  and this record stays active for the whole port. Stage 5 has an unaccepted
+  renderer cutover with three unresolved freshness counterexamples; passing
+  offline gates do not close that boundary. Host integration and the documented
+  unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -37,8 +40,8 @@
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
-| 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
 | 4. Shared policy only | Partial offline: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear accepted offline. Role, local-fixed and gesture policy remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
+| 5. Pure presentation and coordinates | Unaccepted draft renders core border/underlay/drop bounds and deletes legacy renderer policy/forwarding; geometry, cross-gesture and focus-clear freshness remain blocking. No KDE pager renderer | Service 281, JS 750, native CTest 33 and acceptance 6 pass; coordinate proof below. These do not establish the missing causal freshness or native rendering acceptance |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; independent active-border and pager-focused-window colors, default system accent, full-strength border/dimmer fill | Declaration/source checks and adapter tests; independent overrides; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
@@ -1280,6 +1283,10 @@
   the other parked product questions remain unchanged; cursor warp remains
   unsupported and is never reported applied.
 
+- Gesture transport precedes Stage 5 freshness. Expose its immutable identity
+  The three Stage 5 blockers below remain unaccepted. Cursor warp remains
+  native/core association for Stage 5; preview correlation and the native
+  scope separately. Stage 5 remains unaccepted; N5, game/fullscreen suspension,
 ## Stage 5 bounded plan (2026-10-26)
 
 - Replace native border/underlay geometry and eligibility derivation with the
@@ -1300,14 +1307,89 @@
   Independent pager-highlight styling belongs with the pager rendering surface.
 - Native acceptance remains distinct from offline gates; a live check requires
   fixture-only scope and independent frame/visibility/foreground readback.
-- An unverified broker draft projects a `drag-preview` result into a separate
+- The initial broker draft projected a `drag-preview` result into a separate
   read-only `preview` field before stripping requester results. This draft
   passes the service build, tests and strict clippy but has not had contract
   review and is not accepted delivery. The native
   renderer, legacy forwarding and gesture ingress remain unchanged; Stage 5 is
   incomplete. Next: review preview freshness/retention semantics, implement the
-  native subscriber/render cutover, then run the required gates.
+  native subscriber/render cutover, then run the required gates. The outcome
+  below supersedes that draft status, not the Stage 5 acceptance conditions.
 
+### Stage 5 unaccepted renderer outcome (2026-10-26)
+
+- **Incomplete, not accepted:** the read-only renderer cutover builds and its
+  offline suites pass, but causal freshness remains unproven in three concrete
+  source-traced interleavings below. Initial liveness-only and subsequent
+  gesture-epoch/held-order-floor fences both leave stale-render paths. No live
+  fixture leg or native render acceptance was attempted; Stage 6 was not started.
+- Broker projection now carries only preview `rect`, mover-home
+  `sourceOut`/`sourceWs` and insertion-neighbor `win`, or null. Requester-only
+  `op`, hover chain, session revision and result-domain metadata are excluded;
+  take remains sender-bound. Rejections retain the last accepted projection;
+  an accepted preview-less capture, including failed-command fallback, clears
+  preview. Rotation drops the cache. Three service-flow regressions cover those
+  rules and cross-sender terminal isolation. These snapshot rules alone do not
+  correlate a preview to a still-live native gesture.
+- `world-presentation.ts` reads `ReadWorldPresentation` through its separately
+  authorized read lane and forwards accepted shapes to native `SetPresentation`.
+  Discovery seeds, accepted-capture notifications refresh, effect-facts instance
+  changes reseed, and request/generation checks reject stale callbacks. One
+  25-second host-deadline watchdog recovers silent KWin D-Bus errors without
+  idle polling. Replies invalidated by an accepted capture during flight are
+  discarded before painting. Capture/actuation and terminal collection are not
+  renderer authority.
+- Native rendering consumes complete border inner/outer, underlay outer and
+  preview rectangles; native item anchoring, color/radius and hide-only live
+  vetoes remain. Border stroke is recovered only from equal positive insets of
+  the published pair, never current configured width. Pinned KWin `v6.7.4`
+  `src/scene/borderoutline.h` and `outlinedborderitem.cpp` establish that native
+  inflation by that stroke reproduces the published outer rectangle. The
+  helper test plus source inspection is not an independent live draw readback.
+- Deleted legacy JS active-group and preview-result rendering writers,
+  `active-group-highlight.ts`, native group/preview setters, native geometry and
+  eligibility policy FFI consumers, `group_highlight_ffi.h`,
+  `visual_policy_ffi.h`, Rust `group_highlight.rs`/`visual.rs`, their unused crate
+  dependencies and superseded policy-only tests. The native drag oracle and
+  presentation-facts ingress remain. Shared-core behavior is unchanged; only
+  the unsafe-root test allowlist/fixture was synchronized with deleted FFI files.
+
+| Blocking boundary | Minimal counterexample and current defect | Required proof before acceptance |
+| --- | --- | --- |
+| Geometry dirt versus in-flight newer snapshot | Hold paint P5; read already-cached P6 captured before a frame move; move the target/member; then deliver P6 before post-move capture. Native dirt floor snapshots P5, so P6 incorrectly clears it despite stale geometry | A capture/native invalidation witness must fence both the read and final native dispatch; numeric advancement beyond the last displayed paint is not causal proof |
+| Preview publication versus gesture boundary | Queue preview for gesture A; finish A and start B; drain A's queued preview and read it entirely within B's epoch. Separately deliver an already-sent A paint after B starts | Correlate the producing preview with its live native gesture at publication and dispatch, not the neighbor window or merely any current move. Do not change pending cancellation semantics |
+| Focus clear versus in-transit paint | Show A; activate B, clearing native fence; deliver an old A paint; return to A | Production activation and error-hide paths must preserve invalidation/order evidence; reset only an explicitly replaced stream. Helper-only fence tests do not prove production routing |
+
+- [Discriminator rows](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs)
+  retain native/reference outcomes TBD. Existing green helper tests do not
+  execute these complete transport/native-event interleavings. No weakening of
+  hide-until-fresh or cross-gesture isolation is selected.
+- Coordinates: raw `kde_raw.rs::math_round` and JS rectangle capture use
+  `Math.round` semantics, including `-10.5 -> -10`; raw fractions are not
+  rounded with Rust's half-away-from-zero rule. Presentation ingress style
+  numbers already share KWin-logical frame units. Rendering maps scene to item
+  coordinates with `mapFromScene` only: no device-scale conversion, Windows
+  invisible-border compensation or second outset. See the use-site proof in
+  `presentation_consumer.h`/`updateBorder` and the port notes.
+- Native border color keeps its own override and live system-accent default,
+  independent of underlay/drop fills. KDE pager rendering is future/separate;
+  its independent focused-window highlight color is deferred with that surface.
+- PARKED neutrality concerns: integer rectangles and the shared geometry bound
+  quantize fractional host coordinates; `*_px` style names must not imply
+  Windows physical pixels on other hosts; `foreground_cloaked` and the documented
+  Win+Shift chord are Windows-shaped ingress vocabulary, not portable native
+  capability promises. The uniform-ring inset assumption is checked, not
+  approximated. No shared-core representation change is selected.
+- Final scoped declared-environment gates: locked all-target service build,
+  **281/281** tests and strict clippy pass; core/protocol build, **1,396/1,396**
+  tests and strict clippy pass; FFI **20/20** and strict clippy pass; JS
+  typecheck/build and **750/750** tests pass; host-matched effect build and
+  **33/33** CTests pass; exact world acceptance **6/6**, workspace formatting
+  and whitespace pass. An additional workspace-wide test run stops at four
+  existing macOS dock-swipe version-read failures on a non-macOS host;
+  workspace-wide strict clippy stops at existing macOS
+  `trailing_cleanup_decision` dead code. Neither overrides the scoped results
+  nor the renderer's semantic blockers. No dependency changes.
 - **Exact next action:** agree the end-to-end native invalidation and producing-
   gesture correlation contract, then add failing full-interleaving regressions
   for all three rows before further renderer changes. Any shared-core extension
