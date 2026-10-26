@@ -1444,10 +1444,21 @@ platform API behavior.
   **User-approved 2026-10-26:** deterministic layout child order defines
   "first". Candidate eligibility and fullscreen/game gates remain unchanged;
   empty/minimized-only workspaces retain no focused client (R-CLOSE-03,
-  REQ-MNZ-03). Directional focus from no focus, general no-active-window states,
-  and empty-workspace focus across outputs remain undecided. Shared-core
-  delivery retains existing tiled-session eligibility, not new float focus
-  tracking. [Discriminator](spec/reference-outcomes.md#workspace-no-focus-discriminators).
+  REQ-MNZ-03). Empty-workspace focus across outputs remains undecided.
+  Shared-core delivery retains existing tiled-session eligibility, not new
+  float focus tracking. [Discriminator](spec/reference-outcomes.md#workspace-no-focus-discriminators).
+- **User 2026-10-26 (not yet implemented):** directional focus with no focused
+  window follows i3/sway/Hyprland: it starts from the current workspace/output
+  and moves to the adjacent output in that direction by the existing
+  cross-output selection, otherwise it is a no-op; it never picks a window on
+  the current workspace. Shared core, all platforms. COSMIC outcome TBD
+  (surface-level source check, else user testing); a COSMIC-specific variant
+  may later become preset-selected.
+- **User 2026-10-26:** a shown workspace with windows may have no focused
+  window. The tiler never forces focus back after host-caused focus loss
+  (desktop/taskbar click, minimize); arrival rules above still apply on
+  workspace selection. Consistent with i3/sway workspace-level focus and with
+  game safety.
 - **User 2026-10-26:** Windows remembers an accepted asynchronous focus
   target's exact native identity and membership lifetime as in-flight, with no
   blocking completion wait, timer or timeout. Existing foreground WinEvents

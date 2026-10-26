@@ -112,3 +112,6 @@
   scheduler regression supplies that proof. Ordinary-app physical alternating
   Win+Shift+1 / Win+Shift+2 recheck remains user-owned. Cross-output, games and
   genuine mid-switch supersession are not claimed by these legs.
+- User physical acceptance 2026-10-26: heavy ordinary-app spam testing after
+  this fix behaved correctly. Cross-output, games and mid-switch supersession
+  remain unclaimed.

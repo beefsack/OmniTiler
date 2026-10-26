@@ -15,14 +15,13 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
-- P0 | Windows rapid send-follow arrival fails to retile | User physical dogfood
-  2026-10-26: rapid alternating Win+Shift+1 / Win+Shift+2 with two ordinary apps
-  rarely leaves the focused arrival at its singleton full-size frame beneath
-  the other window. Fixed consumed visibility-hook work lost on key-up-only
-  turns; paired scheduler/occupied-return regressions, offline gates and rapid
-  fixture send-follow/select/directional checks pass. User-owned ordinary-app
-  physical burst recheck remains.
-  [Record](changes/archive/windows-rapid-send-follow-convergence.md).
+- P2 | Windows wake-attribution trace flood | User 2026-10-26: during heavy
+  physical spam testing the log fills with consecutive `wake-attribution`
+  lines from `wait_source:"pager"` message wakes with no hook kinds, no
+  foreground and `elapsed_ms:0`, several per 10ms on the same tick. Tidy the
+  diagnostics (e.g. aggregate or suppress no-op wakes) so logs stay readable
+  without losing the attribution that diagnosed the 2026-10-26 starvation bugs
+  ([record](changes/archive/windows-directional-focus-startup.md)).
 - P2 | Pager shows stale source layout after send-follow | User dogfood
   2026-10-26: after sending a window away with follow, the source workspace's
   pager cell keeps the pre-send split until revisited. User wants to explore
@@ -79,16 +78,31 @@ decisions of 2026-09-24 are under
   to another output's window? Capture Tier 1 outcomes in the
   [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
   then decide with the user. Related to cursor-first targeting above.
-- P1 | No-focus workspace semantics | Arrival without remembered focus decided
-  User 2026-10-26 (per-workspace MRU, then layout-first; Hyprland cursor
-  fallback a deliberate deviation) and delivered in core
-  ([decision](decisions.md#workspaces)). Still undecided: directional focus with
-  no focused window, and whether no active window is allowed while windows are
-  shown ([Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
-  Windows occupied-switch focus restore delivered fixture-verified 2026-10-25
-  ([record](changes/archive/windows-workspace-focus-restore.md)); user-owned
-  physical checks remain: chords with ordinary apps, multi-output/shared/floating
-  variants, games.
+- P1 | Directional focus with no focused window | All no-focus semantics
+  decided User 2026-10-26 ([decision](decisions.md#workspaces),
+  [Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
+  Arrival MRU/layout-first is delivered. Next: implement in shared core the
+  i3/sway/Hyprland outcome: with no focused window, directional focus starts
+  from the current workspace/output, moves to the adjacent output in that
+  direction (existing cross-output selection), otherwise no-op; never picks a
+  window on the current workspace. Record per-WM cells in the functional
+  matrix. COSMIC cell TBD: surface-level source check only, else user testing;
+  may later become a preset-selected variant. The no-forced-refocus rule needs
+  no new code; verify it holds. Windows workspace-switch focus, rapid
+  Win+arrow and rapid send-follow are user physically accepted 2026-10-26;
+  multi-output/shared/floating variants and games remain user-owned.
+- P1 | Platform-neutral spam/stress acceptance tests | User 2026-10-26, after
+  the P1 above: one set of platform-agnostic test definitions (high-volume
+  action sequences: sends, switches, directional focus, moves, window churn)
+  with an expected final world (layout, membership, focus, shown workspace,
+  pager). Each platform runs them through a native runner with a configurable
+  delay between actions (including none), then queries real platform state
+  (the live test window tool is the likely query route) and compares it with
+  the expectation. A core-only layer with batched/reordered simulated host
+  replies complements it, but the native layer is essential: the 2026-10-26
+  Windows starvation bugs lived in host-event servicing. Builds on the core-only
+  ordered baseline (`test-fixtures/world-actions.json`, `world_acceptance`) and
+  the native acceptance connector items below.
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every
