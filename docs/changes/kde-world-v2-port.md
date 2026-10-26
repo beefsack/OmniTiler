@@ -1691,6 +1691,20 @@
   sequences. Signal delivery and scene painting remain source-reviewed/offline
   boundaries until physical checks. No new policy or shared-core change.
 
+### Stage 5 recorded-route regression draft: unaccepted (2026-10-27)
+
+- The first shared-fixture regression draft is not accepted. Native recovery
+  CTest reports eight failing assertions covering unpublished advances and
+  stale surfaces; its companion broker/JS legs pass. However the native seed
+  snapshot is assembled by the test instead of obtained from the real facts
+  endpoint, advanced facts are not byte-joined through every language leg,
+  and valid gesture-B recovery is missing. Explicit test-side publication and
+  modeled covering paints cannot establish production recovery.
+- Preserve this draft only as incomplete regression work. Next: replace its
+  assembled facts with actual endpoint replies, assert all advanced payload
+  joins, include gesture-B and focus-return recovery, reproduce failures, and
+  only then repair production publication and every-surface refresh.
+
 <a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
 ## N6 core-intents outcome (2026-10-26)
 

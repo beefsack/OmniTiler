@@ -211,6 +211,34 @@ if(BUILD_TESTING)
         COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-stage5-test>)
     set_tests_properties(native-effect-stage5-handlers PROPERTIES TIMEOUT 120)
 
+    # Stage 5 publication/recovery and cross-surface refresh regressions
+    # (harness only, no runtime change): the exact production
+    # PresentationStage5 handlers with the real router plus the real facts
+    # source, fed the recorded cross-language fixture bytes
+    # (test-fixtures/stage5: real broker output over the real JS route) and
+    # asserting on the stubbed item state each production refresh actually
+    # re-evaluates. RED by design: local bumps are never published after
+    # the seed bind (D1) and frame/gesture routes refresh only part of the
+    # surfaces (D2), so the red assertions fail until the fix unit lands.
+    # The fixture directory is baked in at configure time (source tree
+    # locally, Nix source store in the fileset build).
+    add_executable(omnitiler-active-border-stage5-recovery-test
+        presentation_stage5_recovery_test.cpp
+        presentation_stage5.cpp
+        presentationfacts.cpp
+    )
+    target_link_libraries(omnitiler-active-border-stage5-recovery-test PRIVATE
+        Qt6::Core
+        Qt6::DBus
+        Qt6::Gui)
+    target_compile_options(omnitiler-active-border-stage5-recovery-test PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(omnitiler-active-border-stage5-recovery-test PRIVATE
+        STAGE5_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../test-fixtures/stage5")
+
+    add_test(NAME native-effect-stage5-recovery
+        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-stage5-recovery-test>)
+    set_tests_properties(native-effect-stage5-recovery PROPERTIES TIMEOUT 120)
+
     # Offline transport test for the versioned script facts waiter: the
     # exact production PresentationFactsSource class (no test fake) driven
     # over a real private bus in the production topology (effect-owned

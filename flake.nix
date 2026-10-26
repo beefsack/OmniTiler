@@ -64,6 +64,11 @@
           # the subtree keeps the fileset exact.
           ./kwin/native-effect
           ./kwin/metadata.json
+          # Shared Stage 5 recorded fixtures: the recovery regression test
+          # reads these at test time (baked fixture dir, source tree
+          # locally and Nix source store here). Nothing else in
+          # test-fixtures enters the effect source.
+          ./test-fixtures/stage5
           # All workspace manifests/targets: Cargo requires every member
           # manifest+targets to resolve the workspace even when building
           # only -p omnitiler. Unrelated trees (kwin script
