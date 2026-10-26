@@ -178,7 +178,8 @@ interface Window {
     // Read-only in the official KWin scripting API (KWin::Window ->
     // Read-only Properties -> `clientGeometry`; src/window.h Q_PROPERTY
     // `KWin::RectF clientGeometry READ clientGeometry NOTIFY
-    // clientGeometryChanged` at pinned v6.7.4): the geometry of the window
+    // clientGeometryChanged` at pinned v6.7.4; floor proven at sibling
+    // v6.6.0 src/window.h:123, identical at v6.6.4): the geometry of the window
     // without frame borders, in global screen coordinates. Read-only: the
     // adapter captures it for client-to-decorated size-hint conversion,
     // never writes it.
@@ -411,11 +412,16 @@ interface Workspace {
     // src/scripting/workspace_wrapper.cpp:369-395): up to count clients at
     // a point, topmost first, skipping deleted, off-activity,
     // off-desktop, minimized, show-desktop-hidden and non-hit windows.
-    // Availability on any other KWin version is unproven: callers must
-    // feature-detect the function itself (never assume presence), and no
-    // current path calls it (Stage 6 cursor work consumes it). Cursor-warp
-    // stays unsupported: no warp API exists on either the JS or the
-    // effect side.
+    // Floor proven at sibling v6.6.0
+    // (src/scripting/workspace_wrapper.h:309: Q_INVOKABLE
+    // QList<Window *> windowAt(const QPointF &pos, int count = 1) const;
+    // impl .cpp:341 iterates stacking topmost-first with the same skips;
+    // identical at v6.6.4): callers must still feature-detect the function
+    // itself (never assume presence). The single current caller
+    // (world-observe.ts cursorWindow lane) passes one {x, y} position,
+    // takes the default count of 1, and treats the result as advisory
+    // only, never a target. Cursor warp stays unsupported by this adapter
+    // and is never reported applied.
     windowAt(pos: Point, count?: number): unknown;
     rootTile(output: Output, desktop: VirtualDesktop): Tile | null;
     // src/scripting/workspace_wrapper.h: Q_SCRIPTABLE QRectF clientArea(

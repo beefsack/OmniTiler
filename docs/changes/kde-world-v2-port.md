@@ -1380,9 +1380,38 @@
   and protocol are unchanged. Host-matched native CTest is **34/34** after
   deleting the obsolete Rust-oracle test; unsafe guardrail remains **32/32**.
 - **Exact next action:** correct the two retained red recovery discriminators,
-  then rerun scoped gates and boundary review. Stage 5 remains unaccepted; N5, game/fullscreen suspension,
-  race audit and later stages stay parked. Fixture drag/release/Esc testing
+  then rerun scoped gates and boundary review. Stage 5 remains unaccepted; N5,
+  game/fullscreen suspension, race audit and later stages stay parked. Fixture drag/release/Esc testing
   follows successful offline acceptance only.
+
+### Gesture integration verification (2026-10-26)
+
+- Integrated the newer native macOS selection/pager and Windows/core arrival-
+  focus work without changing their semantics. The append-only Windows test
+  conflict retains both focus and birth-clear suites. New macOS pager/tile
+  report fixtures explicitly retain `birth_clear:false` and default born mode.
+- Declared-environment service build, **307/307** tests and strict clippy pass;
+  core/protocol **1,402/1,402** and strict clippy pass; Windows Linux-available
+  **725/725** and strict clippy pass, not native Windows-target evidence.
+  JS typecheck/build pass; **703 pass, two recovery regressions fail**, neither
+  skipped. Host-matched native build/CTest **34/34**, exact world acceptance
+  **6/6**, workspace fmt/whitespace, portable source checks, source-archive
+  contract and third-party-notice freshness pass. Obsolete FFI gate is removed
+  with its crate, not represented as a new pass.
+- Additional workspace build passes. Workspace tests report **3,928 pass,
+  eight fail**, all macOS dock-swipe tests requiring an unavailable native OS
+  version on Linux. Workspace strict clippy reports existing macOS dead code:
+  `trailing_cleanup_decision`, `observe_creation_receipts`,
+  `release_selection_focus`, `SelectionFocusRelease`,
+  `release_selection_focus_after_arrival`. No unrelated correction or native
+  macOS acceptance is claimed.
+- KWin API inventory initially rejected `clientGeometry`, Workspace
+  `stackingOrder` and `windowAt`. Local source audit proves all three at
+  `v6.6.0` (`e53bb3be7ecf1735c7739b797f94d66de422ab4d`), unchanged at
+  `v6.6.4`: `src/window.h:123` and
+  `src/scripting/workspace_wrapper.h:66,309`, implementation `.cpp:310,341`.
+  Defensive producer reads conform to these signatures/order; inventory and
+  **10/10** guard regressions pass without changing capture behavior.
 
 ## Stage 5 bounded plan (2026-10-26)
 

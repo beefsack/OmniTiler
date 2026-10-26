@@ -11,6 +11,17 @@
 # Those live only in kwin/src/workspace-native.ts (feature detection plus
 # shared fallbacks) and kwin/src/kwin-globals.d.ts (type declarations).
 #
+# Addition 2026-10-26: clientGeometry, Workspace.stackingOrder, and
+# Workspace.windowAt audited against sibling kwin sources at v6.6.0
+# (commit e53bb3be7ecf1735c7739b797f94d66de422ab4d; identical lines at
+# v6.6.4): Window clientGeometry is src/window.h:123
+# (Q_PROPERTY KWin::RectF READ/NOTIFY); Workspace.stackingOrder is
+# src/scripting/workspace_wrapper.h:66 (QList<Window *>, bottommost
+# first); Workspace.windowAt is workspace_wrapper.h:309
+# (Q_INVOKABLE QList<Window *> windowAt(const QPointF &, int count = 1)).
+# All three call sites in kwin/src/world-observe.ts read defensively
+# (feature-detect, try/catch, null on unreadable; windowAt advisory only).
+#
 # Usage: scripts/kwin-66-api-guard.sh [SRC_DIR]
 # Exit 0 when clean, 1 with violations on stdout.
 set -uo pipefail
@@ -41,7 +52,7 @@ done < <(find "$SRC_DIR" -maxdepth 1 -name '*.ts' | sort)
 # Receiver patterns exclude parens (not commas) so TypeScript casts with
 # generic commas such as `Record<string, unknown>` do not hide a name.
 ALLOW=(
-    activeScreen activeWindow clientArea configChanged createDesktop
+    activeScreen activeWindow clientArea clientGeometry configChanged createDesktop
     currentDesktop currentDesktopChanged currentDesktopForScreen cursorPos desktops
     desktopsChanged frameGeometry frameGeometryChanged fullScreen
     fullScreenChanged geometry id interactiveMoveResizeFinished
@@ -51,8 +62,8 @@ ALLOW=(
     perOutputVirtualDesktops removeDesktop resize resizeable resourceClass
     screens screensChanged sendClientToScreen setCurrentDesktopForScreen
     setMaximize slotSwitchToAboveScreen slotSwitchToBelowScreen
-    slotSwitchToLeftScreen slotSwitchToRightScreen transient transientFor
-    windowActivated windowAdded windowList windowRemoved x11DesktopNumber
+    slotSwitchToLeftScreen slotSwitchToRightScreen stackingOrder transient transientFor
+    windowActivated windowAdded windowAt windowList windowRemoved x11DesktopNumber
 )
 
 allow_hit() {

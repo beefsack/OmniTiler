@@ -308,7 +308,8 @@ function readRect(ref: object): { x: number; y: number; w: number; h: number } |
 }
 
 // Read-only window client rectangle (KWin `clientGeometry` Q_PROPERTY at
-// pinned v6.7.4 `src/window.h:128`: the window geometry without frame
+// pinned v6.7.4 `src/window.h:128`, floor proven at sibling v6.6.0
+// `src/window.h:123`, identical at v6.6.4: the window geometry without frame
 // borders, global screen coordinates). Same KWin-logical rounding and
 // bounds as the decorated frame above; null when unreadable. Used only
 // for client-to-decorated size-hint conversion, never for placement.
@@ -1373,8 +1374,10 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         return null;
     })();
     // Raw same-capture script window fact: the live `windowAt` identity at
-    // the cursor position, or null when unreadable (no cursor), foreign, or
-    // throwing. Advisory only, never a target.
+    // the cursor position (sibling v6.6.0
+    // src/scripting/workspace_wrapper.h:309, impl .cpp:341, identical at
+    // v6.6.4; single {x, y} takes the default count of 1), or null when
+    // unreadable (no cursor), foreign, or throwing. Advisory only, never a target.
     const cursorWindow = (() => {
         if (cursor === null) {
             return null;
@@ -1417,8 +1420,10 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     }
     // Native top-to-bottom stacking snapshot for the pager order (Stage 5):
     // pinned v6.7.4 `Workspace.stackingOrder` lists bottommost first
-    // (workspace_wrapper.h:137-142), so the reversed snapshot is topmost
-    // first. windowList order is NOT stacking and never substitutes here:
+    // (workspace_wrapper.h:137-142); floor proven at sibling v6.6.0
+    // (src/scripting/workspace_wrapper.h:66: QList<Window *>, "later ones
+    // cover earlier ones", identical at v6.6.4), so the reversed snapshot is
+    // topmost first. windowList order is NOT stacking and never substitutes here:
     // unreadable stacking rides empty (the core renders no pager members
     // rather than a fabricated order). Unknown ids (windows that left
     // between the two enumerations) drop; duplicates keep first occurrence.
