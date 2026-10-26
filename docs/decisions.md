@@ -14,6 +14,14 @@ Superseded excerpts moved out on 2026-10-24 live in
 [decisions-archive.md](decisions-archive.md); the archive is historical, not
 current product policy.
 
+User-approved 2026-10-26 index (implementation status below):
+- KDE Stage 5 gesture-first causal renderer freshness
+- Neutral focused-fullscreen presentation suspension (option B; pending)
+- N5 workspace membership versus immediate eligibility (option B; pending)
+- Intent-only float toggle and implicit output targeting (option A; pending)
+- Native Plasma pager only on KDE
+  ([dated decisions](#kde-port-and-race-decisions-2026-10-26))
+
 Tentative index (user review pending; not approved product rules):
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))
@@ -48,10 +56,50 @@ Tentative index (user review pending; not approved product rules):
   ([port record](changes/macos-world-v2-port.md#shared-transient-classification-2026-10-25));
   in-process only, Windows dialog exclusions unchanged
 - Intent-first race safety ([below](#world-command-intent-and-birth-ownership-2026-10-26));
-  audit recommendations beyond the approved tiling toggle remain parked
+  float toggle and implicit output targeting are now approved below, not implemented
 - Independent birth-clear property authority under geometry-convergence holds
   ([below](#world-command-intent-and-birth-ownership-2026-10-26)); tentative,
   safety holds and fresh-native settlement requirements remain binding
+
+## KDE port and race decisions (2026-10-26)
+
+- **Stage 5 sequencing, approved:** gesture transport first, then renderer
+  freshness. Tie every drop preview to its producing native gesture identity.
+  The effect mints a monotonic native-invalidation counter; the broker records
+  each capture's covered value. Draw only presentation/preview covering the
+  renderer's latest value, with preview matching the live native gesture.
+  First reproduce all three full-interleaving regressions. Any shared-core
+  need requires a separate decision.
+- **Fullscreen suspension, option B, approved; pending implementation:** a
+  neutral core rule hides borders, underlays, overlays and drop preview on the
+  output whose focused surface is fullscreen. This is not game identification:
+  no app-name or size heuristics. Each host supplies truthful fullscreen facts
+  (KDE `fullScreen`, macOS native fullscreen); Windows retains its adapter path
+  until cross-platform core review. Otherwise fullscreen windows remain ordinary
+  windows: workspace sends move them, switches hide them, window shortcuts act
+  on them. A fullscreen-exit shortcut such as Alt+Enter needs a neutral fullscreen
+  command, a separate future question.
+- **N5, option B, approved; pending implementation:** shared classification
+  separates workspace membership from immediate layout/action eligibility.
+  Minimized and host-hidden windows remain members but are ineligible. Windows
+  safety exclusions still yield unmanaged, unchanged. KWin dialog/transient
+  facts use the existing float path, not fabricated Windows owned-dialog facts.
+  Regressions must cover member-but-ineligible layout, focus navigation, sends
+  and migration consumers.
+- **Float-toggle race audit, option A, approved; pending implementation:**
+  `ToggleFloat` carries no intent-time rectangle. Core resolves floating geometry
+  at execution from the remembered float rectangle, else the current frame.
+  Explicit rectangles are only for genuine user placement, such as drag drop.
+  Prove Windows float-placement parity.
+- **Output-targeting race audit, option A, approved; pending implementation:**
+  implicit selection/send/move commands leave output unset; core resolves the
+  configured cursor/focused output at execution. Explicit outputs require a
+  genuine user choice, such as a per-monitor indicator click or CLI `--output`.
+  Prove per-platform behavior unchanged or report visible differences.
+- **KDE pager, approved:** no OmniTiler KDE pager; use the native Plasma pager.
+  Core pager-focused-window color does not apply on KDE. This supersedes earlier
+  proposed KDE pager rendering/styling work; the backlog item is already recorded.
+- [Port scope and implementation evidence](changes/kde-world-v2-port.md#user-decisions-2026-10-26).
 
 ## World command intent and birth ownership (2026-10-26)
 
@@ -72,8 +120,10 @@ Tentative index (user review pending; not approved product rules):
   against retained state at execution, never adapter snapshot preselection.
   This is guidance for review, not approval to change other commands. The
   [audit](changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26)
-  parks geometry-bearing float toggles, implicit output/source selection and
-  explicit-send current sampling. No changes to those commands are selected.
+  originally parked geometry-bearing float toggles, implicit output/source
+  selection and explicit-send current sampling. Float-toggle geometry and
+  implicit output targeting are now approved in the dated decisions above;
+  implementation and explicit-send current sampling remain separate work.
 - **Tentative user decision 2026-10-26:** independently proven birth-clear
   authority may proceed while geometry convergence remains held. Maximize
   clear is a mode transition authorized by the window's own birth facts and

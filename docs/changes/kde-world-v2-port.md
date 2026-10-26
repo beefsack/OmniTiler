@@ -42,7 +42,7 @@
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
 | 4. Shared policy only | Partial offline: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear accepted offline. Role, local-fixed and gesture policy remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
 | 5. Pure presentation and coordinates | Unaccepted draft renders core border/underlay/drop bounds and deletes legacy renderer policy/forwarding; geometry, cross-gesture and focus-clear freshness remain blocking. No KDE pager renderer | Service 281, JS 750, native CTest 33 and acceptance 6 pass; coordinate proof below. These do not establish the missing causal freshness or native rendering acceptance |
-| 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; independent active-border and pager-focused-window colors, default system accent, full-strength border/dimmer fill | Declaration/source checks and adapter tests; independent overrides; native styling remains host-owned |
+| 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; active-border color with default system accent; KDE uses the native Plasma pager, so core pager-focused-window color does not apply | Declaration/source checks and adapter tests; border override; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
 
@@ -1463,6 +1463,42 @@
   required for that leg. Controller evaluated-readiness, gesture execution and
   complete post-mutation restoration have not been exercised by this preflight.
 
+## User decisions (2026-10-26)
+
+- [Approved decisions](../decisions.md#kde-port-and-race-decisions-2026-10-26)
+  supersede earlier parked recommendations only as specified here; approval is
+  not implementation or native acceptance.
+- Stage 5: accepted offline gesture transport precedes renderer freshness.
+  Every preview names its producing native `{instance, serial}`. Effect-owned
+  native invalidation advances on geometry, focus/activation and gesture
+  boundaries; the broker records capture coverage, and rendering requires that
+  coverage to include the latest invalidation. Full production-routing red
+  regressions for the three interleavings below precede implementation. No
+  timing, geometry, age or settle-wait inference; any shared-core need returns
+  for a separate decision. Pending cancellation semantics remain unchanged.
+- Fullscreen suspension option B is approved, not implemented: neutral core
+  presentation suppression on the focused-fullscreen output, with truthful
+  host fullscreen facts, no game/app/size heuristics and ordinary window
+  commands/membership retained. Windows keeps its adapter path until review;
+  a neutral fullscreen-exit command is a separate future question.
+- N5 option B is approved, not implemented: shared membership is distinct from
+  immediate layout/action eligibility; minimized/host-hidden windows stay
+  members but ineligible. Windows unmanaged safety exclusions stay unchanged;
+  KWin dialog/transient facts use the existing float path. Layout, focus
+  navigation, sends and migration all need member-but-ineligible regressions.
+- Race-audit option A choices are approved, not implemented: intent-only
+  `ToggleFloat` resolves remembered/current floating geometry at execution;
+  explicit rectangles mean genuine user placement. Implicit output commands
+  leave output unset for execution-time configured cursor/focus resolution;
+  explicit output means a real user choice. Prove Windows float parity and
+  per-platform output behavior, reporting any visible differences.
+- No OmniTiler KDE pager: native Plasma pager only. Its core focused-window
+  color is inapplicable on KDE; Stage 6 above is corrected accordingly. The
+  backlog entry is already recorded. Earlier proposed KDE pager renderer/color
+  work below is historical, not future scope.
+- Only Stage 5 causal freshness is implementation scope here. Fullscreen, N5,
+  float/output command changes and Stages 6-8 remain separate work.
+
 ## Stage 5 bounded plan (2026-10-26)
 
 - Replace native border/underlay geometry and eligibility derivation with the
@@ -1548,8 +1584,9 @@
   invisible-border compensation or second outset. See the use-site proof in
   `presentation_consumer.h`/`updateBorder` and the port notes.
 - Native border color keeps its own override and live system-accent default,
-  independent of underlay/drop fills. KDE pager rendering is future/separate;
-  its independent focused-window highlight color is deferred with that surface.
+  independent of underlay/drop fills. Superseding user decision: KDE uses the
+  native Plasma pager; no OmniTiler pager renderer or core pager-focused-window
+  color applies on KDE.
 - PARKED neutrality concerns: integer rectangles and the shared geometry bound
   quantize fractional host coordinates; `*_px` style names must not imply
   Windows physical pixels on other hosts; `foreground_cloaked` and the documented
