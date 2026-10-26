@@ -730,11 +730,18 @@ pub(crate) mod tests {
             closed: Vec::new(),
             host_owned_workspace_domains: false,
             equal_workspace_count: false,
+            // Core regression builders opt into the automatic birth-clear
+            // capability explicitly: production adapters carry their own
+            // value (KDE true, Windows/macOS false) and these tests pin the
+            // enabled lane. Disabled behavior is pinned per-test by
+            // overriding this back to false.
+            birth_clear: true,
             native: Vec::new(),
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
             anchor_fallback: crate::admission::AnchorFallback::default(),
             no_space_result: crate::admission::NoSpaceResult::default(),
+            born_maximized: crate::born_maximized::BornMaximized::default(),
             switch_target: crate::cursor_targeting::SwitchTarget::default(),
             fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
             focus_follows_cursor: false,

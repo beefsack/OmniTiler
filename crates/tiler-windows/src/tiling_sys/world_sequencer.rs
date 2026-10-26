@@ -370,11 +370,16 @@ impl WorldSequencer {
             workspace_mode: captured.workspace_mode,
             host_owned_workspace_domains: false,
             equal_workspace_count: captured.equal_workspace_count,
+            // The Windows adapter never opts into automatic birth clears:
+            // the retained admission preamble owns the birth route and the
+            // core must not mint a second autonomous lane beside it.
+            birth_clear: false,
             native: Vec::new(),
             fixed_size_predicate: captured.fixed_size_predicate,
             migration_source_refill: captured.migration_source_refill,
             anchor_fallback: Default::default(),
             no_space_result: Default::default(),
+            born_maximized: captured.born_maximized,
             switch_target: captured.switch_target,
             fresh_placement: captured.fresh_placement,
             focus_follows_cursor: captured.focus_follows_cursor,

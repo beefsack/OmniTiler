@@ -2285,6 +2285,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             observation,
             defaultTiled: settings.readDefaultTiled(),
             refill: settings.readRefillLive(),
+            bornMaximized: settings.readBornMaximizedLive(),
             anchorFallback: settings.readAnchorFallbackLive(),
             noSpaceResult: settings.readNoSpaceResultLive(),
             creationAttempts: state.creationAttemptsForReport(),

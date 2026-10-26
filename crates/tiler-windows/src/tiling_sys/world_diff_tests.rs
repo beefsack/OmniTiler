@@ -3641,6 +3641,20 @@ pub(super) fn dispatch_obs(
     .expect("dispatch")
 }
 
+#[test]
+fn production_sequencer_reports_opt_out_of_automatic_birth_clear() {
+    // Non-opt-in production route pin: the real capture/sequencer path
+    // reports the capability off, so the core never mints an autonomous
+    // birth clear beside the retained preamble-owned birth route.
+    let rig = rig();
+    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+    let report = dispatch_obs(&mut seq, &rig, 1001, 7);
+    assert!(
+        !report.birth_clear,
+        "Windows production stays opted out of automatic birth clears"
+    );
+}
+
 /// Model truthful observation: the next capture reads what the native
 /// desktop actually holds after the last apply pass.
 pub(super) fn sync_observed_from_native(rig: &mut Rig, native: &FakeNative) {

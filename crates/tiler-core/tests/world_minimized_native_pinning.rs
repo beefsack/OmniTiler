@@ -126,11 +126,13 @@ fn report(
         closed: vec![],
         host_owned_workspace_domains: true,
         equal_workspace_count: false,
+        birth_clear: false,
         native,
         fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
         migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: tiler_core::admission::AnchorFallback::default(),
         no_space_result: tiler_core::admission::NoSpaceResult::default(),
+        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
         default_tiled: true,
         focused_global: windows
             .first()

@@ -638,6 +638,10 @@ pub(super) struct CapturedWorld {
     pub(super) action_outputs: Vec<OutputId>,
     pub(super) default_tiled: bool,
     pub(super) fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate,
+    /// Born-maximized admission mode for subsequent admissions (report
+    /// ingress only; never an adapter clear policy). Backfills the default
+    /// when no live settings exist.
+    pub(super) born_maximized: tiler_core::born_maximized::BornMaximized,
     pub(super) migration_source_refill: tiler_core::output_selection::MigrationSourceRefill,
     /// Uniform presentation ingress (stage 5): normalized foreground, style,
     /// and movement facts plus the native stacking snapshot. The sequencer
@@ -1697,6 +1701,13 @@ pub(super) fn capture_world(
             .map(|live| live.settings.core.workspace.default_tiled)
             .unwrap_or(true),
         fixed_size_predicate: admission::fixed_predicate_for(state.settings_live.as_ref()),
+        born_maximized: if super::focus_actuation::born_maximized_keep_overlay_for(
+            state.settings_live.as_ref(),
+        ) {
+            tiler_core::born_maximized::BornMaximized::KeepMaximizedOverlay
+        } else {
+            tiler_core::born_maximized::BornMaximized::TileOnLaunch
+        },
         migration_source_refill: state
             .settings_live
             .as_ref()

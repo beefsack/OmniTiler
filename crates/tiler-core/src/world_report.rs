@@ -1014,6 +1014,12 @@ pub struct WorldReport {
     /// (neutral parity for native desktops spanning outputs). Off by
     /// default; replaces the superseded aligned-grid option.
     pub equal_workspace_count: bool,
+    /// Capability opt-in: the core may clear a born maximized window
+    /// automatically (commandless born maximize-clear, see
+    /// [`crate::world_born`]). Off by default; without it no automatic
+    /// birth behavior mints, publishes, or settles, while the explicit
+    /// directional clear lane is unchanged.
+    pub birth_clear: bool,
     /// Host-owned native domain observations. Must be empty unless the
     /// `host_owned_workspace_domains` capability is set.
     pub native: Vec<NativeObservation>,
@@ -1110,6 +1116,15 @@ pub struct WorldReport {
     /// toggles already retained never reseed. Backfills `true` when the
     /// adapter predates the field.
     pub default_tiled: bool,
+    /// Ingress born-maximized admission mode (R-MAX-06, main.xml
+    /// `bornMaximized`, catalog `admission.born-maximized`): selects whether
+    /// a tiled-first born maximized window clears once (`tile-on-launch`,
+    /// default) or keeps its overlay over a reserved slot
+    /// (`keep-maximized-overlay`). Tolerant: missing/invalid backfills the
+    /// default. The held-fullscreen exit lane clears under both modes.
+    /// Applies to subsequent admissions only, never reclassifying retained
+    /// windows.
+    pub born_maximized: crate::born_maximized::BornMaximized,
     pub inventory_complete: bool,
     pub gesture_barrier: bool,
     /// Normalized gesture lifecycle ingress (stage 4a): `None` on
@@ -1483,6 +1498,7 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     flag(&mut hash, report.default_tiled);
     flag(&mut hash, report.host_owned_workspace_domains);
     flag(&mut hash, report.equal_workspace_count);
+    flag(&mut hash, report.birth_clear);
     feed(&mut hash, &report.focused_global);
     sep(&mut hash);
     feed(
@@ -1553,6 +1569,8 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     }
     flag(&mut hash, report.focus_follows_cursor);
     flag(&mut hash, report.cursor_warp);
+    feed(&mut hash, report.born_maximized.as_wire_str());
+    sep(&mut hash);
     feed(&mut hash, report.fixed_size_predicate.as_wire_str());
     sep(&mut hash);
     feed(&mut hash, report.migration_source_refill.as_wire_str());

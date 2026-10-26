@@ -525,7 +525,7 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 pub fn report_estimate(report: &WorldReport) -> usize {
     // Envelope fixed bytes: {"v":2,"owner":,"adapter":,"gen":,"obs":"","reqSeq":"",
     // "req":,"cmdSeq":,"command":,"screens":[],"windows":[],"views":[],"closed":[],
-    // "hostOwned":,"equalCount":,"native":[],"predicate":,"refill":,"defaultTiled":,
+    // "hostOwned":,"equalCount":,"birthClear":,"native":[],"predicate":,"refill":,"defaultTiled":,
     // "complete":,"gesture":} = 219, plus the cursor-first
     // targeting keys (10 + 16 + 18 + 22 + 13 = 79):
     // ,"cursor":,"switchTarget":,"freshPlacement":,"focusFollowsCursor":,
@@ -535,7 +535,9 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 415,
     // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 453,
     // plus ,"clearAttempts":[] (18) = 471, plus ,"creationAttempts":[] (22)
-    // = 493, plus ,"gesture":null (12) = 505, plus the version digits, plus
+    // = 493, plus ,"gesture":null (12) = 505, plus ,"birthClear": (14) =
+    // 519, plus ,"bornMaximized":S (17
+    // fixed plus the token) = 522, plus the version digits, plus
     // ,"presentation":{} below. Values
     // counted
     // separately below; nullable command, cursor, cursor-hit, and
@@ -543,9 +545,10 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // registry counts its brackets plus one comma per entry. The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
-    let mut bytes = 437
+    let mut bytes = 451
         + 36
         + 20
+        + 17
         + gesture_estimate(report)
         + usize_len(report.contract_version as usize)
         + json_string_len(&report.owner)
@@ -554,6 +557,7 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + json_string_len(&report.request_id)
         + json_string_len(crate::workspace_scope::mode_token(report.workspace_mode))
         + json_string_len(report.fixed_size_predicate.as_wire_str())
+        + json_string_len(report.born_maximized.as_wire_str())
         + json_string_len(report.migration_source_refill.as_wire_str())
         + json_string_len(report.anchor_fallback.as_wire_str())
         + json_string_len(report.no_space_result.as_wire_str())
@@ -587,6 +591,7 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + bool_len(report.default_tiled)
         + bool_len(report.host_owned_workspace_domains)
         + bool_len(report.equal_workspace_count)
+        + bool_len(report.birth_clear)
         + json_string_len(&report.focused_global)
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)

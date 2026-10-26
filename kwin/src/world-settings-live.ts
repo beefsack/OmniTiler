@@ -212,6 +212,7 @@ export interface WorldSettingsLiveOverrides {
     readonly readOuterGapFn?: () => unknown;
     readonly readSameAxisMoveFn?: () => unknown;
     readonly readMigrationSourceRefillFn?: () => unknown;
+    readonly readBornMaximizedFn?: () => unknown;
     readonly readAnchorFallbackFn?: () => unknown;
     readonly readNoSpaceResultFn?: () => unknown;
 }
@@ -232,6 +233,12 @@ export interface WorldSettingsLive {
     readonly readOuterGapLive: () => number;
     readonly readSameAxisLive: () => string;
     readonly readRefillLive: () => MigrationSourceRefill;
+    // R-MAX-06 born-maximized mode (main.xml `bornMaximized`): validated
+    // token carried on every full report, re-resolved per dispatch so a
+    // deliberate Options reload applies to subsequent admissions with no
+    // restart. The core owns admission/clear policy from this ingress;
+    // the adapter never decides.
+    readonly readBornMaximizedLive: () => BornMaximized;
     // D2/D3 best-effort capacity settings (main.xml `anchorFallback`,
     // `noSpaceResult`): validated tokens carried on every full report,
     // re-resolved per dispatch so a deliberate Options reload applies to
@@ -326,6 +333,17 @@ export function createWorldSettingsLive(
             return "last-remaining-workspace";
         }
     };
+    // Born-maximized admission mode (R-MAX-06 N6): validated token
+    // carried on every full report, re-resolved per dispatch. Core owns
+    // admission and the one-shot clear from this ingress.
+    const readBornMaximizedLive = (): BornMaximized => {
+        try {
+            return readBornMaximizedValue(overrides.readBornMaximizedFn);
+        } catch (error) {
+            void error;
+            return BORN_MAXIMIZED_DEFAULT;
+        }
+    };
     // D2 anchor fallback (main.xml `anchorFallback`): validated token
     // carried on every full report, re-resolved per dispatch so a
     // deliberate Options reload applies to subsequent capacity decisions
@@ -411,6 +429,7 @@ export function createWorldSettingsLive(
         readOuterGapLive,
         readSameAxisLive,
         readRefillLive,
+        readBornMaximizedLive,
         readAnchorFallbackLive,
         readNoSpaceResultLive,
         checkStartupDrift,

@@ -1470,6 +1470,10 @@ export interface WorldInnerReportInput {
     // migrations only. Resolved live per report by the entry, never
     // defaulted here.
     readonly refill: MigrationSourceRefill;
+    // Validated R-MAX-06 born-maximized token (main.xml
+    // `bornMaximized`): the core applies it to subsequent admissions
+    // only. Resolved live per report by the entry, never defaulted here.
+    readonly bornMaximized: string;
     // Validated D2/D3 capacity tokens (main.xml `anchorFallback`,
     // `noSpaceResult`): the core applies them to subsequent capacity
     // decisions only, never reflowing retained state on Apply.
@@ -1616,8 +1620,13 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
     return `{"v":${WORLD_CONTRACT_VERSION},"mode":${esc(observation.mode)},` +
         `"screens":[${screens}],"windows":[${windows}],"views":[${views}],"closed":[${closed}],` +
         `"hostOwned":${observation.hostOwned ? "true" : "false"},"equalCount":${observation.equalCount ? "true" : "false"},` +
+        // KDE explicitly opts into the automatic birth-clear capability:
+        // the core may clear a born maximized window once under
+        // tile-on-launch (the held-fullscreen exit lane included).
+        `"birthClear":true,` +
         `"native":[${native}],` +
         `"predicate":${esc(observation.predicate)},"refill":${esc(input.refill)},` +
+        `"bornMaximized":${esc(input.bornMaximized)},` +
         `"defaultTiled":${input.defaultTiled ? "true" : "false"},"focused":${esc(observation.focusedGlobal)},` +
         `"complete":${observation.complete ? "true" : "false"},"gesture":${observation.gesture ? "true" : "false"},` +
         `"switchTarget":${esc(observation.switchTarget)},"freshPlacement":${esc(observation.freshPlacement)},` +

@@ -659,6 +659,10 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         // owns the mapping, the adapter only observes.
         host_owned_workspace_domains: true,
         equal_workspace_count: false,
+        // The macOS adapter keeps the old path: no automatic birth clear
+        // (handover notes the lane for a later review; KDE opts in, Windows
+        // stays preamble-owned).
+        birth_clear: false,
         native,
         fixed_size_predicate: input.predicate,
         migration_source_refill: input.refill,
@@ -669,6 +673,7 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
         gesture: input.gesture.clone(),
         anchor_fallback: tiler_core::admission::AnchorFallback::default(),
         no_space_result: tiler_core::admission::NoSpaceResult::default(),
+        born_maximized: tiler_core::born_maximized::BornMaximized::default(),
         switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
         fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
         focus_follows_cursor: false,

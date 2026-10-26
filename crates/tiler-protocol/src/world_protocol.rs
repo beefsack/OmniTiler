@@ -33,8 +33,11 @@
 //!  switchTarget, freshPlacement, cursor:[x,y]|null,
 //!  actionForeground:id|null, actionCached:id|null, actionOutputs:[id...],
 //!  focusFollowsCursor:bool, cursorWarp:bool}
-//! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult;
-//!  missing or invalid values backfill the defaults)
+//! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult,
+//!  and bornMaximized; missing or invalid values backfill the defaults;
+//!  plus the optional tolerant birthClear capability: missing backfills
+//!  false = no automatic birth clear, a present bool decodes, any other
+//!  shape refuses)
 //! screens[]: {out, full:[x,y,w,h]|null, work:[x,y,w,h]|null, gap, outer,
 //!             complete:bool, primary:bool}
 //! windows[] (facts): {win, out, rect:[x,y,w,h]|null, floating:bool,
@@ -56,6 +59,11 @@
 //!   (optional, tolerant: missing or invalid backfills the default)
 //! noSpaceResult: "float"|"allow-overlap"
 //!   (optional, tolerant: missing or invalid backfills the default)
+//! bornMaximized: "tile-on-launch"|"keep-maximized-overlay"
+//!   (optional, tolerant: missing or invalid backfills tile-on-launch)
+//! birthClear: bool (optional, tolerant: missing backfills false = no
+//!   automatic birth clear; a present bool decodes, any other shape
+//!   refuses like the strict capability flags)
 //! switchTarget: "cursor-output"|"focused-output" (strict: unknown refuses)
 //! freshPlacement: "cursor-output-last-focused"|"cursor-output-cursor-closest"|"focused-output-last-focused"
 //!   (strict: unknown refuses)
@@ -1576,6 +1584,8 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         &[
             "anchorFallback",
             "noSpaceResult",
+            "bornMaximized",
+            "birthClear",
             "cursorHit",
             "monotonicMs",
             "frameAttempts",
@@ -1711,6 +1721,21 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     let no_space_result = tiler_core::admission::NoSpaceResult::normalize_wire(
         map.get("noSpaceResult").and_then(serde_json::Value::as_str),
     );
+    // Tolerant born-maximized admission mode: missing, non-string, or
+    // invalid tokens backfill the tile-on-launch default (never refuse old
+    // adapters or typos). Applies to subsequent admissions only.
+    let born_maximized = tiler_core::born_maximized::BornMaximized::normalize_wire(
+        map.get("bornMaximized").and_then(serde_json::Value::as_str),
+    );
+    // Tolerant automatic birth-clear capability: missing backfills false
+    // (no automatic birth behavior, the fail-closed default for adapters
+    // predating the key). A present bool decodes; any other shape refuses
+    // like the strict capability flags.
+    let birth_clear = match map.get("birthClear") {
+        None => false,
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(_) => return Err(malformed()),
+    };
     // No restoration ingress exists: every report is a fresh-observation
     // report. A present `restored` key is an unknown key and refuses
     // above; no durable ring store ever feeds this path.
@@ -1737,11 +1762,13 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         closed,
         host_owned_workspace_domains: req_bool(map, "hostOwned")?,
         equal_workspace_count: req_bool(map, "equalCount")?,
+        birth_clear,
         native,
         fixed_size_predicate: predicate,
         migration_source_refill: refill,
         anchor_fallback,
         no_space_result,
+        born_maximized,
         switch_target,
         fresh_placement,
         cursor: opt_point_or_null(map, "cursor")?,

@@ -199,6 +199,51 @@ fn native_observations_require_the_capability() {
 }
 
 #[test]
+fn birth_clear_capability_decodes_tolerantly() {
+    // Missing backfills false: adapters predating the key stay on the old
+    // path with no automatic birth behavior.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert!(!report.birth_clear);
+    // A present bool decodes either way.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["birthClear"] = serde_json::Value::Bool(true);
+    let report = decode_request(&value.to_string()).expect("true decodes");
+    assert!(report.birth_clear);
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["birthClear"] = serde_json::Value::Bool(false);
+    let report = decode_request(&value.to_string()).expect("false decodes");
+    assert!(!report.birth_clear);
+    // A present non-bool refuses like the strict capability flags.
+    for bad in [
+        serde_json::Value::Null,
+        serde_json::json!("true"),
+        serde_json::json!(1),
+        serde_json::json!({}),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["birthClear"] = bad;
+        let error = decode_request(&value.to_string()).expect_err("non-bool refuses");
+        assert_eq!(error.kind, "malformed");
+    }
+    // The estimate still bounds a wire carrying the key either way.
+    for enabled in [false, true] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["birthClear"] = serde_json::Value::Bool(enabled);
+        let wire = value.to_string();
+        let report = decode_request(&wire).expect("decodes");
+        assert_eq!(report.birth_clear, enabled);
+        let estimate = tiler_core::world_report::report_estimate(&report);
+        assert!(
+            estimate >= wire.len(),
+            "estimate {estimate} bounds wire {}",
+            wire.len()
+        );
+    }
+}
+
+#[test]
 fn all_commands_decode_typed_and_refuse_bad_vocab() {
     use tiler_core::world_report::WorldCommand as C;
     let command_json = serde_json::json!({"op": "focus", "win": "win-a", "direction": "left"});
@@ -472,6 +517,29 @@ fn with_command(command: &serde_json::Value, seq: &str) -> String {
     value["command"] = command.clone();
     value["cmdSeq"] = serde_json::Value::String(seq.to_owned());
     value.to_string()
+}
+
+#[test]
+fn tolerance_backfills_born_maximized() {
+    // Missing or invalid born-maximized backfills tile-on-launch, never
+    // refuses; both wire tokens decode.
+    use tiler_core::born_maximized::BornMaximized;
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert_eq!(report.born_maximized, BornMaximized::TileOnLaunch);
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["bornMaximized"] = serde_json::Value::String("bogus".to_owned());
+    let report = decode_request(&value.to_string()).expect("tolerant decodes");
+    assert_eq!(report.born_maximized, BornMaximized::TileOnLaunch);
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["bornMaximized"] = serde_json::Value::String("tile-on-launch".to_owned());
+    let report = decode_request(&value.to_string()).expect("tile decodes");
+    assert_eq!(report.born_maximized, BornMaximized::TileOnLaunch);
+    assert!(report.born_maximized.should_clear_at_admission());
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["bornMaximized"] = serde_json::Value::String("keep-maximized-overlay".to_owned());
+    let report = decode_request(&value.to_string()).expect("keep decodes");
+    assert_eq!(report.born_maximized, BornMaximized::KeepMaximizedOverlay);
+    assert!(!report.born_maximized.should_clear_at_admission());
 }
 
 #[test]

@@ -239,6 +239,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(Array.isArray(inner["closed"]));
         assert.ok(Array.isArray(inner["native"]));
         assert.equal(inner["hostOwned"], true);
+        assert.equal(inner["birthClear"], true);
         assert.equal(inner["predicate"], "both-axes-fixed");
         assert.equal(inner["refill"], "last-remaining-workspace");
         assert.equal(inner["defaultTiled"], true);
