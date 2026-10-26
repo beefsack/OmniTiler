@@ -145,7 +145,7 @@ unreadable scopes. `world_no_focus_directional` proves loss -> crossing -> quiet
 arrival and loss -> no-op -> quiet observation. JSON decode-to-engine and Windows
 production keyboard-route tests pass. Fixture minimize confirms no forced native
 refocus; its CLI refuses an unmanaged origin, so it did not exercise the new
-no-focus path. Physical shortcuts remain unverified. [Record](../changes/directional-focus-without-window.md).
+no-focus path. Physical shortcuts remain unverified. [Record](../changes/archive/directional-focus-without-window.md).
 
 <a id="cross-output-focus-edge-discriminator"></a>
 ### Cross-output focus: edge-nearest versus destination MRU

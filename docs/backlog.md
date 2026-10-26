@@ -80,17 +80,10 @@ decisions of 2026-09-24 are under
   [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
   then decide with the user. Related to cursor-first targeting above and the
   2026-10-26 no-focus decisions ([decisions](decisions.md#workspaces)).
-- P1 | Directional focus with no focused window | All no-focus semantics
-  decided User 2026-10-26 ([decision](decisions.md#workspaces),
-  [Tier 1 evidence](spec/reference-outcomes.md#workspace-no-focus-discriminators)).
-  Shared core, strict JSON and Windows no-origin keyboard routing delivered;
-  per-WM matrix recorded (COSMIC TBD after surface-only check). No-forced-refocus
-  holds in core regressions and fixture minimize. Native Windows gates pass;
-  Linux no-focus tests pass, whole-workspace CI blocked by unrelated suites
-  ([details](changes/directional-focus-without-window.md#cross-platform-ci-evidence-and-blocker)).
-  New no-focus physical shortcut/output-crossing proof remains
-  user-owned: the CLI retains its managed-origin gate and injected keys remain
-  filtered. [Evidence/limits](changes/directional-focus-without-window.md).
+- P1 | No-focus navigation remaining proof | Implementation complete
+  ([record](changes/archive/directional-focus-without-window.md)). User-owned
+  physical no-focus shortcut/output-crossing proof and COSMIC runtime outcome
+  remain TBD; fixture CLI origin and injected-key safety gates stay unchanged.
 - P1 | Platform-neutral spam/stress acceptance tests | User 2026-10-26, after
   the P1 above: one set of platform-agnostic test definitions (high-volume
   action sequences: sends, switches, directional focus, moves, window churn)

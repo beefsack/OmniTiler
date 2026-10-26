@@ -1510,7 +1510,7 @@ platform API behavior.
   native output crossing remain unverified. **Tentative (pending user review):**
   explicit empty `win` on `focus-directional` means no focused window, equally
   for in-process and JSON callers; missing/null/invalid ids and other commands
-  retain their strict validation. [Evidence and limits](changes/directional-focus-without-window.md).
+  retain their strict validation. [Evidence and limits](changes/archive/directional-focus-without-window.md).
 - **User 2026-10-26:** a shown workspace with windows may have no focused
   window. The tiler never forces focus back after host-caused focus loss
   (desktop/taskbar click, minimize); arrival rules above still apply on

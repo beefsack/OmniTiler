@@ -88,9 +88,11 @@ checks to core.
 
 ## Remaining verification and limits
 
-- Implementation pushed as `00221036`; integration verification remains open
-  because the whole-workspace CI gates are not green. Keep this record active
-  until the failures below are resolved and the required gates rerun.
+- Complete: implementation `00221036` and native Windows gates are accepted;
+  the additional Windows CI failure is reproduced on the clean pre-feature
+  parent below. No product fix is needed for this change. Whole-workspace CI
+  remains red for independently evidenced pre-existing failures, not a claim
+  that skipped gates passed.
 - Native macOS/KDE integration, physical no-focus shortcuts, native no-focus
   output crossing and game variants remain unproved.
 - A live new-path leg was not practical: normal owners ignore injected keys,
@@ -99,7 +101,7 @@ checks to core.
   branch); fit-excluded/game destination exclusion relies on existing session
   admission. No new game-specific behavior or acceptance is claimed.
 
-## Cross-platform CI evidence and blocker
+## Cross-platform CI evidence
 
 [CI run 40315667855](https://github.com/beefsack/OmniTiler/actions/runs/40315667855)
 at `00221036` completed with failure. Comparison:
@@ -117,12 +119,41 @@ at `68ce0b75`.
   facts-transport tests as the parent; native settings tests were skipped.
 - Windows portable tests hit the same eight dock-swipe failures plus
   `wrong_sid_arrival_is_unproven_without_replay` (`scripted full row`). The
-  additional failure is absent in the parent and passes on Linux/macOS at the
-  same feature revision; its cause is unproven, not established as pre-existing
-  or flaky. The test and scripted native-row loop are untouched by this change.
+  additional failure was absent from the parent CI run but is independently
+  reproduced on its clean source below; it is a pre-existing intermittent test
+  failure, not caused by no-focus navigation. The test and scripted native-row
+  loop are untouched by this change.
   Later Windows CI formatting/clippy gates were skipped; the local Windows
   three-package gates above passed independently.
+- Rechecked both CI logs: the same eight `tiler-macos` dock-swipe tests refuse
+  with `macOS major unreadable` on Linux and Windows; KWin has the same offline
+  `async-broadcast v0.7.2` download error; native has the same
+  `native-effect-facts-transport` and `native-effect-gesture-facts-transport`
+  failures (33/35 passed). The macOS CI job itself passed on both revisions.
 - No unrelated test, dependency, native transport or safety-gate changes were
-  made to obtain a green result. Next: resolve the owning macOS/KWin/native CI
-  failures, investigate the additional Windows test failure, rerun required
-  gates, then archive this record. Physical new-path proof remains separate.
+  made to obtain a green result. Those independent failures remain outside this
+  implementation. Physical new-path proof and COSMIC runtime outcome stay open.
+
+## Additional Windows failure: pre-feature reproduction
+
+- Built the unmodified `tiler-macos` library test binary from a clean detached
+  `68ce0b75119f5448ef658f40231edf26fb997401`, immediately before `00221036`,
+  using `mise exec -- cargo test -p tiler-macos --lib --no-run` with its parent
+  workspace manifest. Ran only
+  `dock_swipe_select_tests::wrong_sid_arrival_is_unproven_without_replay --exact`
+  in separate test processes; no injected clock, source edits or fault seams.
+- Saved per-process libtest output: 15 passes and one failure in 16 executions,
+  with the exact CI panic at `dock_swipe_select_tests.rs:66:31`,
+  `scripted full row`. The failing run lasted 0.15 s. Outcomes are established
+  from the saved libtest result lines, not unreliable process exit-code sampling.
+- `git diff 68ce0b75..00221036 -- crates/tiler-macos` is empty. Matching source
+  hashes cover `dock_swipe_select.rs`, `dock_swipe_select_tests.rs`, `ffi.rs`
+  and `workspace_select.rs`. The isolated parent test binary's SHA-256 is
+  `427DE930F26231CFE0262DB3A1EA66F27D40D0E79816E1A2A9F58EA71574C846`.
+- The fixture supplies four scripted rows (`dock_swipe_select_tests.rs:584-593`)
+  to the clock-driven settlement loop (`dock_swipe_select.rs:819-992`); an
+  extra probe exhausts the fixture. That implementation has no `tiler_core`
+  import and this test does not invoke directional focus. Exact scheduler/timer
+  trigger is not established; same-signature failure on the unchanged parent
+  proves the regression predates this feature. Raw build/provenance and all
+  individual test outputs are retained outside the repository.
