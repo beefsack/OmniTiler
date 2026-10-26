@@ -158,6 +158,53 @@ pub type MidflightHook = Arc<dyn Fn() + Send + Sync>;
 /// [`RuntimeHandle::set_post_accept_hook_for_test`]`(None)`.
 pub type PostAcceptHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Bind-time focus baselines for one deferred selection intent: the owning
+/// app generation, the engine's worker-gated observed global focus, and
+/// the main-thread foreground PID — all read at dispatch. `None` in any
+/// of them refuses the bind (no baseline, no intent): never guessed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FocusBaselines {
+    pub app_generation: Option<u64>,
+    pub prior_focus: Option<String>,
+    pub prior_frontmost: Option<u32>,
+}
+
+/// Correlation-bound deferred selection focus: one explicit-focus outcome
+/// of a planner-owned view switch (the target domain's remembered leaf),
+/// held after the engine reply until the native Dock-swipe selection proves
+/// arrival. Released only by the matching select completion's verified post
+/// (the post names the bound native Space); dropped on refusal, on
+/// supersession by a newer switch or explicit focus, on a stale app, on a
+/// user focus move to another app, or when the post never proves arrival.
+/// Never dispatched before verified arrival, never on the wrong Space,
+/// never replayed (at-most-once: the slot is taken before enqueue).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeferredSelectionFocus {
+    /// Stable world-command operation identity (`op-<command_seq>`).
+    pub operation_id: String,
+    pub command_seq: u64,
+    /// Core-correlated focus target (`"<pid>_<wid>"`).
+    pub window: tiler_core::directional::WindowId,
+    pub route: crate::focus_route::FocusRoute,
+    /// Native Space the selection must arrive on before focus releases.
+    pub expected_sid: u64,
+    /// Owning app generation at bind (`None` when the app was unknown
+    /// then): release requires a live, unterminated record with this exact
+    /// generation, so PID reuse or termination drops the intent.
+    pub app_generation: Option<u64>,
+    /// Observed global focus (`"<pid>_<wid>"`) at bind, from the engine's
+    /// worker-gated observed truth: the owner worker refuses to dispatch
+    /// when the agreed selected focus names neither this prior nor the
+    /// target, closing the same-app window race the main thread cannot
+    /// see. `None` is never bound (bind refuses without a baseline).
+    pub prior_focus: Option<String>,
+    /// Main-thread foreground PID at bind: release requires the same
+    /// foreground at completion (a move in between proves user input and
+    /// drops the intent). `None` is never bound (bind refuses without a
+    /// stability baseline).
+    pub prior_frontmost: Option<u32>,
+}
+
 pub(crate) struct Shared {
     pub(crate) config: RuntimeConfig,
     /// Live [`RuntimeHandle`] count, held solely by handles (clones bump,
@@ -230,6 +277,19 @@ pub(crate) struct Shared {
     /// longer names its SID or whose revision drifted.
     pub(crate) select_pending: Option<ClaimedSelect>,
     pub(crate) select_busy: bool,
+    /// Deferred selection focus bound at engine-reply dispatch (see
+    /// [`DeferredSelectionFocus`]): at most one, latest-wins. Keyed by
+    /// operation identity so only the matching select completion can
+    /// release it; anything else supersedes or drops it. Shared between
+    /// the engine thread (bind/drop) and the main-thread tile controller
+    /// (release on the verified completion post).
+    pub(crate) selection_focus_pending: Option<DeferredSelectionFocus>,
+    /// Monotonic supersession floor for deferred selection focus: bumped
+    /// by every selection bind and every explicit-focus dispatch. A select
+    /// completion releases focus only when its command seq reaches the
+    /// floor; anything below was superseded by newer input and drops
+    /// counted instead of ever reapplying.
+    pub(crate) selection_focus_floor_seq: u64,
     /// Main-thread-supplied global focus evidence (workspace-frontmost PID
     /// plus bundle, plain IDs — never AX reads: the main thread performs no
     /// AX under any cadence). The AX focused leg (`ax_focus`) is NOT read on

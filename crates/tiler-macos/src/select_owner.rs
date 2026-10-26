@@ -296,8 +296,10 @@ impl SelectThread {
                             continue;
                         }
                         let completion = executor(&job, &mut state);
-                        thread_handoff.pending_creations
-                            .lock().unwrap_or_else(|e| e.into_inner())
+                        thread_handoff
+                            .pending_creations
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
                             .extend(state.take_pending_creations());
                         let _ = thread_handoff.finish(completion);
                         continue;
@@ -434,8 +436,14 @@ impl SelectController {
         row: &crate::workspace_select::SelectionSnapshot,
         read_started_ms: u64,
     ) -> Vec<crate::workspace_select::CreationReport> {
-        let Some(thread) = self.thread.as_ref() else { return Vec::new(); };
-        let mut pending = thread.handoff.pending_creations.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(thread) = self.thread.as_ref() else {
+            return Vec::new();
+        };
+        let mut pending = thread
+            .handoff
+            .pending_creations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut ready = Vec::new();
         pending.retain(|receipt| {
             if let Some(report) = receipt.observe(row, read_started_ms) {

@@ -506,6 +506,12 @@ pub struct FocusEvidence {
 /// `revision` fences display/Space change mid-plan: a worker dispatches
 /// only commands matching the live generation and revision (counted
 /// otherwise, never dispatched). `route` selects the native dispatcher.
+/// `expect_prior` carries the bind-time observed focus (`"<pid>_<wid>"`)
+/// for arrival-bound deferred selection focus only (`None` on the legacy
+/// explicit path, which dispatches unchanged): the worker refuses to
+/// dispatch when the agreed selected focus names neither the prior nor the
+/// target, so a same-app user focus move the main thread cannot see never
+/// gets fought. Never guessed: `None` means no prior check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusCommand {
     pub pid: u32,
@@ -515,6 +521,7 @@ pub struct FocusCommand {
     pub window: String,
     pub revision: u64,
     pub route: FocusRoute,
+    pub expect_prior: Option<String>,
 }
 
 /// Typed semantic input action. Produced by the input thread from exact

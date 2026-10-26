@@ -223,11 +223,20 @@ fn reply_plan_previous_actuates_bound_target() {
             Ok(true)
         }
 
-        fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
-            Err(crate::workspace_select::DispatchError::refused("no create in this test"))
+        fn create(
+            &mut self,
+            _before: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
+            Err(crate::workspace_select::DispatchError::refused(
+                "no create in this test",
+            ))
         }
 
-        fn select(&mut self, _before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
+        fn select(
+            &mut self,
+            _before: &SelectionSnapshot,
+            sid: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.current = sid;
             Ok(())
         }

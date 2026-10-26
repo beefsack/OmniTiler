@@ -523,6 +523,7 @@ mod tests {
             window: format!("{pid}_7"),
             revision,
             route: FocusRoute::Slps,
+            expect_prior: None,
         }
     }
 

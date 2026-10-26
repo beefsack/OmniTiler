@@ -1619,9 +1619,12 @@ mod native {
     /// system accent - then drive the one main-thread carrier. Core shapes
     /// decide bounds; freshness/lifetime/session joins plus fresh native
     /// safety vetoes (classifier exclusions, zoom approximation,
-    /// full-display fence) decide visibility. Normalization stays partial:
-    /// the ingress cannot name maximized/cloaked/shell/hidden truthfully
-    /// yet, so the vetoes fail closed instead. `engine_placed` still
+    /// full-display fence) revalidate fresh state before painting: the
+    /// ingress now names maximized/hidden/shell from retained truth, and
+    /// the vetoes stay as last-moment fresh-read fences (a stale report
+    /// frame never paints over a changed native state). Cloaked and the
+    /// session lock stay renderer-side (no roster fact, main-thread only).
+    /// `engine_placed` still
     /// reports the tick's placement join on show/update lines (live
     /// placement-truth diagnosis, never a gate on its own: the zoom veto
     /// consults it). `snapshot` is the last good topology read (`None`
@@ -2463,7 +2466,23 @@ mod native {
                     let trailing_row =
                         crate::workspace_select::user_row_from_rows(&snapshot.rows, 0).ok();
                     if let Some(row) = trailing_row.as_ref() {
-                        for receipt in select_controller.observe_creation_receipts(row, topology_read_started_ms) {
+                        for receipt in select_controller
+                            .observe_creation_receipts(row, topology_read_started_ms)
+                        {
+                            handle.report_creation_attempt(
+                                &receipt.operation_id,
+                                &receipt.logical,
+                                &receipt.output.0,
+                                receipt.setter,
+                                &receipt.order_before,
+                                &receipt.order_after,
+                                receipt.created,
+                                receipt.attempt_ms,
+                            );
+                        }
+                        for receipt in send_controller
+                            .observe_trailing_creation_receipts(row, topology_read_started_ms)
+                        {
                             handle.report_creation_attempt(
                                 &receipt.operation_id,
                                 &receipt.logical,
@@ -2561,8 +2580,9 @@ mod native {
             // out of scope clears observed focus engine-side via
             // disagreement - never guessed here.
             let frontmost = crate::ffi::frontmost_app();
+            let frontmost_pid = frontmost.as_ref().map(|(pid, _)| *pid as u32);
             handle.update_focus_evidence(FocusEvidence {
-                frontmost_pid: frontmost.as_ref().map(|(pid, _)| *pid as u32),
+                frontmost_pid,
                 frontmost_bundle: frontmost.map(|(_, bundle)| bundle),
                 ax_focus: None,
             });
@@ -2608,14 +2628,29 @@ mod native {
                 // Owner-verified trailing append: the created SID adopts
                 // into lifecycle ownership here (token or not: the Space
                 // persists even when the drag failed). The owner-verified
-                // target SID stays drain-side for arrival proof only.
-                if let Some(proof) = settle.trailing.as_ref()
-                    && let Some(created) = proof.created
-                    && let Err(reason) = trailing_lifecycle.adopt_created(created)
-                {
-                    eprintln!(
-                        "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
-                    );
+                // target SID stays drain-side for arrival proof only. The
+                // desire-gated creation receipt rides alongside so the core
+                // binds the appended native under the desire's identity.
+                if let Some(proof) = settle.trailing.as_ref() {
+                    if let Some(created) = proof.created
+                        && let Err(reason) = trailing_lifecycle.adopt_created(created)
+                    {
+                        eprintln!(
+                            "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
+                        );
+                    }
+                    if let Some(creation) = proof.creation.as_ref() {
+                        handle.report_creation_attempt(
+                            &creation.operation_id,
+                            &creation.logical,
+                            &creation.output.0,
+                            creation.setter,
+                            &creation.order_before,
+                            &creation.order_after,
+                            creation.created,
+                            creation.attempt_ms,
+                        );
+                    }
                 }
                 eprintln!(
                     "tiler-macos send settled target={} outcome={:?} complete=true",
@@ -2663,6 +2698,11 @@ mod native {
             // claim's operation identity.
             if let Some((completion, reaped)) = select_controller.poll() {
                 adopt_select_completion(&handle, &mut trailing_lifecycle, &completion);
+                // Frontmost owner for arrival-bound focus release below
+                // (the evidence update above already stamped this tick's
+                // foreground; the release fences a user move after the
+                // select against the bound intent).
+                let release_frontmost = frontmost_pid;
                 match completion.result.as_ref() {
                     Ok(success) => {
                         eprintln!(
@@ -2675,6 +2715,15 @@ mod native {
                             reaped,
                         );
                         report_select_completion(&handle, &completion);
+                        // Arrival-bound selection focus: only the owner's
+                        // verified post (naming the bound Space) releases
+                        // the core-correlated focus — never before arrival,
+                        // never on refusal, never twice.
+                        handle.release_selection_focus(
+                            completion.operation_id.as_deref(),
+                            success.post,
+                            release_frontmost,
+                        );
                     }
                     Err(failure) => {
                         eprintln!(
@@ -2686,6 +2735,9 @@ mod native {
                             failure.reason,
                         );
                         report_select_completion(&handle, &completion);
+                        // Refused arrival proves nothing: the deferred focus
+                        // intent (if any) must never fire.
+                        handle.drop_selection_focus(completion.operation_id.as_deref());
                     }
                 }
             }
@@ -3123,6 +3175,22 @@ mod native {
                     {
                         eprintln!(
                             "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
+                        );
+                    }
+                    if let Some(creation) = settle
+                        .trailing
+                        .as_ref()
+                        .and_then(|proof| proof.creation.as_ref())
+                    {
+                        handle.report_creation_attempt(
+                            &creation.operation_id,
+                            &creation.logical,
+                            &creation.output.0,
+                            creation.setter,
+                            &creation.order_before,
+                            &creation.order_after,
+                            creation.created,
+                            creation.attempt_ms,
                         );
                     }
                     eprintln!(

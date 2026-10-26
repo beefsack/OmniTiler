@@ -43,9 +43,7 @@ use std::time::{Duration, Instant};
 
 use crate::ffi::{LatchWait, SpaceSelectLatch};
 use crate::space_switch_edges::{GesturePairsOutcome, gesture_payload_allowed, swipe_plan};
-use crate::workspace_select::{
-    DispatchError, SelectGates, SelectionBackend, SelectionSnapshot,
-};
+use crate::workspace_select::{DispatchError, SelectGates, SelectionBackend, SelectionSnapshot};
 
 /// Absolute arrival deadline for one Dock-swipe settlement (ms). Async
 /// `SPACE_CHANGED` arrival needs a bound and 3 s is the proven window.
@@ -200,8 +198,9 @@ impl LiveMcExitGate {
 impl McExitGate for LiveMcExitGate {
     fn arm(&mut self) -> Result<(), DispatchError> {
         self.disarm();
-        let pid = crate::mc_lifecycle::live::dock_pid()
-            .map_err(|e| DispatchError::refused(format!("exit watch refused: Dock PID unprovable ({e})")))?;
+        let pid = crate::mc_lifecycle::live::dock_pid().map_err(|e| {
+            DispatchError::refused(format!("exit watch refused: Dock PID unprovable ({e})"))
+        })?;
         let bundle = crate::ffi::bundle_id_for_pid(pid).unwrap_or_default();
         crate::mc_probe::require_dock_bundle(&bundle)
             .map_err(|e| DispatchError::refused(format!("exit watch refused: {e}")))?;
@@ -249,15 +248,18 @@ impl LiveMcExitGate {
                 return Ok(());
             }
             if cancel.load(Ordering::SeqCst) || self.latch.cancelled() {
-                return Err(DispatchError::refused(
-                    "trailing post-create select refused: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched",
+                // Post-arm cancellation: the append is verified and retained
+                // with proof while nothing is dispatched. MC exit is
+                // unproven, so this holds (never a proven refusal).
+                return Err(DispatchError::threw(
+                    "trailing post-create select unproven: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched",
                 ));
             }
             if Instant::now() >= deadline {
                 // Wedged-Dock guard: the append is verified and retained
                 // with proof; dispatching nothing is a post-actuation
                 // hold, never a proven refusal.
-                return Err(DispatchError::refused(format!(
+                return Err(DispatchError::threw(format!(
                     "trailing post-create select unproven: Mission Control exit (Dock AXExposeExit) unobserved within {}ms (wedged-Dock guard); created Space retained with proof; no gesture dispatched; a fresh action may reuse it, never an automatic replay",
                     self.wait_ms
                 )));
@@ -304,8 +306,9 @@ impl McCreateEffect for LiveMcCreateEffect {
         uuid: &str,
         budget: &mut crate::mc_probe::ActionBudget,
     ) -> Result<(), DispatchError> {
-        let outcome = crate::mc_lifecycle::live::mc_add_space_pinned(display, cgid, uuid, budget, false)
-            .map_err(DispatchError::from_mc)?;
+        let outcome =
+            crate::mc_lifecycle::live::mc_add_space_pinned(display, cgid, uuid, budget, false)
+                .map_err(DispatchError::from_mc)?;
         if let Some(e) = outcome.close_error {
             eprintln!("tiler-macos select pinned create close shortfall accepted ({e})");
         }
@@ -851,7 +854,9 @@ pub fn execute_dock_swipe_select(
             // Posted but unproven within the bound (delayed arrival): the OS
             // accepted the dispatch. Return Accepted and let the drain's
             // genuine post read hold or settle; never an invented Threw.
-            return Err(DispatchError::accepted("dock-swipe unproven: arrival deadline elapsed after posting; no replay"));
+            return Err(DispatchError::accepted(
+                "dock-swipe unproven: arrival deadline elapsed after posting; no replay",
+            ));
         }
         let probe = seams.topo.fresh_full_row().ok();
         last_current = probe.as_ref().map(|row| row.current);
@@ -934,7 +939,9 @@ pub fn execute_dock_swipe_select(
                     );
                     // Posted but topology drifted under the swipe: Accepted
                     // with the drain's genuine post read, never Threw.
-                    return Err(DispatchError::accepted("dock-swipe unproven: topology changed after posting; no replay"));
+                    return Err(DispatchError::accepted(
+                        "dock-swipe unproven: topology changed after posting; no replay",
+                    ));
                 }
             }
         }

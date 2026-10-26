@@ -154,11 +154,12 @@ pub struct ScopedObservation {
 // admission lives in [`crate::runtime_apps`].
 pub use crate::runtime_core::EngineFactsRead;
 pub use crate::runtime_core::EngineManagedFacts;
+pub(crate) use crate::runtime_shared::{
+    DeferredSelectionFocus, FocusBaselines, Shared, emit, engine_alive, invalidate_clock,
+    lock_focus, lock_shared,
+};
 pub use crate::runtime_shared::{
     MidflightHook, NativeContextCell, PostAcceptHook, PublishedDisplayInputs,
-};
-pub(crate) use crate::runtime_shared::{
-    Shared, emit, engine_alive, invalidate_clock, lock_focus, lock_shared,
 };
 
 // -- Runtime -------------------------------------------------------------------
@@ -265,6 +266,8 @@ impl Runtime {
                 native_context: None,
                 select_pending: None,
                 select_busy: false,
+                selection_focus_pending: None,
+                selection_focus_floor_seq: 0,
                 native_cell: NativeContextCell::new(),
                 focus_evidence: None,
                 zombies: Vec::new(),
@@ -315,6 +318,8 @@ impl Runtime {
             native_context: None,
             select_pending: None,
             select_busy: false,
+            selection_focus_pending: None,
+            selection_focus_floor_seq: 0,
             native_cell: NativeContextCell::new(),
             focus_evidence: None,
             zombies: Vec::new(),

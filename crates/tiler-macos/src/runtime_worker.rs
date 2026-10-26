@@ -22,7 +22,7 @@ use crate::runtime_log::sanitize_backend_reason;
 use crate::runtime_native::{FocusFence, fence_focus_command};
 use crate::runtime_observe::{BackendSnapshot, PendingObservation, merge_readback, stage_latest};
 use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, Inbox};
-use crate::runtime_types::{FocusEvidence, ScopedBackendSnapshot, TopologyMode};
+use crate::runtime_types::{FocusEvidence, ScopedBackendSnapshot, TopologyMode, parse_window_id};
 
 /// Bound for one worker multiplex slice: frame waits and backend
 /// observation pumps share this cadence. Command wake stays immediate
@@ -181,6 +181,51 @@ fn note_observation_failure(
 /// a newer desired set supersedes the batch — including the first command.
 /// Calls already inside the backend may finish (taken is not inflight), but
 /// nothing taken-but-unstarted begins after the fence.
+/// Outcome of the worker-side same-app intervention check for one
+/// arrival-bound deferred selection focus command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PriorFocusGate {
+    /// The agreed selected focus already names the target: satisfied, no
+    /// dispatch needed.
+    Satisfied,
+    /// The agreed selected focus still names the bind-time prior: the user
+    /// did not move since the select dispatched; the focus write proceeds.
+    Proceed,
+    /// The agreed selected focus names a third window: the user focused
+    /// elsewhere after the select — drop instead of fighting newer input.
+    Moved,
+    /// The agreed selected focus is unreadable or unparsable: arrival is
+    /// unproven at dispatch — drop instead of dispatching blind.
+    Unproven,
+}
+
+/// Gate one deferred selection focus dispatch against the worker's fresh
+/// agreed selected focus (`None` = unreadable). The bind-time prior is the
+/// engine-observed focus at select dispatch; the target is the
+/// core-correlated remembered window. Only `Proceed` actuates: `Satisfied`
+/// skips a pointless write, anything else drops counted. Pure over plain
+/// data so offline tests prove the matrix without live AX.
+pub(crate) fn gate_deferred_focus(
+    target_pid: u32,
+    target_wid: u32,
+    prior: &str,
+    current: Option<(u32, Option<u32>)>,
+) -> PriorFocusGate {
+    let Some((current_pid, current_wid)) = current else {
+        return PriorFocusGate::Unproven;
+    };
+    if current_wid == Some(target_wid) && current_pid == target_pid {
+        return PriorFocusGate::Satisfied;
+    }
+    match (parse_window_id(prior), current_wid) {
+        (Some(prior_pair), Some(wid)) if prior_pair == (current_pid, wid) => {
+            PriorFocusGate::Proceed
+        }
+        (Some(_), _) => PriorFocusGate::Moved,
+        (None, _) => PriorFocusGate::Unproven,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn app_worker_main(
     pid: u32,
@@ -426,6 +471,70 @@ pub(crate) fn app_worker_main(
                     );
                 }
                 FocusFence::Dispatch => {
+                    // Arrival-bound deferred selection focus only: re-check
+                    // the bind-time prior against the worker's fresh agreed
+                    // selected focus. Explicit focus carries no prior and
+                    // dispatches legacy-unchanged. Satisfied skips a
+                    // pointless write; Moved/Unproven drop counted instead
+                    // of fighting newer user input or dispatching blind.
+                    // No FocusResult rides the skip/drop paths (that lane
+                    // is diagnostics-only; nothing settles on it).
+                    let proceed = match cmd.expect_prior.as_deref() {
+                        None => true,
+                        Some(prior) => {
+                            let current = crate::ffi::ax_selected_focus_evidence().ok().and_then(
+                                |evidence| {
+                                    u32::try_from(evidence.pid)
+                                        .ok()
+                                        .map(|pid| (pid, evidence.wid))
+                                },
+                            );
+                            match gate_deferred_focus(cmd.pid, cmd.wid, prior, current) {
+                                PriorFocusGate::Proceed => true,
+                                PriorFocusGate::Satisfied => {
+                                    emit(
+                                        &shared,
+                                        pid,
+                                        generation,
+                                        cmd.request_id,
+                                        "focus",
+                                        "already-satisfied",
+                                        0,
+                                    );
+                                    false
+                                }
+                                PriorFocusGate::Moved => {
+                                    lock_shared(&shared).diagnostics.stale_dropped += 1;
+                                    emit(
+                                        &shared,
+                                        pid,
+                                        generation,
+                                        cmd.request_id,
+                                        "focus",
+                                        "superseded-observed",
+                                        1,
+                                    );
+                                    false
+                                }
+                                PriorFocusGate::Unproven => {
+                                    lock_shared(&shared).diagnostics.stale_dropped += 1;
+                                    emit(
+                                        &shared,
+                                        pid,
+                                        generation,
+                                        cmd.request_id,
+                                        "focus",
+                                        "unproven-read",
+                                        1,
+                                    );
+                                    false
+                                }
+                            }
+                        }
+                    };
+                    if !proceed {
+                        continue;
+                    }
                     emit(
                         &shared,
                         pid,
@@ -798,5 +907,54 @@ mod tests {
                 "{reason}",
             );
         }
+    }
+
+    #[test]
+    fn deferred_focus_gate_matrix() {
+        // Same-app intervention matrix over the worker's fresh agreed
+        // focus: already-on-target skips the write, unchanged-prior
+        // proceeds, a third window refuses (user moved), and an unreadable
+        // read refuses (unproven). Malformed priors never compare equal.
+        assert_eq!(
+            gate_deferred_focus(4242, 7, "4242_7", Some((4242, Some(7)))),
+            PriorFocusGate::Satisfied,
+            "already there: no write needed"
+        );
+        assert_eq!(
+            gate_deferred_focus(4242, 9, "4242_7", Some((4242, Some(7)))),
+            PriorFocusGate::Proceed,
+            "user did not move since bind"
+        );
+        assert_eq!(
+            gate_deferred_focus(4242, 9, "4242_7", Some((4242, Some(8)))),
+            PriorFocusGate::Moved,
+            "same-app user focus move never gets fought"
+        );
+        assert_eq!(
+            gate_deferred_focus(4242, 9, "4242_7", Some((9999, Some(9)))),
+            PriorFocusGate::Moved,
+            "other-app focus is a move too"
+        );
+        assert_eq!(
+            gate_deferred_focus(4242, 9, "4242_7", Some((4242, None))),
+            PriorFocusGate::Moved,
+            "windowless agreement still differs from the prior window"
+        );
+        assert_eq!(
+            gate_deferred_focus(4242, 9, "4242_7", None),
+            PriorFocusGate::Unproven,
+            "unreadable read dispatches nothing blind"
+        );
+        assert_eq!(
+            gate_deferred_focus(4242, 9, "nope", Some((4242, Some(8)))),
+            PriorFocusGate::Unproven,
+            "malformed prior proves nothing"
+        );
+        // Prior equal to target with a moved current still refuses: the
+        // comparison is against the fresh read, never the prior alone.
+        assert_eq!(
+            gate_deferred_focus(4242, 7, "4242_7", Some((4242, Some(8)))),
+            PriorFocusGate::Moved,
+        );
     }
 }

@@ -159,7 +159,7 @@ struct FakeManaged {
     /// [`ManagedSendBackend::prepare_trailing_target`] verdict plus its
     /// call count. `None` keeps the default honest refusal (numbered-only
     /// backend, never serves trailing).
-    trailing_prep: Option<Result<TrailingPrepProof, String>>,
+    trailing_prep: Option<Result<TrailingPrepProof, crate::workspace_send::TrailingPrepFailure>>,
     prep_calls: usize,
     /// Fast bridged-route scripting: availability chosen once per op,
     /// consumed-permit dispatch log, destination-select log, and anchor
@@ -499,7 +499,9 @@ impl ManagedSendBackend for FakeManaged {
     fn prepare_trailing_target(
         &mut self,
         _pins: &TrailingPrepPins,
-    ) -> Result<TrailingPrepProof, String> {
+    ) -> Result<TrailingPrepProof, crate::workspace_send::TrailingPrepFailure> {
+        use crate::workspace_send::TrailingPrepFailure;
+        use tiler_core::world_report::FrameSetter;
         self.prep_calls += 1;
         if let Some(handoff) = self.cancel_on_prep.take() {
             handoff.cancel();
@@ -508,11 +510,23 @@ impl ManagedSendBackend for FakeManaged {
             let _ = started.send(());
             // Bounded block: the test releases; a timeout fails closed.
             if release.recv_timeout(Duration::from_secs(5)).is_err() {
-                return Err("injected prep block timed out".to_owned());
+                return Err(TrailingPrepFailure {
+                    reason: "injected prep block timed out".to_owned(),
+                    setter: FrameSetter::Threw,
+                    before: None,
+                    after: None,
+                    dispatched: false,
+                });
             }
         }
         self.trailing_prep.clone().unwrap_or_else(|| {
-            Err("trailing preparation unimplemented on this backend; refusing".to_owned())
+            Err(TrailingPrepFailure {
+                reason: "trailing preparation unimplemented on this backend; refusing".to_owned(),
+                setter: FrameSetter::Refused,
+                before: None,
+                after: None,
+                dispatched: false,
+            })
         })
     }
     fn effect_deadline_ms(&self) -> u64 {
@@ -1589,10 +1603,17 @@ fn trailing_send_drain_bound_target_submits_and_settles_through_the_same_lane() 
         fn empty(&mut self, _: u64) -> Result<bool, String> {
             Ok(true)
         }
-        fn create(&mut self, _: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        fn create(
+            &mut self,
+            _: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             unreachable!("proven-empty last reuses without an append");
         }
-        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), crate::workspace_select::DispatchError> {
+        fn select(
+            &mut self,
+            _: &SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             unreachable!("preparation never selects");
         }
     }
@@ -2480,6 +2501,30 @@ fn trailing_request() -> TrailingSendRequest {
             pinned_uuid: "uuid-a".to_owned(),
             trailing_enabled: true,
         },
+        creation_operation: None,
+        creation_logical: None,
+        creation_output: None,
+    }
+}
+
+/// Scripted typed preparation failure: the setter mirrors
+/// [`crate::workspace_send::classify_trailing_prep_error`] (proven
+/// pre-actuation reasons refuse, everything else holds ambiguous) with no
+/// genuine rows — the owner stages nothing and retains nothing.
+fn prep_fail(reason: &str) -> crate::workspace_send::TrailingPrepFailure {
+    use tiler_core::world_report::FrameSetter;
+    let refused = crate::workspace_send::classify_trailing_prep_error(reason)
+        == crate::workspace_send_effect::SendEffectOutcome::RefusedProven;
+    crate::workspace_send::TrailingPrepFailure {
+        reason: reason.to_owned(),
+        setter: if refused {
+            FrameSetter::Refused
+        } else {
+            FrameSetter::Threw
+        },
+        before: None,
+        after: None,
+        dispatched: false,
     }
 }
 
@@ -2528,6 +2573,7 @@ fn trailing_append_applies_with_proof_for_adoption() {
     assert_eq!(proof.target_sid, 21);
     assert_eq!(proof.revision, 9);
     assert_eq!(proof.created, Some(21), "creation rides for adoption");
+    assert!(proof.creation.is_none(), "no desire stages no creation row");
     // The bound target settles through the normal completion fence.
     let done = completion_for(&target, FrameSetter::Accepted, outcome, Some(proof));
     handoff.submit(target).expect("idle submits");
@@ -2594,7 +2640,7 @@ fn trailing_prep_pre_actuation_refuses_proven_without_proof() {
     ] {
         let handoff = SendEffectHandoff::new();
         let mut backend = FakeManaged::new();
-        backend.trailing_prep = Some(Err(reason.to_owned()));
+        backend.trailing_prep = Some(Err(prep_fail(reason)));
         let (crate::workspace_send_managed::SendEffect { outcome, .. }, target, proof) =
             execute_trailing_send(&trailing_request(), &mut backend, &handoff);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{reason}");
@@ -2626,12 +2672,151 @@ fn trailing_prep_ambiguous_holds_without_proof() {
     ] {
         let handoff = SendEffectHandoff::new();
         let mut backend = FakeManaged::new();
-        backend.trailing_prep = Some(Err(reason.to_owned()));
+        backend.trailing_prep = Some(Err(prep_fail(reason)));
         let (crate::workspace_send_managed::SendEffect { outcome, .. }, target, proof) =
             execute_trailing_send(&trailing_request(), &mut backend, &handoff);
         assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted, "{reason}");
         assert!(target.is_none() && proof.is_none(), "{reason}");
     }
+}
+
+/// Desire-carrying trailing request: the reply published a creation desire
+/// for the unbound trailing target, so the owner stages the append receipt
+/// under it.
+fn trailing_request_with_desire() -> TrailingSendRequest {
+    let mut request = trailing_request();
+    request.creation_operation = Some("op-native-7".to_owned());
+    request.creation_logical = Some("ws-trailing".to_owned());
+    request.creation_output = Some("macos-display-1".to_owned());
+    request
+}
+
+fn prep_row() -> SelectionSnapshot {
+    SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 7],
+        current: 20,
+    }
+}
+
+#[test]
+fn trailing_append_stages_creation_receipt_under_desire() {
+    // Owner-verified append under an engine creation desire: the proof
+    // carries the raw creation receipt (exact desire identity, genuine
+    // pre/post rows, verified SID, original dispatch stamp) so the main
+    // thread stages it under the desire instead of fabricating one.
+    let handoff = SendEffectHandoff::new();
+    let request = trailing_request_with_desire();
+    let mut backend = FakeManaged::new();
+    backend.snapshot = Ok(appended_row());
+    backend.trailing_prep = Some(Ok(trailing_prep(21, Some(21))));
+    let (effect, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
+    assert_eq!(effect.outcome, SendEffectOutcome::Applied);
+    assert!(target.is_some());
+    let proof = proof.expect("append proves");
+    assert_eq!(proof.created, Some(21));
+    let creation = proof
+        .creation
+        .expect("desire-gated append reports its receipt");
+    assert_eq!(creation.operation_id, "op-native-7");
+    assert_eq!(creation.logical, "ws-trailing");
+    assert_eq!(creation.output, OutputId("macos-display-1".to_owned()));
+    assert_eq!(creation.setter, FrameSetter::Accepted);
+    assert_eq!(creation.order_before, vec![20, 3, 7]);
+    assert_eq!(creation.order_after, vec![20, 3, 7, 21]);
+    assert_eq!(creation.created, Some(21));
+    assert_eq!(
+        handoff.pending_creation_count(),
+        0,
+        "verified receipts never pend"
+    );
+}
+
+#[test]
+fn trailing_reuse_stages_no_creation_row() {
+    // Reuse proves no append: the proof carries no creation receipt even
+    // under a desire, and nothing pends.
+    let handoff = SendEffectHandoff::new();
+    let request = trailing_request_with_desire();
+    let mut backend = FakeManaged::new();
+    backend.trailing_prep = Some(Ok(trailing_prep(7, None)));
+    let (effect, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
+    assert_eq!(effect.outcome, SendEffectOutcome::Applied);
+    assert!(target.is_some());
+    let proof = proof.expect("reuse still reports for settlement");
+    assert_eq!(proof.created, None);
+    assert!(proof.creation.is_none(), "reuse ran no create leg");
+    assert_eq!(handoff.pending_creation_count(), 0);
+}
+
+#[test]
+fn trailing_ambiguous_prep_retains_deferred_receipt() {
+    // Ambiguous preparation (partial dispatch, unreadable post): nothing is
+    // submitted, but the genuine pre-order is retained with the original
+    // stamp. The first readable post-order completes the desire exactly
+    // once with no claimed identity — never a fabricated post-order.
+    use crate::workspace_send::TrailingPrepFailure;
+    let handoff = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    backend.trailing_prep = Some(Err(TrailingPrepFailure {
+        reason: "trailing send refuses: append failed (press refused)".to_owned(),
+        setter: FrameSetter::Threw,
+        before: Some(Box::new(prep_row())),
+        after: None,
+        dispatched: false,
+    }));
+    let (effect, target, proof) =
+        execute_trailing_send(&trailing_request_with_desire(), &mut backend, &handoff);
+    assert_eq!(effect.outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(target.is_none() && proof.is_none());
+    assert_eq!(handoff.pending_creation_count(), 1);
+    // A later readable row completes the retained receipt exactly once.
+    let row = SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 7, 21],
+        current: 20,
+    };
+    let pending = handoff.take_pending_creations();
+    assert_eq!(pending.len(), 1);
+    let report = pending[0]
+        .observe(&row, u64::MAX)
+        .expect("readable row completes");
+    assert_eq!(report.operation_id, "op-native-7");
+    assert_eq!(report.logical, "ws-trailing");
+    assert_eq!(
+        report.setter,
+        FrameSetter::Threw,
+        "dispatch truth survives deferral"
+    );
+    assert_eq!(report.order_before, vec![20, 3, 7]);
+    assert_eq!(report.order_after, vec![20, 3, 7, 21]);
+    assert_eq!(report.created, None, "a later-turn delta is uncorrelated");
+}
+
+#[test]
+fn trailing_refused_prep_stages_no_receipt() {
+    // Proven pre-actuation refusal with no readable post: nothing ran, so
+    // nothing is retained and nothing is submitted — not even under a
+    // desire.
+    use crate::workspace_send::TrailingPrepFailure;
+    let handoff = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    backend.trailing_prep = Some(Err(TrailingPrepFailure {
+        reason: "trailing send refuses: append failed (pre-create topology drift)".to_owned(),
+        setter: FrameSetter::Refused,
+        before: Some(Box::new(prep_row())),
+        after: None,
+        dispatched: false,
+    }));
+    let (effect, target, proof) =
+        execute_trailing_send(&trailing_request_with_desire(), &mut backend, &handoff);
+    assert_eq!(effect.outcome, SendEffectOutcome::RefusedProven);
+    assert!(target.is_none() && proof.is_none());
+    assert_eq!(
+        handoff.pending_creation_count(),
+        0,
+        "proven refusals stage nothing"
+    );
 }
 
 #[test]
@@ -2718,7 +2903,7 @@ fn trailing_claim() -> crate::runtime_types::ClaimedSelect {
 }
 
 fn trailing_factory(
-    prep: Result<TrailingPrepProof, String>,
+    prep: Result<TrailingPrepProof, crate::workspace_send::TrailingPrepFailure>,
     snapshot: SelectionSnapshot,
     owner_thread: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>,
 ) -> impl FnOnce() -> FakeManaged + Send + 'static {
@@ -2822,7 +3007,9 @@ fn trailing_controller_refusal_settles_feedback_only() {
                 trailing_enabled: true,
             },
             trailing_factory(
-                Err("trailing send refuses: fresh row unreadable (gone)".to_owned()),
+                Err(prep_fail(
+                    "trailing send refuses: fresh row unreadable (gone)",
+                )),
                 row(),
                 Arc::clone(&owner_thread),
             ),
@@ -2843,6 +3030,112 @@ fn trailing_controller_refusal_settles_feedback_only() {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("proof-less completion settles");
+}
+
+#[test]
+fn trailing_controller_observation_path_completes_deferred_receipt_once() {
+    // Owner-path integration through the production observation seam
+    // (`LiveSendController::observe_trailing_creation_receipts`): an
+    // ambiguous preparation (partial dispatch, unreadable post) retains
+    // the genuine pre-order under the desire; a mismatched-display row
+    // retains with nothing submitted; the first readable same-display
+    // delta emits exactly one genuine receipt (original dispatch stamp,
+    // no claimed identity); a repeat observation emits none.
+    use crate::workspace_select::SelectionSnapshot;
+    use crate::workspace_send::TrailingPrepFailure;
+    let owner_thread = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut controller = crate::workspace_send::LiveSendController::new();
+    let mut claim = trailing_claim();
+    claim.select_creation_operation = Some("op-native-7".to_owned());
+    claim.select_creation_logical = Some("ws-trailing".to_owned());
+    claim.select_creation_output = Some("macos-display-1".to_owned());
+    let submit_ms = crate::input_eligibility::now_ms();
+    controller
+        .submit_trailing(
+            &claim,
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 1,
+                pinned_uuid: "uuid-a",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            trailing_factory(
+                Err(TrailingPrepFailure {
+                    reason: "trailing send refuses: append failed (press refused)".to_owned(),
+                    setter: FrameSetter::Threw,
+                    before: Some(Box::new(prep_row())),
+                    after: None,
+                    dispatched: false,
+                }),
+                prep_row(),
+                Arc::clone(&owner_thread),
+            ),
+        )
+        .expect("trailing submits");
+    // Proof-less refusal settles feedback-only; the deferred creation
+    // receipt stays retained on the owner handoff.
+    let mut refused = None;
+    for _ in 0..500 {
+        if let Some(refusal) = controller.poll_trailing_refusal() {
+            refused = Some(refusal);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let refusal = refused.expect("proof-less refusal settles");
+    assert_eq!(refusal.operation_id, "op-3");
+    assert_eq!(refusal.setter, FrameSetter::Threw);
+    let observe_ms = crate::input_eligibility::now_ms();
+    // Mismatched display: retained, nothing submitted.
+    let foreign = SelectionSnapshot {
+        display: "display-b".to_owned(),
+        spaces: vec![20, 3, 7, 21],
+        current: 20,
+    };
+    assert!(
+        controller
+            .observe_trailing_creation_receipts(&foreign, u64::MAX)
+            .is_empty(),
+        "mismatched display retains without submission"
+    );
+    // Fresh readable same-display delta: exactly one genuine receipt.
+    let arrived = SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 7, 21],
+        current: 20,
+    };
+    let receipts = controller.observe_trailing_creation_receipts(&arrived, u64::MAX);
+    assert_eq!(receipts.len(), 1, "first readable delta completes once");
+    let receipt = &receipts[0];
+    assert_eq!(receipt.operation_id, "op-native-7");
+    assert_eq!(receipt.logical, "ws-trailing");
+    assert_eq!(receipt.output, OutputId("macos-display-1".to_owned()));
+    assert_eq!(
+        receipt.setter,
+        FrameSetter::Threw,
+        "dispatch truth survives deferral"
+    );
+    assert_eq!(receipt.order_before, vec![20, 3, 7]);
+    assert_eq!(receipt.order_after, vec![20, 3, 7, 21]);
+    assert_eq!(receipt.created, None, "a later-turn delta is uncorrelated");
+    assert!(
+        (submit_ms..=observe_ms).contains(&receipt.attempt_ms),
+        "original dispatch stamp preserved, not the observe time: {} not in [{submit_ms},{observe_ms}]",
+        receipt.attempt_ms,
+    );
+    // Repeat observation emits none (at-most-once, no replay).
+    assert!(
+        controller
+            .observe_trailing_creation_receipts(&arrived, u64::MAX)
+            .is_empty(),
+        "receipt completes exactly once"
+    );
+    assert!(
+        controller.shutdown().is_none(),
+        "settled lane shuts down idle"
+    );
 }
 
 #[test]
@@ -3388,6 +3681,8 @@ mod send_join_tests {
             native_cell: crate::runtime_shared::NativeContextCell::new(),
             select_pending: None,
             select_busy: false,
+            selection_focus_pending: None,
+            selection_focus_floor_seq: 0,
             focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,

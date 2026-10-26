@@ -56,7 +56,10 @@ impl SelectionBackend for Fake {
     fn empty(&mut self, _: u64) -> Result<bool, String> {
         self.empty.clone()
     }
-    fn create(&mut self, _: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+    fn create(
+        &mut self,
+        _: &SelectionSnapshot,
+    ) -> Result<(), crate::workspace_select::DispatchError> {
         self.creates += 1;
         if self.effect {
             let next = if !self.row.spaces.contains(&21) {
@@ -73,7 +76,11 @@ impl SelectionBackend for Fake {
         }
         Ok(())
     }
-    fn select(&mut self, _: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
+    fn select(
+        &mut self,
+        _: &SelectionSnapshot,
+        sid: u64,
+    ) -> Result<(), crate::workspace_select::DispatchError> {
         self.selects.push(sid);
         if self.effect {
             self.row.current = sid;
@@ -342,7 +349,11 @@ fn reply_creation_refusal_reports_unknown_without_fabricated_after_order() {
             self.inner.display_count()
         }
         fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
-            if self.post_unreadable { Err("post-order unreadable".to_owned()) } else { self.inner.snapshot() }
+            if self.post_unreadable {
+                Err("post-order unreadable".to_owned())
+            } else {
+                self.inner.snapshot()
+            }
         }
         fn revision(&mut self) -> Option<u64> {
             self.inner.revision()
@@ -353,11 +364,18 @@ fn reply_creation_refusal_reports_unknown_without_fabricated_after_order() {
         fn empty(&mut self, sid: u64) -> Result<bool, String> {
             self.inner.empty(sid)
         }
-        fn create(&mut self, _: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        fn create(
+            &mut self,
+            _: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.post_unreadable = true;
             Err(DispatchError::threw("MC open failed mid-leg"))
         }
-        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), crate::workspace_select::DispatchError> {
+        fn select(
+            &mut self,
+            _: &SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             unreachable!("no select follows a failed create");
         }
     }
@@ -384,12 +402,20 @@ fn reply_creation_refusal_reports_unknown_without_fabricated_after_order() {
     );
     let failure = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
         .expect_err("failed create holds");
-    // Ambiguous mid-actuation output: hold without re-actuation, never a
-    // proven refusal and never a fabricated success.
-    assert_eq!(failure.setter, FrameSetter::Refused, "no view write was attempted");
+    // Ambiguous mid-actuation output: the typed Threw disposition is
+    // preserved verbatim (a partial dispatch may have run — never a proven
+    // refusal), and the unreadable after-order stages nothing fabricated.
+    assert_eq!(
+        failure.setter,
+        FrameSetter::Threw,
+        "partial dispatch may have run"
+    );
     assert_eq!(failure.pre, None);
     assert_eq!(failure.baseline, Some(1));
-    assert!(failure.creation.is_none(), "unknown after-order must not be substituted");
+    assert!(
+        failure.creation.is_none(),
+        "unknown after-order must not be substituted"
+    );
     assert_eq!(state.pending_creation_count(), 1);
     assert!(state.poll_pending_creations(&mut backend).is_empty());
     backend.post_unreadable = false;
@@ -399,29 +425,232 @@ fn reply_creation_refusal_reports_unknown_without_fabricated_after_order() {
     assert_eq!(creation.operation_id, "op-native-1");
     assert_eq!(creation.setter, FrameSetter::Threw);
     assert_eq!(creation.order_before, vec![1, 277]);
-    assert_eq!(creation.order_after, vec![1, 277], "first readable full post-order, even with no delta");
+    assert_eq!(
+        creation.order_after,
+        vec![1, 277],
+        "first readable full post-order, even with no delta"
+    );
     assert_eq!(creation.attempt_ms, failure.attempt_ms);
     assert_eq!(creation.created, None);
-    assert!(state.poll_pending_creations(&mut backend).is_empty(), "receipt completes once");
+    assert!(
+        state.poll_pending_creations(&mut backend).is_empty(),
+        "receipt completes once"
+    );
     assert!(state.take_trailing_proof().is_none());
+}
+
+#[test]
+fn reply_creation_no_delta_defers_receipt_without_emission() {
+    // Dispatched create with a readable row that shows no delta yet: the
+    // desktop may simply not be visible, so the drain retains a pending
+    // receipt (Accepted dispatch truth) and emits nothing — a no-delta
+    // emission here would turn the later delta into a changed replay.
+    struct NoDelta {
+        row: SelectionSnapshot,
+    }
+    impl SelectionBackend for NoDelta {
+        fn display_count(&mut self) -> Result<usize, String> {
+            Ok(1)
+        }
+        fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            Ok(self.row.clone())
+        }
+        fn revision(&mut self) -> Option<u64> {
+            None
+        }
+        fn check_output(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn empty(&mut self, _: u64) -> Result<bool, String> {
+            Ok(false)
+        }
+        fn create(
+            &mut self,
+            _: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
+            Ok(())
+        }
+        fn select(
+            &mut self,
+            _: &SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
+            unreachable!("no select follows an unverified create");
+        }
+    }
+    let row = SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![1, 277],
+        current: 1,
+    };
+    let mut backend = NoDelta { row };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-new", "macos-display-1")),
+        Some(1),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
+        .expect_err("unvisible create defers");
+    assert!(
+        failure.reason.contains("not yet visible"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(
+        failure.setter,
+        FrameSetter::Refused,
+        "no view was attempted"
+    );
+    assert!(
+        failure.creation.is_none(),
+        "no-delta must not emit a completed receipt"
+    );
+    assert_eq!(state.pending_creation_count(), 1);
+    // The first later delta completes the retained receipt exactly once
+    // with the original dispatch stamp and no claimed identity.
+    backend.row.spaces.push(21);
+    let receipts = state.poll_pending_creations(&mut backend);
+    assert_eq!(receipts.len(), 1);
+    let creation = &receipts[0];
+    assert_eq!(creation.setter, FrameSetter::Accepted);
+    assert_eq!(creation.order_before, vec![1, 277]);
+    assert_eq!(creation.order_after, vec![1, 277, 21]);
+    assert_eq!(creation.created, None, "a later-turn delta is uncorrelated");
+    assert_eq!(creation.attempt_ms, failure.attempt_ms);
+}
+
+#[test]
+fn reply_creation_disagree_reports_threw_with_genuine_after() {
+    // Dispatched create with a readable row that disagrees (outside race
+    // added a Space): the drain completes immediately as Threw with the
+    // genuine after-image and no guessed SID — never a silent no-delta.
+    struct Disagree {
+        before: SelectionSnapshot,
+        after: SelectionSnapshot,
+        phase: u8,
+    }
+    impl SelectionBackend for Disagree {
+        fn display_count(&mut self) -> Result<usize, String> {
+            Ok(1)
+        }
+        fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            self.phase += 1;
+            Ok(if self.phase == 1 {
+                self.before.clone()
+            } else {
+                self.after.clone()
+            })
+        }
+        fn revision(&mut self) -> Option<u64> {
+            None
+        }
+        fn check_output(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn empty(&mut self, _: u64) -> Result<bool, String> {
+            Ok(false)
+        }
+        fn create(
+            &mut self,
+            _: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
+            Ok(())
+        }
+        fn select(
+            &mut self,
+            _: &SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
+            unreachable!("no select follows a disagreeing create");
+        }
+    }
+    let mut backend = Disagree {
+        before: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        after: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277, 99, 100],
+            current: 1,
+        },
+        phase: 0,
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-new", "macos-display-1")),
+        Some(1),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
+        .expect_err("disagreeing create holds as Threw");
+    assert!(
+        failure.reason.contains("not an exact same-display append"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(
+        failure.setter,
+        FrameSetter::Threw,
+        "ambiguity holds, never a proven refusal"
+    );
+    let creation = failure
+        .creation
+        .expect("genuine after-image completes immediately");
+    assert_eq!(creation.setter, FrameSetter::Threw);
+    assert_eq!(creation.order_before, vec![1, 277]);
+    assert_eq!(creation.order_after, vec![1, 277, 99, 100]);
+    assert_eq!(creation.created, None, "a raced row names no identity");
+    assert_eq!(
+        state.pending_creation_count(),
+        0,
+        "completed receipts never pend"
+    );
 }
 
 #[test]
 fn deferred_creation_never_claims_causal_identity_or_changes_setter() {
     let pending = PendingCreation {
-        operation_id: "op-native-1".to_owned(), logical: "ws-new".to_owned(),
+        operation_id: "op-native-1".to_owned(),
+        logical: "ws-new".to_owned(),
         output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
-        display_id: "display-a".to_owned(), order_before: vec![20, 3],
-        setter: FrameSetter::Accepted, attempt_ms: 42,
+        display_id: "display-a".to_owned(),
+        order_before: vec![20, 3],
+        setter: FrameSetter::Accepted,
+        attempt_ms: 42,
     };
-    let row = SelectionSnapshot { display: "display-a".to_owned(), spaces: vec![3, 20, 99, 100], current: 20 };
-    assert!(pending.observe(&row, 42).is_none(), "same-ms capture cannot prove ordering");
+    let row = SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![3, 20, 99, 100],
+        current: 20,
+    };
+    assert!(
+        pending.observe(&row, 42).is_none(),
+        "same-ms capture cannot prove ordering"
+    );
     let report = pending.observe(&row, 43).unwrap();
-    assert_eq!(report.setter, FrameSetter::Accepted, "outside reorders do not change dispatch truth");
+    assert_eq!(
+        report.setter,
+        FrameSetter::Accepted,
+        "outside reorders do not change dispatch truth"
+    );
     assert_eq!(report.order_after, row.spaces);
     assert_eq!(report.created, None, "later additions are uncorrelated");
     assert_eq!(report.attempt_ms, 42);
-    let foreign = SelectionSnapshot { display: "display-b".to_owned(), ..row };
+    let foreign = SelectionSnapshot {
+        display: "display-b".to_owned(),
+        ..row
+    };
     assert!(pending.observe(&foreign, 44).is_none());
 }
 
@@ -558,10 +787,17 @@ fn reply_select_failure_after_append_stages_throw_with_proof() {
         fn empty(&mut self, sid: u64) -> Result<bool, String> {
             self.inner.empty(sid)
         }
-        fn create(&mut self, before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        fn create(
+            &mut self,
+            before: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.inner.create(before)
         }
-        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), crate::workspace_select::DispatchError> {
+        fn select(
+            &mut self,
+            _: &SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             Err(DispatchError::threw("goto failed"))
         }
     }
@@ -634,10 +870,17 @@ fn reply_accepted_with_unreadable_post_stays_accepted() {
         fn empty(&mut self, sid: u64) -> Result<bool, String> {
             self.inner.empty(sid)
         }
-        fn create(&mut self, before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        fn create(
+            &mut self,
+            before: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.inner.create(before)
         }
-        fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
+        fn select(
+            &mut self,
+            before: &SelectionSnapshot,
+            sid: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.inner.select(before, sid)
         }
     }

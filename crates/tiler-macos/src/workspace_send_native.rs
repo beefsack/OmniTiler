@@ -1359,14 +1359,23 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
     fn prepare_trailing_target(
         &mut self,
         pins: &TrailingPrepPins,
-    ) -> Result<TrailingPrepProof, String> {
+    ) -> Result<TrailingPrepProof, crate::workspace_send::TrailingPrepFailure> {
+        use crate::workspace_send::TrailingPrepFailure;
+        use tiler_core::world_report::FrameSetter;
         // Bounded caffeinate companion around preparation only (same shape
         // as the retired main-thread preparation): covers the create plus
         // settle reads and self-terminates via `-t` even if the reaper
         // wedges. Spawn failure refuses before any read.
-        let mut awake =
-            crate::mc_lifecycle::live::CaffeinateGuard::spawn(TRAILING_PREP_BUDGET_SECS)
-                .map_err(|e| format!("trailing send refuses: caffeinate unspawnable ({e})"))?;
+        let mut awake = crate::mc_lifecycle::live::CaffeinateGuard::spawn(
+            TRAILING_PREP_BUDGET_SECS,
+        )
+        .map_err(|e| TrailingPrepFailure {
+            reason: format!("trailing send refuses: caffeinate unspawnable ({e})"),
+            setter: FrameSetter::Refused,
+            before: None,
+            after: None,
+            dispatched: false,
+        })?;
         // Single-display rule up front (same rule as the drag below): the
         // pinned legs name exactly one display, never a first-display
         // guess.
@@ -1374,15 +1383,25 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             Ok(1) => {}
             Ok(n) => {
                 let _ = awake.stop();
-                return Err(format!(
-                    "trailing send refuses: expected exactly one native display, found {n}"
-                ));
+                return Err(TrailingPrepFailure {
+                    reason: format!(
+                        "trailing send refuses: expected exactly one native display, found {n}"
+                    ),
+                    setter: FrameSetter::Refused,
+                    before: None,
+                    after: None,
+                    dispatched: false,
+                });
             }
             Err(e) => {
                 let _ = awake.stop();
-                return Err(format!(
-                    "trailing send refuses: display count unreadable ({e})"
-                ));
+                return Err(TrailingPrepFailure {
+                    reason: format!("trailing send refuses: display count unreadable ({e})"),
+                    setter: FrameSetter::Refused,
+                    before: None,
+                    after: None,
+                    dispatched: false,
+                });
             }
         }
         let mut adapter = OwnerTrailingAdapter {
@@ -1400,9 +1419,13 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         );
         let _ = awake.stop();
         let prep = prep?;
-        let (before, after) = adapter
-            .snapshots()
-            .ok_or_else(|| "trailing send refuses: post-preparation row unprovable".to_owned())?;
+        let (before, after) = adapter.snapshots().ok_or_else(|| TrailingPrepFailure {
+            reason: "trailing send refuses: post-preparation row unprovable".to_owned(),
+            setter: FrameSetter::Threw,
+            before: adapter.before.clone().map(Box::new),
+            after: adapter.after.clone().map(Box::new),
+            dispatched: prep.created.is_some(),
+        })?;
         Ok(TrailingPrepProof {
             target_sid: prep.target_sid,
             created: prep.created,
@@ -1491,7 +1514,10 @@ impl<R: SendNativeReaders> crate::workspace_select::SelectionBackend
         crate::workspace_select::probe_trailing_emptiness(sid)
     }
 
-    fn create(&mut self, before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+    fn create(
+        &mut self,
+        before: &SelectionSnapshot,
+    ) -> Result<(), crate::workspace_select::DispatchError> {
         use crate::workspace_select::DispatchError;
         if self
             .snapshot()

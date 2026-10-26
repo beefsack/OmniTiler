@@ -7,8 +7,9 @@
   core correction, separate macOS automatic-float echo removal, born-state policy
   deletion, per-app native lifetime/flat-close path and tentative shared transient
   classifier integration are verified offline.
-  The reply-driven executor/presentation draft described below is not accepted:
-  native creation receipts and selection setter evidence still need correction.
+  The reply-driven targeting/receipt cutover is accepted offline; selection
+  setter truth, deferred creation receipts and arrival-bound selection focus
+  have reviewed regressions. Presentation and native acceptance remain open.
   Stage 0 evidence is from `a0f54105`
   (2026-10-24). The source-only fit review below is historical where superseded
   by the reviewed outcomes. No live tests were performed for this record.
@@ -304,6 +305,10 @@ edge cases tentative. Acceptance of an approach does not claim native evidence.
 | Confirmed 2026-10-25 | Missing AX with live/unreadable CG retains and holds | Only covering AX absence plus fresh complete CG absence proves close |
 | Tentative | Three-way shared classifier A: tile, float member, unmanaged | One neutral transient fact; Windows Dialog/OwnedDialog exclusions unchanged |
 | Tentative | Fullscreen, all-Spaces and unreadable membership use `None` | No guessed home or sticky proof; shared edge tests and native scope evidence remain pending |
+| Tentative 2026-10-26 | Post-arm cancellation/MC-exit timeout is `Threw`, not `Refused` | A native append already occurred; an unproven later selection must hold, not claim no dispatch |
+| Tentative 2026-10-26 | Topology drift after select dispatch retains the existing `Accepted`/unproven hold | Correct the stale refusal test, not production; no replay or history advance is inferred |
+| Tentative 2026-10-26 | Selection focus defers in the adapter until verified native arrival | Require correlated reply/transfer/binding and grounded focus priors; cancel on supersession or changed/unknown focus; no shared settlement-time change |
+| Tentative 2026-10-26 | Ambiguous trailing creation retains its genuine pre-order and original stamp | First later readable matching-display row completes once without a claimed identity; never echo the pre-order as an unreadable post-order |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -787,6 +792,43 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   Keep pager/underlay/game-lane
   and sticky/native hide-reveal acceptance explicitly incomplete.
 
+## Reviewed targeting and receipt cutover (2026-10-26)
+
+- Supersedes the dispatch/creation rejection and selection-focus gap in the
+  draft above. No core/protocol source changed. Native acceptance is separate.
+- Select/create errors preserve typed native setter truth. Unreadable or
+  unchanged post-orders retain a pending receipt with the real preimage and
+  original attempt stamp; disagreeing readable rows report `Threw` with the
+  genuine after-image. No guessed empty/before-echo post-order is emitted.
+- Trailing sends consume the creation desire. Verified appends stage their
+  receipt on ordinary and shutdown settlement; ambiguous creation is observed
+  later through the real send-controller seam. Wrong-display reads retain it;
+  first qualifying readable post-order completes once with `created: None`.
+  Reuse never fabricates a creation. Native creation is never replayed.
+- Selection `fx-<seq>` effects bind only to a real correlated View transfer,
+  live reply Space binding and grounded focus/foreground priors. Matching
+  verified native arrival releases once. Refusal, supersession, unknown or
+  changed foreground, lifetime loss and full outbox drop the intent. The worker
+  re-reads agreed native focus before writing: target already focused skips;
+  unchanged prior permits; another same-app window or unknown evidence drops.
+  Explicit focus retains its existing path. No main-thread AX read was added.
+- Independent review found and closed a missing positive real-dispatch bind
+  test and unknown-foreground permission. The positive test includes genuine
+  away dispatch, raw ViewAttempt settlement and return binding. Refusal,
+  delayed/unreadable arrival, latest-wins supersession, no replay and retained
+  removal-pin suites pass. Mechanical formatting normalizes the earlier draft.
+- Final gates: locked macOS build PASS; macOS tests PASS (1,353: 1,205 library
+  plus 148 integration); strict all-target clippy PASS; workspace fmt and diff
+  whitespace PASS. Unchanged shared baseline: core/protocol locked build/tests
+  (1,314), strict clippy and ordered acceptance 6/6 PASS. Independent review
+  repeated the 1,205 library tests, correction tests and integration spot checks.
+- Unsupported: trailing-append remembered focus has no pre-append binding and
+  drops safely; live post-switch focus-read availability and native arrival
+  acceptance remain TBD. A final native read-to-write race is not claimed solved
+  by offline tests. Shutdown abandons deferred focus without replay.
+- Exact next action: finish the production pager carrier and presentation
+  eligibility, then run signed-fixture sticky-scope and native hide/reveal legs.
+
 ## Risks and open evidence
 
 - KDE delivery may change exact native binding receipts; update/inspect it before
@@ -805,8 +847,5 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   claims until its own ownership contract is accepted.
 - macOS uses absent DPI by reviewed decision; fractional readbacks and
   cross-display clamps still need the planned fake-native coverage.
-- Remaining exact next step: replace select/send/trailing owners and pre-reply
-  numbered claims with reply-driven executors and complete raw native readbacks,
-  consuming the delivered KDE B2 fields. Shared transient
-  classification is integrated offline; later policy/executor/presentation and
-  native acceptance stages remain open. Do not invent shared shapes in the adapter.
+- Targeting/receipt cutover is accepted offline above. Presentation and native
+  acceptance remain open. Do not invent shared shapes in the adapter.

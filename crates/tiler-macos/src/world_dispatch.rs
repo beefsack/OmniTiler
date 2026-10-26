@@ -25,9 +25,10 @@ use tiler_core::gesture::{GestureIngress, GestureSettled};
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{OneShotEffect, ScopeAuthority, WorldCommand, WorldReply};
 
+use crate::focus_route::FocusRoute;
 use crate::runtime::{
-    DesiredFrame, FocusCommand, FocusRequest, FrameCommand, Shared, emit, lock_focus, lock_shared,
-    parse_window_id,
+    DeferredSelectionFocus, DesiredFrame, FocusBaselines, FocusCommand, FocusRequest, FrameCommand,
+    Shared, emit, lock_focus, lock_shared, parse_window_id,
 };
 use crate::runtime_core::RetainedCore;
 use crate::runtime_thread::{CoherencePending, FocusSlot, FrameSlot, Inbox};
@@ -1224,6 +1225,7 @@ fn consume_world_reply(
         shared,
         focus_queue,
         focus_capacity,
+        reply,
         effects,
         ticket_command,
         ticket_command_seq,
@@ -1363,6 +1365,350 @@ fn emit_world_frames(
     }
 }
 
+/// Selection tickets whose remembered-leaf focus outcome defers instead
+/// of dispatching: the native Dock-swipe selection must prove arrival on
+/// the bound Space first. Every other ticket (observation-only, move,
+/// send, explicit focus, consumed replay) binds nothing here.
+pub(crate) fn selection_ticket_seq(
+    ticket_command: Option<&WorldCommand>,
+    ticket_command_seq: Option<u64>,
+) -> Option<u64> {
+    let seq = ticket_command_seq?;
+    match ticket_command {
+        Some(
+            WorldCommand::SelectWorkspace { .. }
+            | WorldCommand::SelectNumbered { .. }
+            | WorldCommand::SelectRelative { .. }
+            | WorldCommand::SelectPrevious { .. }
+            | WorldCommand::SelectTrailing { .. }
+            | WorldCommand::SwitchView { .. },
+        ) => Some(seq),
+        _ => None,
+    }
+}
+
+/// Resolve the deferred selection focus for one replied selection effect:
+/// the effect must be the command's own correlated `fx-<seq>` outcome and
+/// the caller must supply the reply's live native binding for the retained
+/// View target (`None` when unmapped). The binding must parse to a live
+/// Space id, and every baseline must be present (observed focus, foreground
+/// PID — never guessed). `None` on any gap: refusal direction, never a
+/// guessed target or baseline.
+pub(crate) fn deferred_selection_focus_for(
+    operation_id: &str,
+    command_seq: u64,
+    effect: &OneShotEffect,
+    native_binding: Option<String>,
+    route: FocusRoute,
+    baselines: FocusBaselines,
+) -> Option<DeferredSelectionFocus> {
+    if !effect.is_explicit_focus_for(command_seq) {
+        return None;
+    }
+    let expected_sid = crate::workspace_select::parse_native_binding(native_binding?.as_str())?;
+    let FocusBaselines {
+        app_generation,
+        prior_focus,
+        prior_frontmost,
+    } = baselines;
+    let (prior_focus, prior_frontmost) = match (prior_focus, prior_frontmost) {
+        (Some(focus), Some(frontmost)) => (focus, frontmost),
+        _ => return None,
+    };
+    Some(DeferredSelectionFocus {
+        operation_id: operation_id.to_owned(),
+        command_seq,
+        window: effect.target.clone(),
+        route,
+        expected_sid,
+        app_generation,
+        prior_focus: Some(prior_focus),
+        prior_frontmost: Some(prior_frontmost),
+    })
+}
+
+/// Drop any deferred selection focus without dispatch (supersession or
+/// refusal path): counted evidence, never actuated. Locking helper shared
+/// by dispatch paths; `token` is a static ring token.
+fn drop_selection_focus_locked(shared: &Arc<Mutex<Shared>>, token: &'static str) {
+    let mut guard = lock_shared(shared);
+    if guard.selection_focus_pending.take().is_some() {
+        guard.diagnostics.focus_dropped_full += 1;
+        drop(guard);
+        emit(shared, 0, 0, 0, "focus", token, 1);
+    }
+}
+
+/// Bind the correlation-bound deferred selection focus for one replied
+/// selection command (engine thread, at dispatch): replaces any older
+/// pending intent (latest-wins supersession, counted), or drops the older
+/// intent when this command retains no View target or carries no focus
+/// outcome (a newer switch still supersedes). Binds nothing when the reply
+/// publishes no live native binding for the retained target — the arrival
+/// Space is unprovable, so no focus may ever release (refusal direction).
+/// Bumps the supersession floor on every selection bind so older
+/// completions can never reapply after this newer input.
+fn bind_selection_focus(
+    session: &mut WorldSession,
+    shared: &Arc<Mutex<Shared>>,
+    reply: &WorldReply,
+    effects: &[OneShotEffect],
+    command_seq: u64,
+    observed_focus: Option<WindowId>,
+) {
+    let operation_id = command_operation_id(command_seq);
+    {
+        let mut guard = lock_shared(shared);
+        guard.selection_focus_floor_seq = guard.selection_focus_floor_seq.max(command_seq);
+    }
+    let transfer = session
+        .engine_mut()
+        .retained_transfers()
+        .into_iter()
+        .find(|target| {
+            target.operation_id == operation_id
+                && matches!(target.kind, tiler_core::world_report::TransferKind::View)
+        });
+    let Some(transfer) = transfer else {
+        drop_selection_focus_locked(shared, "superseded-no-transfer");
+        return;
+    };
+    let Some(effect) = effects
+        .iter()
+        .find(|e| e.is_explicit_focus_for(command_seq))
+    else {
+        drop_selection_focus_locked(shared, "superseded-no-effect");
+        return;
+    };
+    let (fpid, _fwid) = match parse_window_id(&effect.target.0) {
+        Some(pair) => pair,
+        None => {
+            drop_selection_focus_locked(shared, "unproven-target");
+            return;
+        }
+    };
+    // Bind-time baselines, read fresh at dispatch (never guessed): the
+    // owning app generation, the engine's worker-gated observed focus, and
+    // the main-thread foreground. Any gap refuses the bind — without a
+    // baseline the release could never prove non-intervention.
+    let baselines = {
+        let guard = lock_shared(shared);
+        FocusBaselines {
+            app_generation: guard.apps.get(&fpid).map(|record| record.generation),
+            prior_focus: observed_focus.map(|window| window.0),
+            prior_frontmost: guard
+                .focus_evidence
+                .as_ref()
+                .and_then(|evidence| evidence.frontmost_pid),
+        }
+    };
+    let native_binding = reply
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == transfer.target_output.0 && row.id == transfer.target_workspace)
+        .and_then(|row| row.native_binding.clone());
+    let Some(deferred) = deferred_selection_focus_for(
+        &operation_id,
+        command_seq,
+        effect,
+        native_binding,
+        session.focus_route(),
+        baselines,
+    ) else {
+        drop_selection_focus_locked(shared, "unproven-baseline");
+        return;
+    };
+    {
+        let mut guard = lock_shared(shared);
+        if guard
+            .selection_focus_pending
+            .as_ref()
+            .is_some_and(|pending| pending.operation_id != operation_id)
+        {
+            guard.diagnostics.focus_dropped_full += 1;
+            drop(guard);
+            emit(shared, 0, 0, 0, "focus", "superseded-deferred", 1);
+            let mut guard = lock_shared(shared);
+            guard.selection_focus_pending = Some(deferred);
+            drop(guard);
+        } else {
+            guard.selection_focus_pending = Some(deferred);
+            drop(guard);
+        }
+        emit(shared, 0, 0, 0, "focus", "deferred-bound", 1);
+    }
+}
+
+/// Outcome of one arrival-bound selection-focus release attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectionFocusRelease {
+    /// Focus enqueued to the outbox plus the owner slot.
+    Released,
+    /// Deferred intent dropped without dispatch (refusal, supersession,
+    /// stale app, user focus move, or unproven arrival).
+    Dropped,
+    /// No deferred intent names this operation: nothing to do.
+    NoPending,
+}
+
+/// Release one deferred selection focus after the native selection proved
+/// arrival (main thread, on the matching select completion's verified
+/// post): the post must name the bound native Space — an unreadable or
+/// wrong-Space post drops the intent instead of dispatching early.
+/// Freshness fences mirror the dispatch path: a superseded seq, a
+/// dead/regenerated app, a user focus move to another app, or a full
+/// outbox all drop counted instead of dispatching stale. At-most-once:
+/// the slot is taken before any enqueue, so a repeat completion finds
+/// nothing (no replay).
+pub(crate) fn release_selection_focus_after_arrival(
+    shared: &Arc<Mutex<Shared>>,
+    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    completion_op: Option<&str>,
+    post_sid: Option<u64>,
+    frontmost_pid: Option<u32>,
+) -> SelectionFocusRelease {
+    let Some(op) = completion_op else {
+        return SelectionFocusRelease::NoPending;
+    };
+    let deferred = {
+        let mut guard = lock_shared(shared);
+        match guard.selection_focus_pending.as_ref() {
+            Some(pending) if pending.operation_id == op => guard
+                .selection_focus_pending
+                .take()
+                .expect("matched pending"),
+            _ => return SelectionFocusRelease::NoPending,
+        }
+    };
+    let drop_stale = |token: &'static str| {
+        lock_shared(shared).diagnostics.stale_dropped += 1;
+        emit(shared, 0, 0, 0, "focus", token, 1);
+        SelectionFocusRelease::Dropped
+    };
+    if deferred.command_seq < lock_shared(shared).selection_focus_floor_seq {
+        return drop_stale("superseded-release");
+    }
+    if post_sid != Some(deferred.expected_sid) {
+        return drop_stale("unproven-arrival");
+    }
+    let Some((fpid, fwid)) = parse_window_id(&deferred.window.0) else {
+        return drop_stale("unproven-target");
+    };
+    let live = {
+        let guard = lock_shared(shared);
+        guard.apps.get(&fpid).map(|record| {
+            (
+                record.generation,
+                record.terminated,
+                Arc::clone(&record.focus),
+            )
+        })
+    };
+    let Some((app_generation, terminated, slot)) = live else {
+        return drop_stale("stale-app");
+    };
+    if terminated || Some(app_generation) != deferred.app_generation {
+        return drop_stale("stale-app");
+    }
+    // Foreground stability since bind: the release-time foreground must
+    // equal the bind-time foreground. A move in between proves user input
+    // after the select and drops the intent — whether the user left the
+    // target app or arrived from elsewhere. An unchanged foreground
+    // proceeds even when it names another app (hotkey select from
+    // elsewhere is the ordinary restore path, not an intervention).
+    // Unknown on either side fails closed: without a stability baseline
+    // the release could never prove non-intervention. Same-app window
+    // moves under a stable foreground are invisible here; the owner worker
+    // re-checks them against the bind-time prior before dispatching.
+    match (deferred.prior_frontmost, frontmost_pid) {
+        (Some(before), Some(now)) if before == now => {}
+        (Some(_), Some(_)) => return drop_stale("user-focus-moved"),
+        _ => return drop_stale("unproven-foreground"),
+    }
+    let (capacity, native_mode, revision) = {
+        let guard = lock_shared(shared);
+        (
+            guard.config.focus_outbox_depth,
+            matches!(guard.config.topology_mode, TopologyMode::Native),
+            guard.topology_revision,
+        )
+    };
+    let request = FocusRequest {
+        pid: fpid,
+        generation: app_generation,
+        request_id: deferred.command_seq,
+        wid: fwid,
+        window: deferred.window.0.clone(),
+        dispatched: true,
+        verified: false,
+        topology_revision: revision,
+    };
+    {
+        let mut queue = lock_focus(focus_queue);
+        if queue.len() >= capacity {
+            drop(queue);
+            lock_shared(shared).diagnostics.focus_dropped_full += 1;
+            emit(shared, 0, 0, 0, "focus", "dropped-full", 1);
+            return SelectionFocusRelease::Dropped;
+        }
+        queue.push(request);
+    }
+    {
+        let mut guard = lock_shared(shared);
+        guard.diagnostics.focus_dispatched += 1;
+    }
+    emit(shared, 0, 0, 0, "focus", "selection-released", 1);
+    // Owner actuation path, native mode only (mirrors the dispatch path:
+    // the synthetic skeleton has no per-app focus dispatch).
+    if native_mode {
+        let cmd = FocusCommand {
+            pid: fpid,
+            generation: app_generation,
+            request_id: deferred.command_seq,
+            wid: fwid,
+            window: deferred.window.0,
+            revision,
+            route: deferred.route,
+            // The bind-time observed focus rides along so the owner worker
+            // can refuse a same-app user focus move the main thread cannot
+            // see (frontmost is app-level).
+            expect_prior: deferred.prior_focus,
+        };
+        if slot.set_latest(cmd).is_some() {
+            lock_shared(shared).diagnostics.focus_dispatched += 1;
+        } else {
+            lock_shared(shared).diagnostics.focus_dropped_full += 1;
+            emit(shared, 0, 0, 0, "focus", "dropped-full", 1);
+        }
+    }
+    SelectionFocusRelease::Released
+}
+
+/// Drop any deferred selection focus naming one operation (refused select
+/// completion): arrival never proved, so the intent must never fire.
+/// Returns true when an intent was dropped.
+pub(crate) fn drop_selection_focus_for_operation(
+    shared: &Arc<Mutex<Shared>>,
+    operation_id: Option<&str>,
+) -> bool {
+    let Some(op) = operation_id else {
+        return false;
+    };
+    let mut guard = lock_shared(shared);
+    if guard
+        .selection_focus_pending
+        .as_ref()
+        .is_some_and(|pending| pending.operation_id == op)
+    {
+        guard.selection_focus_pending = None;
+        guard.diagnostics.stale_dropped += 1;
+        drop(guard);
+        emit(shared, 0, 0, 0, "focus", "cancelled-with-select", 1);
+        return true;
+    }
+    false
+}
+
 /// Focus dispatch from spent one-shot effects: the bounded controller
 /// outbox plus the owning app's latest-wins slot (native mode), sharing
 /// one `request_id`. Only the explicit focus outcome of the dispatched
@@ -1379,6 +1725,7 @@ fn dispatch_focus_effects(
     shared: &Arc<Mutex<Shared>>,
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
+    reply: &WorldReply,
     effects: &[OneShotEffect],
     ticket_command: Option<&WorldCommand>,
     ticket_command_seq: Option<u64>,
@@ -1392,12 +1739,32 @@ fn dispatch_focus_effects(
     // the dispatched command is an explicit focus step, so exactly its
     // correlated `fx-<seq>` outcome may dispatch. Any other ticket —
     // observation-only, move, select, or a consumed replay — dispatches
-    // no focus even when the reply carries admission intents.
+    // no focus even when the reply carries admission intents. Newer core
+    // selection effects (remembered-leaf focus on actual view changes)
+    // never dispatch here either: they bind a correlation-bound deferred
+    // (see `bind_selection_focus`) released only after the native
+    // selection proves arrival.
     let explicit_focus_seq = match (ticket_command, ticket_command_seq) {
         (Some(WorldCommand::Focus { .. }), Some(seq))
         | (Some(WorldCommand::Operation(CoreCommand::Focus { .. })), Some(seq)) => Some(seq),
         _ => None,
     };
+    if let Some(seq) = explicit_focus_seq {
+        // Newer user focus intent supersedes any deferred selection
+        // focus: never reapply a stale selection focus after it.
+        drop_selection_focus_locked(shared, "explicit-focus-superseded");
+        let mut guard = lock_shared(shared);
+        guard.selection_focus_floor_seq = guard.selection_focus_floor_seq.max(seq);
+    } else if let Some(seq) = selection_ticket_seq(ticket_command, ticket_command_seq) {
+        bind_selection_focus(
+            session,
+            shared,
+            reply,
+            effects,
+            seq,
+            retained.observed_focus.clone(),
+        );
+    }
     let (slots, topology_revision, native_mode): (LiveSlots, u64, bool) = {
         let guard = lock_shared(shared);
         (
@@ -1482,6 +1849,9 @@ fn dispatch_focus_effects(
                         window: effect.target.0.clone(),
                         revision: topology_revision,
                         route: session.focus_route(),
+                        // Explicit focus dispatches legacy-unchanged: no
+                        // prior check (the user intent IS the focus move).
+                        expect_prior: None,
                     };
                     if slot.set_latest(cmd).is_some() {
                         focus_dispatched += 1;
@@ -1701,5 +2071,602 @@ mod tests {
         }
         // The empty reply carries no transfers: no pending claim settles.
         assert!(empty_reply().transfers.is_empty());
+    }
+
+    // -- Arrival-bound deferred selection focus ----------------------------
+
+    use std::collections::BTreeMap;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+
+    fn focus_shared() -> Arc<Mutex<Shared>> {
+        let config = crate::runtime_types::RuntimeConfig {
+            topology_mode: crate::runtime_types::TopologyMode::Native,
+            ..Default::default()
+        };
+        Arc::new(Mutex::new(Shared {
+            config,
+            handles_live: 0,
+            generation_counter: 0,
+            log_counter: 0,
+            start: Instant::now(),
+            apps: BTreeMap::new(),
+            clock: Arc::new(crate::world_sequencer::ObservationClock::new()),
+            midflight_hook: Mutex::new(None),
+            post_accept_hook: Mutex::new(None),
+            topology: None,
+            display_inputs: None,
+            select_wake: None,
+            topology_revision: 9,
+            native_context: None,
+            native_cell: crate::runtime_shared::NativeContextCell::new(),
+            select_pending: None,
+            select_busy: false,
+            selection_focus_pending: None,
+            selection_focus_floor_seq: 0,
+            focus_evidence: None,
+            zombies: Vec::new(),
+            engine_handle: None,
+            input_handle: None,
+            logger_handle: None,
+            input_thread: None,
+            terminal: None,
+            admission_closed: false,
+            stop_engine: Arc::new(AtomicBool::new(false)),
+            stop_input: Arc::new(AtomicBool::new(false)),
+            stop_logger: Arc::new(AtomicBool::new(false)),
+            log_tx: None,
+            diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
+            log: std::collections::VecDeque::new(),
+            last_desired: Vec::new(),
+            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation_style: crate::active_border::PresentationStylePx::default(),
+        }))
+    }
+
+    fn live_focus_app(shared: &Arc<Mutex<Shared>>, pid: u32, generation: u64) -> Arc<FocusSlot> {
+        let slot = Arc::new(FocusSlot::new());
+        lock_shared(shared).apps.insert(
+            pid,
+            crate::runtime_shared::AppRecord {
+                generation,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::new(FrameSlot::new()),
+                focus: Arc::clone(&slot),
+                ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
+                worker: None,
+                worker_name: "test".to_owned(),
+            },
+        );
+        slot
+    }
+
+    fn focus_session() -> WorldSession {
+        WorldSession::new(
+            tiler_core::size_hints::FixedSizePredicate::BothAxes,
+            true,
+            crate::focus_route::FocusRoute::Slps,
+            Arc::new(crate::world_sequencer::ObservationClock::new()),
+        )
+    }
+
+    fn focus_effect(seq: u64) -> OneShotEffect {
+        use tiler_core::directional::WindowId;
+        OneShotEffect::explicit_focus(seq, WindowId("4242_7".to_owned()), seq + 100)
+    }
+
+    fn pending_op3() -> DeferredSelectionFocus {
+        use tiler_core::directional::WindowId;
+        DeferredSelectionFocus {
+            operation_id: "op-3".to_owned(),
+            command_seq: 3,
+            window: WindowId("4242_7".to_owned()),
+            route: crate::focus_route::FocusRoute::Slps,
+            expected_sid: 3,
+            app_generation: Some(1),
+            prior_focus: Some("4242_7".to_owned()),
+            prior_frontmost: Some(4242),
+        }
+    }
+
+    #[test]
+    fn selection_tickets_defer_while_other_tickets_bind_nothing() {
+        use tiler_core::directional::OutputId;
+        use tiler_core::world_report::WorldCommand;
+        let out = Some(OutputId("macos-display-1".to_owned()));
+        let tickets = [
+            WorldCommand::SelectWorkspace {
+                output: out.clone().expect("output"),
+                workspace: "ws-a".to_owned(),
+            },
+            WorldCommand::SwitchView {
+                output: out.clone().expect("output"),
+                workspace: "ws-a".to_owned(),
+            },
+            WorldCommand::SelectNumbered {
+                output: out.clone(),
+                index: 2,
+            },
+            WorldCommand::SelectRelative {
+                output: out.clone(),
+                delta: 1,
+            },
+            WorldCommand::SelectPrevious {
+                output: out.clone(),
+            },
+            WorldCommand::SelectTrailing { output: out },
+        ];
+        for ticket in &tickets {
+            assert_eq!(selection_ticket_seq(Some(ticket), Some(9)), Some(9));
+        }
+        // Explicit focus, missing seq, missing ticket, and unrelated
+        // commands bind nothing here.
+        assert_eq!(
+            selection_ticket_seq(
+                Some(&WorldCommand::Focus {
+                    window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                    direction: "left".to_owned(),
+                }),
+                Some(9),
+            ),
+            None,
+        );
+        assert_eq!(selection_ticket_seq(Some(&tickets[0]), None), None);
+        assert_eq!(selection_ticket_seq(None, Some(9)), None);
+    }
+
+    #[test]
+    fn deferred_resolver_requires_correlated_effect_and_live_binding() {
+        use tiler_core::directional::WindowId;
+        let target = WindowId("4242_7".to_owned());
+        let route = crate::focus_route::FocusRoute::Slps;
+        let baselines = || FocusBaselines {
+            app_generation: Some(1),
+            prior_focus: Some("4242_7".to_owned()),
+            prior_frontmost: Some(4242),
+        };
+        let effect = OneShotEffect::explicit_focus(4, target.clone(), 104);
+        let resolved = deferred_selection_focus_for(
+            "op-4",
+            4,
+            &effect,
+            Some("space-3".to_owned()),
+            route,
+            baselines(),
+        )
+        .expect("correlated effect with a live binding resolves");
+        assert_eq!(resolved.operation_id, "op-4");
+        assert_eq!(resolved.command_seq, 4);
+        assert_eq!(resolved.window, target);
+        assert_eq!(resolved.expected_sid, 3);
+        assert_eq!(resolved.app_generation, Some(1));
+        assert_eq!(resolved.prior_focus.as_deref(), Some("4242_7"));
+        assert_eq!(resolved.prior_frontmost, Some(4242));
+        // Uncorrelated effect id never resolves.
+        let other = OneShotEffect::explicit_focus(5, target.clone(), 105);
+        assert!(
+            deferred_selection_focus_for(
+                "op-4",
+                4,
+                &other,
+                Some("space-3".to_owned()),
+                route,
+                baselines(),
+            )
+            .is_none(),
+            "fx-5 is not the outcome of command 4"
+        );
+        // Missing or unparsable bindings never resolve (no guessed Space).
+        assert!(
+            deferred_selection_focus_for("op-4", 4, &effect, None, route, baselines(),).is_none()
+        );
+        assert!(
+            deferred_selection_focus_for(
+                "op-4",
+                4,
+                &effect,
+                Some("desktop-3".to_owned()),
+                route,
+                baselines(),
+            )
+            .is_none()
+        );
+        assert!(
+            deferred_selection_focus_for(
+                "op-4",
+                4,
+                &effect,
+                Some("space-0".to_owned()),
+                route,
+                baselines(),
+            )
+            .is_none(),
+            "zero SID never resolves"
+        );
+        // Missing baselines never resolve: without an observed-focus or
+        // foreground baseline, non-intervention is unprovable.
+        assert!(
+            deferred_selection_focus_for(
+                "op-4",
+                4,
+                &effect,
+                Some("space-3".to_owned()),
+                route,
+                FocusBaselines {
+                    prior_focus: None,
+                    ..baselines()
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            deferred_selection_focus_for(
+                "op-4",
+                4,
+                &effect,
+                Some("space-3".to_owned()),
+                route,
+                FocusBaselines {
+                    prior_frontmost: None,
+                    ..baselines()
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn selection_dispatch_without_retained_target_binds_nothing() {
+        // Refusal direction through the real dispatch path: a selection
+        // reply with no retained View transfer (fresh engine, nothing
+        // retained) binds no deferred focus and queues nothing — even
+        // when the reply carries a focus effect.
+        use tiler_core::world_report::WorldCommand;
+        let mut session = focus_session();
+        let mut retained = crate::runtime_core::RetainedCore::default();
+        let shared = focus_shared();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = empty_reply();
+        dispatch_focus_effects(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            8,
+            &reply,
+            &[focus_effect(5)],
+            Some(&WorldCommand::SelectNumbered {
+                output: None,
+                index: 2,
+            }),
+            Some(5),
+            0,
+            0,
+            0,
+        );
+        let guard = lock_shared(&shared);
+        assert!(guard.selection_focus_pending.is_none());
+        assert_eq!(guard.selection_focus_floor_seq, 5);
+        assert_eq!(guard.diagnostics.focus_dispatched, 0);
+        assert_eq!(guard.diagnostics.focus_dropped_full, 0);
+        drop(guard);
+        assert!(lock_focus(&focus_queue).is_empty());
+    }
+
+    #[test]
+    fn newer_switch_supersedes_pending_selection_focus() {
+        // Supersession through the real dispatch path: a newer selection
+        // command (seq 5) with no retained target drops the older pending
+        // intent (op-3) counted — it can never fire after this input.
+        use tiler_core::world_report::WorldCommand;
+        let mut session = focus_session();
+        let mut retained = crate::runtime_core::RetainedCore::default();
+        let shared = focus_shared();
+        lock_shared(&shared).selection_focus_pending = Some(pending_op3());
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = empty_reply();
+        dispatch_focus_effects(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            8,
+            &reply,
+            &[],
+            Some(&WorldCommand::SelectNumbered {
+                output: None,
+                index: 2,
+            }),
+            Some(5),
+            0,
+            0,
+            0,
+        );
+        let guard = lock_shared(&shared);
+        assert!(guard.selection_focus_pending.is_none());
+        assert_eq!(guard.selection_focus_floor_seq, 5);
+        assert_eq!(guard.diagnostics.focus_dropped_full, 1);
+        assert_eq!(guard.diagnostics.focus_dispatched, 0);
+    }
+
+    #[test]
+    fn explicit_focus_supersedes_and_dispatches_immediately() {
+        // Explicit focus still dispatches at once (unchanged path) and
+        // supersedes any deferred selection intent plus the floor.
+        use tiler_core::directional::WindowId;
+        use tiler_core::world_report::WorldCommand;
+        let mut session = focus_session();
+        let mut retained = crate::runtime_core::RetainedCore::default();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, 4242, 1);
+        lock_shared(&shared).selection_focus_pending = Some(pending_op3());
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = empty_reply();
+        dispatch_focus_effects(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            8,
+            &reply,
+            &[focus_effect(7)],
+            Some(&WorldCommand::Focus {
+                window: WindowId("4242_7".to_owned()),
+                direction: "left".to_owned(),
+            }),
+            Some(7),
+            4242,
+            1,
+            7,
+        );
+        let guard = lock_shared(&shared);
+        assert!(guard.selection_focus_pending.is_none());
+        assert_eq!(guard.selection_focus_floor_seq, 7);
+        // Immediate dispatch is unchanged: queue plus owner slot.
+        assert_eq!(guard.diagnostics.focus_dispatched, 2);
+        drop(guard);
+        let queued = lock_focus(&focus_queue);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].pid, 4242);
+        assert_eq!(queued[0].wid, 7);
+        drop(queued);
+        assert!(slot.take().is_some(), "owner slot dispatches at once");
+    }
+
+    #[test]
+    fn release_fires_only_on_verified_arrival_exactly_once() {
+        // Async arrival: nothing fires before the verified post; the first
+        // matching completion releases to the queue plus the owner slot,
+        // and a repeat completion finds nothing (no replay).
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, 4242, 1);
+        lock_shared(&shared).selection_focus_pending = Some(pending_op3());
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        assert_eq!(
+            release_selection_focus_after_arrival(
+                &shared,
+                &focus_queue,
+                Some("op-9"),
+                Some(3),
+                None
+            ),
+            SelectionFocusRelease::NoPending,
+            "unrelated operations never touch the intent"
+        );
+        assert!(
+            lock_shared(&shared).selection_focus_pending.is_some(),
+            "unrelated release keeps the intent"
+        );
+        assert_eq!(
+            release_selection_focus_after_arrival(
+                &shared,
+                &focus_queue,
+                Some("op-3"),
+                Some(3),
+                Some(4242)
+            ),
+            SelectionFocusRelease::Released,
+        );
+        {
+            let queued = lock_focus(&focus_queue);
+            assert_eq!(queued.len(), 1);
+            assert_eq!((queued[0].pid, queued[0].wid), (4242, 7));
+            assert_eq!(queued[0].generation, 1);
+            assert_eq!(queued[0].topology_revision, 9);
+        }
+        let cmd = slot.take().expect("owner slot carries the release");
+        assert_eq!(cmd.window, "4242_7");
+        assert_eq!(cmd.revision, 9);
+        assert_eq!(
+            cmd.expect_prior.as_deref(),
+            Some("4242_7"),
+            "bind-time observed focus rides for the worker check"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.focus_dispatched,
+            2,
+            "queue plus slot count"
+        );
+        assert_eq!(
+            release_selection_focus_after_arrival(
+                &shared,
+                &focus_queue,
+                Some("op-3"),
+                Some(3),
+                None
+            ),
+            SelectionFocusRelease::NoPending,
+            "at-most-once: no replay"
+        );
+        assert_eq!(lock_focus(&focus_queue).len(), 1);
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn release_drops_unproven_wrong_space_and_stale_states() {
+        // No focus before verified arrival: an unreadable post drops. A
+        // wrong-Space post drops. Stale apps, regenerated lifetimes, a user
+        // foreground move, unknown foreground on either side, a superseding
+        // floor, and a full outbox all drop counted — never dispatch stale.
+        // An unchanged foreground releases even when it names another app.
+        let release_with = |pending: DeferredSelectionFocus,
+                            post: Option<u64>,
+                            frontmost: Option<u32>,
+                            floor: u64,
+                            terminate: bool,
+                            configure: &dyn Fn(&Arc<Mutex<Shared>>)|
+         -> (
+            SelectionFocusRelease,
+            Arc<Mutex<Shared>>,
+            Arc<Mutex<Vec<FocusRequest>>>,
+            Arc<FocusSlot>,
+        ) {
+            let shared = focus_shared();
+            let slot = live_focus_app(&shared, 4242, 1);
+            if terminate {
+                lock_shared(&shared)
+                    .apps
+                    .get_mut(&4242)
+                    .expect("app")
+                    .terminated = true;
+            }
+            lock_shared(&shared).selection_focus_pending = Some(pending);
+            lock_shared(&shared).selection_focus_floor_seq = floor;
+            configure(&shared);
+            let focus_queue = Arc::new(Mutex::new(Vec::new()));
+            let outcome = release_selection_focus_after_arrival(
+                &shared,
+                &focus_queue,
+                Some("op-3"),
+                post,
+                frontmost,
+            );
+            (outcome, shared, focus_queue, slot)
+        };
+        let no_configure = |_: &Arc<Mutex<Shared>>| {};
+        // Unreadable post: arrival unproven.
+        let (outcome, shared, queue, slot) =
+            release_with(pending_op3(), None, None, 0, false, &no_configure);
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        assert!(slot.take().is_none());
+        assert_eq!(lock_shared(&shared).diagnostics.stale_dropped, 1);
+        // Wrong Space post.
+        let (outcome, _, queue, _) =
+            release_with(pending_op3(), Some(9), None, 0, false, &no_configure);
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        // Terminated app.
+        let (outcome, _, queue, _) =
+            release_with(pending_op3(), Some(3), None, 0, true, &no_configure);
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        // Regenerated lifetime (bound gen 1, live gen 2).
+        let (outcome, _, queue, _) = release_with(
+            DeferredSelectionFocus {
+                app_generation: Some(1),
+                ..pending_op3()
+            },
+            Some(3),
+            None,
+            0,
+            false,
+            &|shared: &Arc<Mutex<Shared>>| {
+                lock_shared(shared)
+                    .apps
+                    .get_mut(&4242)
+                    .expect("app")
+                    .generation = 2;
+            },
+        );
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        // User moved foreground to another app after the select.
+        let (outcome, _, queue, _) =
+            release_with(pending_op3(), Some(3), Some(9999), 0, false, &no_configure);
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        // Unknown foreground fails closed: without fresh evidence the
+        // target still owns the foreground, nothing dispatches.
+        let (outcome, shared, queue, slot) =
+            release_with(pending_op3(), Some(3), None, 0, false, &no_configure);
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        assert!(slot.take().is_none());
+        assert_eq!(lock_shared(&shared).diagnostics.stale_dropped, 1);
+        // Superseded by newer input (floor past the bound seq).
+        let (outcome, _, queue, _) =
+            release_with(pending_op3(), Some(3), None, 4, false, &no_configure);
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        // Full outbox.
+        let (outcome, shared, queue, slot) = release_with(
+            pending_op3(),
+            Some(3),
+            Some(4242),
+            0,
+            false,
+            &|shared: &Arc<Mutex<Shared>>| {
+                lock_shared(shared).config.focus_outbox_depth = 0;
+            },
+        );
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        assert!(slot.take().is_none());
+        assert_eq!(lock_shared(&shared).diagnostics.focus_dropped_full, 1);
+        // Foreground already on the target app still releases.
+        let (outcome, _, queue, slot) =
+            release_with(pending_op3(), Some(3), Some(4242), 0, false, &no_configure);
+        assert_eq!(outcome, SelectionFocusRelease::Released);
+        assert_eq!(lock_focus(&queue).len(), 1);
+        assert!(slot.take().is_some());
+        // Unchanged foreground elsewhere releases too: the user sat in
+        // another app at bind and never moved — hotkey select from
+        // elsewhere is the ordinary restore path, not an intervention.
+        let (outcome, _, queue, slot) = release_with(
+            DeferredSelectionFocus {
+                prior_frontmost: Some(9999),
+                ..pending_op3()
+            },
+            Some(3),
+            Some(9999),
+            0,
+            false,
+            &no_configure,
+        );
+        assert_eq!(outcome, SelectionFocusRelease::Released);
+        assert_eq!(lock_focus(&queue).len(), 1);
+        assert!(slot.take().is_some());
+        // Unknown bind-time foreground drops even with a fresh release
+        // read: stability needs both baselines.
+        let (outcome, shared, queue, slot) = release_with(
+            DeferredSelectionFocus {
+                prior_frontmost: None,
+                ..pending_op3()
+            },
+            Some(3),
+            Some(4242),
+            0,
+            false,
+            &no_configure,
+        );
+        assert_eq!(outcome, SelectionFocusRelease::Dropped);
+        assert!(lock_focus(&queue).is_empty());
+        assert!(slot.take().is_none());
+        assert_eq!(lock_shared(&shared).diagnostics.stale_dropped, 1);
+    }
+
+    #[test]
+    fn refused_completion_drops_the_matching_intent_only() {
+        let shared = focus_shared();
+        live_focus_app(&shared, 4242, 1);
+        lock_shared(&shared).selection_focus_pending = Some(pending_op3());
+        assert!(!drop_selection_focus_for_operation(&shared, Some("op-9")));
+        assert!(lock_shared(&shared).selection_focus_pending.is_some());
+        assert!(!drop_selection_focus_for_operation(&shared, None));
+        assert!(drop_selection_focus_for_operation(&shared, Some("op-3")));
+        assert!(lock_shared(&shared).selection_focus_pending.is_none());
+        assert_eq!(lock_shared(&shared).diagnostics.stale_dropped, 1);
     }
 }

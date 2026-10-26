@@ -2264,6 +2264,7 @@ mod tests {
             window: format!("{pid}_7"),
             revision,
             route: crate::focus_route::FocusRoute::Slps,
+            expect_prior: None,
         }
     }
 
@@ -2432,7 +2433,7 @@ mod trailing_join_tests {
     use tiler_core::session::DomainKey;
     use tiler_core::size_hints::WindowSizeHints;
     use tiler_core::world_engine::WorldOutcome;
-    use tiler_core::world_report::{FrameSetter, NativeCreationAttempt};
+    use tiler_core::world_report::FrameSetter;
 
     use crate::focus_route::FocusRoute;
     use crate::runtime::{Shared, lock_shared};
@@ -2502,6 +2503,8 @@ mod trailing_join_tests {
             native_cell: crate::runtime_shared::NativeContextCell::new(),
             select_pending: None,
             select_busy: false,
+            selection_focus_pending: None,
+            selection_focus_floor_seq: 0,
             focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,
@@ -2637,6 +2640,216 @@ mod trailing_join_tests {
         assert!(
             guard.select_pending.is_some(),
             "armed production stores the trailing claim"
+        );
+    }
+
+    #[test]
+    fn selection_focus_binds_through_real_dispatch_with_live_binding() {
+        // Positive real-routing proof: a remembered-leaf view change mints
+        // `fx-<seq>` through the real core, and the real dispatch binds the
+        // deferred intent with the genuine expected SID taken from the
+        // reply's live native binding (never a guessed Space). The full
+        // production cycle runs between the legs: the away select drains
+        // through the scripted native row, stages its proven attempt, and
+        // settles on the moved observation — then the return mints its own
+        // remembered focus and supersedes the away intent.
+        use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with};
+        use tiler_core::world_report::TransferKind;
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        // Away: numbered 2 moves the view to the other adopted workspace.
+        // Its sole window is remembered there, so the reply mints the
+        // away outcome and the dispatch binds the away intent with the
+        // genuine SID. Foreground evidence rides the shared cell exactly
+        // like the tile pump publishes it every tick (bind reads it as
+        // its stability baseline). The drain + settle below proves the
+        // away arrival; the return leg then supersedes this intent
+        // (counted) with its own remembered focus.
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 }),
+            true,
+        );
+        let away = lock_shared(&shared)
+            .select_pending
+            .clone()
+            .expect("away select stores its operation");
+        let away_op = away.operation_id.clone().expect("operation rides");
+        let away_pending = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("away remembered window binds deferred focus");
+        assert_eq!(away_pending.operation_id, away_op);
+        assert_eq!(away_pending.window.0, "4243_9");
+        assert_eq!(away_pending.expected_sid, 277);
+        assert_eq!(away_pending.prior_focus.as_deref(), Some("4242_7"));
+        assert_eq!(away_pending.prior_frontmost, Some(4242));
+        // Drain the away move through the scripted native row and stage the
+        // proven raw attempt, exactly like the main-thread drain. An
+        // unsettled outstanding flight is not a proven arrival, so the
+        // return leg only runs after the settle below.
+        let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+        let mut state = SelectionState::default();
+        let gates = SelectGates {
+            session_unlocked: true,
+            secure_active: false,
+            lock_screen: false,
+        };
+        let moved = drain_claimed_select_with(&mut state, &mut backend, away, &gates, true)
+            .expect("away drains to its binding");
+        assert_eq!((moved.pre, moved.post), (Some(1), Some(277)));
+        process_job(
+            EngineJob::ViewAttempt {
+                operation_id: away_op.clone(),
+                setter: FrameSetter::Accepted,
+                pre_sid: moved.pre,
+                post_sid: moved.post,
+                baseline_sid: moved.effect.baseline,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        // Settle the moved observation through the production dispatch path.
+        let moved_ctx = Arc::new(NativeContext {
+            revision: 10,
+            domains: vec![domain(1, false), domain(277, true)],
+            skipped: Vec::new(),
+        });
+        lock_shared(&shared).native_context = Some(Arc::clone(&moved_ctx));
+        lock_shared(&shared).topology_revision = moved_ctx.revision;
+        match dispatch_report(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            crate::world_runtime::DispatchContext::Native(Arc::clone(&moved_ctx)),
+            Vec::new(),
+            None,
+            None,
+            false,
+            crate::world_command_map::OP_RECONCILE,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("moved observation must apply, got {other:?}"),
+        }
+        assert!(
+            session.engine_mut().retained_transfers().is_empty(),
+            "native echo settles the away transfer"
+        );
+        // The main-thread drain claims the pending select, freeing the lane
+        // for the next arm exactly like production. Foreground evidence is
+        // unchanged since the away dispatch (same tick shape).
+        lock_shared(&shared).select_pending = None;
+        lock_shared(&shared).select_busy = false;
+        // Back: numbered 1 returns to the remembered home. The newer
+        // switch supersedes the away intent (counted — no completion ever
+        // released it in this lane) and binds its own with the genuine
+        // home SID.
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 1 }),
+            true,
+        );
+        let pending = lock_shared(&shared)
+            .selection_focus_pending
+            .clone()
+            .expect("remembered-leaf return binds deferred focus");
+        assert_eq!(
+            lock_shared(&shared).diagnostics.focus_dropped_full,
+            1,
+            "unreleased away intent superseded by the newer switch"
+        );
+        // The bound op names a retained View transfer in the live session.
+        let transfer = session
+            .engine_mut()
+            .retained_transfers()
+            .into_iter()
+            .find(|target| {
+                target.operation_id == pending.operation_id
+                    && matches!(target.kind, TransferKind::View)
+            })
+            .expect("bound op retains its View transfer");
+        // The expected SID is exactly the reply's live native binding for
+        // that retained target — parsed, never guessed.
+        let reply = session
+            .sequencer()
+            .last_reply()
+            .expect("applied reply retained");
+        let binding = reply
+            .workspaces
+            .iter()
+            .find(|row| {
+                row.output.0 == transfer.target_output.0 && row.id == transfer.target_workspace
+            })
+            .and_then(|row| row.native_binding.clone())
+            .expect("reply publishes the live native binding");
+        let expected: u64 = binding
+            .strip_prefix("space-")
+            .expect("space-<sid> vocabulary")
+            .parse()
+            .expect("numeric SID");
+        assert_eq!(pending.expected_sid, expected);
+        assert_eq!(
+            pending.prior_focus.as_deref(),
+            Some("4242_7"),
+            "bind-time observed focus rides as the worker baseline"
+        );
+        assert_eq!(
+            pending.prior_frontmost,
+            Some(4242),
+            "bind-time foreground rides as the stability baseline"
+        );
+        // The window is exactly the reply's correlated focus outcome.
+        let seq: u64 = pending
+            .operation_id
+            .strip_prefix("op-")
+            .expect("op-<seq> identity")
+            .parse()
+            .expect("numeric seq");
+        assert_eq!(pending.command_seq, seq);
+        let effect = reply
+            .effects
+            .iter()
+            .find(|effect| effect.is_explicit_focus_for(seq))
+            .expect("reply carries the correlated focus outcome");
+        assert_eq!(pending.window, effect.target);
+        // The away leg's superseded floor never blocks the newer bind.
+        assert!(
+            lock_shared(&shared).selection_focus_floor_seq <= seq,
+            "floor tracks the binding command"
         );
     }
 
@@ -3749,7 +3962,10 @@ mod trailing_join_tests {
             Ok(!self.occupied.contains(&sid))
         }
 
-        fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        fn create(
+            &mut self,
+            _before: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.creates += 1;
             let sid = self.next_sid;
             self.next_sid += 1;
@@ -3758,9 +3974,15 @@ mod trailing_join_tests {
             Ok(())
         }
 
-        fn select(&mut self, _before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
+        fn select(
+            &mut self,
+            _before: &SelectionSnapshot,
+            sid: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             if !self.spaces.contains(&sid) {
-                return Err(crate::workspace_select::DispatchError::refused("scripted select of absent Space"));
+                return Err(crate::workspace_select::DispatchError::refused(
+                    "scripted select of absent Space",
+                ));
             }
             self.selects.push(sid);
             self.current = sid;
@@ -4097,8 +4319,6 @@ mod trailing_join_tests {
             let prep = crate::workspace_send::prepare_trailing_send_target(&mut backend, true)
                 .expect("native append proves");
             assert_eq!((prep.target_sid, prep.created), (278, Some(278)));
-            let after = backend.spaces.clone();
-            let _ = after;
             // Observed arrival: the mover now homes to the new trailing.
             retained.window_domains.insert(
                 crate::runtime::window_id(4242, 7),
@@ -4130,7 +4350,31 @@ mod trailing_join_tests {
             // key (the appended Space has no core mapping yet at stage
             // time; the core translates it at settle time once the
             // creation receipt below binds it).
-            let mut report = build_dispatch_report(
+            // The desire-gated creation receipt rides the production
+            // staging path (not a hand-built row): the genuine pre row,
+            // the owner's verified post-append row, the verified created
+            // SID, and a genuine dispatch-time stamp. A zero stamp or a
+            // before-echo post-order would fabricate evidence and hold
+            // the transfer under ambiguity.
+            process_job(
+                EngineJob::NativeCreation {
+                    operation_id: desire.operation_id.clone(),
+                    logical: desire.logical_workspace.clone(),
+                    output: output(),
+                    setter: FrameSetter::Accepted,
+                    order_before: vec![1, 277],
+                    order_after: backend.spaces.clone(),
+                    created_sid: prep.created,
+                    attempt_ms: crate::input_eligibility::now_ms(),
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+            let report = build_dispatch_report(
                 &mut session,
                 &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&created)),
@@ -4143,29 +4387,6 @@ mod trailing_join_tests {
                 "req-3",
             )
             .expect("nonempty context reports");
-            // Stage1b creation proof for the send trailing authorization,
-            // staged here because the adapter drain reports no creation rows
-            // yet. The post stages honestly unknown; the bound receipt plus
-            // the staged arrival homing settle the transfer, and the bound
-            // echo settles the follow view with no separate flight.
-            report.creation_attempts.push(NativeCreationAttempt {
-                operation_id: desire.operation_id.clone(),
-                logical_workspace: desire.logical_workspace.clone(),
-                target_output: output(),
-                setter: FrameSetter::Accepted,
-                order_before: ctx
-                    .domains
-                    .iter()
-                    .map(|domain| domain.workspace.0.clone())
-                    .collect(),
-                order_after: created
-                    .domains
-                    .iter()
-                    .map(|domain| domain.workspace.0.clone())
-                    .collect(),
-                created_native: Some(workspace_key(prep.target_sid)),
-                attempt_ms: 0,
-            });
             assert_eq!(
                 report.member_attempts.len(),
                 1,
@@ -4389,6 +4610,8 @@ mod drag_gesture_handoff_tests {
             native_cell: crate::runtime_shared::NativeContextCell::new(),
             select_pending: None,
             select_busy: false,
+            selection_focus_pending: None,
+            selection_focus_floor_seq: 0,
             focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,

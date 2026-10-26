@@ -1426,7 +1426,10 @@ mod tests {
         fn empty(&mut self, _: u64) -> Result<bool, String> {
             Ok(true)
         }
-        fn create(&mut self, _before: &crate::workspace_select::SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        fn create(
+            &mut self,
+            _before: &crate::workspace_select::SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             unreachable!("armed clicks never create");
         }
         fn select(

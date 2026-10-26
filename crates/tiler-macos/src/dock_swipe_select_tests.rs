@@ -19,7 +19,8 @@ use crate::dock_swipe_select::{
 use crate::ffi::{LatchWait, SlsDisplayRow, SlsSpaceType, SpaceSelectLatch, SpaceSelectWake};
 use crate::runtime_types::ClaimedSelect;
 use crate::workspace_select::{
-    DispatchError, SelectGates, SelectionBackend, SelectionSnapshot, SelectionState, drain_claimed_select_with,
+    DispatchError, SelectGates, SelectionBackend, SelectionSnapshot, SelectionState,
+    drain_claimed_select_with,
 };
 use tiler_core::world_report::FrameSetter;
 
@@ -120,7 +121,10 @@ impl McCreateEffect for FakeCreate {
     ) -> Result<(), DispatchError> {
         self.calls.push((display, cgid, uuid.to_owned()));
         self.log.borrow_mut().push("append".to_owned());
-        self.results.pop_front().expect("scripted create result").map_err(DispatchError::threw)
+        self.results
+            .pop_front()
+            .expect("scripted create result")
+            .map_err(DispatchError::threw)
     }
 }
 
@@ -155,24 +159,34 @@ impl McExitGate for FakeExitGate {
     fn arm(&mut self) -> Result<(), crate::workspace_select::DispatchError> {
         self.arms += 1;
         self.log.borrow_mut().push("arm".to_owned());
-        self.arm_results.pop_front().expect("scripted arm result").map_err(DispatchError::refused)
+        self.arm_results
+            .pop_front()
+            .expect("scripted arm result")
+            .map_err(DispatchError::refused)
     }
 
-    fn await_exit(&mut self, cancel: &AtomicBool) -> Result<(), crate::workspace_select::DispatchError> {
+    fn await_exit(
+        &mut self,
+        cancel: &AtomicBool,
+    ) -> Result<(), crate::workspace_select::DispatchError> {
         self.awaits += 1;
         self.log.borrow_mut().push("await".to_owned());
         let flag = cancel.load(Ordering::SeqCst);
         self.saw_cancel_at_await.push(flag);
-        // Mirror the production contract: an observed cancellation refuses
-        // promptly without consuming a scripted outcome, so the test proves
-        // the backend actually threads its cancel flag to the gate.
+        // Mirror the production contract: post-arm cancellation or an
+        // unobserved exit holds (nothing dispatched, MC state unproven —
+        // never a proven refusal) without consuming a scripted outcome, so
+        // the test proves the backend actually threads its cancel flag to
+        // the gate.
         if flag {
-            return Err(DispatchError::refused("trailing post-create select refused: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched"));
+            return Err(DispatchError::threw(
+                "trailing post-create select unproven: cancelled while awaiting Mission Control exit; created Space retained with proof; no gesture dispatched",
+            ));
         }
         self.await_results
             .pop_front()
             .expect("scripted await result")
-            .map_err(DispatchError::refused)
+            .map_err(DispatchError::threw)
     }
 
     fn disarm(&mut self) {
@@ -1126,9 +1140,11 @@ fn version_gate_refuses_without_posting() {
 }
 
 #[test]
-fn confirmation_drift_refuses_despite_target_current() {
+fn confirmation_topology_change_after_posting_holds_without_replay() {
     // The current reads the target, but the full order moved underneath
-    // (a concurrent create): unproven, history unchanged, no replay.
+    // (a concurrent create): posted yet unproven, history unchanged, no
+    // replay. The drain holds under `Accepted` with the genuine post read
+    // (never an invented refusal).
     let mut topo = FakeTopo {
         counts: vec![Ok(1), Ok(1)].into(),
         rows: vec![
@@ -1162,9 +1178,15 @@ fn confirmation_drift_refuses_despite_target_current() {
         request(1002, Some(&before), None, SELECT_ARRIVAL_DEADLINE_MS),
         seams(&mut topo, &mut poster, &latch, &cancel, &gates),
     )
-    .expect_err("confirmation drift refuses");
-    assert!(err.reason.contains("drifted"));
+    .expect_err("confirmation topology change holds");
+    assert_eq!(err.setter, FrameSetter::Accepted);
+    assert!(
+        err.reason.contains("topology changed after posting"),
+        "{err}"
+    );
+    assert!(err.reason.contains("no replay"), "{err}");
     assert_eq!(poster.posted.len(), 1);
+    assert!(poster.released.is_empty(), "no replay posts a release");
 }
 
 #[test]
@@ -1596,7 +1618,7 @@ fn trailing_backend(
     (backend, log, cancel)
 }
 
-const EXIT_TIMEOUT: &str = "trailing post-create select refused: Mission Control exit (Dock AXExposeExit) unobserved within 2000ms (wedged-Dock guard); created Space retained with proof; no gesture dispatched";
+const EXIT_TIMEOUT: &str = "trailing post-create select unproven: Mission Control exit (Dock AXExposeExit) unobserved within 2000ms (wedged-Dock guard); created Space retained with proof; no gesture dispatched";
 
 #[test]
 fn post_create_select_dispatches_no_gesture_until_exit_observed() {
@@ -1783,7 +1805,8 @@ fn post_create_exit_wait_answers_cancellation() {
         .select(&before_row(&[71, 72, 73], 72), 73)
         .expect_err("cancelled exit wait refuses");
     assert!(
-        err.reason.contains("cancelled while awaiting Mission Control exit"),
+        err.reason
+            .contains("cancelled while awaiting Mission Control exit"),
         "cancellation refuses honestly: {err}"
     );
     assert!(
@@ -1904,13 +1927,22 @@ impl SelectionBackend for ProofBackend {
         Ok(self.empty_result)
     }
 
-    fn create(&mut self, _before: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+    fn create(
+        &mut self,
+        _before: &SelectionSnapshot,
+    ) -> Result<(), crate::workspace_select::DispatchError> {
         Ok(())
     }
 
-    fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), crate::workspace_select::DispatchError> {
+    fn select(
+        &mut self,
+        before: &SelectionSnapshot,
+        sid: u64,
+    ) -> Result<(), crate::workspace_select::DispatchError> {
         self.selected.push((before.clone(), sid));
-        self.select_result.clone().map_err(DispatchError::refused)
+        // Post-actuation ambiguity (the exit gate never proved MC exit
+        // after a verified append): holds, never a proven refusal.
+        self.select_result.clone().map_err(DispatchError::threw)
     }
 }
 

@@ -176,6 +176,36 @@ impl RuntimeHandle {
         }
     }
 
+    /// Release one deferred selection focus after the native selection
+    /// proved arrival (main thread, on the matching select completion's
+    /// verified post): the post must name the bound native Space, the app
+    /// must be live at its bound generation, and the foreground must not
+    /// have moved to another app. Anything else drops the intent counted
+    /// instead of dispatching stale; a repeat completion finds nothing (no
+    /// replay). See
+    /// [`crate::world_dispatch::release_selection_focus_after_arrival`].
+    pub(crate) fn release_selection_focus(
+        &self,
+        completion_op: Option<&str>,
+        post_sid: Option<u64>,
+        frontmost_pid: Option<u32>,
+    ) -> crate::world_dispatch::SelectionFocusRelease {
+        crate::world_dispatch::release_selection_focus_after_arrival(
+            &self.shared,
+            &self.focus_queue,
+            completion_op,
+            post_sid,
+            frontmost_pid,
+        )
+    }
+
+    /// Drop any deferred selection focus naming one operation (refused
+    /// select completion): arrival never proved, so the intent must never
+    /// fire. Returns true when an intent was dropped.
+    pub fn drop_selection_focus(&self, operation_id: Option<&str>) -> bool {
+        crate::world_dispatch::drop_selection_focus_for_operation(&self.shared, operation_id)
+    }
+
     /// Drop a pending (unclaimed) product select without dispatching: the
     /// lock/secure/stale-topology paths refuse narrowly instead of running
     /// a switch under an unsafe context. Returns whether one was dropped.

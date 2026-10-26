@@ -379,7 +379,10 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
         fn empty(&mut self, _: u64) -> Result<bool, String> {
             self.empty.clone()
         }
-        fn create(&mut self, _: &SelectionSnapshot) -> Result<(), crate::workspace_select::DispatchError> {
+        fn create(
+            &mut self,
+            _: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             self.creates += 1;
             if !self.no_effect {
                 let next = self.row.spaces.iter().max().copied().unwrap_or(0) + 1;
@@ -390,7 +393,11 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
             }
             Ok(())
         }
-        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), crate::workspace_select::DispatchError> {
+        fn select(
+            &mut self,
+            _: &SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
             unreachable!("send preparation never selects");
         }
     }

@@ -645,13 +645,22 @@ pub struct SendCompletion {
 /// verified bound target plus the runtime-created SID when an append ran
 /// (`None` on reuse). The main thread adopts `created` into lifecycle
 /// ownership on every proof-bearing completion (token or not: the Space
-/// persists either way). Reuse carries neither; tokenless appends carry
-/// creation — their transfers settle on the target alone.
+/// persists either way) and stages `creation` as the raw native creation
+/// attempt under the desire's identity so the core binds the appended
+/// native. Reuse carries neither; tokenless appends carry creation — their
+/// transfers settle on the target alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrailingCompletionProof {
     pub target_sid: u64,
     pub revision: u64,
     pub created: Option<u64>,
+    /// Raw native creation receipt for the desire-gated append: the exact
+    /// desire identity, the genuine native orders around the owner's single
+    /// append, the verified created SID, and the original dispatch stamp.
+    /// `None` on reuse or when the claim carried no creation desire (the
+    /// engine issued none). Never guessed, never a before-echo: `order_after`
+    /// is the owner's verified post-append row.
+    pub creation: Option<crate::workspace_select::CreationReport>,
 }
 
 /// Owner-side trailing preparation pins: the main-thread-published
@@ -684,12 +693,14 @@ pub struct TrailingPrepProof {
 
 /// One trailing send request for the effect owner: the engine-admitted
 /// original pins (subject, lifetime generation, source domain, operation
-/// identity - never re-sampled) plus the preparation pins. The owner
-/// prepares the exact native target, binds it to these pins (original
-/// subject/lifetime/source/operation fences intact), executes the forward
-/// drag, and reports the proof back on its completion. No second dispatch,
-/// no guessed token, no duplicate native effect: the single owner drag is
-/// the only actuation.
+/// identity - never re-sampled) plus the optional creation desire the reply
+/// published for the unbound trailing target (operation, logical workspace,
+/// output - `None` when the target was already bound and no creation was
+/// desired) plus the preparation pins. The owner prepares the exact native
+/// target, binds it to these pins (original subject/lifetime/source/
+/// operation fences intact), executes the forward drag, and reports the
+/// proof back on its completion. No second dispatch, no guessed token, no
+/// duplicate native effect: the single owner drag is the only actuation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrailingSendRequest {
     pub pid: u32,
@@ -699,6 +710,13 @@ pub struct TrailingSendRequest {
     pub source: tiler_core::session::DomainKey,
     pub operation_id: String,
     pub pins: TrailingPrepPins,
+    /// Reply-published creation desire for the unbound trailing target
+    /// (`None` when the engine desired no creation). The owner stages the
+    /// append receipt under this identity so the core binds the appended
+    /// native; a missing desire stages no creation row (never invented).
+    pub creation_operation: Option<String>,
+    pub creation_logical: Option<String>,
+    pub creation_output: Option<String>,
 }
 
 impl TrailingSendRequest {
@@ -756,6 +774,9 @@ impl TrailingSendRequest {
                 pinned_uuid: pinned_uuid.to_owned(),
                 trailing_enabled,
             },
+            creation_operation: claim.select_creation_operation.clone(),
+            creation_logical: claim.select_creation_logical.clone(),
+            creation_output: claim.select_creation_output.clone(),
         })
     }
 }
@@ -815,6 +836,14 @@ struct Lane {
 #[derive(Debug, Default)]
 pub struct SendEffectHandoff {
     inner: Mutex<Lane>,
+    /// Local pending native creation receipts: one per attempted trailing
+    /// desire whose post-order is not yet readable. Same seam as the select
+    /// lane ([`crate::workspace_select::SelectionState`]): the owner
+    /// retains the genuine pre-order with the original stamp, and the main
+    /// thread completes each receipt against the first successfully observed
+    /// full post-order. Never a fabricated before-echo or empty after-order.
+    /// Keyed by creation operation id for dedup/redelivery.
+    pending_creations: Mutex<Vec<crate::workspace_select::PendingCreation>>,
 }
 
 impl SendEffectHandoff {
@@ -1034,6 +1063,51 @@ impl SendEffectHandoff {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .stale_dropped
+    }
+
+    /// Retain one local pending trailing creation receipt after an
+    /// ambiguous preparation (the append may have run but the post-order is
+    /// not yet a readable exact append). Keeps the exact desire identity,
+    /// the genuine pre-order, the actual dispatch setter, and the original
+    /// attempt stamp. Idempotent per creation operation id: redelivery
+    /// preserves the original stamp and never duplicates. Called on the
+    /// effect owner thread; consumed on the main thread via
+    /// [`crate::workspace_send::LiveSendController::observe_trailing_creation_receipts`].
+    pub(crate) fn retain_pending_creation(
+        &self,
+        pending: crate::workspace_select::PendingCreation,
+    ) {
+        let mut stored = self
+            .pending_creations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !stored
+            .iter()
+            .any(|existing| existing.operation_id == pending.operation_id)
+        {
+            stored.push(pending);
+        }
+    }
+
+    /// Take all retained pending trailing creation receipts (main thread
+    /// only, once per observation tick). The caller observes each against
+    /// the fresh row and re-retains the still-unreadable ones.
+    pub(crate) fn take_pending_creations(&self) -> Vec<crate::workspace_select::PendingCreation> {
+        std::mem::take(
+            &mut self
+                .pending_creations
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        )
+    }
+
+    /// Pending trailing creation receipt count (test plumbing only).
+    #[cfg(test)]
+    pub(crate) fn pending_creation_count(&self) -> usize {
+        self.pending_creations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .len()
     }
 }
 

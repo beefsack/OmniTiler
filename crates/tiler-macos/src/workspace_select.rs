@@ -187,7 +187,10 @@ pub struct DispatchError {
 
 impl DispatchError {
     pub(crate) fn accepted(reason: impl Into<String>) -> Self {
-        Self { setter: FrameSetter::Accepted, reason: reason.into() }
+        Self {
+            setter: FrameSetter::Accepted,
+            reason: reason.into(),
+        }
     }
 
     pub(crate) fn from_mc(error: crate::mc_probe::McError) -> Self {
@@ -362,7 +365,9 @@ impl SelectionState {
     }
 
     pub(crate) fn take_pending_creations(&mut self) -> Vec<PendingCreation> {
-        std::mem::take(&mut self.pending_creations).into_values().collect()
+        std::mem::take(&mut self.pending_creations)
+            .into_values()
+            .collect()
     }
 }
 
@@ -383,8 +388,15 @@ pub(crate) struct PendingCreation {
 }
 
 impl PendingCreation {
-    pub(crate) fn observe(&self, row: &SelectionSnapshot, read_started_ms: u64) -> Option<CreationReport> {
-        if row.validate().is_err() || row.display != self.display_id || read_started_ms <= self.attempt_ms {
+    pub(crate) fn observe(
+        &self,
+        row: &SelectionSnapshot,
+        read_started_ms: u64,
+    ) -> Option<CreationReport> {
+        if row.validate().is_err()
+            || row.display != self.display_id
+            || read_started_ms <= self.attempt_ms
+        {
             return None;
         }
         Some(CreationReport {
@@ -664,7 +676,7 @@ pub(crate) fn drain_claimed_select(
 
 /// Parse one `space-<sid>` native binding to its live SID (`None` on any
 /// malformed, zero, or unparsable binding - never guessed).
-fn parse_native_binding(binding: &str) -> Option<u64> {
+pub(crate) fn parse_native_binding(binding: &str) -> Option<u64> {
     binding
         .strip_prefix("space-")?
         .parse::<u64>()
@@ -931,7 +943,9 @@ pub(crate) fn drain_claimed_select_with(
                 },
                 setter: FrameSetter::Accepted,
                 pre: Some(before.current),
-                post: (after.display == before.display).then(|| after.validate().ok().map(|()| after.current)).flatten(),
+                post: (after.display == before.display)
+                    .then(|| after.validate().ok().map(|()| after.current))
+                    .flatten(),
                 creation: None,
                 attempt_ms,
             });
@@ -1083,29 +1097,47 @@ pub(crate) fn drain_claimed_select_with(
     };
     if let Err(e) = backend.create(&before) {
         // Typed disposition, never a string classifier:
-        // - Refused: no native effect was attempted. No receipt, no
-        //   pending; the genuine re-read proves the desktop untouched.
-        // - Threw: a partial or erroneous dispatch may have run. Retain a
-        //   local pending receipt with the genuine pre-order and original
-        //   stamp; submit nothing fabricated.
+        // - Refused: no native effect was attempted. The genuine re-read
+        //   (when readable) proves the desktop untouched.
+        // - Threw: a partial or erroneous dispatch may have run. The
+        //   drain reports the typed setter verbatim so the core holds
+        //   instead of settling a proven refusal. Retain a local pending
+        //   receipt with the genuine pre-order and original stamp when the
+        //   post is unreadable; submit nothing fabricated.
         if e.setter == FrameSetter::Refused {
-            let after = backend.snapshot().ok().filter(|row| row.display == before.display && row.validate().is_ok());
+            let after = backend
+                .snapshot()
+                .ok()
+                .filter(|row| row.display == before.display && row.validate().is_ok());
             return Err(SelectFailure {
                 reason: e.reason,
                 setter: FrameSetter::Refused,
                 pre: None,
                 post: None,
                 baseline,
-                creation: after.map(|after| mk_creation(FrameSetter::Refused, before.spaces.clone(), after.spaces, None)),
+                creation: after.map(|after| {
+                    mk_creation(
+                        FrameSetter::Refused,
+                        before.spaces.clone(),
+                        after.spaces,
+                        None,
+                    )
+                }),
                 attempt_ms,
             });
         }
-        let after = backend.snapshot().ok().filter(|row| row.display == before.display && row.validate().is_ok());
-        let creation = after.map(|after| mk_creation(e.setter, before.spaces.clone(), after.spaces, None));
-        if creation.is_none() { retain_pending(state, e.setter); }
+        let after = backend
+            .snapshot()
+            .ok()
+            .filter(|row| row.display == before.display && row.validate().is_ok());
+        let creation =
+            after.map(|after| mk_creation(e.setter, before.spaces.clone(), after.spaces, None));
+        if creation.is_none() {
+            retain_pending(state, e.setter);
+        }
         return Err(SelectFailure {
             reason: e.reason,
-            setter: FrameSetter::Refused,
+            setter: e.setter,
             pre: None,
             post: None,
             baseline,
@@ -1137,25 +1169,26 @@ pub(crate) fn drain_claimed_select_with(
         || after.spaces.len() != before.spaces.len() + 1
         || !after.spaces.starts_with(&before.spaces)
     {
-        // Readable but not an exact same-display append. When the row is
-        // readable yet shows no delta, the desktop is simply not visible:
+        // Readable but not an exact same-display append. A readable row
+        // with no delta means the desktop is simply not visible yet:
         // retain pending so the first later delta completes exactly once
         // (emitting a no-delta now would turn that later delta into a
-        // changed replay). When the readable row disagrees (outside race
-        // or multiple additions), complete immediately as Threw with the
+        // changed replay). A genuinely disagreeing row (outside race or
+        // multiple additions) completes immediately as Threw with the
         // genuine after-image and no guessed SID; otherwise retain.
         let readable = after.validate().is_ok() && after.display == before.display;
-        if readable {
+        let no_delta = readable && after.spaces == before.spaces && after.current == before.current;
+        if readable && !no_delta {
             let order_after = after.spaces.clone();
             return Err(SelectFailure {
                 reason: "create effect is not an exact same-display append; adoption refused"
                     .to_owned(),
-                setter: FrameSetter::Refused,
+                setter: FrameSetter::Threw,
                 pre: None,
                 post: None,
                 baseline,
                 creation: Some(mk_creation(
-                    FrameSetter::Accepted,
+                    FrameSetter::Threw,
                     before.spaces.clone(),
                     order_after,
                     None,
@@ -1165,7 +1198,11 @@ pub(crate) fn drain_claimed_select_with(
         }
         retain_pending(state, FrameSetter::Accepted);
         return Err(SelectFailure {
-            reason: "create effect unreadable; receipt pending".to_owned(),
+            reason: if readable {
+                "create effect not yet visible; receipt pending".to_owned()
+            } else {
+                "create effect unreadable; receipt pending".to_owned()
+            },
             setter: FrameSetter::Refused,
             pre: None,
             post: None,
@@ -2000,8 +2037,9 @@ impl SelectionBackend for NativeSelection {
         {
             return Err(DispatchError::refused("pre-create topology drift"));
         }
-        let outcome = crate::mc_lifecycle::live::mc_add_space(self.display, &mut self.budget, false)
-            .map_err(DispatchError::from_mc)?;
+        let outcome =
+            crate::mc_lifecycle::live::mc_add_space(self.display, &mut self.budget, false)
+                .map_err(DispatchError::from_mc)?;
         if let Some(e) = outcome.close_error {
             eprintln!("tiler-macos select create close shortfall accepted ({e})");
         }
@@ -2034,7 +2072,9 @@ impl SelectionBackend for NativeSelection {
             .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
             .unwrap_or(true)
         {
-            return Err(DispatchError::refused("select refused: lock screen pre-dispatch"));
+            return Err(DispatchError::refused(
+                "select refused: lock screen pre-dispatch",
+            ));
         }
         if self
             .snapshot()
@@ -2043,12 +2083,8 @@ impl SelectionBackend for NativeSelection {
         {
             return Err(DispatchError::refused("pre-select topology drift"));
         }
-        let outcome = crate::mc_lifecycle::live::mc_goto_sid(
-            sid,
-            &mut self.budget,
-            false,
-        )
-        .map_err(DispatchError::from_mc)?;
+        let outcome = crate::mc_lifecycle::live::mc_goto_sid(sid, &mut self.budget, false)
+            .map_err(DispatchError::from_mc)?;
         if let Some(e) = outcome.close_error {
             eprintln!("tiler-macos select close shortfall accepted ({e})");
         }

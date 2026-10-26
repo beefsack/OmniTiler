@@ -84,13 +84,14 @@ use std::sync::{
 
 use crate::desktop_shortcuts::{ShortcutEntry, resolve_numbered_chord};
 use crate::space_drag_transfer::{DragBackend, DragStep, LegError, LegOk, PostCounts};
-use crate::workspace_select::SelectionSnapshot;
-use crate::workspace_send::SendGates;
+use crate::workspace_select::{CreationReport, PendingCreation, SelectionSnapshot};
+use crate::workspace_send::{SendGates, TrailingPrepFailure};
 use crate::workspace_send_effect::{
     BlindRoot, ManagedSendTarget, SendCompletion, SendEffectHandoff, SendEffectOutcome,
     SendFreshEvidence, SendProofRefusal, SendRequest, TrailingCompletionProof, TrailingPrepPins,
     TrailingPrepProof, TrailingSendRequest, prove_managed_send,
 };
+use tiler_core::directional::OutputId;
 use tiler_core::world_report::FrameSetter;
 
 /// Injectable managed-send backend for the dedicated effect owner.
@@ -215,15 +216,24 @@ pub trait ManagedSendBackend: Send {
     /// the main thread never waits for preparation - it only submits the
     /// request nonblocking and polls the completion. Default refuses (the
     /// numbered-only fakes never serve trailing); the live backend and
-    /// trailing-capable fakes override. Errors name the refusing leg;
-    /// anything past a possibly-sent press classifies ambiguous (see
-    /// [`crate::workspace_send::classify_trailing_prep_error`]).
+    /// trailing-capable fakes override. Errors name the refusing leg with
+    /// the typed dispatch setter; anything past a possibly-sent press
+    /// classifies ambiguous (see
+    /// [`crate::workspace_send::classify_trailing_prep_error`]). The
+    /// genuine pre/post rows ride the typed failure so the caller can defer
+    /// the desire-gated creation receipt instead of fabricating one.
     fn prepare_trailing_target(
         &mut self,
         pins: &TrailingPrepPins,
-    ) -> Result<TrailingPrepProof, String> {
+    ) -> Result<TrailingPrepProof, TrailingPrepFailure> {
         let _ = pins;
-        Err("trailing preparation unimplemented on this backend; refusing".to_owned())
+        Err(TrailingPrepFailure {
+            reason: "trailing preparation unimplemented on this backend; refusing".to_owned(),
+            setter: FrameSetter::Refused,
+            before: None,
+            after: None,
+            dispatched: false,
+        })
     }
     /// Post-release poll window (live 3 s; fakes fast).
     fn effect_deadline_ms(&self) -> u64 {
@@ -1583,6 +1593,92 @@ fn single_sid(membership: Option<Vec<u64>>) -> Option<u64> {
     }
 }
 
+/// Raw native creation receipt for one owner-verified trailing append:
+/// the exact desire identity from the request plus the genuine native
+/// orders around the single append and the verified created SID. `None`
+/// on reuse or when the claim carried no creation desire (the engine
+/// issued none — never invented). `order_after` is the owner's verified
+/// post-append row, never a before-echo.
+fn trailing_creation_for_append(
+    request: &TrailingSendRequest,
+    prep: &TrailingPrepProof,
+    attempt_ms: u64,
+) -> Option<CreationReport> {
+    let created = prep.created?;
+    let operation_id = request.creation_operation.clone()?;
+    let logical = request.creation_logical.clone()?;
+    let output = request.creation_output.clone()?;
+    Some(CreationReport {
+        operation_id,
+        logical,
+        output: OutputId(output),
+        setter: FrameSetter::Accepted,
+        order_before: prep.before.clone(),
+        order_after: prep.after.clone(),
+        created: Some(created),
+        attempt_ms,
+    })
+}
+
+/// Retain one deferred trailing creation receipt after an ambiguous
+/// preparation (the append may have run but the post-order is not a
+/// verified receipt). Mirrors the select drain: a readable row that shows
+/// no delta yet defers (async arrival may still land — emitting now would
+/// turn the later delta into a changed replay); a disagreeing row defers
+/// as `Threw` with no guessed SID; an unreadable row defers only when the
+/// dispatch itself was partial (`Threw`). Proven refusals with no readable
+/// post stage nothing (nothing ran, nothing to prove). The next readable
+/// full post-order completes the desire exactly once with the original
+/// stamp; a later-turn delta stays uncorrelated (`created` null).
+fn retain_trailing_creation(
+    request: &TrailingSendRequest,
+    handoff: &SendEffectHandoff,
+    error: &crate::workspace_send::TrailingPrepFailure,
+    attempt_ms: u64,
+) {
+    let (Some(operation_id), Some(logical), Some(output)) = (
+        request.creation_operation.clone(),
+        request.creation_logical.clone(),
+        request.creation_output.clone(),
+    ) else {
+        return;
+    };
+    let Some(before) = error.before.clone() else {
+        return;
+    };
+    let readable = error
+        .after
+        .as_ref()
+        .is_some_and(|after| after.validate().is_ok() && after.display == before.display);
+    if !readable && error.setter != FrameSetter::Threw {
+        return;
+    }
+    let setter = match error.after.as_ref() {
+        Some(after) if readable => {
+            let exact = after.spaces.len() == before.spaces.len() + 1
+                && after.spaces.starts_with(&before.spaces);
+            let no_delta = after.spaces == before.spaces && after.current == before.current;
+            if error.dispatched && (exact || no_delta) {
+                FrameSetter::Accepted
+            } else if error.dispatched {
+                FrameSetter::Threw
+            } else {
+                error.setter
+            }
+        }
+        _ => error.setter,
+    };
+    handoff.retain_pending_creation(PendingCreation {
+        operation_id,
+        logical,
+        output: OutputId(output),
+        display_id: before.display.clone(),
+        order_before: before.spaces.clone(),
+        setter,
+        attempt_ms,
+    });
+}
+
 /// Execute one trailing send request on the calling (effect-owner) thread:
 /// prepare the exact native target (reuse proven-empty last, else exactly
 /// one append), bind it to the request's original pins, run the single
@@ -1631,10 +1727,11 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
             None,
         );
     }
+    let attempt_ms = crate::input_eligibility::now_ms();
     let prep = match backend.prepare_trailing_target(&request.pins) {
         Ok(prep) => prep,
-        Err(reason) => {
-            let outcome = crate::workspace_send::classify_trailing_prep_error(&reason);
+        Err(error) => {
+            let outcome = crate::workspace_send::classify_trailing_prep_error(&error.reason);
             // The member write never fired on this path: a proven
             // pre-actuation refusal stays `Refused`, anything past a
             // possibly-sent press throws. The outcome (not the setter)
@@ -1644,6 +1741,12 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
                 SendEffectOutcome::PossiblyExecuted => FrameSetter::Threw,
                 SendEffectOutcome::Applied => FrameSetter::Threw,
             };
+            // Deferred creation receipt for the desire-gated append: the
+            // typed failure carries the genuine rows, so the first later
+            // readable post-order completes the desire instead of a
+            // fabricated post-order now. Refused preparations with no
+            // readable post stage nothing (nothing ran, nothing to prove).
+            retain_trailing_creation(request, handoff, &error, attempt_ms);
             emit_owner_line(&format!(
                 "tiler-macos send trailing prep op={} outcome={outcome:?} complete=false",
                 request.operation_id,
@@ -1664,6 +1767,7 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
             target_sid: prep.target_sid,
             revision: prep.revision,
             created: prep.created,
+            creation: trailing_creation_for_append(request, &prep, attempt_ms),
         })
     };
     // Bind through the single pin contract: the ephemeral claim carries

@@ -230,6 +230,53 @@ pub struct TrailingSendPrep {
     pub revision: u64,
 }
 
+/// Typed trailing preparation failure: the refusing reason plus the
+/// mechanical native disposition at the actual touch and the genuine rows
+/// around it. `Refused` means nothing was actuated (pre-actuation gates,
+/// fences, drift — the backend's typed refusal, never a string guess);
+/// `Threw` means native work may have run (partial or erroneous dispatch,
+/// unreadable/invalid post states — never blindly repeated). `before` is
+/// the genuine pre row when one was read (`None` when the pre row itself
+/// was unreadable — nothing to defer); `after` is the genuine post row when
+/// one was read and validated (`None` where unreadable/invalid — unknown
+/// holds, never a fabricated post-order). `dispatched` is true only when
+/// the backend create call itself reported success (the post paths); a
+/// refused or partial create never sets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingPrepFailure {
+    pub reason: String,
+    pub setter: tiler_core::world_report::FrameSetter,
+    pub before: Option<Box<crate::workspace_select::SelectionSnapshot>>,
+    pub after: Option<Box<crate::workspace_select::SelectionSnapshot>>,
+    pub dispatched: bool,
+}
+
+impl TrailingPrepFailure {
+    fn refused(reason: String, before: Option<crate::workspace_select::SelectionSnapshot>) -> Self {
+        Self {
+            reason,
+            setter: tiler_core::world_report::FrameSetter::Refused,
+            before: before.map(Box::new),
+            after: None,
+            dispatched: false,
+        }
+    }
+
+    fn threw(
+        reason: String,
+        before: Option<crate::workspace_select::SelectionSnapshot>,
+        after: Option<crate::workspace_select::SelectionSnapshot>,
+    ) -> Self {
+        Self {
+            reason,
+            setter: tiler_core::world_report::FrameSetter::Threw,
+            before: before.map(Box::new),
+            after: after.map(Box::new),
+            dispatched: false,
+        }
+    }
+}
+
 /// Ensure the trailing send-follow target over a selection backend (the same
 /// [`crate::workspace_select::SelectionBackend`] trait the select drain
 /// proves through, so scripted fakes inject here and the live tile passes
@@ -252,66 +299,139 @@ pub struct TrailingSendPrep {
 /// carried explicitly into [`bind_trailing_send_target`] — never bypassed.
 /// The owner still fences that revision plus focus/generation/source per
 /// edge, so any later drift refuses.
+///
+/// The typed failure preserves the backend's [`DispatchError`] setter
+/// verbatim (never a string classifier): a refused create stays `Refused`
+/// even when its reason names no proven prefix, and a partial create stays
+/// `Threw`. The caller retains a deferred creation receipt from the genuine
+/// rows exactly like the select drain (emit nothing fabricated); the reason
+/// strings stay stable so [`classify_trailing_prep_error`] keeps mapping
+/// the outcome.
 pub fn prepare_trailing_send_target(
     backend: &mut impl crate::workspace_select::SelectionBackend,
     trailing_enabled: bool,
-) -> Result<TrailingSendPrep, String> {
+) -> Result<TrailingSendPrep, TrailingPrepFailure> {
     if !trailing_enabled {
-        return Err("trailing send-0 unarmed: no trailing append runs".to_owned());
+        return Err(TrailingPrepFailure::refused(
+            "trailing send-0 unarmed: no trailing append runs".to_owned(),
+            None,
+        ));
     }
-    let before = backend
-        .snapshot()
-        .map_err(|e| format!("trailing send refuses: fresh row unreadable ({e})"))?;
-    before
-        .validate()
-        .map_err(|e| format!("trailing send refuses: fresh row unprovable ({e})"))?;
+    let before = match backend.snapshot() {
+        Ok(row) => row,
+        Err(e) => {
+            return Err(TrailingPrepFailure::refused(
+                format!("trailing send refuses: fresh row unreadable ({e})"),
+                None,
+            ));
+        }
+    };
+    if let Err(e) = before.validate() {
+        return Err(TrailingPrepFailure::refused(
+            format!("trailing send refuses: fresh row unprovable ({e})"),
+            None,
+        ));
+    }
     let last = *before.spaces.last().expect("validated nonempty row");
     let empty = backend.empty(last);
-    match trailing_send_target(&before.spaces, empty)? {
-        TrailingSendTarget::Reuse(sid) => {
+    match trailing_send_target(&before.spaces, empty) {
+        Err(reason) => Err(TrailingPrepFailure::refused(reason, Some(before))),
+        Ok(TrailingSendTarget::Reuse(sid)) => {
             if before.spaces.len() > 9 {
-                return Err(
+                return Err(TrailingPrepFailure::refused(
                     "trailing send refuses: reuse ordinal past Desktop-9; unmappable".to_owned(),
-                );
+                    Some(before),
+                ));
             }
-            let revision = backend.revision().ok_or_else(|| {
-                "trailing send refuses: post-preparation revision unprovable".to_owned()
-            })?;
+            let revision = match backend.revision() {
+                Some(revision) => revision,
+                None => {
+                    // No create ran on the reuse path, so there is no
+                    // create pre-order to defer: `before` stays `None`.
+                    return Err(TrailingPrepFailure::threw(
+                        "trailing send refuses: post-preparation revision unprovable".to_owned(),
+                        None,
+                        None,
+                    ));
+                }
+            };
             Ok(TrailingSendPrep {
                 target_sid: sid,
                 created: None,
                 revision,
             })
         }
-        TrailingSendTarget::NeedAppend => {
+        Ok(TrailingSendTarget::NeedAppend) => {
             if before.spaces.len() + 1 > 9 {
-                return Err(
+                return Err(TrailingPrepFailure::refused(
                     "trailing send refuses: append ordinal past Desktop-9; unmappable".to_owned(),
-                );
+                    Some(before),
+                ));
             }
-            backend
-                .create(&before)
-                .map_err(|e| format!("trailing send refuses: append failed ({e})"))?;
-            let after = backend
-                .snapshot()
-                .map_err(|e| format!("trailing send refuses: post-append row unreadable ({e})"))?;
-            after
-                .validate()
-                .map_err(|e| format!("trailing send refuses: post-append row unprovable ({e})"))?;
+            if let Err(e) = backend.create(&before) {
+                // Typed disposition, never a string classifier: `Refused`
+                // means no native effect was attempted; `Threw` means a
+                // partial or erroneous dispatch may have run. The genuine
+                // post row (when readable) rides along so the caller can
+                // prove refusal or defer the receipt — never a guess.
+                let after = backend
+                    .snapshot()
+                    .ok()
+                    .filter(|row| row.display == before.display && row.validate().is_ok());
+                return Err(TrailingPrepFailure {
+                    reason: format!("trailing send refuses: append failed ({e})"),
+                    setter: e.setter,
+                    before: Some(Box::new(before)),
+                    after: after.map(Box::new),
+                    dispatched: false,
+                });
+            }
+            let after = match backend.snapshot() {
+                Ok(row) => row,
+                Err(e) => {
+                    return Err(TrailingPrepFailure::threw(
+                        format!("trailing send refuses: post-append row unreadable ({e})"),
+                        Some(before),
+                        None,
+                    ));
+                }
+            };
+            if let Err(e) = after.validate() {
+                return Err(TrailingPrepFailure::threw(
+                    format!("trailing send refuses: post-append row unprovable ({e})"),
+                    Some(before),
+                    None,
+                ));
+            }
             if after.display != before.display
                 || after.current != before.current
                 || after.spaces.len() != before.spaces.len() + 1
                 || !after.spaces.starts_with(&before.spaces)
             {
-                return Err(
-                    "trailing send refuses: create effect is not an exact same-display append; adoption refused"
+                // Dispatched but not an exact same-display append. The
+                // genuine rows ride along: a readable no-delta row defers
+                // (async arrival may still land) while a disagreeing row
+                // proves ambiguity with no guessed SID.
+                return Err(TrailingPrepFailure {
+                    reason: "trailing send refuses: create effect is not an exact same-display append; adoption refused"
                         .to_owned(),
-                );
+                    setter: tiler_core::world_report::FrameSetter::Accepted,
+                    before: Some(Box::new(before)),
+                    after: Some(Box::new(after)),
+                    dispatched: true,
+                });
             }
             let sid = *after.spaces.last().expect("appended row");
-            let revision = backend.revision().ok_or_else(|| {
-                "trailing send refuses: post-append revision unprovable".to_owned()
-            })?;
+            let revision = match backend.revision() {
+                Some(revision) => revision,
+                None => {
+                    return Err(TrailingPrepFailure::threw(
+                        "trailing send refuses: post-append revision unprovable".to_owned(),
+                        Some(before),
+                        Some(after),
+                    ));
+                }
+            };
             Ok(TrailingSendPrep {
                 target_sid: sid,
                 created: Some(sid),
@@ -897,6 +1017,39 @@ impl LiveSendController {
             operation_id: trailing.request.operation_id,
             setter: completion.setter,
         })
+    }
+
+    /// Observe retained trailing creation receipts against one fresh native
+    /// row: the first successfully observed full post-order completes that
+    /// desire exactly once (original dispatch stamp preserved) with no
+    /// claimed identity; unreadable or mismatched-display rows stay retained
+    /// with nothing submitted. Same seam as the select lane (see
+    /// [`crate::select_owner::SelectController::observe_creation_receipts`]):
+    /// trailing appends whose post-order was not yet readable at preparation
+    /// settle here instead of fabricating a post-order on the owner thread.
+    pub fn observe_trailing_creation_receipts(
+        &self,
+        row: &crate::workspace_select::SelectionSnapshot,
+        read_started_ms: u64,
+    ) -> Vec<crate::workspace_select::CreationReport> {
+        let Some(thread) = self.thread.as_ref() else {
+            return Vec::new();
+        };
+        let handoff = thread.handoff();
+        let mut pending = handoff.take_pending_creations();
+        let mut ready = Vec::new();
+        pending.retain(|receipt| {
+            if let Some(report) = receipt.observe(row, read_started_ms) {
+                ready.push(report);
+                false
+            } else {
+                true
+            }
+        });
+        for receipt in pending {
+            handoff.retain_pending_creation(receipt);
+        }
+        ready
     }
 
     /// Stop the owner thread without joining: signal stop, reap only when
