@@ -15,7 +15,6 @@
 // plus safe actuation with no silent fallback.
 
 import { connectSignal, readSignal } from "./signal-capability";
-import { createWorldDragRoute } from "./world-drag";
 import { registerWorldShortcuts } from "./world-shortcuts";
 import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
 import {
@@ -94,6 +93,18 @@ import {
     type WorldWaitReply,
 } from "./world-report";
 import { captureWorldObservation, type PresentationSnapshot, type WorldObservation } from "./world-observe";
+import {
+    GESTURE_ACK_METHOD,
+    GESTURE_INTERFACE,
+    GESTURE_LEASE_MS,
+    GESTURE_OBJECT,
+    GESTURE_SERVICE,
+    GESTURE_WAIT_METHOD,
+    gestureAckRequest,
+    gestureWaitRequest,
+    parseNativeGesture,
+    type NativeGestureSnapshot,
+} from "./world-gesture";
 import { WorldAdapterState, type CaptureFlight, type QueuedIntent } from "./world-state";
 import { applyWorldReply } from "./world-apply";
 import { decodeList } from "./qml-list";
@@ -193,13 +204,8 @@ export interface WorldEntryOverrides {
     // backfill the defaults.
     readonly readAnchorFallbackFn?: () => unknown;
     readonly readNoSpaceResultFn?: () => unknown;
-    // Native-only seams (never workspace policy): the drag-oracle D-Bus
-    // caller (LastVerdict pull shape differs from the world payload shape),
-    // the fixed-size predicate reader, and the fixed-origin decorator.
-    readonly oracleCallDbus?: (
-        service: string, path: string, iface: string, method: string,
-        callback: (reply: unknown) => void,
-    ) => void;
+    // Native-only seams (never workspace policy): the fixed-size
+    // predicate reader and the fixed-origin decorator.
     // Native effect presentation-facts seam (read-only, no policy): the
     // transport for the held `WaitPresentationFacts` call on the effect's
     // well-known object. Same callDBus shape as every other route
@@ -208,6 +214,15 @@ export interface WorldEntryOverrides {
     // production wires the global callDBus, offline tests inject exact
     // replies or omit the seam.
     readonly effectCallDbus?: (
+        service: string, path: string, iface: string, method: string,
+        payload: string, callback: (reply: unknown) => void,
+    ) => void;
+    // Native effect gesture-facts route (read-only, no policy): the
+    // `omnitiler` gesture effect owns the well-known object and serves one
+    // held `WaitGesture` call per adapter generation. Absent skips the lane
+    // entirely (unknown facts omit ingress truthfully); production wires
+    // the global callDBus, offline tests inject exact replies or omit.
+    readonly gestureCallDbus?: (
         service: string, path: string, iface: string, method: string,
         payload: string, callback: (reply: unknown) => void,
     ) => void;
@@ -443,9 +458,67 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // Tile-override membership (native only): fixed-window tile intent from
     // the Rust-owned store (ReadFloatIntent `tile`), disjoint from floats.
     const tileIds = new Set<string>();
-    // Drag-oracle verdict route (Started/Finish capture, move-drop/resize
-    // routing, per-gesture preview) lives in world-drag; created below once
-    // observation and transport exist.
+    // Authoritative native gesture lifecycle (effect-owned, read-only):
+    // the latest versioned snapshot the held gesture waiter delivered for
+    // the bound generation, or null when unknown (effect absent, stale,
+    // malformed, or explicitly unavailable). The script carries it raw;
+    // the broker owns ALL mapping to the core ingress lane, so no
+    // script-side identity map exists here. Read-only identity exposure
+    // for presentation/preview rides `gestureIdentityForPresentation`
+    // below (broker-settled truth only); no freshness enforcement.
+    let gestureSnapshot: NativeGestureSnapshot | null = null;
+    let gestureWaiterOutstanding = false;
+    let gestureWaiterNonce = 0;
+    let gestureWaiterGen: string | null = null;
+    let gestureWatchdogCancel: (() => void) | null = null;
+    let gestureRetryCancel: (() => void) | null = null;
+    // Unacked terminal fence: while a terminal snapshot is incorporated
+    // but not yet acked, the waiter stays down (no re-arm) so the same
+    // terminal never hot-loops. Set at waiter adoption; cleared on ack
+    // completion, rotation, or stop. Never abandoned while core-settled:
+    // the exact pending ack persists and retries at the host-deadline
+    // cadence until the native FIFO retires it.
+    let gestureTerminalPending: { instance: string; serial: string } | null = null;
+    // Single outstanding ack (exact pending ack): the native identity plus
+    // the bound generation and nonce fencing the callback. At most one ack
+    // flies at a time; transport loss retries on a bounded fast cadence
+    // then at the host-deadline cadence, never a second settlement (the
+    // core never re-emits one) and never an arbitrary accepted capture.
+    let gestureAckPending: {
+        instance: string; serial: string; gen: string; nonce: number; attempts: number;
+    } | null = null;
+    let gestureAckNonce = 0;
+    let gestureAckTimeoutCancel: (() => void) | null = null;
+    // Proven bound actuator association (broker truth, refreshed on every
+    // accepted capture carrying one): the exact core id the broker mapped
+    // for one native identity. Read-only presentation seam only; generation
+    // fenced, snapshot matched. Set from accepted replies (open or
+    // terminal), never terminal-only, so the NEXT package can expose the
+    // current native identity with its proven core id while open.
+    let gestureBoundAssoc: { instance: string; serial: string; coreId: string; gen: string } | null = null;
+    // Exact pending ack retries: initial send plus this many fast attempts
+    // total, 2 s apart, then the exact pending ack persists and retries at
+    // the existing 25 s host-deadline cadence (no hot loop, no new
+    // capture, no new core terminal). The native ack is idempotent
+    // (exact-identity retire), so retries are side-effect free; the FIFO
+    // head is never abandoned while core-settled.
+    const GESTURE_ACK_MAX_ATTEMPTS = 3;
+    const gestureIdentityForPresentation = (): { instance: string; serial: string; coreId: string } | null => {
+        if (gestureSnapshot === null || !gestureSnapshot.available || gestureSnapshot.phase === "idle") {
+            return null;
+        }
+        const assoc = gestureBoundAssoc;
+        if (assoc === null || assoc.gen !== state.boundGen) {
+            return null;
+        }
+        if (assoc.instance !== gestureSnapshot.instance || assoc.serial !== gestureSnapshot.serial) {
+            return null;
+        }
+        return { instance: assoc.instance, serial: assoc.serial, coreId: assoc.coreId };
+    };
+    // Authoritative native gesture lifecycle (effect-owned): preview,
+    // drop, resize, and hover routing all run through the core
+    // GestureIngress lane. No script-side verdict route remains.
 
     // Live settings seams (startup snapshots plus per-dispatch
     // re-reads) live in world-settings-live; the entry only consumes
@@ -498,16 +571,23 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 return false;
             }
         }
-        return false;
+        // Authoritative barrier follows the native open only: script
+        // interactive signals never mint a lifecycle.
+        return gestureSnapshot !== null && gestureSnapshot.available &&
+            (gestureSnapshot.phase === "started" || gestureSnapshot.phase === "updated");
     };
 
+    // The raw native snapshot rides the capture verbatim: the broker maps
+    // it (plus the same-capture script cursor/windowAt facts the observer
+    // reads live) to the core ingress lane. Script signals never mint
+    // here; terminal snapshots freeze the native finish cursor upstream.
     const capture = (): WorldObservation | null => {
         try {
             closeTracker.syncLive(surface);
         } catch (error) {
             void error;
         }
-        return captureWorldObservation({
+        const observation = captureWorldObservation({
         workspace: surface,
         readMode: readModeAligned,
         readGap: () => settings.readGapLive(),
@@ -555,7 +635,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         presentationFacts: effectSnapshot,
         ...(overrides.readFixedPredicateFn !== undefined ? { readFixedPredicate: overrides.readFixedPredicateFn } : {}),
         ...(overrides.fixedOriginOf !== undefined ? { fixedOriginOf: overrides.fixedOriginOf } : {}),
+        nativeGesture: gestureSnapshot,
     });
+        if (observation === null) {
+            return null;
+        }
+        return observation;
     };
 
     const token = (value: unknown): string => {
@@ -1049,31 +1134,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // Drag-oracle verdict route (single responsibility: Started/Finish
-    // capture, move-drop/resize routing). Owned by
-    // world-drag; driven here with observation and transport.
-    // Stage 5: renderer hooks removed (preview now via the presentation
-    // subscriber below); preview ticks are no-ops while verdict routing
-    // retains oracle liveness.
-    const dragRoute = createWorldDragRoute({
-        surface,
-        log,
-        token,
-        readProp,
-        observeForCommand: route.observeForCommand,
-        // Drag verdicts keep the fail-fast single-flight
-        // fence (busy refuses and releases for retry); they never queue
-        // behind shortcut commands.
-        submitCommand: submitCommandInner,
-        isStopped: () => stopped,
-        trackDetach: (detach) => {
-            detaches.push(detach);
-        },
-        oracleCallDbus: overrides.oracleCallDbus,
-        setPreview: () => false,
-        clearPreview: () => {},
-    });
-
     // Read-only presentation subscriber (Stage 5): event-driven consumer of
     // the broker ReadWorldPresentation projection (same-UID read-only,
     // separate from capture/actuation). Paints accepted core shapes only
@@ -1083,6 +1143,32 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // accepted captures, on wait wakes (a foreign accepted capture may
     // have advanced the projection), and on effect resets; a lost reply
     // retries on the shared host deadline. No polling, no self re-arm.
+    // Gesture-boundary fencing for the preview (finding D): bumped on
+    // every authoritative native gesture boundary (a new native
+    // identity adoption or a terminal adoption), never on script
+    // signals. Read-only observation for the presentation subscriber.
+    let gestureBoundaryCounter = 0;
+    let lastBoundaryKey: string | null = null;
+    const noteGestureBoundary = (
+        next: { instance: string; serial: string; phase: string } | null,
+    ): void => {
+        if (next === null) {
+            return;
+        }
+        const key = `${next.instance} ${next.serial}`;
+        if (next.phase === "released" || next.phase === "cancelled") {
+            lastBoundaryKey = key;
+            gestureBoundaryCounter += 1;
+            return;
+        }
+        if (next.phase !== "started" && next.phase !== "updated") {
+            return;
+        }
+        if (lastBoundaryKey !== key) {
+            lastBoundaryKey = key;
+            gestureBoundaryCounter += 1;
+        }
+    };
     const presentationSubscriber: WorldPresentationSubscriber = createWorldPresentationSubscriber({
         callDbus: (service, path, iface, method, payload, callback) => {
             try {
@@ -1090,11 +1176,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     service, path, iface, method, payload, callback,
                 );
             } catch (error) {
+                void error;
                 throw error;
             }
         },
         getGeneration: () => state.boundGen,
-        getGestureEpoch: () => 0,
+        getGestureEpoch: () => gestureBoundaryCounter,
+        // Read-only authoritative gesture identity for the NEXT package:
+        // the mapped native lifecycle identity behind the current snapshot,
+        // or null when no gesture is open. No freshness enforcement here.
+        getGestureIdentity: () => gestureIdentityForPresentation(),
         isStopped: () => stopped,
         log,
         token,
@@ -1238,8 +1329,30 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     effectWatchdogCancel = null;
                     cancelEffectRecovery();
+                    // A fresh generation also drops the old gesture identity:
+                    // the broker map reset with the engine, so stale core
+                    // ids and replaced waiters never cross the rotation. An
+                    // unavailable interval inside a generation recovers
+                    // without reset (broker mapping persists there).
+                    gestureSnapshot = null;
+                    gestureTerminalPending = null;
+                    gestureBoundAssoc = null;
+                    lastBoundaryKey = null;
+                    clearGestureAck();
+                    clearTerminalCaptureRetry();
+                    lastResolvedCaptureSource = null;
+                    gestureWaiterOutstanding = false;
+                    gestureWaiterGen = null;
+                    try {
+                        gestureWatchdogCancel?.();
+                    } catch (error) {
+                        void error;
+                    }
+                    gestureWatchdogCancel = null;
+                    cancelGestureRecovery();
                     void dispatch(false);
                     armEffectWaiter();
+                    armGestureWaiter();
                     armWait();
                 },
             );
@@ -1749,6 +1862,447 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         });
     };
 
+    // Gesture-facts transport: the explicit override first, else the
+    // production default wrapper around the global callDBus (same
+    // service/path/iface/method plus one JSON payload string shape as every
+    // other route). Null when neither exists: the lane stays unknown and
+    // nothing is armed, so offline doubles without a gesture service
+    // observe zero lane impact.
+    const resolveGestureCallDbus = (): ((
+        service: string, path: string, iface: string, method: string,
+        payload: string, callback: (reply: unknown) => void,
+    ) => void) | null => {
+        if (overrides.gestureCallDbus !== undefined) {
+            return overrides.gestureCallDbus;
+        }
+        try {
+            if (typeof callDBus !== "function") {
+                return null;
+            }
+            const native = callDBus;
+            return (service, path, iface, method, payload, callback) => {
+                try {
+                    (native as (...a: ReadonlyArray<unknown>) => void)(
+                        service, path, iface, method, payload, callback,
+                    );
+                } catch (error) {
+                    void error;
+                }
+            };
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+
+    // Single held gesture-facts waiter for the bound generation. Terminal
+    // snapshots stay down (no re-arm) until the exact core settlement acks
+    // them: a terminal completes every waiter immediately, so re-arming
+    // would hot-loop the same unacked terminal. Open/idle snapshots re-arm
+    // immediately; only changed snapshots invalidate. The 25 s host
+    // watchdog drops a killed call to unknown (omit) and re-arms, so an
+    // unavailable interval recovers without reset (mapping persists, the
+    // broker owns it).
+    const armGestureWaiter = (): void => {
+        if (stopped || gestureWaiterOutstanding) {
+            return;
+        }
+        if (gestureTerminalPending !== null) {
+            return;
+        }
+        if (state.boundGen === null || state.brokerIncarnation === null || discoverOutstanding) {
+            return;
+        }
+        const gestureCall = resolveGestureCallDbus();
+        if (gestureCall === null) {
+            return;
+        }
+        const gen = state.boundGen;
+        gestureWaiterNonce += 1;
+        const nonce = gestureWaiterNonce;
+        gestureWaiterGen = gen;
+        gestureWaiterOutstanding = true;
+        const request = gestureWaitRequest(
+            gestureSnapshot?.instance ?? "",
+            gestureSnapshot === null || gestureSnapshot.phase === "idle" ? "0" : gestureSnapshot.serial,
+            gestureSnapshot?.revision ?? "0",
+            GESTURE_LEASE_MS,
+        );
+        let settled = false;
+        gestureWatchdogCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            if (settled || stopped || nonce !== gestureWaiterNonce) {
+                return;
+            }
+            settled = true;
+            gestureWaiterOutstanding = false;
+            gestureWaiterGen = null;
+            gestureWatchdogCancel = null;
+            log("omnitiler:world:gesture-facts-host-timeout recovery=rearm-unknown");
+            gestureSnapshot = null;
+            state.invalidate();
+            scheduleDispatch();
+            armGestureWaiter();
+        });
+        try {
+            (gestureCall as NonNullable<WorldEntryOverrides["gestureCallDbus"]>)(
+                GESTURE_SERVICE, GESTURE_OBJECT, GESTURE_INTERFACE,
+                GESTURE_WAIT_METHOD, request, (reply: unknown) => {
+                    if (settled) {
+                        return;
+                    }
+                    if (nonce !== gestureWaiterNonce || gen !== gestureWaiterGen) {
+                        settled = true;
+                        log("omnitiler:world:gesture-facts-stale recovery=ignore");
+                        return;
+                    }
+                    settled = true;
+                    const cancel = gestureWatchdogCancel;
+                    gestureWatchdogCancel = null;
+                    try {
+                        cancel?.();
+                    } catch (error) {
+                        void error;
+                    }
+                    onGestureFactsReply(nonce, gen, reply);
+                },
+            );
+        } catch (error) {
+            void error;
+            settled = true;
+            gestureWaiterOutstanding = false;
+            gestureWaiterGen = null;
+            try {
+                gestureWatchdogCancel?.();
+            } catch (discardError) {
+                void discardError;
+            }
+            gestureWatchdogCancel = null;
+            if (gestureSnapshot !== null) {
+                gestureSnapshot = null;
+                state.invalidate();
+                scheduleDispatch();
+            }
+            log("omnitiler:world:gesture-facts-transport recovery=host-deadline-unknown");
+            scheduleGestureRecovery();
+        }
+    };
+    const onGestureFactsReply = (nonce: number, gen: string, reply: unknown): void => {
+        if (stopped) {
+            return;
+        }
+        if (nonce !== gestureWaiterNonce || gen !== gestureWaiterGen) {
+            log("omnitiler:world:gesture-facts-stale recovery=ignore");
+            return;
+        }
+        gestureWaiterOutstanding = false;
+        gestureWaiterGen = null;
+        if (gen !== state.boundGen) {
+            log("omnitiler:world:gesture-facts-stale recovery=ignore");
+            return;
+        }
+        const parsed = parseNativeGesture(reply);
+        if (parsed === null) {
+            log("omnitiler:world:gesture-facts-malformed recovery=host-deadline-unknown");
+            gestureSnapshot = null;
+            state.invalidate();
+            scheduleDispatch();
+            scheduleGestureRecovery();
+            return;
+        }
+        if (!parsed.available) {
+            log("omnitiler:world:gesture-facts-unavailable recovery=host-deadline-unknown");
+            gestureSnapshot = null;
+            gestureTerminalPending = null;
+            clearTerminalCaptureRetry();
+            state.invalidate();
+            scheduleDispatch();
+            scheduleGestureRecovery();
+            return;
+        }
+        if (parsed.superseded) {
+            log("omnitiler:world:gesture-facts-superseded recovery=host-deadline");
+            scheduleGestureRecovery();
+            return;
+        }
+        gestureSnapshot = parsed;
+        noteGestureBoundary({ instance: parsed.instance, serial: parsed.serial, phase: parsed.phase });
+        const terminal = parsed.phase === "released" || parsed.phase === "cancelled";
+        if (terminal) {
+            gestureTerminalPending = { instance: parsed.instance, serial: parsed.serial };
+            // Terminals always dispatch (even with changed:0): the waiter
+            // never holds past an unacked terminal, so no hot loop is
+            // possible and no terminal is ever lost to a quiet flag. The
+            // exact pending ack is never abandoned while core-settled: fast
+            // retries yield to the host-deadline cadence instead.
+            log(`omnitiler:world:gesture-facts-terminal phase=${parsed.phase} serial=${parsed.serial}`);
+            state.invalidate();
+            scheduleDispatch();
+            return;
+        }
+        gestureTerminalPending = null;
+        armGestureWaiter();
+        if (parsed.changed) {
+            log(`omnitiler:world:gesture-facts-changed phase=${parsed.phase} serial=${parsed.serial}`);
+            state.invalidate();
+            scheduleDispatch();
+        }
+    };
+    const cancelGestureRecovery = (): void => {
+        try {
+            gestureRetryCancel?.();
+        } catch (error) {
+            void error;
+        }
+        gestureRetryCancel = null;
+    };
+    const scheduleGestureRecovery = (): void => {
+        if (stopped || gestureRetryCancel !== null) {
+            return;
+        }
+        gestureRetryCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            gestureRetryCancel = null;
+            if (stopped || gestureWaiterOutstanding || gestureTerminalPending !== null) {
+                return;
+            }
+            if (state.boundGen === null || discoverOutstanding) {
+                return;
+            }
+            armGestureWaiter();
+        });
+    };
+    // Exact pending ack plumbing: one outstanding ack, generation- plus
+    // nonce-fenced. Retries are idempotent (the native side retires the
+    // head terminal on exact {instance, serial} match only; a mismatch is a
+    // no-op returning the current snapshot), so a retried ack can never
+    // double-retire.
+    const cancelGestureAckTimer = (): void => {
+        try {
+            gestureAckTimeoutCancel?.();
+        } catch (error) {
+            void error;
+        }
+        gestureAckTimeoutCancel = null;
+    };
+    const clearGestureAck = (): void => {
+        cancelGestureAckTimer();
+        gestureAckPending = null;
+    };
+    const sendGestureAck = (): void => {
+        const ack = gestureAckPending;
+        if (ack === null || stopped) {
+            return;
+        }
+        if (state.boundGen === null || state.boundGen !== ack.gen) {
+            return;
+        }
+        // Every send owns a fresh nonce: a superseded attempt's late
+        // callback can never adopt beside the live attempt.
+        gestureAckNonce += 1;
+        ack.nonce = gestureAckNonce;
+        const nonce = ack.nonce;
+        const gestureCall = resolveGestureCallDbus();
+        if (gestureCall === null) {
+            noteGestureAckFailed();
+            return;
+        }
+        cancelGestureAckTimer();
+        gestureAckTimeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
+            gestureAckTimeoutCancel = null;
+            onGestureAckTimeout(nonce);
+        });
+        try {
+            gestureCall(
+                GESTURE_SERVICE, GESTURE_OBJECT, GESTURE_INTERFACE,
+                GESTURE_ACK_METHOD, gestureAckRequest(ack.instance, ack.serial), (reply: unknown) => {
+                    onGestureAckReply(nonce, reply);
+                },
+            );
+        } catch (error) {
+            void error;
+            // Synchronous transport throw counts as a failed attempt (never
+            // a silent wedge): retry on the timeout cadence while attempts
+            // remain, else abandon as unknown.
+            cancelGestureAckTimer();
+            noteGestureAckFailed();
+        }
+    };
+    // One failed ack attempt (timeout or synchronous throw): retry the
+    // exact identity on the fast cadence while attempts remain, then retain
+    // the exact pending ack and retry at the host-deadline cadence (never
+    // abandoned while core-settled, never a hot loop).
+    const noteGestureAckFailed = (): void => {
+        const ack = gestureAckPending;
+        if (ack === null || stopped) {
+            return;
+        }
+        if (state.boundGen === null || state.boundGen !== ack.gen) {
+            return;
+        }
+        ack.attempts += 1;
+        if (ack.attempts > GESTURE_ACK_MAX_ATTEMPTS) {
+            scheduleGestureAckHostRetry();
+            return;
+        }
+        cancelGestureAckTimer();
+        gestureAckTimeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
+            gestureAckTimeoutCancel = null;
+            onGestureAckTimeout(ack.nonce);
+        });
+    };
+    const onGestureAckTimeout = (nonce: number): void => {
+        const ack = gestureAckPending;
+        if (ack === null || stopped || nonce !== ack.nonce) {
+            return;
+        }
+        if (state.boundGen === null || state.boundGen !== ack.gen) {
+            return;
+        }
+        log("omnitiler:world:gesture-ack-timeout recovery=retry-bounded");
+        ack.attempts += 1;
+        if (ack.attempts > GESTURE_ACK_MAX_ATTEMPTS) {
+            scheduleGestureAckHostRetry();
+            return;
+        }
+        sendGestureAck();
+    };
+    // Fast attempts exhausted with no native answer: the native FIFO head
+    // still blocks future gestures, so the exact pending ack persists and
+    // retries at the existing 25 s host-deadline cadence until the native
+    // side retires it. No hot loop, no new capture, no new core terminal.
+    const scheduleGestureAckHostRetry = (): void => {
+        const ack = gestureAckPending;
+        if (ack === null || stopped) {
+            return;
+        }
+        if (state.boundGen === null || state.boundGen !== ack.gen) {
+            return;
+        }
+        log("omnitiler:world:gesture-ack-exhausted recovery=host-deadline-retry");
+        cancelGestureAckTimer();
+        gestureAckTimeoutCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
+            gestureAckTimeoutCancel = null;
+            const live = gestureAckPending;
+            if (live === null || stopped) {
+                return;
+            }
+            if (state.boundGen === null || state.boundGen !== live.gen) {
+                return;
+            }
+            // Host-cadence retry keeps the exact pending identity: attempts
+            // stay past the fast bound so every later failure returns here.
+            sendGestureAck();
+        });
+    };
+    // Terminal ack reply: adopt the returned next snapshot regardless of
+    // the changed flag (the native ack return always carries changed:0
+    // even when exposing the next terminal/open/idle) and never lose a
+    // native terminal to a quiet flag.
+    const onGestureAckReply = (nonce: number, reply: unknown): void => {
+        if (stopped) {
+            return;
+        }
+        const ack = gestureAckPending;
+        if (ack === null || nonce !== ack.nonce) {
+            log("omnitiler:world:gesture-ack-stale recovery=ignore");
+            return;
+        }
+        if (state.boundGen === null || state.boundGen !== ack.gen) {
+            log("omnitiler:world:gesture-ack-stale recovery=ignore");
+            return;
+        }
+        clearGestureAck();
+        const parsed = parseNativeGesture(reply);
+        if (parsed === null) {
+            log("omnitiler:world:gesture-ack-malformed recovery=host-deadline-unknown");
+            gestureSnapshot = null;
+            gestureTerminalPending = null;
+            state.invalidate();
+            scheduleDispatch();
+            scheduleGestureRecovery();
+            return;
+        }
+        if (!parsed.available) {
+            log("omnitiler:world:gesture-ack-unavailable recovery=host-deadline-unknown");
+            gestureSnapshot = null;
+            gestureTerminalPending = null;
+            state.invalidate();
+            scheduleDispatch();
+            scheduleGestureRecovery();
+            return;
+        }
+        if (parsed.superseded) {
+            log("omnitiler:world:gesture-ack-superseded recovery=host-deadline");
+            gestureTerminalPending = null;
+            scheduleGestureRecovery();
+            return;
+        }
+        gestureSnapshot = parsed;
+        noteGestureBoundary({ instance: parsed.instance, serial: parsed.serial, phase: parsed.phase });
+        gestureTerminalPending = null;
+        const terminal = parsed.phase === "released" || parsed.phase === "cancelled";
+        if (terminal) {
+            gestureTerminalPending = { instance: parsed.instance, serial: parsed.serial };
+            log(`omnitiler:world:gesture-ack-terminal phase=${parsed.phase} serial=${parsed.serial}`);
+            state.invalidate();
+            scheduleDispatch();
+            return;
+        }
+        armGestureWaiter();
+        log(`omnitiler:world:gesture-ack-next phase=${parsed.phase} serial=${parsed.serial}`);
+        state.invalidate();
+        scheduleDispatch();
+    };
+    // Exact-identity ack after the core incorporated the terminal: only the
+    // broker-bound association proves the current ingress. The script
+    // requires GestureSettled.id === association.coreId AND the flight
+    // native pair === association native pair before any ack fires, so a
+    // core-retained close settling an unrelated id while the new ingress
+    // omitted can never alias the current terminal. At-most-once is
+    // core-owned (the core never re-emits a settlement for a consumed
+    // identity; the native ack itself retires exactly once on identity
+    // match). The proven association is broker-only (never a shared
+    // core/protocol field) and rides the exact response replay.
+    const ackGestureTerminal = (
+        flightGesture: { instance: string; serial: string } | null,
+        settledId: unknown,
+        assoc: { instance: string; serial: string; coreId: string } | null,
+    ): void => {
+        if (stopped) {
+            return;
+        }
+        if (typeof settledId !== "string" || settledId === "") {
+            return;
+        }
+        if (assoc === null || settledId !== assoc.coreId) {
+            return;
+        }
+        const pending = gestureTerminalPending;
+        if (pending === null || gestureAckPending !== null) {
+            return;
+        }
+        if (
+            flightGesture === null ||
+            flightGesture.instance !== pending.instance ||
+            flightGesture.serial !== pending.serial
+        ) {
+            return;
+        }
+        // The flight identity must be the association's proven native pair:
+        // an unrelated settled id for another ingress never matches here.
+        if (assoc.instance !== pending.instance || assoc.serial !== pending.serial) {
+            return;
+        }
+        const gen = state.boundGen;
+        if (gen === null) {
+            return;
+        }
+        gestureAckNonce += 1;
+        const nonce = gestureAckNonce;
+        gestureAckPending = { instance: pending.instance, serial: pending.serial, gen, nonce, attempts: 1 };
+        log(`omnitiler:world:gesture-ack id=${token(settledId)} serial=${pending.serial}`);
+        sendGestureAck();
+    };
+
     // Terminal take collection for one filed queue-client command. The
     // capture reply never carries the result (requester-only even when the
     // actuator is the issuer): ready carries the core result (possibly null
@@ -1909,13 +2463,57 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         flight: CaptureFlight,
         takeResult: WorldReplyResult | null,
     ): void => {
-                    // The terminal take result (requester-only, never the
-                    // capture reply lane) settles the preview flight: the
-                    // derived core rect renders (identical repeats never
-                    // re-set), the hover prior chains, and the coalesced
-                    // pending tick dispatches from the latest pointer.
+                    // Proven bound association (broker-only): every accepted
+                    // reply carrying one refreshes the read-only identity,
+                    // open or terminal, so the NEXT package exposes the
+                    // current native identity with its proven core id while
+                    // open. Omitted lanes carry null and change nothing.
                     try {
-                        dragRoute.notifyReplyAccepted(takeResult);
+                        const assoc = (parsed as unknown as {
+                            gestureAssoc?: { instance?: unknown; serial?: unknown; coreId?: unknown } | null;
+                        }).gestureAssoc ?? null;
+                        if (
+                            assoc !== null && assoc !== undefined &&
+                            typeof assoc.instance === "string" &&
+                            typeof assoc.serial === "string" &&
+                            typeof assoc.coreId === "string" &&
+                            state.boundGen !== null
+                        ) {
+                            gestureBoundAssoc = {
+                                instance: assoc.instance,
+                                serial: assoc.serial,
+                                coreId: assoc.coreId,
+                                gen: state.boundGen,
+                            };
+                        }
+                    } catch (error) {
+                        void error;
+                    }
+                    // Exact-identity gesture ack: only the broker-bound
+                    // association proves the current ingress (settled id
+                    // must equal the association core id and the flight
+                    // identity must equal the association native pair).
+                    // The terminal carries frozen start facts; the ack
+                    // exposes the next snapshot.
+                    try {
+                        const settled = (parsed as unknown as {
+                            gestureSettled?: { id?: unknown; committed?: unknown } | null;
+                        }).gestureSettled;
+                        const assoc = (parsed as unknown as {
+                            gestureAssoc?: { instance?: unknown; serial?: unknown; coreId?: unknown } | null;
+                        }).gestureAssoc ?? null;
+                        if (settled !== null && settled !== undefined) {
+                            ackGestureTerminal(
+                                flight.gesture,
+                                settled.id,
+                                assoc !== null && assoc !== undefined &&
+                                typeof assoc.instance === "string" &&
+                                typeof assoc.serial === "string" &&
+                                typeof assoc.coreId === "string"
+                                    ? { instance: assoc.instance, serial: assoc.serial, coreId: assoc.coreId }
+                                    : null,
+                            );
+                        }
                     } catch (error) {
                         void error;
                     }
@@ -2261,6 +2859,37 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     wakeFollowup();
     };
 
+    // Bounded same-envelope terminal capture retry (finding A): a
+    // commandless terminal flight whose reply is lost (timeout, transport,
+    // malformed, oversize) keeps its immutable terminal/source identity and
+    // redelivers the BYTE-IDENTICAL envelope on a bounded cadence. The
+    // broker replays the remembered bound response (with its exact settled
+    // outcome) when the first delivery already processed, or processes the
+    // envelope fresh when it was lost before processing. Fresh-source
+    // re-execution alone could never recover the settlement (consumed core
+    // ids never re-emit), so the retry never mints a new source and never
+    // infers a new terminal: it fires only while the same terminal is
+    // still pending and no newer native input arrived. No double commit
+    // (server-side dedup by source), no unrelated window events needed.
+    let terminalCaptureRetry: {
+        envelope: string; source: string; watermark: string;
+        gesture: { instance: string; serial: string }; attempts: number;
+        timerCancel: (() => void) | null;
+    } | null = null;
+    const TERMINAL_CAPTURE_MAX_RETRIES = 2;
+    // Last envelope source resolved by any received reply (accept, stale,
+    // or rejection): a late timeout for a resolved source never re-arms a
+    // same-envelope retry. Reset on generation rotation and stop.
+    let lastResolvedCaptureSource: string | null = null;
+    const clearTerminalCaptureRetry = (): void => {
+        try {
+            terminalCaptureRetry?.timerCancel?.();
+        } catch (error) {
+            void error;
+        }
+        terminalCaptureRetry = null;
+    };
+
     // One capture flight: the inner report is ALWAYS commandless (the broker
     // stamps the drained queued command itself). Fresh-source correlation
     // and the CURRENT local watermark bind the envelope; the callback binds
@@ -2324,6 +2953,103 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (flight === null) {
             return;
         }
+        // Stamp the exact raw terminal identity this capture carries (if
+        // any): the later accept binds its GestureSettled to this flight
+        // identity before any ack may fire.
+        try {
+            const raw = observation.nativeGesture ?? null;
+            flight.gesture = (
+                raw !== null && raw.available &&
+                (raw.phase === "released" || raw.phase === "cancelled")
+            )
+                ? { instance: raw.instance, serial: raw.serial }
+                : null;
+        } catch (error) {
+            void error;
+        }
+        // A fresh terminal send supersedes any pending same-envelope retry:
+        // the live send owns recovery now (its own failures re-arm below).
+        if (flight.gesture !== null) {
+            clearTerminalCaptureRetry();
+        }
+        transmitCapture(envelope, flight, headOp);
+    };
+
+    // Bounded same-envelope retry arming for a failed commandless terminal
+    // send. Fires only while the same terminal is still pending, the wire
+    // is free, and no newer native input arrived; the timer redelivers the
+    // byte-identical envelope (never a new source, never a new terminal).
+    const maybeRetryTerminalCapture = (envelope: string, flight: CaptureFlight): void => {
+        if (stopped || flight.clientCmd !== null || flight.gesture === null) {
+            return;
+        }
+        if (lastResolvedCaptureSource === flight.source) {
+            return;
+        }
+        const pending = gestureTerminalPending;
+        if (
+            pending === null ||
+            pending.instance !== flight.gesture.instance ||
+            pending.serial !== flight.gesture.serial
+        ) {
+            return;
+        }
+        if (state.boundGen === null || state.inFlight !== null) {
+            return;
+        }
+        const prev = terminalCaptureRetry;
+        const attempts = prev !== null && prev.source === flight.source ? prev.attempts + 1 : 1;
+        if (attempts > TERMINAL_CAPTURE_MAX_RETRIES) {
+            clearTerminalCaptureRetry();
+            return;
+        }
+        clearTerminalCaptureRetry();
+        log(`omnitiler:world:terminal-retry attempt=${attempts} recovery=same-envelope`);
+        const gesture = { instance: flight.gesture.instance, serial: flight.gesture.serial };
+        const timerCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
+            if (terminalCaptureRetry === null || stopped) {
+                return;
+            }
+            const saved = terminalCaptureRetry;
+            if (lastResolvedCaptureSource === saved.source) {
+                terminalCaptureRetry = null;
+                return;
+            }
+            terminalCaptureRetry = null;
+            if (state.boundGen === null || state.inFlight !== null) {
+                return;
+            }
+            if (state.currentInvalid !== saved.watermark) {
+                return;
+            }
+            const still = gestureTerminalPending;
+            if (
+                still === null ||
+                still.instance !== saved.gesture.instance ||
+                still.serial !== saved.gesture.serial
+            ) {
+                return;
+            }
+            const retryFlight = state.beginCapture(saved.source, null);
+            if (retryFlight === null) {
+                return;
+            }
+            retryFlight.gesture = { instance: saved.gesture.instance, serial: saved.gesture.serial };
+            transmitCapture(saved.envelope, retryFlight, null);
+        });
+        terminalCaptureRetry = {
+            envelope, source: flight.source, watermark: flight.watermark,
+            gesture, attempts, timerCancel,
+        };
+    };
+
+    // Transmit one capture envelope with its bound flight: timeout plus the
+    // full DescribeWorld reply handling. Shared by fresh sends and by the
+    // bounded same-envelope terminal retry above.
+    const transmitCapture = (envelope: string, flight: CaptureFlight, headOp: string | null): void => {
+        if (stopped || state.boundGen === null || state.brokerIncarnation === null) {
+            return;
+        }
         // A fresh capture consumes any owed wake: it drains at most one
         // head server-side (or observes when the queue is empty).
         wakePendingCapture = false;
@@ -2333,14 +3059,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 settled = true;
                 log("omnitiler:world:timeout recovery=on-next-event");
                 // The filed head is never replayed; queued tails drain on
-                // the scheduled catchup below, never on a blind retry.
+                // the scheduled catchup below, never on a blind retry. A
+                // lost commandless terminal redelivers its identical
+                // envelope on a bounded cadence instead.
                 state.noteRejectedOrTransportError();
                 killPending("timeout");
                 drainAfterFailure(flight);
+                maybeRetryTerminalCapture(envelope, flight);
                 wakeFollowup();
             }
         });
-        log(`omnitiler:world:dispatch src=${token(source)} nwinv=${flight.watermark} cmd=${headOp === null ? "observe" : token(headOp)}`);
+        log(`omnitiler:world:dispatch src=${token(flight.source)} nwinv=${flight.watermark} cmd=${headOp === null ? "observe" : token(headOp)}`);
         try {
             (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
                 WORLD_DBUS_SERVICE, WORLD_DBUS_OBJECT, WORLD_DBUS_INTERFACE,
@@ -2350,11 +3079,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     settled = true;
                     timeoutCancel();
+                    // Any received reply resolves the envelope: a late
+                    // timeout for this source never re-arms a retry.
+                    lastResolvedCaptureSource = flight.source;
                     if (typeof reply !== "string") {
                         log("omnitiler:world:transport-error recovery=on-next-event");
                         state.noteRejectedOrTransportError();
                         killPending("transport");
                         drainAfterFailure(flight);
+                        maybeRetryTerminalCapture(envelope, flight);
                         wakeFollowup();
                         return;
                     }
@@ -2363,6 +3096,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight);
+                        maybeRetryTerminalCapture(envelope, flight);
                         wakeFollowup();
                         return;
                     }
@@ -2372,6 +3106,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight);
+                        maybeRetryTerminalCapture(envelope, flight);
                         wakeFollowup();
                         return;
                     }
@@ -2426,17 +3161,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // unsent queued remainder are retained; the
                         // redispatch below drains the queue after it.
                         state.releaseFlight(flight.source);
-                        try {
-                            dragRoute.notifyStaleReply(verdict.reason);
-                        } catch (error) {
-                            void error;
-                        }
                         if (state.dirty || pendingQueue.length > 0) {
                             scheduleDispatch();
                         }
                         wakeFollowup();
                         return;
                     }
+                    // An accepted reply resolves the envelope: a pending
+                    // same-envelope terminal retry is consumed with it.
+                    clearTerminalCaptureRetry();
                     if (state.currentInvalid !== flight.watermark) {
                         // Native input landed during flight: the drained
                         // command already executed server-side (collect its
@@ -2477,6 +3210,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             state.noteRejectedOrTransportError();
             killPending("transport");
             drainAfterFailure(flight);
+            maybeRetryTerminalCapture(envelope, flight);
             wakeFollowup();
         }
     };
@@ -3197,10 +3931,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     // Authenticated generation discovery on start; restart/poison paths
-    // re-enter through the generation-mismatch branch above. The drag-oracle
-    // verdict route attaches with the native surface; float membership seeds
-    // from the runtime store before the first dispatch.
-    dragRoute.attach();
+    // re-enter through the generation-mismatch branch above. Float
+    // membership seeds from the runtime store before the first dispatch.
     seedFloatIntent();
     discover();
     log(`omnitiler:world:ready ${state.describeForLog()} source=${resolveSourceRev()}`);
@@ -3329,6 +4061,25 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 void error;
             }
             effectWatchdogCancel = null;
+            // Gesture-facts teardown: drop the held waiter slot so a late
+            // facts callback no-ops on the fence; unacked terminals and
+            // outstanding acks drop with the entry (no ack after stop).
+            gestureWaiterOutstanding = false;
+            gestureWaiterGen = null;
+            gestureTerminalPending = null;
+            gestureSnapshot = null;
+            gestureBoundAssoc = null;
+            lastBoundaryKey = null;
+            clearGestureAck();
+            clearTerminalCaptureRetry();
+            lastResolvedCaptureSource = null;
+            try {
+                gestureWatchdogCancel?.();
+            } catch (error) {
+                void error;
+            }
+            gestureWatchdogCancel = null;
+            cancelGestureRecovery();
             // Per-window homing teardown first so no stale window
             // callback can fire after stop; workspace detaches below
             // are idempotent and also release the per-window set.
@@ -3365,11 +4116,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // unharnessed and makes no claim here.
             try {
                 native.releaseAllAutomaticFloats("stop");
-            } catch (error) {
-                void error;
-            }
-            try {
-                dragRoute.stop();
             } catch (error) {
                 void error;
             }

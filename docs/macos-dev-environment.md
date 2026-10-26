@@ -130,7 +130,7 @@ mise exec -- rustup which cargo
 ### 4. Prove the portable offline Cargo baseline (allowlist only)
 
 **R:** `Cargo.toml` workspace members are `tiler-core`,
-`tiler-protocol`, `omnitiler`, `tiler-kwin-effect-ffi`, `tiler-windows`,
+`tiler-protocol`, `omnitiler`, `tiler-windows`,
 `tiler-macos`, `tiler-kde-settings-exporter` and `tiler-live-fixture`.
 The portable crates plus macOS probe
 below are the Mac baseline. `omnitiler` is the Linux/KDE service (rustix plus
@@ -143,10 +143,10 @@ current passing result. Earlier native evidence predates the core boundary
 replacement; retain it as history and rerun affected acceptance after porting.
 
 ```zsh
-mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
-mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
+mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-macos
+mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-macos
 mise exec -- cargo fmt --all -- --check
-mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos --all-targets -- -D warnings
+mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-macos --all-targets -- -D warnings
 ```
 
 - **P:** explicit `-p` flags are the boundary; do not change
@@ -359,6 +359,5 @@ tccutil reset ScreenCapture 'io.github.omnitiler.macos.probe'
 - S18: https://developer.apple.com/library/archive/technotes/tn2206/_index.html
 - R: `Cargo.toml`, `crates/tiler-core/Cargo.toml`,
   `crates/tiler-protocol/Cargo.toml`,
-  `crates/tiler-kwin-effect-ffi/Cargo.toml`,
   `crates/omnitiler/Cargo.toml`,
   `docs/research/macos-port/prior-art.md`, root `AGENTS.md`.

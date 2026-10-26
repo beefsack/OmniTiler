@@ -66,11 +66,10 @@
           ./kwin/metadata.json
           # All workspace manifests/targets: Cargo requires every member
           # manifest+targets to resolve the workspace even when building
-          # only -p tiler-kwin-effect-ffi. Unrelated trees (kwin script
+          # only -p omnitiler. Unrelated trees (kwin script
           # sources, tray assets, test-fixtures) stay excluded.
           ./Cargo.toml
           ./Cargo.lock
-          ./crates/tiler-kwin-effect-ffi
           ./crates/tiler-core
           ./crates/tiler-protocol
           ./crates/omnitiler
@@ -89,13 +88,6 @@
         let
           kde = pkgs.kdePackages;
           kwinDev = kwin.dev;
-          # Offline Cargo vendor from the workspace lockfile (caller pkgs,
-          # not a pinned dev toolchain). CMake invokes cargo with
-          # CARGO_NET_OFFLINE=true (see below); this vendor dir backs the
-          # crates-io replacement so no network is needed at build time.
-          cargoVendor = pkgs.rustPlatform.importCargoLock {
-            lockFile = ./Cargo.lock;
-          };
         in
         pkgs.stdenv.mkDerivation {
           pname = "omnitiler-native-effect";
@@ -108,25 +100,8 @@
             pkgs.cmake
             pkgs.ninja
             pkgs.pkg-config
-            pkgs.cargo
-            pkgs.rustc
             kde.extra-cmake-modules
           ];
-          # Cargo offline via caller pkgs vendor (no network at build time).
-          # CARGO_HOME carries the vendored-sources replacement; CMake adds
-          # --offline when CARGO_NET_OFFLINE=true so the lockfile/vendor
-          # contract fails closed instead of hitting the network.
-          env.CARGO_NET_OFFLINE = "true";
-          preConfigure = ''
-            export CARGO_HOME="$NIX_BUILD_TOP/cargo-home"
-            mkdir -p "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${cargoVendor}"
-            EOF
-          '';
           buildInputs = [
             kwin
             kwinDev
@@ -143,16 +118,14 @@
           cmakeFlags = [
             "-DBUILD_TESTING=${if withTests then "ON" else "OFF"}"
             "-DOMNITILER_BUILD_EFFECT=ON"
-            # withTests builds the original full tree (settings ON) so the
-            # combined FFI assertions stay gated; the shipping derivation
-            # stays effect-only (settings OFF).
+            # withTests builds the original full tree (settings ON); the
+            # shipping derivation stays effect-only (settings OFF).
             "-DOMNITILER_BUILD_SETTINGS=${if withTests then "ON" else "OFF"}"
             "-DKDE_INSTALL_PLUGINDIR=lib/qt-6/plugins"
             "-DKWin_DIR=${kwinDev}/lib/cmake/KWin"
           ];
 
-          # License notices in the installed output: GPL effect text plus
-          # the MIT notice for the linked staticlib portion. $src is the
+          # License notices in the installed output. $src is the
           # fileset store path (postInstall runs from the CMake build
           # dir, not sourceRoot, so no relative path is used).
           postInstall = ''
@@ -185,9 +158,9 @@
               # Hermetic full gates: offscreen platform, isolated config
               # home; the test binaries isolate the session bus themselves.
               # installCheck runs with the build directory as cwd, so invoke
-              # ctest directly. This is the original 32-test suite
-              # (reconciler, KCM shortcut/config with FFI, metadata
-              # validation, Rust FFI).
+              # ctest directly. This is the 34-test suite (effect logic,
+              # presentation consumer, facts/gesture transports, KCM
+              # shortcut/config, metadata validation, unified lifecycle).
               export QT_QPA_PLATFORM=offscreen
               export XDG_CONFIG_HOME="$NIX_BUILD_TOP/check-home"
               mkdir -p "$XDG_CONFIG_HOME"

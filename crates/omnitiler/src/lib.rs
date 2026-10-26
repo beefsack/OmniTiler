@@ -5,6 +5,7 @@
 // same-UID callers and authorizes snapshots only by sender unique name
 // equal to the current `org.kde.KWin` owner.
 pub(crate) mod float_intent_store;
+pub(crate) mod kde_gesture;
 pub(crate) mod kde_raw;
 pub mod planner_service;
 pub mod tray;

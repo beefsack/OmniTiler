@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tiler-core", "crates/tiler-protocol", "crates/omnitiler", "crates/tiler-kwin-effect-ffi", "crates/tiler-windows", "crates/tiler-macos", "crates/tiler-kde-settings-exporter", "crates/tiler-live-fixture"]
+members = ["crates/tiler-core", "crates/tiler-protocol", "crates/omnitiler", "crates/tiler-windows", "crates/tiler-macos", "crates/tiler-kde-settings-exporter", "crates/tiler-live-fixture"]
 resolver = "2"
 
 [workspace.lints.rust]

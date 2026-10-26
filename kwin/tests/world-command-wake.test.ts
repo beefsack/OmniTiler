@@ -192,13 +192,14 @@ function runHostTimers(flow: ReturnType<typeof startFlow>): number {
 function liveHostTimers(flow: ReturnType<typeof startFlow>): number {
     return flow.timers.filter((t) => t.live && t.delay === 25000 && !isPresentationTimer(t)).length;
 }
+
 function bootstrap(gen: string, req: string): string {
     return JSON.stringify({
         v: 2, adapter: "broker-1", gen, req,
         obs: "0", rev: "0", ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: DISABLED_PRESENTATION,
     });
 }
@@ -215,7 +216,7 @@ function acceptCapture(
         workspaces: [], outputs: [],
         windows: [windowRow([10, 10, 300, 300])],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
     });

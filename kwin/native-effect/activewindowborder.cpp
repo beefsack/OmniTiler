@@ -3,8 +3,8 @@
 #include "activewindowborder.h"
 #include "activeborderconfig.h"
 #include "activeborderlogic.h"
-#include "drag_oracle_ffi.h"
-#include "oraclepress.h"
+#include "gesture_lifecycle.h"
+#include "gesturefacts.h"
 #include "presentationfacts.h"
 
 #include <KColorScheme>
@@ -19,6 +19,7 @@
 #include <scene/workspacescene.h>
 #include <scene/windowitem.h>
 #include <window.h>
+#include <workspace.h>
 
 #include <QByteArray>
 #include <QColor>
@@ -114,51 +115,51 @@ private:
     PresentationFactsSource *m_facts = nullptr;
 };
 
-class LastVerdictObject : public QObject
-{
-    Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "com.omnitiler.DragOracle1")
-
-public:
-    using QObject::QObject;
-
-public Q_SLOTS:
-    Q_SCRIPTABLE QString LastVerdict() const
-    {
-        // Copy the verdict before the D-Bus return so the reply never borrows
-        // the oracle's process-static storage across threads or reentrancy.
-        // The reply carries the exact existing fields plus, only when a
-        // resize-binding press was verified for the same window, an optional
-        // bounded "press" object (native f64 position, closed-vocabulary
-        // binding token). No second call, service, or object.
-        uint8_t copy[1024];
-        const size_t taken = drag_oracle_last_copy(copy, sizeof(copy));
-        if (taken == 0 || taken > sizeof(copy)) {
-            return QStringLiteral("{\"v\":1,\"cancelled\":true,\"finalRect\":{\"x\":0,\"y\":0,\"w\":1,\"h\":1},\"windowIdentity\":\"\",\"correlation\":\"drag-0\",\"reason\":\"oracle-unavailable\"}");
-        }
-        return QString::fromUtf8(reinterpret_cast<const char *>(copy), static_cast<int>(taken));
-    }
-};
-
 } // namespace
 
-// Passive press observer at KWin scope (matching the header forward
-// declaration): sees every pointer button event before filters but never
-// consumes, grabs, or modifies anything. Forwards presses to the effect,
-// which matches them against the resize binding and window.
-class OraclePressSpy : public InputEventSpy
+// Passive Esc delivery fence at InteractiveMoveResize weight (decision B).
+// Installed after the builtin MoveResizeFilter exists, so the lower_bound
+// install order (src/input.cpp, primary pin v6.7.4) places this fence
+// immediately BEFORE the builtin consumer while staying AFTER earlier
+// consumers (shortcuts at GlobalShortcut, effects at Effects): an Esc
+// reaching this fence reaches the builtin in the same dispatch unless an
+// earlier filter consumed it. No input spy arms anything: spies run before
+// filters (src/keyboard_input.cpp, v6.7.4) and only observe, so there is no
+// sticky prefilter arm; the fence below is the only arm site, and the
+// effect verifies the exact native move/resize window before arming (see
+// noteGestureEsc). Passive observer only: never consumes (always returns
+// false), never calls finish, never patches KWin, no timers. It only
+// records the arm, which the finish handler consumes synchronously.
+//
+// Source pins (primary: KWin v6.7.4; the installed host 6.8.0 headers carry
+// the identical contract in input.h/input_event.h): processFilters is a
+// synchronous ordered loop stopping at the first true; InputFilterOrder has
+// Effects immediately before InteractiveMoveResize; installInputEventFilter
+// inserts later same-weight filters before earlier ones; KeyboardKeyEvent
+// carries a Qt::Key; the builtin MoveResizeFilter forwards to
+// Window::keyPressEvent (Escape ends with finish(true), which emits
+// interactiveMoveResizeFinished synchronously, re-emitted directly by
+// src/effect/effectwindow.cpp) and consumes whenever a move/resize window
+// exists.
+class GestureEscFence : public InputEventFilter
 {
 public:
-    explicit OraclePressSpy(ActiveWindowBorderEffect *effect)
-        : m_effect(effect)
+    explicit GestureEscFence(ActiveWindowBorderEffect *effect)
+        : InputEventFilter(InputFilterOrder::InteractiveMoveResize)
+        , m_effect(effect)
     {
     }
 
-    void pointerButton(PointerButtonEvent *event) override
+    bool keyboardKey(KeyboardKeyEvent *event) override
     {
-        if (m_effect != nullptr) {
-            m_effect->noteOraclePointerPress(event);
+        if (event != nullptr && m_effect != nullptr
+            && gestureEscArmsFilter(event->key,
+                   event->state == KeyboardKeyState::Pressed || event->state == KeyboardKeyState::Repeated)) {
+            m_effect->noteGestureEsc();
         }
+        // Never consume: the Esc must reach the builtin MoveResizeFilter in
+        // this same dispatch for the arm to be causal.
+        return false;
     }
 
 private:
@@ -168,35 +169,52 @@ private:
 namespace
 {
 
-DragOracleRect toOraclePod(const QRect &rect)
-{
-    DragOracleRect out{};
-    out.x = rect.x();
-    out.y = rect.y();
-    out.w = rect.width();
-    out.h = rect.height();
-    return out;
-}
-
-QRect quantizedOracleRect(const RectF &geometry)
+QRect quantizedGestureRect(const RectF &geometry)
 {
     return QRect(static_cast<int>(std::lround(geometry.x())), static_cast<int>(std::lround(geometry.y())),
         static_cast<int>(std::lround(geometry.width())), static_cast<int>(std::lround(geometry.height())));
 }
 
-QRect oracleMoveResizeRect(EffectWindow *window)
+// Native start-geometry mechanics for the authoritative gesture lifecycle
+// (read-only): the live move/resize frame at Started, quantized. Policy
+// (move-vs-resize, targets, commits) lives in core; this only observes.
+QRect gestureMoveResizeRect(EffectWindow *window)
 {
     if (window == nullptr) {
         return QRect();
     }
     if (Window *inner = window->window()) {
-        return quantizedOracleRect(inner->moveResizeGeometry());
+        return quantizedGestureRect(inner->moveResizeGeometry());
     }
     return QRect();
 }
 
-// fullscreen, maximized, then applet popup.
-const char *activeBorderDiagReason(bool hasWindow, bool deleted, bool minimized, bool fullScreen, bool nativeMaximized,
+// Live pointer proof for the authoritative gesture lifecycle (read-only):
+// the global pointer quantized like the start rect, or absent when the
+// input redirection is unavailable or the position is not finite. Never a
+// fallback, never a gesture decision: absence rides as null cursor.
+struct GesturePointer {
+    bool has = false;
+    QPoint point;
+};
+
+GesturePointer gesturePointerNow()
+{
+    InputRedirection *redir = input();
+    if (redir == nullptr) {
+        return GesturePointer{};
+    }
+    const QPointF pos = redir->globalPointer();
+    if (!std::isfinite(pos.x()) || !std::isfinite(pos.y())) {
+        return GesturePointer{};
+    }
+    const long x = std::lround(pos.x());
+    const long y = std::lround(pos.y());
+    if (x < INT_MIN || x > INT_MAX || y < INT_MIN || y > INT_MAX) {
+        return GesturePointer{};
+    }
+    return GesturePointer{true, QPoint(static_cast<int>(x), static_cast<int>(y))};
+}
 
 // Native styling independence (Stage 5): the active ring keeps its own
 // border color/theme tokens (default: live system accent). An explicit
@@ -288,19 +306,18 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     // unavailable/clear unless both the well-known service and object
     // register. A transient failure retries on later activation/reconfigure
     // events, never by timer. The ActiveBorder object binds the
-    // effect-owned dedicated connection (cross-connection held replies);
-    // the oracle stays on the shared sessionBus.
-    m_oracleDbusObject = new LastVerdictObject(this);
+    // effect-owned dedicated connection (cross-connection held replies).
     ensureEndpointsRegistered();
     if (!m_groupDbusAvailable) {
         clearPresentationPaint(&m_presentation);
     }
 
+    // Gesture observation is independent of rendering. Keep this one shared
     // lifecycle hookup set active even when the border cannot render.
     connect(effects, &EffectsHandler::windowDeleted, this, [this](EffectWindow *window) {
         unsubscribeMaximize(window);
         unsubscribeGroupVisibility(window);
-        forgetOracleWindow(window);
+        forgetGestureWindow(window);
         m_maximizedWindows.remove(window);
         if (!m_isOpenGL) {
             return;
@@ -316,7 +333,7 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     connect(effects, &EffectsHandler::windowClosed, this, [this](EffectWindow *window) {
         unsubscribeMaximize(window);
         unsubscribeGroupVisibility(window);
-        forgetOracleWindow(window);
+        forgetGestureWindow(window);
         m_maximizedWindows.remove(window);
         if (!m_isOpenGL) {
             return;
@@ -326,18 +343,20 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
         updateGroupVisibility();
         emitPresentationTransitionDiag();
     });
-    // seeds its committed maximizeMode() directly: windows already maximized
-    // before effect load emit no transition, so the seed is authoritative
-    // until native transition signals update it.
+    // Global maximize tracking and the gesture lifecycle observe every
+    // window, including when the active border cannot render. Each observed
+    // window seeds its committed maximizeMode() directly: windows already
+    // maximized before effect load emit no transition, so the seed is
+    // authoritative until native transition signals update it.
     for (EffectWindow *window : effects->stackingOrder()) {
         subscribeMaximize(window);
         subscribeGroupVisibility(window);
-        attachOracleWindow(window);
+        attachGestureWindow(window);
     }
     connect(effects, &EffectsHandler::windowAdded, this, [this](EffectWindow *window) {
         subscribeMaximize(window);
         subscribeGroupVisibility(window);
-        attachOracleWindow(window);
+        attachGestureWindow(window);
         if (m_isOpenGL) {
             updateGroupAnchorAndGeometry();
             updateGroupVisibility();
@@ -355,14 +374,14 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
         updateGroupVisibility();
         emitPresentationTransitionDiag();
     });
-    // endpoint and press spy stay useful without a visible border. Rendering
+    // Activation recovery runs even when OpenGL rendering is off: the
+    // gesture lifecycle stays useful without a visible border. Rendering
     // below stays OpenGL-gated; focus-clear ordering is preserved.
     connect(effects, &EffectsHandler::windowActivated, this, [this](EffectWindow *) {
         ensureEndpointsRegistered();
         if (!m_isOpenGL) {
             return;
         }
-        // Focus activation clears the old group immediately before any
         // Focus activation clears the old paint immediately before any
         // asynchronous script refresh, so no stale paint renders under the
         // new focus. The subscriber repaints from the next accepted
@@ -411,18 +430,25 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
 
 ActiveWindowBorderEffect::~ActiveWindowBorderEffect()
 {
-    delete m_oraclePressSpy;
-    m_oraclePressSpy = nullptr;
+    // The fence uninstalls itself on delete (InputEventFilter contract), so
+    // no live dispatch can arm a dying source.
+    delete m_gestureFence;
+    m_gestureFence = nullptr;
     // Release only endpoints this effect registered, never an endpoint owned
     // elsewhere after a failed or partial registration. The ActiveBorder
     // endpoint tears down on its exact owned connection (unregister there,
-    // then disconnect that named connection); the shared sessionBus and the
-    // oracle endpoint on it are untouched by the ActiveBorder teardown.
-    QDBusConnection bus = QDBusConnection::sessionBus();
-    if (m_oracleDbusAvailable) {
-        bus.unregisterObject(QStringLiteral("/com/omnitiler/DragOracle"));
-        bus.unregisterService(QStringLiteral("com.omnitiler.DragOracle"));
+    // then disconnect that named connection); the shared sessionBus is
+    // untouched by the ActiveBorder teardown.
+    // Gesture endpoint teardown on the same dedicated connection: release
+    // the well-known name there, then destroy the source so a held waiter
+    // completes explicitly unavailable instead of holding a stale snapshot.
+    if (m_gestureDbusAvailable) {
+        m_groupBus.unregisterObject(QStringLiteral("/com/omnitiler/Gesture"));
+        m_groupBus.unregisterService(QStringLiteral("com.omnitiler.Gesture"));
     }
+    m_gestureDbusAvailable = false;
+    delete m_gestureSource;
+    m_gestureSource = nullptr;
     if (m_groupDbusAvailable) {
         m_groupBus.unregisterObject(QStringLiteral("/com/omnitiler/ActiveBorder"));
         m_groupBus.unregisterService(QStringLiteral("com.omnitiler.ActiveBorder"));
@@ -717,109 +743,6 @@ void ActiveWindowBorderEffect::onGroupMemberVisibilityChanged(EffectWindow *wind
     }
     updateGroupAnchorAndGeometry();
     updateGroupVisibility();
-}
-
-void ActiveWindowBorderEffect::attachOracleWindow(EffectWindow *window)
-{
-    if (window == nullptr || m_oracleAttached.contains(window)) {
-        return;
-    }
-    m_oracleAttached.insert(window);
-    connect(window, &EffectWindow::windowStartUserMovedResized, this, [this](EffectWindow *moved) {
-        onOracleDragStart(moved);
-    });
-    connect(window, &EffectWindow::windowFinishUserMovedResized, this, [this](EffectWindow *moved) {
-        onOracleDragFinish(moved);
-    });
-}
-
-void ActiveWindowBorderEffect::forgetOracleWindow(EffectWindow *window)
-{
-    if (window == nullptr) {
-        return;
-    }
-    m_oracleStartRects.remove(window);
-    m_oracleStartPress.remove(window);
-    if (m_oraclePress.window == window) {
-        m_oraclePress = OraclePressCandidate{};
-    }
-    // Removal clears the exact tracked window arm; any other window's arm
-    // (or none) is untouched. Callers refresh visibility after this.
-    if (m_groupMoveWindow == window) {
-        m_groupMoveWindow.clear();
-    }
-    m_oracleAttached.remove(window);
-}
-
-void ActiveWindowBorderEffect::emitOraclePressDiag(const char *outcome, bool configured)
-{
-    // Redacted transition diagnostic only: outcome plus the closed-vocabulary
-    // binding source. Never carries coordinates, identities, or geometry.
-    try {
-        logActiveBorderDiag(QStringLiteral("omnitiler:drag-oracle:press outcome=%1 binding=%2")
-                .arg(QString::fromUtf8(outcome))
-                .arg(QString::fromUtf8(oraclePressBindingName(configured))));
-    } catch (...) {
-    }
-}
-
-void ActiveWindowBorderEffect::noteOraclePointerPress(PointerButtonEvent *event)
-{
-    // Passive observer only: the event is never consumed, grabbed, filtered,
-    // or modified. Only press edges can start a candidate; every other event
-    // leaves the current candidate untouched.
-    if (event == nullptr || event->state != PointerButtonState::Pressed) {
-        return;
-    }
-    // Single overwrite-on-press candidate: each press replaces the previous
-    // one, so at most one press is ever pending.
-    m_oraclePress = OraclePressCandidate{};
-    if (!std::isfinite(event->position.x()) || !std::isfinite(event->position.y())) {
-        return;
-    }
-    // Identify the actual configured MouseUnrestrictedResize binding. While
-    // the public options are unavailable, fall back to the verified source
-    // default (Alt+RightButton) and log that default once per effect
-    // instance. A missing resize slot fails closed with no candidate.
-    Qt::MouseButton resizeButton = oracleDefaultResizeButton();
-    Qt::KeyboardModifier resizeModifier = oracleDefaultResizeModifier();
-    bool configured = false;
-    if (options != nullptr) {
-        resizeButton = oracleResizeButton(static_cast<int>(options->commandAll1()), static_cast<int>(options->commandAll2()),
-            static_cast<int>(options->commandAll3()), static_cast<int>(Options::MouseUnrestrictedResize));
-        resizeModifier = options->commandAllModifier();
-        configured = true;
-    } else if (!m_oraclePressDefaultLogged) {
-        m_oraclePressDefaultLogged = true;
-        emitOraclePressDiag("default-binding", false);
-    }
-    if (resizeButton == Qt::NoButton || event->button != resizeButton || !event->modifiers.testFlag(resizeModifier)) {
-        return;
-    }
-    InputRedirection *redir = input();
-    if (redir == nullptr) {
-        return;
-    }
-    Window *top = redir->findToplevel(event->position);
-    if (top == nullptr || top->isDeleted()) {
-        return;
-    }
-    // Associate the toplevel with its effect window through the public
-    // internal-id lookup, then verify the exact same live window object.
-    EffectWindow *found = effects->findWindow(top->internalId());
-    if (found == nullptr || found->isDeleted() || found->window() != top) {
-        return;
-    }
-    OraclePressCandidate next;
-    next.window = found;
-    next.identity = found->internalId().toString(QUuid::WithoutBraces).toUtf8();
-    next.x = event->position.x();
-    next.y = event->position.y();
-    next.configured = configured;
-    next.hasPress = true;
-    next.at = std::chrono::steady_clock::now();
-    m_oraclePress = next;
-    emitOraclePressDiag("captured", configured);
     emitPresentationTransitionDiag();
 }
 
@@ -860,9 +783,26 @@ bool ActiveWindowBorderEffect::groupMoveLiveNow() const
     return true;
 }
 
-void ActiveWindowBorderEffect::onOracleDragStart(EffectWindow *window)
+void ActiveWindowBorderEffect::attachGestureWindow(EffectWindow *window)
 {
-    if (window == nullptr || window->isDeleted()) {
+    if (window == nullptr || m_gestureAttached.contains(window)) {
+        return;
+    }
+    m_gestureAttached.insert(window);
+    connect(window, &EffectWindow::windowStartUserMovedResized, this, [this](EffectWindow *moved) {
+        onGestureDragStart(moved);
+    });
+    connect(window, &EffectWindow::windowStepUserMovedResized, this, [this](EffectWindow *moved) {
+        onGestureDragStep(moved);
+    });
+    connect(window, &EffectWindow::windowFinishUserMovedResized, this, [this](EffectWindow *moved) {
+        onGestureDragFinish(moved);
+    });
+}
+
+void ActiveWindowBorderEffect::forgetGestureWindow(EffectWindow *window)
+{
+    if (window == nullptr) {
         return;
     }
     // Window removed mid-gesture: drop the open gesture by its tracked
@@ -871,69 +811,154 @@ void ActiveWindowBorderEffect::onOracleDragStart(EffectWindow *window)
     // tracked move window plus the held drop-preview latch, so no later
     // paint may arrive to clear a stale preview for a dead window.
     if (m_groupMoveWindow == window) {
+        m_groupMoveWindow.clear();
+        KWin::clearPaintPreview(&m_presentation);
         updateDragPreview();
         emitPresentationTransitionDiag();
     }
-    // A new drag drops any held drop-preview latch immediately.
+    if (m_gestureSource != nullptr) {
+        const QString id = m_gestureWinIds.take(window);
+        if (!id.isEmpty() && m_gestureSource->gestureAborted(id)) {
+            emitGestureDiag("aborted", "dropped");
+        }
+    } else {
+        m_gestureWinIds.remove(window);
+    }
+    m_gestureAttached.remove(window);
+}
+
+void ActiveWindowBorderEffect::onGestureDragStart(EffectWindow *window)
+{
+    if (window == nullptr || window->isDeleted() || m_gestureSource == nullptr) {
+        return;
+    }
+    Window *inner = window->window();
+    if (inner == nullptr || inner->isDeleted()) {
+        return;
+    }
+    // Native move-vs-resize classification from the live gesture flags
+    // (never assumed): a started move loop carries modal-move truth.
+    const bool isMove = inner->isInteractiveMove();
+    if (!isMove && !inner->isInteractiveResize()) {
+        // Not a tracked move/resize start: a refused/unsupported new start
+        // must not leave an older same-window open lifecycle to receive a
+        // later Esc/finish. Drop it without a terminal: the missed finish
+        // is an observation gap, never a fabricated outcome.
+        const QString unsupportedId =
+            QString::fromUtf8(window->internalId().toString(QUuid::WithoutBraces).toUtf8());
+        if (!unsupportedId.isEmpty() && m_gestureSource->gestureAborted(unsupportedId)) {
+            emitGestureDiag("refused", "idle");
+        }
+        return;
+    }
+    // A new gesture drops any held drop-preview latch immediately: the
+    // latch belongs to exactly one live gesture, and a late
+    // previous-gesture paint must not reseed the new one.
+    KWin::clearPaintPreview(&m_presentation);
     updateDragPreview();
     updateGroupMoveArm(window);
-    m_oracleStartRects.insert(window, oracleMoveResizeRect(window));
-    // A repeated start supersedes any prior unconsumed slot for this window:
-    // drop it before evaluating the candidate so a stale slot can never leak
-    // into a later finish. A stale candidate likewise drops on any start via
-    // the exact freshness match below instead of lingering for an unrelated
-    // later window start; only a fresh candidate for another window stays
-    // pending (bounded by age and overwrite-on-press).
-    m_oracleStartPress.remove(window);
-    // Single-use press evidence: a candidate for the exact same effect window
-    // and identity within the bounded monotonic age moves into this window's
-    // start slot. Stale or orphaned candidates drop; a candidate for another
-    // window stays pending (bounded by age and overwrite-on-press). Whether
-    // this drag is a move or a resize is not decided here: the matched press
-    // is recorded and the script adapter gates on its own start.resize.
-    if (m_oraclePress.hasPress) {
-        const auto now = std::chrono::steady_clock::now();
-        const int64_t ageMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - m_oraclePress.at).count();
-        const QByteArray identity = window->internalId().toString(QUuid::WithoutBraces).toUtf8();
-        if (m_oraclePress.window.isNull() || !oraclePressAgeOk(ageMs)) {
-            const bool wasConfigured = m_oraclePress.configured;
-            m_oraclePress = OraclePressCandidate{};
-            emitOraclePressDiag("stale", wasConfigured);
-        } else if (m_oraclePress.window == window && m_oraclePress.identity == identity) {
-            DragOraclePress pod{};
-            pod.hasPress = 1;
-            pod.binding = m_oraclePress.configured ? 1 : 0;
-            pod.x = m_oraclePress.x;
-            pod.y = m_oraclePress.y;
-            m_oracleStartPress.insert(window, pod);
-            const bool wasConfigured = m_oraclePress.configured;
-            m_oraclePress = OraclePressCandidate{};
-            emitOraclePressDiag("attached", wasConfigured);
-        }
+    const QString id =
+        QString::fromUtf8(window->internalId().toString(QUuid::WithoutBraces).toUtf8());
+    m_gestureWinIds.insert(window, id);
+    const GesturePointer pointer = gesturePointerNow();
+    const QString kind = isMove ? QStringLiteral("move") : QStringLiteral("resize");
+    const quint64 serial =
+        m_gestureSource->gestureStarted(id, kind, gestureMoveResizeRect(window), pointer.has, pointer.point, isMove);
+    if (serial == 0) {
+        // Refused (bad window identity, unknown kind, out-of-bound frame,
+        // or serial exhaustion): same fail-closed drop of the older
+        // same-window open lifecycle, never a terminal.
+        m_gestureSource->gestureAborted(id);
+        m_gestureWinIds.remove(window);
+        emitGestureDiag("refused", "idle");
+        return;
+    }
+    emitGestureDiag("started", isMove ? "move" : "resize");
+}
+
+void ActiveWindowBorderEffect::onGestureDragStep(EffectWindow *window)
+{
+    if (window == nullptr || window->isDeleted() || m_gestureSource == nullptr) {
+        return;
+    }
+    const QString id = m_gestureWinIds.value(window);
+    if (id.isEmpty()) {
+        return;
+    }
+    const GesturePointer pointer = gesturePointerNow();
+    m_gestureSource->gestureCursor(id, pointer.has, pointer.point);
+}
+
+void ActiveWindowBorderEffect::onGestureDragFinish(EffectWindow *window)
+{
+    // Finish/cancel clears the exact tracked move window plus the held
+    // drop-preview latch first, from the authoritative gesture callback:
+    // preview hiding never depends on verdict success or readable
+    // geometry.
+    if (window != nullptr && m_groupMoveWindow == window) {
+        m_groupMoveWindow.clear();
+        KWin::clearPaintPreview(&m_presentation);
+        updateDragPreview();
+        emitPresentationTransitionDiag();
+    }
+    if (window == nullptr || window->isDeleted() || m_gestureSource == nullptr) {
+        return;
+    }
+    const QString id = m_gestureWinIds.value(window);
+    if (id.isEmpty()) {
+        return;
+    }
+    // The fence arm (if an Esc reached InteractiveMoveResize during this
+    // gesture) is consumed synchronously here, in the same dispatch the
+    // builtin filter ended: armed finishes Cancelled, all others Released.
+    const GesturePointer pointer = gesturePointerNow();
+    const GesturePhase phase = m_gestureSource->gestureFinished(id, pointer.has, pointer.point);
+    if (phase != GesturePhase::Idle) {
+        emitGestureDiag("finished", gesturePhaseName(phase));
     }
 }
 
-void ActiveWindowBorderEffect::onOracleDragFinish(EffectWindow *window)
+void ActiveWindowBorderEffect::noteGestureEsc()
 {
-    // Finish/cancel clears the exact tracked window arm first, before any
-    // oracle-state read: move cleanup never depends on verdict success or
-    if (window != nullptr && m_groupMoveWindow == window) {
-        m_groupMoveWindow.clear();
-        updateGroupVisibility();
-        emitPresentationTransitionDiag();
-    }
-    if (window == nullptr || window->isDeleted()) {
+    // Fence arm only, and only when the exact currently active native
+    // move/resize window matches the tracked open native identity in an
+    // interactive mode: a stray Esc (no gesture, another window, or a mode
+    // that already ended) never arms a future or foreign lifecycle. The
+    // store additionally drops the arm when nothing is open and every
+    // begin clears it, so a refused or unsupported start can never leave an
+    // older same-window open armed for a later Esc.
+    if (m_gestureSource == nullptr || !m_gestureSource->hasOpen()) {
         return;
     }
-    const QRect finalRect = oracleMoveResizeRect(window);
-    const QRect startRect = m_oracleStartRects.take(window);
-    // Single-use: the start slot is consumed with this verdict, so the press
-    // evidence correlates atomically with the final verdict in one reply.
-    const DragOraclePress press = m_oracleStartPress.take(window);
-    const QByteArray identity = window->internalId().toString(QUuid::WithoutBraces).toUtf8();
-    drag_oracle_record(toOraclePod(startRect), toOraclePod(finalRect), reinterpret_cast<const uint8_t *>(identity.constData()),
-        static_cast<size_t>(identity.size()), press);
+    Window *native = nullptr;
+    try {
+        if (workspace() != nullptr) {
+            native = workspace()->moveResizeWindow();
+        }
+    } catch (...) {
+        return;
+    }
+    if (native == nullptr || native->isDeleted()) {
+        return;
+    }
+    try {
+        if (!native->isInteractiveMove() && !native->isInteractiveResize()) {
+            return;
+        }
+    } catch (...) {
+        return;
+    }
+    QString nativeId;
+    try {
+        nativeId = QString::fromUtf8(native->internalId().toString(QUuid::WithoutBraces).toUtf8());
+    } catch (...) {
+        return;
+    }
+    if (nativeId.isEmpty() || nativeId != m_gestureSource->openWin()) {
+        return;
+    }
+    m_gestureSource->armEsc();
+}
 
 void ActiveWindowBorderEffect::onTrackedFrameChanged()
 {
@@ -988,13 +1013,85 @@ void ActiveWindowBorderEffect::emitActiveBorderEndpoint()
     }
 }
 
-void ActiveWindowBorderEffect::emitOracleEndpoint()
+void ActiveWindowBorderEffect::emitGestureDiag(const char *outcome, const char *detail)
 {
+    // Redacted transition diagnostic only: outcome plus a closed-vocabulary
+    // detail (kind or phase). Never carries coordinates, identities, serials,
+    // or geometry.
     try {
-        logActiveBorderDiag(QStringLiteral("omnitiler:drag-oracle:endpoint available=%1")
-                .arg(m_oracleDbusAvailable ? 1 : 0));
+        logActiveBorderDiag(QStringLiteral("omnitiler:drag-gesture:gesture outcome=%1 detail=%2")
+                .arg(QString::fromUtf8(outcome))
+                .arg(QString::fromUtf8(detail)));
     } catch (...) {
     }
+}
+
+void ActiveWindowBorderEffect::emitGestureEndpoint()
+{
+    try {
+        logActiveBorderDiag(QStringLiteral("omnitiler:drag-gesture:endpoint available=%1")
+                .arg(m_gestureDbusAvailable ? 1 : 0));
+    } catch (...) {
+    }
+}
+
+bool ActiveWindowBorderEffect::ensureGestureEndpointRegistered()
+{
+    // Gesture endpoint on the effect-owned dedicated connection (same bus,
+    // same topology as the ActiveBorder endpoint), so held WaitGesture
+    // replies route cross-connection instead of hitting the local-loop
+    // limit. Independent of the ActiveBorder endpoint outcome, like the
+    // group endpoint is of the gesture outcome.
+    if (!m_groupBus.isConnected()) {
+        if (!m_groupBusName.isEmpty()) {
+            QDBusConnection::disconnectFromBus(m_groupBusName);
+            m_groupBus = QDBusConnection::connectToBus(QDBusConnection::SessionBus, m_groupBusName);
+        }
+        if (!m_groupBus.isConnected()) {
+            return false;
+        }
+        // A (re)connected bus invalidates the previous binding: the source
+        // holds exactly the registering connection, so rebind and re-mint
+        // the instance (the script treats it as unknown until fresh facts).
+        delete m_gestureSource;
+        m_gestureSource = nullptr;
+        m_gestureDbusAvailable = false;
+    } else if (m_gestureDbusAvailable && m_gestureSource != nullptr) {
+        return true;
+    }
+    if (m_gestureSource == nullptr) {
+        m_gestureSource = new GestureFactsSource(m_groupBus, this);
+    }
+    bool serviceOk = false;
+    bool objectOk = false;
+    if (ensureDbusEndpointOn(m_groupBus, QStringLiteral("com.omnitiler.Gesture"),
+            QStringLiteral("/com/omnitiler/Gesture"), m_gestureSource, &serviceOk, &objectOk)) {
+        m_gestureDbusAvailable = true;
+        emitGestureEndpoint();
+        return true;
+    }
+    if (!m_gestureEndpointFailedLogged) {
+        m_gestureEndpointFailedLogged = true;
+        logActiveBorderDiag(QStringLiteral("omnitiler:drag-gesture:endpoint stage=failed service=%1 object=%2")
+                .arg(serviceOk ? 1 : 0)
+                .arg(objectOk ? 1 : 0));
+        emitGestureEndpoint();
+    }
+    return false;
+}
+
+void ActiveWindowBorderEffect::ensureGestureFence()
+{
+    // Late install when input redirection was null at construction. Passive
+    // observer only: never grabs, consumes, or modifies events.
+    if (m_gestureFence != nullptr) {
+        return;
+    }
+    if (input() == nullptr) {
+        return;
+    }
+    m_gestureFence = new GestureEscFence(this);
+    input()->installInputEventFilter(m_gestureFence);
 }
 
 bool ActiveWindowBorderEffect::ensureDbusEndpoint(
@@ -1095,60 +1192,25 @@ bool ActiveWindowBorderEffect::ensureGroupEndpointRegistered()
     return false;
 }
 
-void ActiveWindowBorderEffect::ensureOraclePressSpy()
-{
-    // Late install when input redirection was null at construction. Passive
-    // observer only: never grabs, consumes, or modifies events.
-    if (m_oraclePressSpy != nullptr) {
-        return;
-    }
-    if (input() == nullptr) {
-        return;
-    }
-    m_oraclePressSpy = new OraclePressSpy(this);
-    input()->installInputEventSpy(m_oraclePressSpy);
-    if (m_pressSpyFailedLogged) {
-        logActiveBorderDiag(QStringLiteral("omnitiler:drag-oracle:press-spy available=1"));
-    }
-}
-
 void ActiveWindowBorderEffect::ensureEndpointsRegistered()
 {
     // Idempotent: never re-registers while healthy, never polls. Called from
     // construction plus the existing activation and reconfigure events.
     // The ActiveBorder endpoint registers on the effect-owned dedicated
-    // connection (same bus, same service/path/interface/shape); the
-    // DragOracle endpoint stays on the shared sessionBus. A dropped
-    // dedicated connection recovers even while the endpoint still reads
+    // connection (same bus, same service/path/interface/shape). The
+    // Gesture endpoint registers beside the ActiveBorder object on the
+    // dedicated connection (cross-connection held replies); a dropped
+    // dedicated connection recovers even while an endpoint still reads
     // available: the bus check below re-enters the reconnect path.
     if (!m_groupDbusAvailable || !m_groupBus.isConnected()) {
         ensureGroupEndpointRegistered();
     }
-    // Drag oracle endpoint stays independent of the ActiveBorder outcome, so
-    // one failure never hides the other service.
-    if (!m_oracleDbusAvailable) {
-        bool serviceOk = false;
-        bool objectOk = false;
-        if (ensureDbusEndpoint(QStringLiteral("com.omnitiler.DragOracle"),
-                QStringLiteral("/com/omnitiler/DragOracle"), m_oracleDbusObject, &serviceOk, &objectOk)) {
-            m_oracleDbusAvailable = true;
-            emitOracleEndpoint();
-        } else if (!m_oracleEndpointFailedLogged) {
-            m_oracleEndpointFailedLogged = true;
-            logActiveBorderDiag(QStringLiteral("omnitiler:drag-oracle:endpoint stage=failed service=%1 object=%2")
-                    .arg(serviceOk ? 1 : 0)
-                    .arg(objectOk ? 1 : 0));
-            emitOracleEndpoint();
-        }
+    // Gesture lifecycle endpoint stays independent of the other outcomes,
+    // so one failure never hides another service.
+    if (!m_gestureDbusAvailable || !m_groupBus.isConnected()) {
+        ensureGestureEndpointRegistered();
     }
-    if (m_oraclePressSpy == nullptr && input() == nullptr) {
-        if (!m_pressSpyFailedLogged) {
-            m_pressSpyFailedLogged = true;
-            logActiveBorderDiag(QStringLiteral("omnitiler:drag-oracle:press-spy available=0"));
-        }
-        return;
-    }
-    ensureOraclePressSpy();
+    ensureGestureFence();
 }
 
 void ActiveWindowBorderEffect::emitActiveBorderVisible(bool visible, const char *reason, bool appletPopup)

@@ -26,12 +26,12 @@ function extractBody(body: string, marker: string): string {
     return body.slice(start, end + 3);
 }
 
-        assert.match(effectImpl, /LastVerdict/);
 describe("presentation native static contract", () => {
     it("exposes the paint setter, paint clear, and the held facts waiter through the effect-owned endpoint", () => {
         assert.equal(countMatches(effectImpl, /Q_SCRIPTABLE/g), 3);
         assert.match(effectImpl, /SetPresentation/);
         assert.match(effectImpl, /ClearPresentation/);
+        assert.doesNotMatch(effectImpl, /LastVerdict/);
         assert.doesNotMatch(effectImpl, /SetGroupHighlight/);
         assert.doesNotMatch(effectImpl, /ClearGroupHighlight/);
         assert.doesNotMatch(effectImpl, /GetGroupHighlightStatus/);
@@ -59,7 +59,6 @@ describe("presentation native static contract", () => {
         assert.match(factsImpl, /QDBusError::InvalidArgs/);
         assert.match(factsImpl, /MAX_REQUEST_BYTES/);
         assert.match(factsImpl, /available && m_tripleKnown/);
-        assert.match(factsImpl, /QDBusError::InvalidArgs/);
         assert.match(factsImpl, /completePending\(false, true, true\)/);
         assert.match(logic, /presentationFactsJson/);
         assert.match(logic, /presentationFactsStale/);
@@ -69,19 +68,17 @@ describe("presentation native static contract", () => {
         assert.match(logic, /\\"superseded\\":%9/);
         assert.match(logic, /\\"available\\"/);
         // No script maximize handoff: observation seeds directly from the
-        // native committed maximizeMode().
+        // native committed maximizeMode() for the hide veto only.
         assert.doesNotMatch(effectImpl, /SetInitialMaximizeState/);
         assert.doesNotMatch(effectImpl, /ClearInitialMaximizeState/);
         assert.doesNotMatch(effectImpl, /GetInitialMaximizeEpoch/);
         assert.doesNotMatch(effectImpl, /initial_maximize_/);
         assert.doesNotMatch(effectImpl, /InitialMaximize/);
-        assert.match(effectHeader, /groupHighlightStatus\(\) const/);
         assert.match(effectImpl, /Q_CLASSINFO\("D-Bus Interface", "com\.omnitiler\.ActiveBorder1"\)/);
         // Effect-owned dedicated connection to the same session bus: Qt
         // forbids delayed replies on local-loop (same-connection)
         // messages, so the held waiter needs the endpoint on its own
         // connection while the script keeps calling via KWin's sessionBus.
-        // Same service/path/interface/shape; the oracle stays on sessionBus.
         assert.match(effectImpl, /connectToBus\(QDBusConnection::SessionBus/);
         assert.match(effectImpl, /omnitiler-active-border-endpoint/);
         assert.match(effectImpl, /disconnectFromBus/);
@@ -223,14 +220,13 @@ describe("presentation native static contract", () => {
         // End/cancel/removal clears the exact tracked move window only.
         assert.match(effectImpl, /m_groupMoveWindow == window/);
         assert.match(effectImpl, /m_groupMoveWindow\.clear\(\)/);
-        const freshBody = extractBody(effectImpl, "bool ActiveWindowBorderEffect::groupMoveLiveNow(");
-        assert.match(freshBody, /activeWindow/);
-        // Finish clears the exact arm before any oracle-state read, so move
-        // cleanup never depends on verdict success or readable geometry.
-        const finishBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onOracleDragFinish(");
+        // Finish clears the exact liveness first, from the authoritative
+        // gesture callback, so preview hiding never depends on verdict
+        // success or readable geometry.
+        const finishBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGestureDragFinish(");
         const armClear = finishBody.indexOf("m_groupMoveWindow.clear()");
-        const verdict = finishBody.indexOf("drag_oracle_record");
-        assert.ok(armClear >= 0 && verdict > armClear);
+        const terminal = finishBody.indexOf("gestureFinished");
+        assert.ok(armClear >= 0 && terminal > armClear);
         // Same-window resize Started clears a stale own arm via the current
         // move classification.
         const armBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::updateGroupMoveArm(");
@@ -454,18 +450,20 @@ describe("presentation native static contract", () => {
         assert.doesNotMatch(cmake, /group-highlight-rs/);
         assert.match(cmake, /DRAG_HEADER/);
         assert.match(cmake, /DRAG_IMPL/);
-        assert.match(cmake, /DRAG_FFI/);
-        assert.match(cmake, /DRAG_RUST/);
         assert.match(cmake, /validate-unified-lifecycle\.cmake/);
-        assert.match(validator, /LastVerdict/);
-        assert.doesNotMatch(validator, /SetInitialMaximizeState/);
-        assert.doesNotMatch(validator, /ClearInitialMaximizeState/);
         assert.match(validator, /PRES_HEADER/);
         assert.match(validator, /PRES_IMPL/);
         assert.match(validator, /PRES_LOGIC/);
         assert.match(validator, /PRES_CONSUMER/);
         assert.match(validator, /SetPresentation/);
         assert.match(validator, /ClearPresentation/);
+        // The retired verdict endpoint is named only as forbidden residue;
+        // the survivor must prove the gesture endpoint instead.
+        assert.doesNotMatch(validator, /drag-oracle endpoint validation failed/);
+        assert.doesNotMatch(validator, /oracleMoveResizeRect/);
+        assert.match(validator, /gesture endpoint validation failed/);
+        assert.match(validator, /gestureMoveResizeRect/);
+        // The validator's deleted-method loop names the retired setters as
         // forbidden data; no wiring, FFI, or Rust reference to them remains.
         assert.match(validator, /PRES_DELETED_METHOD/);
         assert.doesNotMatch(validator, /GROUP_FFI/);
@@ -481,57 +479,57 @@ describe("presentation native static contract", () => {
         assert.match(validator, /m_groupDbusAvailable/);
     });
 
-    it("folds the drag oracle into the survivor with one shared lifecycle and no second plugin", () => {
-        // Oracle D-Bus endpoint and LastVerdict contract survive unchanged.
-        assert.match(effectImpl, /Q_CLASSINFO\("D-Bus Interface", "com\.omnitiler\.DragOracle1"\)/);
-        assert.match(effectImpl, /registerService\(QStringLiteral\("com\.omnitiler\.DragOracle"\)\)/);
-        assert.match(effectImpl, /registerObject\(QStringLiteral\("\/com\/omnitiler\/DragOracle"\)/);
-        assert.match(effectImpl, /unregisterObject\(QStringLiteral\("\/com\/omnitiler\/DragOracle"\)\)/);
-        assert.match(effectImpl, /unregisterService\(QStringLiteral\("com\.omnitiler\.DragOracle"\)\)/);
-        // Copied verdict before the D-Bus return; never a borrowed view.
-        assert.match(effectImpl, /drag_oracle_last_copy/);
-        assert.doesNotMatch(effectImpl, /drag_oracle_last\(/);
-        assert.match(effectImpl, /drag_oracle_record/);
-        // Construction seed plus the group-underlay lowest-stacked anchor
+    it("retires the drag oracle: gesture lifecycle owns preview with one shared lifecycle and no second plugin", () => {
+        // The retired verdict endpoint, press spy, and FFI record calls
+        // are gone; the core GestureIngress lane alone owns preview/drop.
+        assert.doesNotMatch(effectImpl, /Q_CLASSINFO\("D-Bus Interface", "com\.omnitiler\.DragOracle1"\)/);
+        assert.doesNotMatch(effectImpl, /com\.omnitiler\.DragOracle/);
+        assert.doesNotMatch(effectImpl, /LastVerdict/);
+        assert.doesNotMatch(effectImpl, /drag_oracle_last_copy/);
+        assert.doesNotMatch(effectImpl, /drag_oracle_record/);
+        assert.doesNotMatch(effectImpl, /OraclePress/);
+        assert.doesNotMatch(effectImpl, /m_oracle/);
+        assert.doesNotMatch(effectHeader, /m_oracle/);
+        assert.doesNotMatch(effectHeader, /drag_oracle_ffi\.h/);
+        assert.doesNotMatch(effectHeader, /OraclePressSpy/);
+        // The authoritative gesture endpoint and lifecycle observation
+        // survive: one shared window wiring, native start/step/finish.
+        assert.match(effectImpl, /registerService\(QStringLiteral\("com\.omnitiler\.Gesture"\)\)/);
+        assert.match(effectImpl, /registerObject\(QStringLiteral\("\/com\/omnitiler\/Gesture"\)/);
+        assert.match(effectImpl, /unregisterObject\(QStringLiteral\("\/com\/omnitiler\/Gesture"\)\)/);
+        assert.match(effectImpl, /unregisterService\(QStringLiteral\("com\.omnitiler\.Gesture"\)\)/);
+        // Construction seed plus the presentation lowest-stacked anchor
         // share the lifecycle; stacking changes re-anchor the underlay.
         assert.equal(countMatches(effectImpl, /stackingOrder\(\)/g), 2);
         assert.match(effectImpl, /stackingOrderChanged/);
         assert.equal(countMatches(effectImpl, /EffectsHandler::windowAdded/g), 1);
         assert.equal(countMatches(effectImpl, /EffectsHandler::windowClosed/g), 1);
         assert.equal(countMatches(effectImpl, /EffectsHandler::windowDeleted/g), 1);
-        assert.match(effectImpl, /attachOracleWindow/);
-        assert.match(effectImpl, /forgetOracleWindow/);
-        assert.match(effectImpl, /onOracleDragStart/);
-        assert.match(effectImpl, /onOracleDragFinish/);
+        assert.match(effectImpl, /attachGestureWindow/);
+        assert.match(effectImpl, /forgetGestureWindow/);
+        assert.match(effectImpl, /onGestureDragStart/);
+        assert.match(effectImpl, /onGestureDragFinish/);
         assert.match(effectImpl, /windowStartUserMovedResized/);
         assert.match(effectImpl, /windowFinishUserMovedResized/);
         assert.match(effectImpl, /moveResizeGeometry/);
-        assert.match(effectImpl, /oracleMoveResizeRect/);
-        // The original observer was rendering-independent. The survivor must
+        assert.match(effectImpl, /gestureMoveResizeRect/);
+        // The gesture observer was rendering-independent. The survivor must
         // attach it before the active-border-only OpenGL early return.
-        const oracleSetup = effectImpl.indexOf("m_oracleDbusObject =");
-        assert.ok(oracleSetup >= 0);
-        assert.ok(effectImpl.indexOf("attachOracleWindow(window);", oracleSetup) < effectImpl.indexOf("m_borderItem.setZ(-1)", oracleSetup));
+        const gestureSetup = effectImpl.indexOf("attachGestureWindow(window);");
+        assert.ok(gestureSetup >= 0);
+        assert.ok(effectImpl.indexOf("attachGestureWindow(window);", gestureSetup) < effectImpl.indexOf("m_borderItem.setZ(-1)", gestureSetup));
+        // Live move start arms the latch; finish/removal clears the exact
+        // tracked window, all from the authoritative gesture callbacks.
+        assert.match(effectImpl, /updateGroupMoveArm\(window\)/);
         // No second plugin effect or factory.
         assert.doesNotMatch(effectImpl, /DragOracleEffect/);
         assert.doesNotMatch(effectImpl, /dragoracle-metadata\.json/);
         assert.doesNotMatch(effectImpl, /omnitiler-drag-oracle/);
         assert.doesNotMatch(effectHeader, /DragOracleEffect/);
-        assert.match(effectHeader, /m_oracleDbusObject/);
-        assert.match(effectHeader, /m_oracleStartRects/);
-        assert.match(effectHeader, /drag_oracle_ffi\.h/);
-        // Rendering: one active outline plus the filled group underlay and
+        // Rendering: one active outline plus the filled underlay and
         // the drag preview fill.
         assert.equal(countMatches(effectHeader, /OutlinedBorderItem/g), 1);
         assert.ok(countMatches(effectHeader, /ImageItem/g) >= 2);
-        // Oracle Rust FFI and pull protocol surface stay intact.
-        const oracleFfi = read("native-effect/drag_oracle_ffi.h");
-        const oracleRust = read("../crates/tiler-kwin-effect-ffi/src/drag_oracle.rs");
-        assert.match(oracleFfi, /DragOracleRect/);
-        assert.match(oracleFfi, /drag_oracle_record/);
-        assert.match(oracleFfi, /drag_oracle_last_copy/);
-        assert.match(oracleRust, /drag_oracle_last_copy/);
-        assert.match(oracleRust, /correlation/);
     });
 });
 describe("active-border visibility diagnostics", () => {

@@ -115,8 +115,6 @@ interface Harness {
     logs: string[];
     shortcuts: Map<string, () => void>;
     signals: Record<string, FakeSignal>;
-    winSignals: Map<string, { started: FakeSignal; finished: FakeSignal }>;
-    oracleCalls: Array<(reply: unknown) => void>;
     handle: ReturnType<typeof startWorldAdapterEntry>;
     runTimers: (maxDelay?: number) => void;
     lastCall: (method: string) => CapturedCall;
@@ -160,17 +158,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         currentDesktopChanged: fakeSignal(),
         activeScreenChanged: fakeSignal(),
     };
-    // Per-window drag signals (Started for grab capture, Finished for the
-    // LastVerdict pull) plus a live cursor for grab identification.
-    const winSignals = new Map<string, { started: FakeSignal; finished: FakeSignal }>();
-    for (const w of world.wins) {
-        const started = fakeSignal();
-        const finished = fakeSignal();
-        winSignals.set(w.internalId, { started, finished });
-        (w as unknown as Record<string, unknown>)["interactiveMoveResizeStarted"] = started.signal;
-        (w as unknown as Record<string, unknown>)["interactiveMoveResizeFinished"] = finished.signal;
-    }
-    const oracleCalls: Array<(reply: unknown) => void> = [];
+
     const surface = {
         windowList: () => world.wins,
         screens: world.screens,
@@ -268,9 +256,6 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
                 }
             }
         },
-        oracleCallDbus: (_service, _path, _iface, _method, callback) => {
-            oracleCalls.push(callback);
-        },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
             return () => undefined;
@@ -299,7 +284,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         }
     };
     return {
-        world, calls, timers, logs, shortcuts, signals, winSignals, oracleCalls, handle,
+        world, calls, timers, logs, shortcuts, signals, handle,
         runTimers,
         lastCall: (method: string): CapturedCall => {
             const found = [...calls].reverse().find((c) => c.method === method);
@@ -313,7 +298,7 @@ const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
     v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
     windows: [], transfers: [], effects: [], result: null,
-    gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+    gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
     presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
 });
 
@@ -336,7 +321,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [],
@@ -796,58 +781,6 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const settled = h.calls.filter((c) => c.method === "DescribeWorld");
         assert.ok(settled.length >= 2);
-    });
-
-    it("routes a non-cancelled drag verdict as one pointer-resize command", () => {
-        const h = makeHarness();
-        discover(h);
-        const sigs = h.winSignals.get("win-a");
-        assert.ok(sigs !== undefined);
-        for (const handler of [...(sigs as { started: FakeSignal; finished: FakeSignal }).started.handlers]) {
-            handler();
-        }
-        for (const handler of [...(sigs as { started: FakeSignal; finished: FakeSignal }).finished.handlers]) {
-            handler();
-        }
-        assert.equal(h.oracleCalls.length, 1);
-        const pull = h.oracleCalls[0] as (reply: unknown) => void;
-        pull(JSON.stringify({
-            v: 1, cancelled: false,
-            finalRect: { x: -50, y: 0, w: 250, h: 200 },
-            windowIdentity: "win-a", correlation: "drag-1", reason: "ok-moved",
-        }));
-        h.runTimers();
-        const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
-        const cmd = filed["command"] as Record<string, unknown>;
-        assert.equal(cmd["op"], "operation");
-        const inner = cmd["command"] as Record<string, unknown>;
-        assert.equal(inner["op"], "pointer-resize");
-        assert.equal(inner["win"], "win-a");
-        assert.equal(inner["direction"], "left");
-        assert.equal(inner["boundary"], -50);
-    });
-
-    it("treats a cancelled drag verdict as a strict no-op", () => {
-        const h = makeHarness();
-        discover(h);
-        const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
-        const sigs = h.winSignals.get("win-a");
-        assert.ok(sigs !== undefined);
-        for (const handler of [...(sigs as { started: FakeSignal; finished: FakeSignal }).started.handlers]) {
-            handler();
-        }
-        for (const handler of [...(sigs as { started: FakeSignal; finished: FakeSignal }).finished.handlers]) {
-            handler();
-        }
-        const pull = h.oracleCalls[0] as (reply: unknown) => void;
-        pull(JSON.stringify({
-            v: 1, cancelled: true,
-            finalRect: { x: 0, y: 0, w: 200, h: 200 },
-            windowIdentity: "win-a", correlation: "drag-2", reason: "no-change",
-        }));
-        h.runTimers();
-        assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, describesBefore);
-        assert.ok(h.logs.some((l) => l.includes("drag-cancelled")));
     });
 
     it("toggles sticky off with keep-above restore and refuses overlays", () => {

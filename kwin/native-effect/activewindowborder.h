@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Michael Alexander
 #pragma once
 
-#include "drag_oracle_ffi.h"
 #include "presentation_consumer.h"
 
 #include <effect/effect.h>
@@ -10,7 +9,6 @@
 #include <scene/imageitem.h>
 #include <scene/outlinedborderitem.h>
 
-#include <QByteArray>
 #include <QDBusConnection>
 #include <QHash>
 #include <QPointF>
@@ -19,16 +17,13 @@
 #include <QRectF>
 #include <QSet>
 #include <QString>
-#include <QStringList>
 
-#include <chrono>
-#include <cstdint>
 
 namespace KWin
 {
 
-struct PointerButtonEvent;
-class OraclePressSpy;
+class GestureEscFence;
+class GestureFactsSource;
 
 class ActiveWindowBorderEffect : public Effect
 {
@@ -54,42 +49,44 @@ public:
     void noteFactsStyle();
 
 private:
-    friend class OraclePressSpy;
+    friend class GestureEscFence;
     void reconfigure(ReconfigureFlags flags) override;
     void setTrackedWindow(EffectWindow *window);
     void subscribeMaximize(EffectWindow *window);
     void unsubscribeMaximize(EffectWindow *window);
     // Group member visibility observation: every window subscribes its
     // existing public minimizedChanged/windowHiddenChanged signals once;
-    // the handler re-anchors only for Rust-accepted member ids, so
+    // the handler re-anchors only for presentation-held member ids, so
     // minimizing/restoring a lower member preserves the underlay without
     // timers or polling. Precise disconnects never touch the tracked-window
     // signals sharing minimizedChanged.
     void subscribeGroupVisibility(EffectWindow *window);
     void unsubscribeGroupVisibility(EffectWindow *window);
     void onGroupMemberVisibilityChanged(EffectWindow *window);
-    void attachOracleWindow(EffectWindow *window);
-    void forgetOracleWindow(EffectWindow *window);
-    void onOracleDragStart(EffectWindow *window);
-    void onOracleDragFinish(EffectWindow *window);
-    // Captures the exact interactive-move window at Started; display stays
-    // gated on a fresh live-active plus accepted-subject match each refresh.
+    // Authoritative gesture lifecycle observation (decision B): one
+    // effect-owned lifecycle mints immutable {instance, serial} identity,
+    // freezes start facts at Started, owns the phase, and resolves Esc
+    // only through the causal delivery fence. The gesture endpoint
+    // reports the terminal, never geometry inference: the retired oracle
+    // verdict route is gone, and the core GestureIngress lane alone owns
     // preview/drop/resize/hover.
+    void attachGestureWindow(EffectWindow *window);
+    void forgetGestureWindow(EffectWindow *window);
+    void onGestureDragStart(EffectWindow *window);
+    void onGestureDragStep(EffectWindow *window);
+    void onGestureDragFinish(EffectWindow *window);
+    // Delivery-fence arm (passive only): called by the fence filter when an
+    // Esc reaches InteractiveMoveResize. Arms only when the exact currently
+    // active native move/resize window matches the tracked open native
+    // identity in an interactive mode; records nothing by itself, and the
+    // next finish consumes the arm synchronously.
+    void noteGestureEsc();
     // Captures the exact interactive-move window at Started; the preview
     // stays gated on this live liveness plus the accepted paint each
     // refresh. The preview's published `win` is the insertion neighbor,
     // never the mover: no identity match against the mover is performed
     // here.
     void updateGroupMoveArm(EffectWindow *window);
-    // without grabbing or intercepting. A press matching the live configured
-    // MouseUnrestrictedResize binding (or the Alt+Right source default while
-    // the public options are unavailable) overwrites the single candidate;
-    // any other press clears it. At drag start a candidate matching the exact
-    // same effect window and identity within the bounded monotonic age moves
-    // single-use into the per-window start slot, which the finish handler
-    // passes to the verdict atomically. Move-vs-resize is never decided here.
-    void noteOraclePointerPress(PointerButtonEvent *event);
-    void emitOraclePressDiag(const char *outcome, bool configured);
     // Live interactive-move liveness for the drop preview: a non-deleted
     // tracked move window exists. No identity or policy decision.
     bool groupMoveLiveNow() const;
@@ -163,10 +160,6 @@ private:
     // members occlude it normally. Detached (null parent) with no valid
     // anchor so it can never draw as a screen overlay; stays hidden there.
     ImageItem m_groupItem;
-    // Rust-accepted member bare-UUID strings plus the lowest-stacked anchor.
-    // Extracted native-side from the already-accepted payload with Qt JSON;
-    // no new FFI storage. Never logged.
-    QStringList m_groupMemberIds;
     // Held accepted presentation paint: complete core shapes plus the
     // serving generation/revision for order fencing. The member id list
     // feeds the lowest-stacked anchor choice only; geometry is consumed
@@ -197,35 +190,29 @@ private:
     // QDBusConnection::sessionBus. The dedicated connection reaches the
     // same bus (same service/path/interface/shape; the script still calls
     // via KWin's sessionBus), so held replies route cross-connection.
-    // The DragOracle endpoint stays on the shared sessionBus (fire-and-read
-    // verdict, no held waiter). Exact owned teardown only: unregister the
-    // object/service on this connection, then disconnectFromBus(name);
-    // never touches the shared sessionBus registrations.
+    // Exact owned teardown only: unregister the object/service on this
+    // connection, then disconnectFromBus(name); never touches the shared
+    // sessionBus registrations.
     QString m_groupBusName;
     QDBusConnection m_groupBus;
-    // Drag oracle state: inert read-only
-    // observer state only (start rects plus the D-Bus object). The verdict
-    // policy lives in the std-only Rust staticlib behind the POD C ABI.
-    QObject *m_oracleDbusObject = nullptr;
-    QHash<EffectWindow *, QRect> m_oracleStartRects;
-    QSet<EffectWindow *> m_oracleAttached;
-    // Single overwrite-on-press candidate plus one single-use press slot per
-    // window pending between drag start and finish. Coordinates keep full
-    // native precision (f64) so script thirds comparisons match exactly.
-    struct OraclePressCandidate {
-        QPointer<EffectWindow> window;
-        QByteArray identity;
-        double x = 0.0;
-        double y = 0.0;
-        bool configured = false;
-        bool hasPress = false;
-        std::chrono::steady_clock::time_point at{};
-    };
-    OraclePressCandidate m_oraclePress;
-    QHash<EffectWindow *, DragOraclePress> m_oracleStartPress;
-    OraclePressSpy *m_oraclePressSpy = nullptr;
-    bool m_oraclePressDefaultLogged = false;
-    // Pure group policy state lives in the std-only Rust staticlib; C++
+    // Authoritative gesture lifecycle (decision B): the effect-owned
+    // D-Bus source plus the passive Esc fence. The source registers on the
+    // effect-owned dedicated connection (same bus as the ActiveBorder
+    // endpoint), so held WaitGesture replies route cross-connection. The
+    // fence installs at InteractiveMoveResize weight after the builtin
+    // consumer exists, so lower_bound ordering places it immediately before
+    // the builtin: it observes Esc after earlier consumers and never
+    // consumes. Both tear down with the effect exactly.
+    QSet<EffectWindow *> m_gestureAttached;
+    QHash<EffectWindow *, QString> m_gestureWinIds;
+    GestureFactsSource *m_gestureSource = nullptr;
+    GestureEscFence *m_gestureFence = nullptr;
+    bool m_gestureDbusAvailable = false;
+    bool m_gestureEndpointFailedLogged = false;
+    bool ensureGestureEndpointRegistered();
+    void ensureGestureFence();
+    void emitGestureDiag(const char *outcome, const char *phase);
+    void emitGestureEndpoint();
     void logActiveBorderDiag(const QString &message);
     void emitActiveBorderEndpoint();
     // Bounded presentation observability only: setter receipt plus a
@@ -248,21 +235,17 @@ private:
     // connection, and registers there. Fail/recover on the existing
     // activation/reconfigure events; no retry polling.
     bool ensureGroupEndpointRegistered();
-    void ensureOraclePressSpy();
     void ensureEndpointsRegistered();
     void emitActiveBorderVisible(bool visible, const char *reason, bool appletPopup);
     bool m_groupVisible = false;
     bool m_chordHeld = false;
     bool m_firstMouseSeen = false;
     bool m_groupDbusAvailable = false;
-    bool m_oracleDbusAvailable = false;
     // Once-each redacted transition state: first partial/unavailable log per
     // endpoint and press spy, plus a single recovery log on each recovery.
     // No repeated registration while healthy, no repeated logging while ill.
     bool m_groupEndpointFailedLogged = false;
-    bool m_oracleEndpointFailedLogged = false;
-    bool m_pressSpyFailedLogged = false;
-    // Bounded visibility diagnostic edge state only (two scalars, no ledger):
+    // Bounded visibility diagnostic edge state (two scalars, no ledger):
     // whether the first updateBorder() evaluation was emitted, and the last
     // emitted visibility. updateBorder() emits exactly on first evaluation
     // and then only when computed visibility flips.

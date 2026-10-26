@@ -169,6 +169,7 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             return JSON.stringify({
                 ...core,
                 result: null,
+                gestureAssoc: null,
                 source: envelope["source"],
                 nativeInvalid: envelope["nativeInvalid"],
                 clock: "1",

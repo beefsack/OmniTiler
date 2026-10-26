@@ -326,7 +326,6 @@ mise exec -- where.exe cargo
 | Crate / gate | Native Windows recommendation |
 | --- | --- |
 | `tiler-core`, `tiler-protocol` | Build/test: pure Rust policy; zero normal core dependencies, protocol serde/serde_json. |
-| `tiler-kwin-effect-ffi` | Include Rust tests/staticlib build: only portable Rust/core/serde/POD exports. Its Qt/KWin C++ consumer is Linux-only. |
 | `tiler-windows` | Include build/tests/clippy; native APIs are Windows-gated, ledger tests portable. Build also produces the owned test-window binary. |
 | `omnitiler` | Exclude: unguarded `rustix::process::geteuid` plus D-Bus/KDE service/tray integration. It cannot compile as-is on MSVC; Windows needs its own adapter. |
 | fmt / strict clippy | fmt all packages without compilation; clippy only the allowlist. |
@@ -345,10 +344,10 @@ From ordinary PS7:
 
 ```powershell
 where.exe link
-mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows
-mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows
+mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-windows
+mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-windows
 mise exec -- cargo fmt --all -- --check
-mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows --all-targets -- -D warnings
+mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-windows --all-targets -- -D warnings
 ```
 
 - **V: R3:** rustc's MSVC discovery normally finds an absolute VS linker and

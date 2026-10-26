@@ -7,6 +7,7 @@
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { readNativeAlias } from "./native-alias";
+import type { NativeGestureSnapshot } from "./world-gesture";
 import { normalizeScopeClassList, windowMatchesScopeClass } from "./scope-class";
 import {
     FIXED_SIZE_PREDICATE_DEFAULT,
@@ -244,8 +245,17 @@ export interface WorldObservation {
     // unknown); actionCached is null (the adapter retains no output cache);
     // actionOutputs is the ordered known-output registry.
     cursor: { x: number; y: number } | null;
+    // Raw same-capture script window fact: the live `windowAt` identity at
+    // the cursor position (opaque id), or null when unreadable/unknown.
+    // Advisory only: never a target, never an invention; the broker owns
+    // the combination with the authoritative native snapshot.
+    cursorWindow?: string | null;
     // Authoritative native gesture snapshot (effect-owned lifecycle only):
     // the raw snapshot for this capture, or null when no native gesture
+    // facts are known. Script signals never mint here; the broker maps this
+    // raw lane (plus the same-capture cursor/windowAt facts) to the core
+    // ingress. Terminal snapshots freeze the native finish cursor.
+    nativeGesture?: NativeGestureSnapshot | null;
     actionForeground: string | null;
     actionCached: null;
     actionOutputs: string[];
@@ -608,6 +618,9 @@ export interface ObserveEnv {
     // Authoritative native gesture snapshot (effect-owned lifecycle
     // only): the latest versioned snapshot the entry fetched, or null when
     // unknown (effect absent, stale, malformed, or explicitly unavailable).
+    // Script signals never mint here; the broker maps this raw lane to the
+    // core ingress. Terminal snapshots freeze the native finish cursor.
+    nativeGesture?: NativeGestureSnapshot | null;
 }
 
 // FULL output rectangles for the core-owned topology authority (the
@@ -1359,6 +1372,32 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         }
         return null;
     })();
+    // Raw same-capture script window fact: the live `windowAt` identity at
+    // the cursor position, or null when unreadable (no cursor), foreign, or
+    // throwing. Advisory only, never a target.
+    const cursorWindow = (() => {
+        if (cursor === null) {
+            return null;
+        }
+        try {
+            const fn = readProp(target, "windowAt");
+            if (typeof fn !== "function") {
+                return null;
+            }
+            const found = Reflect.apply(
+                fn as (...a: ReadonlyArray<unknown>) => unknown,
+                target,
+                [{ x: cursor.x, y: cursor.y }],
+            );
+            if (typeof found !== "object" || found === null) {
+                return null;
+            }
+            return normalizeNativeId(readProp(found as object, "internalId"));
+        } catch (error) {
+            void error;
+            return null;
+        }
+    })();
     const visibleCurrents = new Set(screenEntries.map((s) => s.current).filter((c) => c !== ""));
     const fgRecord = activeId !== "" ? liveById.get(activeId) ?? null : null;
     // Focused native Move subject (underlay move arm): the exact KWin
@@ -1485,10 +1524,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     };
     return {
         mode, topology, bindings, domains, minimized, predicate: predicateWire, complete, gesture,
+        nativeGesture: env.nativeGesture ?? null,
         focusedGlobal: activeId,
         screens: screenFacts, windowFacts, views, closed, hostOwned, equalCount, native,
         floatIntent: floatIntentDeduped, tileIntent: tileIntentDeduped,
-        cursor, actionForeground: activeName, actionCached: null,
+        cursor, cursorWindow, actionForeground: activeName, actionCached: null,
         actionOutputs: screenEntries.map((s) => s.name),
         focusFollowsCursor: false, cursorWarp: false,
         switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",

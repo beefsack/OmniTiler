@@ -121,7 +121,6 @@ function startFlow(surface: object) {
         readWorkspaceModeFn: () => "per-output-local",
         readInnerGapFn: () => 8,
         readOuterGapFn: () => 12,
-        oracleCallDbus: () => undefined,
     });
     assert.ok(handle !== null);
     return { handle: handle as NonNullable<typeof handle>, calls, timers, logs };

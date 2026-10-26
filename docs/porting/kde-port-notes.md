@@ -150,14 +150,16 @@ JS adapter (`kwin/src/`):
   logical homing moves to core receipts.
 
 Native effect (`kwin/native-effect/`, `activewindowborder.*`,
-`activeborderlogic.*`, `presentation_consumer.h`, `drag_oracle_ffi.h`):
+`activeborderlogic.*`, `presentation_consumer.h`, `gesturefacts.*`):
 the unaccepted Stage 5 draft consumes serialized core bounds and removes
 group-highlight/visual-policy FFI derivation and legacy result forwarding.
 Native styling (colors, anchoring, artwork) stays native. Geometry dirt,
 queued previews across gestures and focus-clear fence reset still permit
 stale paints; see the [blocking outcome](../changes/kde-world-v2-port.md#stage-5-unaccepted-renderer-outcome-2026-10-26).
-The drag oracle remains pending the cancellation decision. Pager/plasmoid
-work is future and separate.
+The gesture cutover replaces the drag oracle with effect-owned identity and
+delivered-Esc capture; terminal recovery remains unaccepted. The unused Rust
+oracle FFI and its build/unsafe-inventory roots are removed. Pager/plasmoid work
+is future and separate.
 
 ## Host styling on KDE
 

@@ -40,6 +40,16 @@ const planHandle = startWorldAdapterEntry({
             void error;
         }
     },
+    // Native effect gesture-facts lane (read-only): the held WaitGesture
+    // call on the gesture effect's well-known object, same callDBus shape
+    // as every other route.
+    gestureCallDbus: (service, path, iface, method, payload, callback) => {
+        try {
+            callDBus(service, path, iface, method, payload, callback);
+        } catch (error) {
+            void error;
+        }
+    },
     // Development scope baked by the launcher build (`OMNITILER_SCOPE_CLASS`
     // env at `npm run build` time, "" when unset): exact `resourceClass`
     // filter, validated once at startup. Undefined (manual builds without

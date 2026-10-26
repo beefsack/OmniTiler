@@ -5,7 +5,7 @@
 //! 2. Every workspace member declares an explicit lint posture, so a new crate
 //!    root cannot silently opt out:
 //!    - ordinary crates: exactly `[lints] workspace = true` (inherits forbid);
-//!    - `tiler-windows` / `tiler-macos` / `tiler-kwin-effect-ffi`: exactly
+//!    - `tiler-windows` / `tiler-macos`: exactly
 //!      `[lints.rust] unsafe_code = "deny"` with no workspace inheritance
 //!      (Cargo cannot inherit workspace lints and override one key, so the
 //!      exception stands alone; `deny`, not `forbid`, is load-bearing because
@@ -22,10 +22,6 @@
 //! Approved `allow(unsafe_code)` roots (the only ones):
 //! - `crates/tiler-windows/src/ffi/mod.rs` (child modules inherit the allow)
 //! - `crates/tiler-macos/src/ffi.rs`
-//! - `crates/tiler-kwin-effect-ffi/src/drag_oracle.rs` (native ABI boundary;
-//!   the retired group-highlight and visual-policy modules were deleted
-//!   with their native consumers in Stage 5, so no `unsafe` boundary
-//!   remains there and their allowlist roots are removed, not retained)
 //!
 //! Run: `cargo test --locked -p tiler-core --test unsafe_guardrail`
 //! (also runs inside `cargo test --workspace`). No dependencies beyond `std`.
@@ -54,17 +50,11 @@ use std::path::{Path, PathBuf};
 const APPROVED_ALLOW_ROOTS: &[&str] = &[
     "crates/tiler-windows/src/ffi/mod.rs",
     "crates/tiler-macos/src/ffi.rs",
-    "crates/tiler-kwin-effect-ffi/src/drag_oracle.rs",
     "crates/tiler-live-fixture/src/pipe_win.rs",
 ];
 
 /// Crates allowed a standalone `[lints.rust] unsafe_code = "deny"`.
-const DENY_EXCEPTION_CRATES: &[&str] = &[
-    "tiler-kwin-effect-ffi",
-    "tiler-macos",
-    "tiler-windows",
-    "tiler-live-fixture",
-];
+const DENY_EXCEPTION_CRATES: &[&str] = &["tiler-macos", "tiler-windows", "tiler-live-fixture"];
 
 /// Lint levels that weaken `unsafe_code`. `deny`/`forbid` strengthen it and
 /// are accepted anywhere. `force_warn` is not stable attribute syntax today;
@@ -1346,7 +1336,7 @@ mod manifest_tests {
 
     #[test]
     fn deny_exception_ok_for_registered_crates() {
-        for name in ["tiler-windows", "tiler-macos", "tiler-kwin-effect-ffi"] {
+        for name in ["tiler-windows", "tiler-macos"] {
             member_ok(
                 name,
                 &format!("[package]\nname = \"{name}\"\n\n[lints.rust]\nunsafe_code = \"deny\"\n"),
@@ -1372,11 +1362,9 @@ mod manifest_tests {
 
     #[test]
     fn no_lints_rejected_for_any_crate() {
-        // No crate-wide bypass exists: a member without a lint posture fails,
-        // whether brand-new or previously unconfigured.
-        for name in ["tiler-new", "tiler-kwin-effect-ffi"] {
-            member_bad(name, &format!("[package]\nname = \"{name}\"\n"));
-        }
+        // No crate-wide bypass exists: a member without a lint posture fails.
+        let name = "tiler-new";
+        member_bad(name, &format!("[package]\nname = \"{name}\"\n"));
     }
 
     #[test]
@@ -1417,7 +1405,7 @@ mod e2e_tests {
         let mut files: Vec<(&str, &str)> = vec![
             (
                 "Cargo.toml",
-                "[workspace]\nmembers = [\"crates/ok\", \"crates/tiler-windows\", \"crates/tiler-macos\", \"crates/tiler-kwin-effect-ffi\", \"crates/tiler-live-fixture\"]\nresolver = \"2\"\n\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n",
+                "[workspace]\nmembers = [\"crates/ok\", \"crates/tiler-windows\", \"crates/tiler-macos\", \"crates/tiler-live-fixture\"]\nresolver = \"2\"\n\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n",
             ),
             (
                 "crates/ok/Cargo.toml",
@@ -1445,18 +1433,6 @@ mod e2e_tests {
                 "#![deny(unsafe_code)]\npub mod ffi;\n",
             ),
             ("crates/tiler-macos/src/ffi.rs", "#![allow(unsafe_code)]\n"),
-            (
-                "crates/tiler-kwin-effect-ffi/Cargo.toml",
-                "[package]\nname = \"tiler-kwin-effect-ffi\"\n\n[lints.rust]\nunsafe_code = \"deny\"\n",
-            ),
-            (
-                "crates/tiler-kwin-effect-ffi/src/lib.rs",
-                "#![deny(unsafe_code)]\npub mod drag_oracle;\n",
-            ),
-            (
-                "crates/tiler-kwin-effect-ffi/src/drag_oracle.rs",
-                "#![allow(unsafe_code)]\n",
-            ),
             (
                 "crates/tiler-live-fixture/Cargo.toml",
                 "[package]\nname = \"tiler-live-fixture\"\n\n[lints.rust]\nunsafe_code = \"deny\"\n",

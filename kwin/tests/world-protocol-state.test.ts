@@ -62,7 +62,7 @@ const ACCEPTED = (
     transfers: [],
     effects: [],
     result: null,
-    gestureSettled: null,
+    gestureSettled: null, gestureAssoc: null,
     operationSettled: [], nativeCreations: [],
     warpCursor: null,
     presentation: DISABLED_PRESENTATION,

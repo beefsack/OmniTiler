@@ -56,93 +56,21 @@ endif()
 set(config_SOURCES)
 kconfig_add_kcfg_files(config_SOURCES activeborderconfig.kcfgc)
 
-# AR10 effect Rust: a Cargo workspace staticlib
-# (crates/tiler-kwin-effect-ffi, the ABI boundary crate) built by a plain
-# custom command invoking Cargo. No Corrosion, no new system dependency:
-# cargo ships with the existing devenv Rust toolchain. The crate is
-# retained for the guardrail-mandated ABI boundary while the retired
-# oracle verdict consumption is gone from C++. Presentation rendering is
-# derivation-free (see presentation_consumer.h, Qt only, offline-tested),
-# so no group/visual policy module remains.
-# find_program/find_package stay before all consumers so linkage never
-# relies on transitive libs. Effect-only: skipped for settings-only builds,
-# which must not find KWin/Cargo/effect dependencies.
-if(OMNITILER_BUILD_EFFECT)
-find_program(CARGO_PROGRAM cargo REQUIRED)
-# The Rust staticlib references pthread/dl (std thread internals, backtrace
-# symbolization). Link them explicitly and portably so the shared plugins
-# do not rely on transitive linkage.
-find_package(Threads REQUIRED)
-
-# Workspace layout: this file lives at kwin/native-effect under the
-# workspace root. Nix/flake wires the workspace inputs via its source
-# fileset; a missing workspace fails this command closed.
-set(EFFECT_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
-set(EFFECT_FFI_CRATE_DIR "${EFFECT_WORKSPACE_ROOT}/crates/tiler-kwin-effect-ffi")
-set(EFFECT_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo-effect")
-set(EFFECT_STATICLIB "${EFFECT_CARGO_TARGET_DIR}/release/libtiler_kwin_effect_ffi.a")
-# Nix offline vendor: when CARGO_NET_OFFLINE=true (set by the Nix
-# mkNativeEffect derivation alongside its CARGO_HOME vendor config), pass
-# --offline so Cargo fails closed instead of hitting the network. Host
-# builds leave the env unset and keep the default locked (network-capable)
-# behavior with no channel/target change.
-if(DEFINED ENV{CARGO_NET_OFFLINE} AND "$ENV{CARGO_NET_OFFLINE}" STREQUAL "true")
-    set(EFFECT_CARGO_OFFLINE_ARG --offline)
-else()
-    set(EFFECT_CARGO_OFFLINE_ARG "")
-endif()
-# Release-archive offline vendor: when OMNITILER_VENDOR_DIR points at
-# the source archive's vendor/ directory (absolute path), pass cargo --config
-# source replacement so the workspace resolves crates-io from that directory
-# with no network and no CARGO_HOME setup. Distro recipes set this alongside
-# CARGO_NET_OFFLINE=true; unset keeps host/Nix behavior unchanged.
-if(DEFINED ENV{OMNITILER_VENDOR_DIR} AND NOT "$ENV{OMNITILER_VENDOR_DIR}" STREQUAL "")
-    set(EFFECT_CARGO_VENDOR_ARGS
-        --config source.crates-io.replace-with="vendored-sources"
-        --config source.vendored-sources.directory="$ENV{OMNITILER_VENDOR_DIR}")
-else()
-    set(EFFECT_CARGO_VENDOR_ARGS "")
-endif()
-add_custom_command(
-    OUTPUT "${EFFECT_STATICLIB}"
-    COMMAND "${CARGO_PROGRAM}"
-        build
-        --release
-        --locked
-        ${EFFECT_CARGO_OFFLINE_ARG}
-        ${EFFECT_CARGO_VENDOR_ARGS}
-        --manifest-path "${EFFECT_FFI_CRATE_DIR}/Cargo.toml"
-        -p tiler-kwin-effect-ffi
-        --target-dir "${EFFECT_CARGO_TARGET_DIR}"
-    DEPENDS
-        "${EFFECT_WORKSPACE_ROOT}/Cargo.toml"
-        "${EFFECT_WORKSPACE_ROOT}/Cargo.lock"
-        "${EFFECT_FFI_CRATE_DIR}/Cargo.toml"
-        "${EFFECT_FFI_CRATE_DIR}/src/lib.rs"
-        "${EFFECT_FFI_CRATE_DIR}/src/drag_oracle.rs"
-    COMMENT "Building tiler-kwin-effect-ffi staticlib with Cargo"
-    VERBATIM
-)
-add_custom_target(omnitiler-effect-ffi-rs DEPENDS "${EFFECT_STATICLIB}")
-endif()
-
 if(OMNITILER_BUILD_EFFECT)
 kcoreaddons_add_plugin(omnitiler-active-border
     INSTALL_NAMESPACE "kwin/effects/plugins"
     SOURCES
         activewindowborder.h
         activewindowborder.cpp
-        drag_oracle_ffi.h
+        gesture_lifecycle.h
+        gesturefacts.h
+        gesturefacts.cpp
         presentation_consumer.h
         presentationfacts.h
         presentationfacts.cpp
         ${config_SOURCES}
 )
-add_dependencies(omnitiler-active-border omnitiler-effect-ffi-rs)
 target_link_libraries(omnitiler-active-border PRIVATE
-    "${EFFECT_STATICLIB}"
-    Threads::Threads
-    ${CMAKE_DL_LIBS}
     KWin::kwin
     KF6::ConfigCore
     KF6::ConfigGui
@@ -229,11 +157,7 @@ if(BUILD_TESTING)
     add_executable(omnitiler-active-border-logic-test
         activeborderlogic_test.cpp
     )
-    add_dependencies(omnitiler-active-border-logic-test omnitiler-effect-ffi-rs)
     target_link_libraries(omnitiler-active-border-logic-test PRIVATE
-        "${EFFECT_STATICLIB}"
-        Threads::Threads
-        ${CMAKE_DL_LIBS}
         Qt6::Core Qt6::Gui)
     target_compile_options(omnitiler-active-border-logic-test PRIVATE -Wall -Wextra -Werror)
 
@@ -268,11 +192,7 @@ if(BUILD_TESTING)
         presentationfacts_test.cpp
         presentationfacts.cpp
     )
-    add_dependencies(omnitiler-active-border-facts-test omnitiler-effect-ffi-rs)
     target_link_libraries(omnitiler-active-border-facts-test PRIVATE
-        "${EFFECT_STATICLIB}"
-        Threads::Threads
-        ${CMAKE_DL_LIBS}
         Qt6::Core
         Qt6::DBus
         Qt6::Gui)
@@ -284,6 +204,37 @@ if(BUILD_TESTING)
     add_test(NAME native-effect-facts-transport
         COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-facts-test>)
     set_tests_properties(native-effect-facts-transport PROPERTIES TIMEOUT 120)
+
+    # Authoritative gesture lifecycle tests (decision B): the Qt-only store
+    # plus the exact production D-Bus source over a private bus. Pins the
+    # causal Esc fence (arm at the passive filter, consumed synchronously
+    # by finish), fast terminal-before-pull Cancelled delivery, exact-
+    # identity FIFO retention with no heuristic adoption, immutable
+    # identity, abort without invented terminals, and the waiter/ack
+    # transport. No KWin dispatch, no live state.
+    add_executable(omnitiler-gesture-lifecycle-test
+        gesturelifecycle_test.cpp
+    )
+    target_link_libraries(omnitiler-gesture-lifecycle-test PRIVATE
+        Qt6::Core)
+    target_compile_options(omnitiler-gesture-lifecycle-test PRIVATE -Wall -Wextra -Werror)
+
+    add_test(NAME native-effect-gesture-lifecycle
+        COMMAND omnitiler-gesture-lifecycle-test)
+
+    add_executable(omnitiler-gesture-facts-test
+        gesturefacts_test.cpp
+        gesturefacts.cpp
+    )
+    target_link_libraries(omnitiler-gesture-facts-test PRIVATE
+        Qt6::Core
+        Qt6::DBus
+        Qt6::Gui)
+    target_compile_options(omnitiler-gesture-facts-test PRIVATE -Wall -Wextra -Werror)
+
+    add_test(NAME native-effect-gesture-facts-transport
+        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-gesture-facts-test>)
+    set_tests_properties(native-effect-gesture-facts-transport PROPERTIES TIMEOUT 120)
 
     endif()
 
@@ -300,9 +251,6 @@ if(BUILD_TESTING)
     add_executable(omnitiler-active-border-kcm-config-test
         ${kcm_config_test_SOURCES}
     )
-    if(OMNITILER_BUILD_EFFECT)
-        add_dependencies(omnitiler-active-border-kcm-config-test omnitiler-effect-ffi-rs)
-    endif()
     target_link_libraries(omnitiler-active-border-kcm-config-test PRIVATE
         KF6::CoreAddons
         KF6::ConfigCore
@@ -318,16 +266,6 @@ if(BUILD_TESTING)
         -DTRANSLATION_DOMAIN="kwin"
         -DKPLUGINFACTORY_PLUGIN_CLASS_INTERNAL_NAME=ActiveBorderConfigModuleFactory
     )
-    if(OMNITILER_BUILD_EFFECT)
-        target_link_libraries(omnitiler-active-border-kcm-config-test PRIVATE
-            "${EFFECT_STATICLIB}"
-            Threads::Threads
-            ${CMAKE_DL_LIBS}
-        )
-        target_compile_definitions(omnitiler-active-border-kcm-config-test PRIVATE
-            -DOMNITILER_HAVE_EFFECT_FFI=1
-        )
-    endif()
     target_compile_options(omnitiler-active-border-kcm-config-test PRIVATE -Wall -Wextra -Werror)
 
     add_test(NAME native-effect-kcm-dbus
@@ -553,8 +491,6 @@ if(BUILD_TESTING)
             -DPRES_CONSUMER=${CMAKE_CURRENT_SOURCE_DIR}/presentation_consumer.h
             -DDRAG_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.h
             -DDRAG_IMPL=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.cpp
-            -DDRAG_FFI=${CMAKE_CURRENT_SOURCE_DIR}/drag_oracle_ffi.h
-            -DDRAG_RUST=${EFFECT_FFI_CRATE_DIR}/src/drag_oracle.rs
             -DEXPECTED_PLUGIN_ID=omnitiler-active-border
             -P ${CMAKE_CURRENT_SOURCE_DIR}/validate-metadata.cmake)
 
@@ -564,16 +500,5 @@ if(BUILD_TESTING)
             -DHEADER_FILE=${CMAKE_CURRENT_SOURCE_DIR}/activewindowborder.h
             -DCMAKE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/validate-unified-lifecycle.cmake)
-
-    # Effect Rust unit tests run through Cargo against the same workspace
-    # staticlib sources. The retired group/visual policy modules are deleted
-    # with their C++ consumers, so no second policy test scope remains.
-    add_test(NAME native-effect-drag-oracle-rs
-        COMMAND "${CARGO_PROGRAM}" test --release --locked
-            ${EFFECT_CARGO_OFFLINE_ARG}
-            ${EFFECT_CARGO_VENDOR_ARGS}
-            --manifest-path "${EFFECT_FFI_CRATE_DIR}/Cargo.toml"
-            -p tiler-kwin-effect-ffi --lib drag_oracle::
-            --target-dir "${EFFECT_CARGO_TARGET_DIR}")
     endif()
 endif()

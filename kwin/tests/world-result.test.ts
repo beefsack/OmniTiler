@@ -23,7 +23,7 @@ function baseCapture(result: string): string {
         `"obs":"1","rev":"1","ready":true,"consumed":false,` +
         `"scopes":[],"workspaces":[],"outputs":[],"windows":[],` +
         `"transfers":[],"effects":[],${result},` +
-        `"gestureSettled":null,"operationSettled":[],"nativeCreations":[],"warpCursor":null,` +
+        `"gestureSettled":null,"gestureAssoc":null,"operationSettled":[],"nativeCreations":[],"warpCursor":null,` +
         `"presentation":{"foreground":"","border":{"visible":false,"reason":"disabled",` +
         `"inner":null,"outer":null},"underlay":{"status":"hidden","reason":"disabled",` +
         `"baseRev":null},"pager":[]},` +

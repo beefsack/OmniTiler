@@ -2,9 +2,8 @@
 # See about.hbs (render template) and scripts/third-party-notices.sh
 # (regenerate / freshness check, invoked via just recipes).
 #
-# Scope: UNION of the normal dependencies of the shipping Rust roots
-# `omnitiler` (planner/tray) and `tiler-kwin-effect-ffi` (staticlib linked
-# into the native effect), for the supported Linux targets, locked
+# Scope: UNION of the normal dependencies of the shipping Rust root
+# `omnitiler` (planner/tray), for the supported Linux targets, locked
 # Cargo.lock, default features, offline (local license files only, no
 # ClearlyDefined lookups).
 #

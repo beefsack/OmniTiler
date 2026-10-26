@@ -178,15 +178,12 @@ describe("native KCM static contract", () => {
         assert.equal(kcmMetadata.KPlugin.Name, "OmniTiler");
         // Exactly one effect plugin target plus the KCM config target; the
         // standalone drag-oracle effect, factory, metadata, and validation
-        // script are gone while the unified effect-ffi Rust target and the
-        // oracle/group Rust tests stay.
+        // script are gone, as is the retired Rust FFI staticlib and its
+        // header, link, and Rust CTest.
         assert.equal(
             (cmake.match(/INSTALL_NAMESPACE "kwin\/effects\/plugins"/g) ?? []).length,
             1,
         );
-        assert.ok(cmake.includes("drag_oracle_ffi.h"));
-        assert.ok(cmake.includes("omnitiler-effect-ffi-rs"));
-        assert.ok(cmake.includes("native-effect-drag-oracle-rs"));
         for (const residue of [
             "dragoracle.h",
             "dragoracle.cpp",

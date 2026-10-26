@@ -329,6 +329,11 @@ pub struct WorldBroker {
     source_floor: u64,
     /// Per-sender native invalidation high-water. Regressions refuse.
     watermarks: HashMap<String, u64>,
+    /// Broker-owned gesture identity map (one broker generation): raw
+    /// native snapshots fold to core ingress ids here before stamping.
+    /// Rotation replaces the whole broker, so the map resets with the
+    /// engine.
+    gesture_map: crate::kde_gesture::KdeGestureMap,
     /// Per-source bound capture outcomes keyed by exact envelope bytes
     /// (accepted bound replies and bound in-band rejections alike), with
     /// oldest-first eviction. Byte-identical redelivery of a remembered
@@ -451,6 +456,7 @@ impl WorldBroker {
             capture_lifetime: None,
             source_floor: 0,
             watermarks: HashMap::new(),
+            gesture_map: crate::kde_gesture::KdeGestureMap::new(),
             responses: HashMap::new(),
             response_order: VecDeque::new(),
             wake_epoch: 0,
@@ -650,6 +656,33 @@ impl WorldBroker {
             };
             return self.remember_rejection(&refused, envelope, kind, message, clock_now);
         }
+        // Broker-owned gesture normalization: the raw native lane folds to
+        // the core ingress lane (script never mints) on a staged map clone
+        // before sequencing. Like the raw classification above, a malformed
+        // lane remembers an exact-replay rejection and never installs map
+        // state. The staged map installs only with an accepted
+        // `FreshOutcome::Reply` below; every other outcome (rejection,
+        // decode failure, attempt-clock refusal, fallback rejection)
+        // discards the staged mutation so a malformed report with a valid
+        // native lane can never retire sources or spend identity/revision.
+        let mut staged_gesture_map = self.gesture_map.clone();
+        let gesture_assoc = match staged_gesture_map.normalize_gesture_lane(&mut raw_inner) {
+            Ok(assoc) => assoc,
+            Err(crate::kde_gesture::GestureLaneError::Rotate) => {
+                return Err(BrokerError::Rotate);
+            }
+            Err(crate::kde_gesture::GestureLaneError::Reject(kind, message)) => {
+                let refused = ParsedCapture {
+                    adapter,
+                    generation,
+                    source,
+                    source_seq,
+                    native_invalid,
+                    inner: Map::new(),
+                };
+                return self.remember_rejection(&refused, envelope, kind, message, clock_now);
+            }
+        };
         let parsed = ParsedCapture {
             adapter,
             generation,
@@ -731,6 +764,12 @@ impl WorldBroker {
                 self.remember_rejection(&parsed, envelope, kind, message, clock)
             }
             FreshOutcome::Reply(encoded) => {
+                // Staged gesture map installs only on the accepted reply:
+                // malformed report fields, the attempt-clock gate, the
+                // engine rejection, and every other non-accepted outcome
+                // above discarded their staged mutation by reaching this
+                // arm selectively.
+                self.gesture_map = staged_gesture_map;
                 // The actuator lane never carries the terminal result
                 // (requester-only even when the actuator is the issuer); the
                 // projection cache keeps the snapshot plus presentation only,
@@ -745,7 +784,9 @@ impl WorldBroker {
                 // cap; oversize fails closed without caching.
                 let preview = drag_preview_of(&encoded);
                 let stripped = strip_result(&encoded);
-                let bound = bind_response(&stripped, &parsed.source, parsed.native_invalid, clock);
+                let with_assoc = inject_gesture_assoc(&stripped, gesture_assoc.as_ref());
+                let bound =
+                    bind_response(&with_assoc, &parsed.source, parsed.native_invalid, clock);
                 if bound.len() > WORLD_MAX_REPLY_BYTES {
                     return Err(BrokerError::Oversized);
                 }
@@ -1748,6 +1789,42 @@ fn bind_response(reply: &str, source: &str, watermark: u64, clock: u64) -> Strin
             json_string(&watermark.to_string()),
         );
         map.insert("clock".to_owned(), json_string(&clock.to_string()));
+        // Broker-owned bound actuator association defaults to null here;
+        // the accepted-reply path overwrites it via `inject_gesture_assoc`
+        // before binding. Rejections and errors always carry null (never a
+        // fabricated binding), so the script can require the association
+        // without a separate absence proof.
+        if !map.contains_key("gestureAssoc") {
+            map.insert("gestureAssoc".to_owned(), serde_json::Value::Null);
+        }
+    }
+    value.to_string()
+}
+
+/// Attach the broker-only bound actuator association for the actual
+/// normalized ingress (`{instance, serial, coreId}`) to one stripped
+/// accepted reply, or an explicit null when the lane omitted. The key is
+/// broker-owned (never core/protocol): the exact response replay caches
+/// it verbatim, so an unrelated settled id can never alias the current
+/// ingress. Pure over the strings.
+fn inject_gesture_assoc(reply: &str, assoc: Option<&crate::kde_gesture::GestureAssoc>) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(reply).unwrap_or_default();
+    if let Some(map) = value.as_object_mut() {
+        match assoc {
+            Some(a) => {
+                map.insert(
+                    "gestureAssoc".to_owned(),
+                    serde_json::json!({
+                        "instance": a.instance,
+                        "serial": a.serial,
+                        "coreId": a.core_id.to_string(),
+                    }),
+                );
+            }
+            None => {
+                map.insert("gestureAssoc".to_owned(), serde_json::Value::Null);
+            }
+        }
     }
     value.to_string()
 }

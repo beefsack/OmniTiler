@@ -52,6 +52,11 @@ export interface CaptureFlight {
     // Terminal results arrive requester-only via TakeCommandResult, never
     // in the capture reply.
     clientCmd: string | null;
+    // Raw native gesture identity carried by this exact capture (terminal
+    // phases only), or null. The ack after the core GestureSettled binds to
+    // this flight identity plus the pending terminal, never to an arbitrary
+    // accepted capture.
+    gesture: { instance: string; serial: string } | null;
     // Exact facts this flight delivered (snapshots of the pending attempt
     // maps at dispatch): a bound ready reply consumes exactly-equal
     // entries, so a lost acknowledgement redelivers the same attempt
@@ -734,6 +739,7 @@ export class WorldAdapterState {
         // acknowledgement reuses the original write stamps.
         const flight: CaptureFlight = {
             source, watermark: this.currentInvalid, clientCmd,
+            gesture: null,
             delivered: {
                 frames: this.framesForReport(),
                 members: this.memberAttemptsForReport(),

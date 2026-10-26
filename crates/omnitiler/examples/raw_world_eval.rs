@@ -25,7 +25,9 @@ use tiler_protocol::world_protocol::{
     WorldEngine, WorldEngineConfig, WorldOutcome, decode_request, encode_error, encode_reply,
 };
 
-// Direct production-source include: no public API widened solely for tests.
+// Direct production-source includes: no public API widened solely for tests.
+#[path = "../src/kde_gesture.rs"]
+mod kde_gesture;
 #[path = "../src/kde_raw.rs"]
 mod kde_raw;
 
@@ -58,6 +60,10 @@ fn discovery_reply(engine: &WorldEngine, body: &str) -> String {
 
 fn main() {
     let mut engine: Option<WorldEngine> = None;
+    // Retained broker-owned gesture map: the same per-generation identity
+    // namespace the shipped world service folds before stamping. Reset on
+    // every discovery like the broker rotation resets with the engine.
+    let mut gesture_map = kde_gesture::KdeGestureMap::new();
     let mut generation = generation_for(0);
     let mut discoveries: u64 = 0;
     // Test-only platform selection (never a user setting): carriers may
@@ -92,6 +98,7 @@ fn main() {
                 generation = generation_for(discoveries);
                 let fresh = WorldEngine::new_with_config(&generation, config)?;
                 engine = Some(fresh);
+                gesture_map = kde_gesture::KdeGestureMap::new();
                 let active = engine.as_ref()?;
                 Some(discovery_reply(active, body))
             } else if method == "DescribeWorld" {
@@ -100,12 +107,26 @@ fn main() {
                 }
                 // Real-Rust raw normalization on the stamped capture before
                 // the strict core decode (mirrors the production broker
-                // lane: normalize, then decode/evaluate). A raw refusal
-                // rejects in-band without touching the engine or the queue.
+                // lane: normalize windows, fold the gesture lane, then
+                // decode/evaluate). A raw refusal rejects in-band without
+                // touching the engine or the queue.
                 let normalized_body: String = match serde_json::from_str::<serde_json::Value>(body)
                 {
                     Ok(serde_json::Value::Object(mut map)) => {
                         if let Err((kind, message)) = kde_raw::normalize_raw_windows(&mut map) {
+                            return Some(encode_error(kind, message, &generation));
+                        }
+                        if let Err(err) = gesture_map.normalize_gesture_lane(&mut map) {
+                            let (kind, message) = match err {
+                                kde_gesture::GestureLaneError::Reject(k, m) => (k, m),
+                                kde_gesture::GestureLaneError::Rotate => {
+                                    return Some(encode_error(
+                                        "sequence-exhausted",
+                                        "sequencing exhausted",
+                                        &generation,
+                                    ));
+                                }
+                            };
                             return Some(encode_error(kind, message, &generation));
                         }
                         serde_json::Value::Object(map).to_string()

@@ -172,7 +172,7 @@ function makeHarness() {
             source,
             nativeInvalid,
             clock: "0",
-            gestureSettled: null,
+            gestureSettled: null, gestureAssoc: null,
             operationSettled: [], nativeCreations: [],
             warpCursor: null,
             presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },

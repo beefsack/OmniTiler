@@ -199,7 +199,7 @@ function bootstrap(gen: string, req: string): Record<string, unknown> {
         ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: PRESENTATION,
     };
 }
@@ -215,7 +215,7 @@ function accept(
         obs: rev, rev, ready: true, consumed: false,
         source: payload["source"], nativeInvalid: payload["nativeInvalid"], clock: "1",
         scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: PRESENTATION,
         workspaces: [
             { id: "w1", out: "out-1", bind: "d1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
@@ -482,7 +482,7 @@ describe("world empty migration controlled scope", () => {
             { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false },
             { op: "op-1-refill", kind: "view", win: "", out: "out-a", ws: "wr", follow: false, held: false },
         ],
-        effects: [], result: null, gestureSettled: null, operationSettled: [],
+        effects: [], result: null, gestureSettled: null, gestureAssoc: null, operationSettled: [],
         nativeCreations: [], warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         source: "src-1", nativeInvalid: "0", clock: "1",
@@ -720,7 +720,7 @@ function setterReply(
         adapter: "broker-1", gen: "gen-1", req: "src-1", obs: "1", rev: "1",
         ready: true, consumed: false, scopes, workspaces,
         outputs: [], windows, transfers,
-        effects: [], result: null, gestureSettled: null, operationSettled: [],
+        effects: [], result: null, gestureSettled: null, gestureAssoc: null, operationSettled: [],
         nativeCreations: [], warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         source: "src-1", nativeInvalid: "0", clock: "9",

@@ -1,5 +1,7 @@
 # Unified lifecycle/service/ABI validation: exactly one exported KWin
-# effect plugin hosts the active border, group overlay, and drag oracle.
+# effect plugin hosts the active border, group overlay, and the
+# authoritative gesture lifecycle (the retired drag-oracle verdict route is
+# gone; the core GestureIngress lane alone owns preview/drop/resize/hover).
 # Maximize observation seeds directly from the native committed
 # maximizeMode(); no script handoff. No second effect, factory, or metadata.
 #
@@ -39,8 +41,10 @@ foreach(SECOND_PLUGIN "DragOracleEffect" "dragoracle-metadata.json" "omnitiler-d
     endif()
 endforeach()
 
-# Exactly one D-Bus service/object pair per endpoint, each unregistered.
-foreach(ENDPOINT "com.omnitiler.ActiveBorder" "/com/omnitiler/ActiveBorder" "com.omnitiler.DragOracle" "/com/omnitiler/DragOracle")
+# Exactly one D-Bus service/object pair per endpoint, each unregistered:
+# the ActiveBorder presentation endpoint plus the authoritative gesture
+# lifecycle endpoint (the retired DragOracle verdict endpoint is gone).
+foreach(ENDPOINT "com.omnitiler.ActiveBorder" "/com/omnitiler/ActiveBorder" "com.omnitiler.Gesture" "/com/omnitiler/Gesture")
     string(FIND "${IMPL}" "${ENDPOINT}" ENDPOINT_POS)
     if(ENDPOINT_POS EQUAL -1)
         message(FATAL_ERROR "unified service validation failed: '${ENDPOINT}' not found")
@@ -54,32 +58,37 @@ foreach(UNREG "unregisterObject" "unregisterService")
     endif()
 endforeach()
 
-# Oracle verdict lifetime: copy before the D-Bus return, never a borrowed view.
-string(FIND "${IMPL}" "drag_oracle_last_copy" COPY_POS)
-if(COPY_POS EQUAL -1)
-    message(FATAL_ERROR "unified ABI validation failed: LastVerdict must use drag_oracle_last_copy")
-endif()
-string(FIND "${IMPL}" "drag_oracle_last(" BORROW_POS)
-if(NOT BORROW_POS EQUAL -1)
-    message(FATAL_ERROR "unified ABI validation failed: borrowed drag_oracle_last must not be used across the D-Bus boundary")
-endif()
-foreach(FFI_SYMBOL "drag_oracle_record" "drag_oracle_last_copy")
-    string(FIND "${IMPL}" "${FFI_SYMBOL}" FFI_POS)
-    if(FFI_POS EQUAL -1)
-        message(FATAL_ERROR "unified ABI validation failed: '${FFI_SYMBOL}' not found in survivor implementation")
+# Authoritative gesture lifecycle: the effect mints the immutable native
+# identity, freezes start facts, and resolves the phase through the
+# effect-owned source. The retired oracle verdict route (LastVerdict,
+# press spy, FFI record calls) must not survive in the implementation.
+foreach(GESTURE_SYMBOL "ensureGestureEndpointRegistered" "GestureFactsSource" "gestureStarted" "gestureFinished" "gestureAborted")
+    string(FIND "${IMPL}" "${GESTURE_SYMBOL}" GESTURE_POS)
+    if(GESTURE_POS EQUAL -1)
+        message(FATAL_ERROR "unified lifecycle validation failed: '${GESTURE_SYMBOL}' not found in survivor implementation")
     endif()
 endforeach()
-foreach(HEADER_TOKEN "drag_oracle_ffi.h" "m_oracleDbusObject" "m_oracleStartRects" "attachOracleWindow" "forgetOracleWindow" "onOracleDragStart" "onOracleDragFinish")
+foreach(RETIRED_ORACLE "LastVerdict" "com.omnitiler.DragOracle" "drag_oracle_record" "drag_oracle_last_copy" "attachOracleWindow" "forgetOracleWindow" "onOracleDragStart" "onOracleDragFinish" "OraclePress" "m_oracle")
+    string(FIND "${IMPL}" "${RETIRED_ORACLE}" RETIRED_IMPL_POS)
+    if(NOT RETIRED_IMPL_POS EQUAL -1)
+        message(FATAL_ERROR "unified lifecycle validation failed: retired oracle residue '${RETIRED_ORACLE}' must not remain in survivor implementation")
+    endif()
+    string(FIND "${HEADER}" "${RETIRED_ORACLE}" RETIRED_HEADER_POS)
+    if(NOT RETIRED_HEADER_POS EQUAL -1)
+        message(FATAL_ERROR "unified lifecycle validation failed: retired oracle residue '${RETIRED_ORACLE}' must not remain in survivor header")
+    endif()
+endforeach()
+foreach(HEADER_TOKEN "m_gestureAttached" "m_gestureWinIds" "attachGestureWindow" "forgetGestureWindow" "onGestureDragStart" "onGestureDragFinish")
     string(FIND "${HEADER}" "${HEADER_TOKEN}" HEADER_TOKEN_POS)
     if(HEADER_TOKEN_POS EQUAL -1)
-        message(FATAL_ERROR "unified ABI validation failed: '${HEADER_TOKEN}' missing from survivor header")
+        message(FATAL_ERROR "unified lifecycle validation failed: '${HEADER_TOKEN}' missing from survivor header")
     endif()
 endforeach()
 
-# Oracle seed plus the group-underlay lowest-stacked anchor share the
-# existing lifecycle: two stacking-order passes (construction seed plus
+# Gesture observation plus the group-underlay lowest-stacked anchor share
+# the existing lifecycle: two stacking-order passes (construction seed plus
 # anchor choice) plus single windowAdded/closed/deleted connections that
-# also drive the oracle start/finish state through the shared lambdas.
+# also drive the gesture attach/forget state through the shared lambdas.
 # Count exact stackingOrder() calls so the stackingOrderChanged signal and
 # comments do not inflate the count.
 string(REGEX MATCHALL "stackingOrder\\(\\)" STACK_MATCHES "${IMPL}")
@@ -91,7 +100,7 @@ string(FIND "${IMPL}" "stackingOrderChanged" STACK_CHANGED_POS)
 if(STACK_CHANGED_POS EQUAL -1)
     message(FATAL_ERROR "unified lifecycle validation failed: stackingOrderChanged re-anchor missing")
 endif()
-foreach(HOOK "attachOracleWindow" "forgetOracleWindow" "onOracleDragStart" "onOracleDragFinish" "windowStartUserMovedResized" "windowFinishUserMovedResized" "moveResizeGeometry")
+foreach(HOOK "attachGestureWindow" "forgetGestureWindow" "onGestureDragStart" "onGestureDragFinish" "windowStartUserMovedResized" "windowFinishUserMovedResized" "moveResizeGeometry")
     string(FIND "${IMPL}" "${HOOK}" HOOK_POS)
     if(HOOK_POS EQUAL -1)
         message(FATAL_ERROR "unified lifecycle validation failed: '${HOOK}' not found")
@@ -101,15 +110,15 @@ foreach(WINDOW_HOOK "windowAdded" "windowClosed" "windowDeleted")
     string(REGEX MATCHALL "EffectsHandler::${WINDOW_HOOK}" WINDOW_HOOK_MATCHES "${IMPL}")
     list(LENGTH WINDOW_HOOK_MATCHES WINDOW_HOOK_COUNT)
     if(NOT WINDOW_HOOK_COUNT EQUAL 1)
-        message(FATAL_ERROR "unified lifecycle validation failed: expected exactly one '${WINDOW_HOOK}' hookup shared with the oracle, found ${WINDOW_HOOK_COUNT}")
+        message(FATAL_ERROR "unified lifecycle validation failed: expected exactly one '${WINDOW_HOOK}' hookup shared with the gesture lifecycle, found ${WINDOW_HOOK_COUNT}")
     endif()
 endforeach()
-# The oracle observation helper reads moveResizeGeometry only (no geometry
-# fallback beside it); the border's own frameGeometry rendering path above is
-# unrelated and untouched.
-string(FIND "${IMPL}" "oracleMoveResizeRect" ORACLE_HELPER_POS)
-if(ORACLE_HELPER_POS EQUAL -1)
-    message(FATAL_ERROR "unified lifecycle validation failed: oracleMoveResizeRect helper missing")
+# The gesture start-geometry helper reads moveResizeGeometry only (no
+# geometry fallback beside it); the border's own frameGeometry rendering
+# path above is unrelated and untouched.
+string(FIND "${IMPL}" "gestureMoveResizeRect" GESTURE_HELPER_POS)
+if(GESTURE_HELPER_POS EQUAL -1)
+    message(FATAL_ERROR "unified lifecycle validation failed: gestureMoveResizeRect helper missing")
 endif()
 
 # Rendering: the preserved active outline, the filled group underlay below
@@ -134,7 +143,7 @@ foreach(LEGACY_TOKEN "dragoracle.h" "dragoracle.cpp" "dragoracle-metadata.json" 
         message(FATAL_ERROR "unified build validation failed: legacy token '${LEGACY_TOKEN}' must not remain in CMakeLists.txt")
     endif()
 endforeach()
-foreach(SURVIVOR_TOKEN "omnitiler-active-border" "libtiler_kwin_effect_ffi.a" "Qt6::DBus" "drag_oracle_ffi.h" "presentation_consumer.h" "omnitiler-effect-ffi-rs" "native-effect-drag-oracle-rs" "native-effect-presentation-consumer" "native-effect-unified-lifecycle")
+foreach(SURVIVOR_TOKEN "omnitiler-active-border" "Qt6::DBus" "presentation_consumer.h" "native-effect-presentation-consumer" "native-effect-unified-lifecycle")
     string(FIND "${CMAKE}" "${SURVIVOR_TOKEN}" SURVIVOR_POS)
     if(SURVIVOR_POS EQUAL -1)
         message(FATAL_ERROR "unified build validation failed: '${SURVIVOR_TOKEN}' missing from CMakeLists.txt")

@@ -31,47 +31,6 @@ function traceValue(define: string | null): boolean {
     return global.KWIN_TRACE_ENABLED;
 }
 
-function dragLogs(define: string | null, cancelled = false): string[] {
-    const outDir = mkdtempSync(join(tmpdir(), "pat-trace-drag-"));
-    const outFile = join(outDir, "main.js");
-    const args = [
-        "esbuild",
-        "src/drag-oracle-pull.ts",
-        "--bundle",
-        "--format=iife",
-        "--target=es2017",
-        "--global-name=PatTraceDrag",
-        `--outfile=${outFile}`,
-    ];
-    if (define !== null) {
-        args.push(`--define:__OMNITILER_TRACE__=${JSON.stringify(define)}`);
-    }
-    execFileSync("npx", args, { cwd: process.cwd(), stdio: "pipe" });
-    const context = createContext({});
-    runInContext(readFileSync(outFile, "utf8"), context, { filename: outFile });
-    const global = (context as unknown as { PatTraceDrag?: { DragOraclePull: new (env: unknown) => { pullVerdict: () => void } } }).PatTraceDrag;
-    assert.ok(global !== undefined, "drag trace IIFE must be exposed");
-    const logs: string[] = [];
-    const pull = new global.DragOraclePull({
-        callDbus: (_service: unknown, _path: unknown, _iface: unknown, _method: unknown, callback: (reply: unknown) => void): void => {
-            callback(JSON.stringify({
-                v: 1,
-                cancelled,
-                finalRect: { x: 0, y: 0, w: 1, h: 1 },
-                windowIdentity: "win-1",
-                correlation: "drag-1",
-                reason: cancelled ? "no-change" : "ok-moved",
-            }));
-        },
-        log: (message: string): void => {
-            logs.push(message);
-        },
-        routePointer: (): void => {},
-    });
-    pull.pullVerdict();
-    return logs;
-}
-
 describe("compile-time KWin trace gate", () => {
     it("is disabled in ordinary builds and enabled only by the exact trace define", () => {
         assert.equal(KWIN_TRACE_ENABLED, true);
@@ -86,24 +45,5 @@ describe("compile-time KWin trace gate", () => {
         assert.match(manifest, /"build:trace":.*__OMNITILER_TRACE__/);
         assert.match(start, /OMNITILER_TRACE/);
         assert.match(start, /build:trace/);
-    });
-
-    it("suppresses ordinary drag hook detail while retaining it in a trace bundle", () => {
-        assert.deepEqual(dragLogs(null), []);
-        assert.deepEqual(dragLogs("1"), [
-            "omnitiler:route-diag:drag-pull action=dispatch",
-            "omnitiler:route-diag:drag-verdict cancelled=false correlation=drag-1 reason=ok-moved",
-        ]);
-    });
-
-    it("emits the cancelled rejection in normal mode with correlation and reason", () => {
-        assert.deepEqual(dragLogs(null, true), [
-            "omnitiler:route-diag:drag-cancelled correlation=drag-1 reason=no-change",
-        ]);
-        assert.deepEqual(dragLogs("1", true), [
-            "omnitiler:route-diag:drag-pull action=dispatch",
-            "omnitiler:route-diag:drag-verdict cancelled=true correlation=drag-1 reason=no-change",
-            "omnitiler:route-diag:drag-cancelled correlation=drag-1 reason=no-change",
-        ]);
     });
 });

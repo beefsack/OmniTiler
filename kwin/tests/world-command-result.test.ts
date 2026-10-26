@@ -235,7 +235,7 @@ function discover(h: Harness): void {
         v: 2, adapter: "broker-1", gen: "gen-1", req: autoEnv["source"], obs: "1", rev: "0",
         ready: true, consumed: false,
         source: autoEnv["source"], nativeInvalid: autoEnv["nativeInvalid"], clock: "1",
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,

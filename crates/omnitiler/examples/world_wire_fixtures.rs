@@ -39,12 +39,13 @@ const FIXTURE_DIR: &str = concat!(
 const LIFETIME: &str = "test-adapter";
 const SENDER: &str = ":1.42";
 
-const BOUND_KEYS: [&str; 23] = [
+const BOUND_KEYS: [&str; 24] = [
     "adapter",
     "clock",
     "consumed",
     "effects",
     "gen",
+    "gestureAssoc",
     "gestureSettled",
     "nativeCreations",
     "nativeInvalid",
@@ -142,7 +143,9 @@ fn discover(service: &WorldService, request_id: &str) -> (String, String) {
     assert!(bootstrap.get("clock").is_none(), "bootstrap binds no clock");
     let mut core_keys = BOUND_KEYS
         .iter()
-        .filter(|k| **k != "source" && **k != "nativeInvalid" && **k != "clock")
+        .filter(|k| {
+            **k != "source" && **k != "nativeInvalid" && **k != "clock" && **k != "gestureAssoc"
+        })
         .copied()
         .collect::<Vec<_>>();
     core_keys.sort_unstable();

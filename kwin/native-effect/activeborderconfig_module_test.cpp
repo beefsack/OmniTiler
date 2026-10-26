@@ -684,9 +684,6 @@ void groupUnderlayExtensionDefaultsToBorderWidth()
     // sentinel follows the current border width core-side (changing the
     // border width to 5 while the extension stays at default publishes an
     // outer resolved with 5), and an explicit 0 renders as-is.
-    // Gated out of settings-only builds (no effect target there); the full
-    // effect build keeps the config-carriage gates.
-#ifdef OMNITILER_HAVE_EFFECT_FFI
     // Default sentinel follows the current border width core-side: changing
     // the border width to 5 while the extension stays at default keeps the
     // raw -1 carriage (resolution happens in the published paint).
@@ -706,7 +703,6 @@ void groupUnderlayExtensionDefaultsToBorderWidth()
     }
     KWin::ActiveBorderConfig::self()->read();
     CHECK(KWin::ActiveBorderConfig::groupUnderlayExtension() == 0.0);
-#endif
     {
         KConfigGroup group = borderGroup();
         group.deleteEntry(QStringLiteral("GroupUnderlayExtension"));

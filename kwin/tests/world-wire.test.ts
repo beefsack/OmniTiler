@@ -159,7 +159,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
             floating: false, float_origin: "",
         }],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
         ...extra,
@@ -175,7 +175,7 @@ function discoverFlow(flow: ReturnType<typeof startFlow>, gen = "gen-1"): { inca
         obs: "0", rev: "0", ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: DISABLED_PRESENTATION,
     }));
     return { incarnation: "broker-1" };

@@ -95,7 +95,7 @@ NPM_VERSION="$(tagged_version kwin/package.json | node -e "let d='';process.stdi
   || die "tagged kwin/package.json has no usable version"
 [[ "$NPM_VERSION" == "$VERSION" ]] \
   || die "tagged kwin/package.json version $NPM_VERSION does not match tag $TAG"
-for member in tiler-core tiler-protocol omnitiler tiler-kwin-effect-ffi tiler-windows tiler-macos tiler-kde-settings-exporter; do
+for member in tiler-core tiler-protocol omnitiler tiler-windows tiler-macos tiler-kde-settings-exporter; do
   CRATE_VERSION="$(tagged_version "crates/$member/Cargo.toml" | grep -E '^version = "' | head -n 1 | sed -E 's/^version = "(.*)"$/\1/')"
   [[ "$CRATE_VERSION" == "$VERSION" ]] \
     || die "tagged crates/$member/Cargo.toml version '${CRATE_VERSION:-missing}' does not match tag $TAG"
@@ -197,7 +197,7 @@ replace-with = "vendored-sources"
 directory = "$VENDOR_ABS"
 EOF
 (cd -- "$TREE" && CARGO_HOME="$CARGO_HOME_TMP" CARGO_NET_OFFLINE=true \
-  cargo build --locked --offline -p omnitiler -p tiler-kwin-effect-ffi \
+  cargo build --locked --offline -p omnitiler \
   --target-dir "$TARGET_TMP") || die "offline Rust self-check build failed"
 
 printf '%s\n' "$VERSION" > "$TREE/VERSION"

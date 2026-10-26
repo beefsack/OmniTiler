@@ -9,6 +9,7 @@
 
 import { isCanonicalU64, isCorrelationId, isGenerationId, isOpaqueId, WORLD_CONTRACT_VERSION } from "./world-seq";
 import type { WorldObservation } from "./world-observe";
+import { rawNativeGestureJson, type NativeGestureSnapshot } from "./world-gesture";
 import type { MigrationSourceRefill } from "./world-settings-live";
 
 export type WorldMode = "per-output-local" | "global-unique" | "shared";
@@ -329,6 +330,13 @@ export interface WorldReply {
     effects: WorldReplyEffect[];
     result: WorldReplyResult | null;
     gestureSettled: { id: string; committed: boolean } | null;
+    // Broker-only bound actuator association for the actual normalized
+    // ingress (`{instance, serial, coreId}`), cached in the exact response
+    // replay; null on every omitted or unsupported lane. The script
+    // requires `gestureSettled.id === association.coreId` AND the flight
+    // native pair `=== association` native pair before any ack fires.
+    // Never a core/protocol field: the broker stamps it, the script vets it.
+    gestureAssoc: { instance: string; serial: string; coreId: string } | null;
     operationSettled: WorldReplyOperationSettlement[];
     // Core-owned native creation authorizations for this reply: explicit
     // desires only, at most one entry per outstanding creation op.
@@ -912,13 +920,13 @@ function parseNativeCreationRow(e: unknown): WorldNativeCreation {
 }
 
 // Exact v2 core reply shape: the 20 core keys the Rust canonical encoder
-// emits, plus source/nativeInvalid/clock on the bound (capture) lane. Any
-// unknown key refuses. The bootstrap lane (no capture flown yet) carries
-// exactly the 20 core keys; the bindings default without validation.
+// emits, plus source/nativeInvalid/clock/gestureAssoc on the bound (capture)
+// lane. Any unknown key refuses. The bootstrap lane (no capture flown yet)
+// carries exactly the 20 core keys; the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
     "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "result",
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation"] as const;
-const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock"] as const;
+const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc"] as const;
 
 function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): WorldReply | null {
     const want: ReadonlyArray<string> = allowUnbound ? CORE_REPLY_KEYS : BOUND_REPLY_KEYS;
@@ -988,7 +996,33 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             if (typeof g["id"] !== "string" || typeof g["committed"] !== "boolean") {
                 throw new Error("gesture-settled");
             }
+            if (typeof g["id"] !== "string" || !isCanonicalU64(g["id"] as string)) {
+                throw new Error("gesture-settled-id");
+            }
             gestureSettled = { id: g["id"] as string, committed: g["committed"] as boolean };
+        }
+        // Broker-only bound actuator association: null on omitted lanes,
+        // otherwise exactly {instance, serial, coreId} with canonical
+        // counters. Malformed shapes refuse like any other binding.
+        const assocRaw = r["gestureAssoc"] ?? (allowUnbound ? null : null);
+        let gestureAssoc: WorldReply["gestureAssoc"] = null;
+        if (assocRaw !== null && assocRaw !== undefined) {
+            const a = assocRaw as Record<string, unknown>;
+            if (
+                typeof a["instance"] !== "string" || (a["instance"] as string) === "" ||
+                typeof a["serial"] !== "string" || !isCanonicalU64(a["serial"] as string) ||
+                typeof a["coreId"] !== "string" || !isCanonicalU64(a["coreId"] as string) ||
+                (a["coreId"] as string) === "0"
+            ) {
+                throw new Error("gesture-assoc");
+            }
+            gestureAssoc = {
+                instance: a["instance"] as string,
+                serial: a["serial"] as string,
+                coreId: a["coreId"] as string,
+            };
+        } else if (!allowUnbound && (r["gestureAssoc"] === undefined)) {
+            throw new Error("gesture-assoc-missing");
         }
         const warpRaw = r["warpCursor"];
         let warpCursor: WorldReply["warpCursor"] = null;
@@ -1010,7 +1044,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
             scopes, workspaces, outputs, windows, transfers, effects, result: null,
-            gestureSettled, operationSettled, nativeCreations, warpCursor, presentation,
+            gestureSettled, gestureAssoc, operationSettled, nativeCreations, warpCursor, presentation,
             source, nativeInvalid, clock,
         };
     } catch (error) {
@@ -1679,6 +1713,19 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
             `"setter":${esc(a.setter)},"pre":${flag(a.pre)},"post":${flag(a.post)},` +
             `"attemptMs":${JSON.stringify(a.attemptMs)}}`;
     }).join(",");
+    // The script never mints: gestureIngress always rides null and the
+    // broker fills it from the raw native lane. nativeGesture is the
+    // verbatim effect snapshot (or null when unknown); cursorWindow is the
+    // same-capture script window fact (or null when unknown). The broker
+    // strips both raw keys before the strict decode.
+    const nativeGesture = (observation.nativeGesture ?? null) === null
+        ? "null"
+        : rawNativeGestureJson(
+            observation.nativeGesture as NativeGestureSnapshot,
+        );
+    const cursorWindow = (observation.cursorWindow ?? null) === null
+        ? "null"
+        : esc(observation.cursorWindow as string);
     return `{"v":${WORLD_CONTRACT_VERSION},"mode":${esc(observation.mode)},` +
         `"screens":[${screens}],"windows":[${windows}],"views":[${views}],"closed":[${closed}],` +
         `"hostOwned":${observation.hostOwned ? "true" : "false"},"equalCount":${observation.equalCount ? "true" : "false"},` +
@@ -1702,5 +1749,6 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"frameAttempts":[${frameAttempts}],"memberAttempts":[${memberAttempts}],` +
         `"viewAttempts":[${viewAttempts}],"clearAttempts":[${clearAttempts}],` +
         `"floatIntent":[${floatIntent}],"tileIntent":[${tileIntent}],` +
+        `"gestureIngress":null,"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow},` +
         `"anchorFallback":${esc(input.anchorFallback)},"noSpaceResult":${esc(input.noSpaceResult)}}`;
 }

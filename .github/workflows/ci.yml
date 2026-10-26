@@ -161,15 +161,15 @@ jobs:
       - name: Live fixture strict Clippy
         run: mise exec -- cargo clippy --locked -p tiler-live-fixture --all-targets -- -D warnings
       - name: Build portable crates
-        run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows -p tiler-macos
+        run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-windows -p tiler-macos
       - name: Test portable crates
-        run: mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows -p tiler-macos
+        run: mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-windows -p tiler-macos
       - name: Unsafe allowlist gate
         run: mise exec -- cargo test --locked -p tiler-core --test unsafe_guardrail
       - name: Rust format
         run: mise exec -- cargo fmt --all -- --check
       - name: Rust strict Clippy
-        run: mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows -p tiler-macos --all-targets -- -D warnings
+        run: mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-windows -p tiler-macos --all-targets -- -D warnings
       - name: Check for whitespace errors
         run: git diff --check
 
@@ -197,14 +197,14 @@ jobs:
       - name: Live fixture strict Clippy
         run: mise exec -- cargo clippy --locked -p tiler-live-fixture --all-targets -- -D warnings
       - name: Build macOS probe plus portable crates
-        run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
+        run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-macos
       - name: Test macOS probe plus portable crates
-        run: mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
+        run: mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-macos
       - name: Unsafe allowlist gate
         run: mise exec -- cargo test --locked -p tiler-core --test unsafe_guardrail
       - name: Rust format
         run: mise exec -- cargo fmt --all -- --check
       - name: Rust strict Clippy
-        run: mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos --all-targets -- -D warnings
+        run: mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-macos --all-targets -- -D warnings
       - name: Check for whitespace errors
         run: git diff --check

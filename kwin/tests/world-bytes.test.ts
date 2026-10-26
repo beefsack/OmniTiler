@@ -251,14 +251,12 @@ interface Flow {
     calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }>;
     timers: Array<{ delay: number; cb: () => void }>;
     logs: string[];
-    oracleCalls: Array<(reply: unknown) => void>;
 }
 
 function startFlow(surface: object): Flow {
     const calls: Flow["calls"] = [];
     const timers: Flow["timers"] = [];
     const logs: string[] = [];
-    const oracleCalls: Array<(reply: unknown) => void> = [];
     const handle = startWorldAdapterEntry({
         workspace: surface,
         owner: "owner-a",
@@ -286,12 +284,9 @@ function startFlow(surface: object): Flow {
         gestureActive: () => false,
         registerShortcutFn: () => true,
         readWorkspaceModeFn: () => "per-output-local",
-        oracleCallDbus: (_s, _p, _i, _m, callback) => {
-            oracleCalls.push(callback);
-        },
     });
     assert.ok(handle !== null);
-    return { handle: handle as NonNullable<typeof handle>, calls, timers, logs, oracleCalls };
+    return { handle: handle as NonNullable<typeof handle>, calls, timers, logs };
 }
 
 function runTimers(flow: Flow): void {
@@ -324,7 +319,7 @@ function seedBinds(source: unknown, nativeInvalid: string, rev: string): string 
         source,
         nativeInvalid,
         clock: "1",
-        gestureSettled: null,
+        gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
@@ -343,7 +338,7 @@ function bootstrap(gen: string, req: string): string {
         ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
     });
 }
@@ -355,7 +350,7 @@ function acceptEmpty(source: unknown, nativeInvalid: string, rev: string): strin
         source,
         nativeInvalid,
         clock: "0",
-        gestureSettled: null,
+        gestureSettled: null, gestureAssoc: null,
         operationSettled: [], nativeCreations: [],
         warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
@@ -376,7 +371,7 @@ function checkOrWrite(name: string, actual: string): void {
 
 describe("world shared byte fixtures", () => {
     it("captures discovery plus full/command/drag reports byte-identically", () => {
-        const { surface, world, started, finished, windowRemoved } = makeFixtureSurface();
+        const { surface, world, windowRemoved } = makeFixtureSurface();
         const flow = startFlow(surface);
         // Discovery bytes are fully deterministic on a fresh entry.
         checkOrWrite("discover.json", lastPayload(flow, "DiscoverWorld"));
@@ -466,34 +461,6 @@ describe("world shared byte fixtures", () => {
         // report carries no command key at all.
         assert.ok(!("command" in (sendBody["report"] as Record<string, unknown>)), "drained capture stays commandless");
         replyCall(flow, "DescribeWorld")(acceptEmpty(sendBody["source"], "1", "2"));
-        // A finished gesture routes an exact drop with source and null hover.
-        // The final rect keeps the live start size (same-size move) at a
-        // pointer far outside any plausible tiled layout.
-        (surface as { cursorPos: { x: number; y: number } }).cursorPos = { x: 1500, y: 900 };
-        started.emit();
-        finished.emit();
-        assert.ok(flow.oracleCalls.length >= 1, "finish pulls LastVerdict");
-        const pull = flow.oracleCalls[flow.oracleCalls.length - 1] as (reply: unknown) => void;
-        const startFrame = world.wins[0]?.["frameGeometry"] as Record<string, unknown>;
-        const startW = startFrame["w"] ?? startFrame["width"];
-        const startH = startFrame["h"] ?? startFrame["height"];
-        assert.ok(typeof startW === "number" && typeof startH === "number", "live start size known");
-        pull(JSON.stringify({
-            v: 1, cancelled: false,
-            finalRect: { x: 1500, y: 900, w: startW, h: startH },
-            windowIdentity: "win-a", correlation: "drag-9", reason: "ok-moved",
-        }));
-        runTimers(flow);
-        const dragPayload = lastPayload(flow, "DescribeWorld");
-        const dragMasked = JSON.stringify({ ...JSON.parse(dragPayload), source: "src-masked" });
-        checkOrWrite("report-dragdrop.json", dragMasked);
-        const dragQueued = JSON.parse(lastPayload(flow, "QueueWorldCommand")) as Record<string, unknown>;
-        const dragCmd = (dragQueued["command"] as Record<string, unknown>)["command"] as Record<string, unknown>;
-        assert.equal(dragCmd["op"], "drag-drop");
-        assert.equal(dragCmd["x"], 1500);
-        assert.equal(dragCmd["y"], 900);
-        assert.equal(dragCmd["hover"], null);
-        assert.deepEqual(dragCmd["source"], { out: "out-1", ws: "ws-1" });
         flow.handle.stop();
     });
 

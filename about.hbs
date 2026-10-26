@@ -6,9 +6,8 @@ Regenerate with: just third-party-notices
 Freshness check (also run by CI): just check-third-party-notices
 
 Scope (UNION - every condition below holds for this file):
-- Crates: normal dependencies of the shipping Rust roots `omnitiler`
-  (planner/tray) and `tiler-kwin-effect-ffi` (staticlib linked into the
-  native effect), resolved from the locked Cargo.lock with default features.
+- Crates: normal dependencies of the shipping Rust root `omnitiler`
+  (planner/tray), resolved from the locked Cargo.lock with default features.
 - Targets: x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu (Linux).
 - Excluded: first-party workspace crates, dev/build-only dependencies,
   Windows-only roots and test tooling. Conservative extra coverage is

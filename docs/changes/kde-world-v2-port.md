@@ -1374,13 +1374,13 @@
   failed**, neither skipped. Workspace formatting and whitespace pass after
   mechanical cleanup. No shared-core/protocol source, dependency or other-platform change
   belongs to this package.
-- Unused Rust `drag_oracle.rs`, its header/link and Rust CTest remain. Removing
-  its unsafe root requires a mechanical shared-core guardrail-inventory update,
-  outside this package's unchanged-core scope. Native production consumption is
-  gone; retained FFI tests do not prove gesture transport acceptance.
+- Superseded Rust `drag_oracle.rs`, its crate/header/link and Rust CTest are now
+  removed together with their mechanical unsafe-guardrail inventory entries,
+  CI/package/notice wiring and active development commands. Shared-core behavior
+  and protocol are unchanged. Host-matched native CTest is **34/34** after
+  deleting the obsolete Rust-oracle test; unsafe guardrail remains **32/32**.
 - **Exact next action:** correct the two retained red recovery discriminators,
-  then rerun scoped gates and boundary review. Resolve obsolete FFI-root deletion
-  scope separately. Stage 5 remains unaccepted; N5, game/fullscreen suspension,
+  then rerun scoped gates and boundary review. Stage 5 remains unaccepted; N5, game/fullscreen suspension,
   race audit and later stages stay parked. Fixture drag/release/Esc testing
   follows successful offline acceptance only.
 
