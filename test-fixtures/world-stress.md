@@ -95,9 +95,11 @@ observed order fails loudly instead of being copied in.
 
 ## Native connector notes (Windows leg)
 
-The Windows connector is an unaccepted draft. Do not run it live until the
-[blocking recovery/evidence defects](../docs/changes/platform-neutral-stress-acceptance.md#blocking-connector-defects)
-are resolved. The following describes the intended mapping, not native evidence.
+The Windows connector is mechanically parked pending the
+[hidden-frame oracle decision](../docs/changes/platform-neutral-stress-acceptance.md#blocking-decision-and-next-acceptance-step).
+Delay-zero native testing repaired one adapter bug but has no complete pass;
+nonzero delays and trio-churn are unrun. The following describes the connector
+mapping, not native acceptance.
 
 Each action maps 1:1 to the existing exact-owner CLI controls:
 `select-workspace`/`select-numbered` to `workspace --select INDEX`

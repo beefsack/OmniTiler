@@ -36,12 +36,20 @@ $code = $lines -join "`n"
 
 foreach ($fn in @(
     "Get-StressCase", "Get-StressTargetDir", "Validate-StressCase",
-    "Resolve-StressAlias", "Get-StressCliArgs", "Convert-StressTiles",
-    "Test-StressApplyClean", "Compare-StressCheckpoint",
+    "Resolve-StressAlias", "Get-StressCliArgs", "Get-StressDispatchKey", "Convert-StressTiles",
+    "Test-StressHasField", "Get-StressField", "Get-StressRowField", "Test-StressOmissionZero",
+    "Test-StressApplyClean", "Test-StressApplyPending", "Compare-StressCheckpoint",
+    "Get-StressDpiScale", "Get-StressExpectedMini", "Test-StressTransientMismatch",
+    "Get-StressProcCreationHex", "Test-StressFixtureProcess", "Test-StressHwndOwner",
+    "Drain-StressPending", "Wait-StressTransportIdle",
     "Get-StressTitles", "Get-StressHwndOfCaller", "Get-StressDisplayBaseline",
     "Send-StressFixture", "Start-StressFixture", "Start-StressBootstrap",
     "Set-StressCaseSettings", "Assert-NoPreexistingStressOwner",
-    "Wait-StressLog", "Wait-StressFreshApply", "Wait-StressDispatch",
+    "Read-StressOwnerLog",
+    "Test-StressOwnerSame", "Read-StressLedgerOwner", "Wait-StressLedgerOwner",
+    "Write-StressLeg",
+    "Assert-StressOwnerUnreplaced", "Test-StressShouldRestoreSettings",
+    "Wait-StressLog", "Wait-StressFreshApply", "Wait-StressDispatch", "Wait-StressDispatchOrdered",
     "Invoke-StressCli", "Wait-StressRequestFile",
     "Wait-StressHwnd", "Wait-StressAdmitted", "Wait-StressDeparted",
     "Invoke-StressFocus", "Get-StressGeometry", "Get-StressRing",
@@ -51,12 +59,14 @@ foreach ($fn in @(
   )) {
   if ($src -notmatch ("function " + $fn)) { throw "missing function $fn" }
 }
-Write-Output "required functions present=33"
+Write-Output "required functions present=55"
 
 # Required seams are matched against comment-stripped code: real call-site
 # literals, not prose. Freshness uses accepted/command-consumed (duplicate
-# is never fresh); waits cover transport publication and dispatch joins,
-# never per-action native convergence or foreground subject prechecks.
+# is never fresh); transport publication is unpaced per command (burst
+# queue + ordered checkpoint join), settlement skips transient pending
+# until the deadline, and the pager join retains the latest actually
+# emitted change-gated payload with geometry/identity.
 foreach ($must in @("scope-exe tiler-live-fixture.exe", '"workspace", "--select"',
     '"workspace", "--send"', '"workspace", "--stay"', '"workspace", "--previous"',
     '"workspace", "--relative"', '"directional", "--focus"', '"directional", "--move"',
@@ -65,12 +75,22 @@ foreach ($must in @("scope-exe tiler-live-fixture.exe", '"workspace", "--select"
     "clear_holds_omitted", "focus_dispatch_omitted", "inflight_events_omitted",
     "foreground_meta_omitted", "visibility_posts_omitted",
     "desired_geometry_omitted", "geometry_status", "desired_transfers",
-    '"accepted"', '"command-consumed"', '"duplicate"',
+    '"accepted"', '"command-consumed"', '"duplicate"', '"dispatched"',
     "pager-cells", "minis_total", "minis_omitted", "focused_total",
+    "mini_rects", "mini_windows", "command-queued",
+    "transport cannot preserve burst order", "DispatchMark",
+    "mini token multiset", "miniature layout", "DispatchMark", "not settled",
+    "creation mismatch", "fixture process",
     "operation_settled_omitted", "single-pending", "pending",
+    "home slot moved", "settlement timeout",
     "CARGO_TARGET_DIR", "default_tiled", "group-with-neighbor",
     "per-output-local", "leg.json", "world-stress-report", "NoProcessFound",
-    "native leg blocked",
+    "owner-replaced", "will not stop another owner", "OwnerLaunched",
+    "OwnerLaunchIntended", "SettingsChanged", "SettingsConfigIntended",
+    "settings_changed", "settings_intended", "owner_launched",
+    "owner_launch_intended", "already gone", "exit 1",
+    "owner identity query failed", "ready query failed",
+    "DelayMs must be 0..60000", "OwnerSeconds must be 60..600",
     ".process_creation", "GetForegroundWindow", "GetWindowThreadProcessId",
     "OmniTilerTestWindow:") ) {
   if ($code -notmatch [regex]::Escape($must)) { throw "missing required seam $must" }
@@ -89,19 +109,21 @@ Write-Output "forbidden patterns absent"
 . $Lib
 foreach ($fn in @("Get-StressCliArgs", "Convert-StressTiles",
     "Test-StressApplyClean", "Compare-StressCheckpoint",
-    "Resolve-StressAlias", "Validate-StressCase", "Invoke-Mock")) {
+    "Resolve-StressAlias", "Validate-StressCase",
+    "Test-StressOwnerSame", "Read-StressLedgerOwner", "Wait-StressLedgerOwner",
+    "Write-StressLeg",
+    "Assert-StressOwnerUnreplaced", "Test-StressShouldRestoreSettings",
+    "Invoke-Mock")) {
   if ($null -eq (Get-Command $fn -ErrorAction SilentlyContinue)) {
     throw "dot-sourced command missing: $fn"
   }
 }
 Write-Output "dot-source commands present"
-# Mechanical pre-effect Live refusal proof (offline): -Live must refuse
-# before any cargo build, settings write, owner/fixture launch, or run-dir
-# creation. The guard string above is asserted in code; here the refusal is
-# executed in a child with no effects.
+# Preserve the connector without running an unresolved hidden-frame oracle.
+# Execute its refusal before any build, settings write or desktop effect.
 $liveOut = (& pwsh -NoProfile -File $Lib -Live 2>&1 | Out-String)
-if ($LASTEXITCODE -eq 0 -or "$liveOut" -notmatch "refuse: world-stress native leg blocked") {
-  throw "Live leg not blocked pre-effect: exit=$LASTEXITCODE out=$liveOut"
+if ($LASTEXITCODE -eq 0 -or "$liveOut" -notmatch "refuse: world-stress native leg parked") {
+  throw "Live leg pre-effect refusal missing: exit=$LASTEXITCODE out=$liveOut"
 }
-Write-Output "live refusal present"
+Write-Output "live pre-effect refusal present"
 Write-Output "WORLD-STRESS-CHECK-OK"

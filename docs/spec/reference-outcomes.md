@@ -22,6 +22,13 @@ trivially different start state.
 | Client-driven tiled geometry | Tile A/B; have A request a different size without activation or output/desktop change; observe; admit C | Wayland and X11/XWayland: A keeps client-requested geometry, no world dispatch in bounded capture; admission triggers reconciliation and reclaims A's tile. Current hooks observe homing/activation/inventory, not ordinary frame changes | Desired immediate correction versus retained client geometry and reference-WM outcomes TBD; no new policy selected. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
 | X11 urgency hint versus attention state | With B active, request critical attention on A; clear A's attention; activate A | WM_HINTS urgency clears, but KWin DEMANDS_ATTENTION persists until activation. Accepted clear is a client-hint acknowledgement, not compositor-state withdrawal | Other hosts/reference WMs and visual urgency presentation TBD; no tiler urgency policy changed. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
 
+<a id="hidden-frame-stress-discriminator"></a>
+### Hidden frame versus logical allocation
+
+| Minimal action sequence | Windows observation | Decision / unsupported outcomes |
+| --- | --- | --- |
+| Tile A/B side by side on WS1; send B without follow to empty WS2; observe hidden B's native frame and logical tile; reveal WS2 | B hides at its prior half-width native frame while WS2's logical allocation is full width; automatic writes are fenced while hidden. The stress oracle currently requires equality and times out | Immediate hidden-frame equality versus equality only after reveal is undecided. Recommendation in the [stress record](../changes/platform-neutral-stress-acceptance.md#blocking-decision-and-next-acceptance-step) is not adopted. Reveal proof and reference-WM outcomes TBD |
+
 <a id="cursor-first-output-targeting-discriminators"></a>
 ### Cursor-first output-targeting discriminators
 

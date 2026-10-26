@@ -15,6 +15,20 @@ Source roots below are relative to the repository root. Core symbols
 live in `crates/tiler-core/src/`; the JSON codec lives in
 `crates/tiler-protocol/src/world_protocol.rs`.
 
+## Shared stress acceptance connectors
+
+- Reuse `test-fixtures/world-stress-*.json` and the strict contract in
+  `test-fixtures/world-stress.md`; the core-only example runs ordered, batched
+  and reordered host schedules. Do not fork expected worlds per port.
+- Native connectors map actions to existing production routes, support added
+  inter-action delay including zero, and query fixture identity, native frames,
+  visibility and foreground independently of queue acceptance. Settle only at
+  explicit observation barriers; report transport overhead separately.
+- Join the host's real membership/view and renderer evidence without inventing
+  freshness or silent focus repairs. KDE uses its native Plasma pager, not a
+  replacement OmniTiler pager. The hidden-native-frame discriminator remains
+  undecided; [current status](../changes/platform-neutral-stress-acceptance.md).
+
 ## 1. One core model and policy
 
 - Exactly one `WorldEngine`

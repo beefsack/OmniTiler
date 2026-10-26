@@ -99,9 +99,11 @@ decisions of 2026-09-24 are under
   Windows starvation bugs lived in host-event servicing. Builds on the core-only
   ordered baseline (`test-fixtures/world-actions.json`, `world_acceptance`) and
   the native acceptance connector items below. Shared stress definitions and
-  three simulated-host schedules are drafted and pass offline. Windows native
-  connector remains blocked on recovery and evidence-join defects; no live
-  delay results or native acceptance yet
+  three simulated-host schedules pass offline. Windows delay-zero testing found
+  and repaired stale hidden-frame facts; hide/reveal now passes that checkpoint.
+  Full acceptance remains blocked on whether hidden native geometry must match
+  logical allocation (existing safety fences forbid hidden writes). Native
+  runner is parked; nonzero delays and trio case remain unrun
   ([active record](changes/platform-neutral-stress-acceptance.md)).
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match

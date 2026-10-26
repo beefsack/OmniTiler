@@ -201,15 +201,18 @@ const MAX_PAGER_CELLS_TRACE_MINIS: usize = 8;
 
 /// Trace-only cell-payload evidence over the actual frames sent to the
 /// renderer: one bounded `pager-cells` value per pump. Logs actual cell
-/// fields only (ordinals, workspace tokens, current/focus marks with
-/// honest omitted counts); never titles, paths, HWNDs, PIDs, creations,
-/// or raw input. Focus marks ride the cells verbatim (never recomputed
-/// here: no second projection). Tick and reply identity ride the line
-/// for correlation only.
+/// fields only (ordinals, workspace tokens, current/focus marks, cell rects,
+/// per-miniature rects and window tokens with honest omitted counts); never
+/// titles, paths, HWNDs, PIDs, creations, or raw input. Window tokens are the
+/// same opaque lifetime ids already carried by `world-apply` desired rows,
+/// never native identity. Focus marks ride the cells verbatim (never
+/// recomputed here: no second projection). Tick and reply identity ride the
+/// line for correlation only.
 fn pager_cells_trace_value(
     pagers: &[OutputPager],
     output_token: &dyn Fn(&str) -> String,
     workspace_token: &dyn Fn(&str, &str) -> String,
+    token_of: &dyn Fn(&crate::native_guards::WindowKey) -> Option<String>,
     tick: u64,
     observation: u64,
     revision: u64,
@@ -230,19 +233,46 @@ fn pager_cells_trace_value(
                 .take(MAX_PAGER_CELLS_TRACE_MINIS)
                 .map(|focused| serde_json::Value::from(*focused))
                 .collect();
+            let shown = MAX_PAGER_CELLS_TRACE_MINIS.min(cell.mini_focused.len());
+            let mini_rects: Vec<serde_json::Value> = cell
+                .minis
+                .iter()
+                .take(MAX_PAGER_CELLS_TRACE_MINIS)
+                .map(|rect| {
+                    serde_json::json!({
+                        "x": rect.x,
+                        "y": rect.y,
+                        "w": rect.w,
+                        "h": rect.h,
+                    })
+                })
+                .collect();
+            let mini_windows: Vec<serde_json::Value> = cell
+                .mini_keys
+                .iter()
+                .take(MAX_PAGER_CELLS_TRACE_MINIS)
+                .map(|key| match token_of(key) {
+                    Some(token) => serde_json::Value::from(token),
+                    None => serde_json::Value::Null,
+                })
+                .collect();
             cells.push(serde_json::json!({
                 "ord": cell.ordinal,
                 "ws": workspace_token(&pager.output, ws),
                 "cur": cell.active,
+                "rect": {"x": cell.rect.x, "y": cell.rect.y, "w": cell.rect.w, "h": cell.rect.h},
                 "focused": cell.mini_focused.iter().any(|focused| *focused),
                 "minis": marks,
                 "minis_total": cell.mini_focused.len(),
-                "minis_omitted": cell.mini_focused.len().saturating_sub(marks.len()),
+                "minis_omitted": cell.mini_focused.len().saturating_sub(shown),
+                "mini_rects": mini_rects,
+                "mini_windows": mini_windows,
                 "focused_total": cell.mini_focused.iter().filter(|focused| **focused).count(),
             }));
         }
         outputs.push(serde_json::json!({
             "output": output_token(&pager.output),
+            "dpi": pager.dpi,
             "cells": cells,
             "cells_total": pager.cells.len(),
             "cells_omitted": pager.cells.len().saturating_sub(cells.len()),
@@ -261,11 +291,11 @@ fn pager_cells_trace_value(
 }
 
 /// Full change signature over the logged cell payload: output tokens plus
-/// per-cell ordinal/workspace/current/any-focused, per-miniature focus
-/// bits, every total, and the top-level output counts. Tick and reply
-/// identity ride the logged line but never the gate, so a new tick with
-/// identical cells stays silent - while omitted growth past the cap still
-/// re-logs.
+/// per-cell ordinal/workspace/current/rect/any-focused, per-miniature focus
+/// bits, rects and window tokens, every total, and the top-level output
+/// counts. Tick and reply identity ride the logged line but never the gate,
+/// so a new tick with identical cells stays silent - while omitted growth
+/// past the cap still re-logs.
 fn pager_cells_trace_signature(value: &serde_json::Value) -> String {
     let outputs = value
         .get("outputs")
@@ -301,6 +331,7 @@ fn emit_pager_cells(
         pagers,
         &|device| state.output_token(device),
         &|device, workspace| state.workspace_token(device, workspace),
+        &|key| state.member_tokens.get(key).cloned(),
         tick,
         observation,
         revision,
@@ -2611,6 +2642,7 @@ mod pager_host_tests {
             std::slice::from_ref(&pager),
             &|device| state.output_token(device),
             &|device, workspace| state.workspace_token(device, workspace),
+            &|key| state.member_tokens.get(key).cloned(),
             state.tick,
             reply.based_on_observation_seq,
             reply.state_revision,
@@ -2779,6 +2811,7 @@ mod pager_host_tests {
             std::slice::from_ref(&pager),
             &|device| format!("wire-{device}"),
             &|_, workspace| workspace.to_owned(),
+            &|_| None,
             7,
             42,
             43,
@@ -2792,6 +2825,11 @@ mod pager_host_tests {
         assert_eq!(
             value["outputs"][0]["output"],
             serde_json::json!("wire-mon-a")
+        );
+        assert_eq!(
+            value["outputs"][0]["dpi"],
+            serde_json::json!(96),
+            "cell layout dpi rides the payload"
         );
         let cells = value["outputs"][0]["cells"]
             .as_array()
@@ -2810,13 +2848,40 @@ mod pager_host_tests {
             cells[0]["minis"].as_array().expect("marks").len(),
             super::MAX_PAGER_CELLS_TRACE_MINIS
         );
+        assert_eq!(
+            cells[0]["mini_rects"].as_array().expect("rects").len(),
+            super::MAX_PAGER_CELLS_TRACE_MINIS
+        );
+        assert_eq!(
+            cells[0]["mini_windows"].as_array().expect("tokens").len(),
+            super::MAX_PAGER_CELLS_TRACE_MINIS
+        );
+        // Miniature rects carry real cell-space geometry: non-degenerate and
+        // contained in the logged cell rect.
+        let cell_rect = cells[0]["rect"].as_object().expect("cell rect");
+        let cw = cell_rect["w"].as_i64().expect("cell w");
+        let ch = cell_rect["h"].as_i64().expect("cell h");
+        assert!(cw > 0 && ch > 0, "cell rect degenerate");
+        for rect in cells[0]["mini_rects"].as_array().expect("rects") {
+            let w = rect["w"].as_i64().expect("mini w");
+            let h = rect["h"].as_i64().expect("mini h");
+            assert!(w >= 2 && h >= 2, "miniature degenerate: {rect}");
+            assert!(w <= cw && h <= ch, "miniature escapes cell: {rect}");
+        }
+        // Unmapped keys (no member token) surface as null, never a guessed
+        // token and never native identity.
+        for token in cells[0]["mini_windows"].as_array().expect("tokens") {
+            assert!(token.is_null(), "unmapped miniature must be null: {token}");
+        }
         for cell in cells.iter().skip(1) {
             assert_eq!(cell["focused"], serde_json::json!(false));
         }
-        // No private identity anywhere in the payload: no HWNDs, PIDs,
-        // creations, paths, or titles - only ordinals, tokens, and marks.
+        // No native identity anywhere in the payload: no HWNDs, PIDs,
+        // creations, paths, or titles. Opaque window tokens (the same ids
+        // already carried by `world-apply` desired rows) are the only
+        // identity, so miniature focus can join exactly.
         let rendered = serde_json::to_string(&value).expect("trace serializes");
-        for forbidden in ["hwnd", "pid", "creation", "exe", "\\", "tok-"] {
+        for forbidden in ["hwnd", "pid", "creation", "exe", "\\"] {
             assert!(
                 !rendered.to_lowercase().contains(forbidden),
                 "trace leaks {forbidden}: {rendered}"
@@ -2883,6 +2948,21 @@ mod pager_host_tests {
             45,
         );
         assert_eq!(gate_lines(&log).len(), 2, "repeat stays silent");
+        // A focus flip at the SAME tick and reply still re-logs: the gate
+        // keys on payload only, so a same-revision renderer update is never
+        // swallowed by tick/reply identity.
+        let mut same_rev = flipped.clone();
+        same_rev.cells[1].mini_focused = vec![false];
+        same_rev.cells[0].mini_focused = vec![true];
+        emit_pager_cells(
+            &mut gate_state,
+            std::slice::from_ref(&same_rev),
+            &log,
+            8,
+            44,
+            45,
+        );
+        assert_eq!(gate_lines(&log).len(), 3, "same-revision flip re-logs");
         // Omitted growth past the output cap re-logs even when the first
         // eight outputs are byte-identical: the top-level counts ride the
         // gate, while tick and reply identity never do.
@@ -2922,15 +3002,15 @@ mod pager_host_tests {
         let mut ten = nine.clone();
         ten.push(trace_only_pager("mon-9"));
         emit_pager_cells(&mut gate_state, &nine, &log, 10, 50, 51);
-        assert_eq!(gate_lines(&log).len(), 3, "nine-output baseline logs");
+        assert_eq!(gate_lines(&log).len(), 4, "nine-output baseline logs");
         emit_pager_cells(&mut gate_state, &ten, &log, 10, 50, 51);
         assert_eq!(
             gate_lines(&log).len(),
-            4,
+            5,
             "omitted growth re-logs with identical first eight"
         );
         emit_pager_cells(&mut gate_state, &ten, &log, 11, 52, 53);
-        assert_eq!(gate_lines(&log).len(), 4, "repeat stays silent");
+        assert_eq!(gate_lines(&log).len(), 5, "repeat stays silent");
         // Trace off emits nothing and never arms the gate.
         gate_state.trace = false;
         gate_state.pager_cells_last = None;
@@ -2942,7 +3022,7 @@ mod pager_host_tests {
             46,
             47,
         );
-        assert_eq!(gate_lines(&log).len(), 4, "trace off stays silent");
+        assert_eq!(gate_lines(&log).len(), 5, "trace off stays silent");
         assert_eq!(gate_state.pager_cells_last, None);
         clear_pending_seams();
     }
