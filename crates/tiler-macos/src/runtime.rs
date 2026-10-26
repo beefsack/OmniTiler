@@ -155,8 +155,8 @@ pub struct ScopedObservation {
 pub use crate::runtime_core::EngineFactsRead;
 pub use crate::runtime_core::EngineManagedFacts;
 pub(crate) use crate::runtime_shared::{
-    DeferredSelectionFocus, FocusBaselines, Shared, emit, engine_alive, invalidate_clock,
-    lock_focus, lock_shared,
+    AppliedGeometryKey, DeferredSelectionFocus, FocusBaselines, Shared, emit, engine_alive,
+    invalidate_clock, lock_focus, lock_shared,
 };
 pub use crate::runtime_shared::{
     MidflightHook, NativeContextCell, PostAcceptHook, PublishedDisplayInputs,
@@ -266,6 +266,7 @@ impl Runtime {
                 native_context: None,
                 select_pending: None,
                 select_busy: false,
+                select_claim_pending: false,
                 selection_focus_pending: None,
                 selection_focus_floor_seq: 0,
                 native_cell: NativeContextCell::new(),
@@ -284,6 +285,7 @@ impl Runtime {
                 diagnostics: RuntimeDiagnostics::default(),
                 log: VecDeque::new(),
                 last_desired: Vec::new(),
+                last_geometry_key: None,
                 last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
                 last_pager_bindings: Vec::new(),
                 presentation_style: crate::active_border::PresentationStylePx::default(),
@@ -319,6 +321,7 @@ impl Runtime {
             native_context: None,
             select_pending: None,
             select_busy: false,
+            select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
             native_cell: NativeContextCell::new(),
@@ -337,6 +340,7 @@ impl Runtime {
             diagnostics: RuntimeDiagnostics::default(),
             log: VecDeque::new(),
             last_desired: Vec::new(),
+            last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),

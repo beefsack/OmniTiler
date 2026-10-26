@@ -314,6 +314,9 @@ edge cases tentative. Acceptance of an approach does not claim native evidence.
 | Confirmed 2026-10-26 | Independent focused-miniature colour/theme with full-strength border and dimmer same-RGB fill | Border and highlight each default to live accent and retain independent overrides; no shared colour fields |
 | Confirmed 2026-10-26 | Normalize grounded hidden-workspace and zoom/full-display facts before core presentation | Reuse retained homing, fresh native currents and existing geometry predicates; unknown cloak and session state retain last-moment renderer vetoes |
 | Confirmed 2026-10-26 | Retain Authentic Desktop-N holder ensure even with input off; no new gating | User decision: qualify tile help, save exact per-holder pre/post baselines on the next live leg, and never revert a pre-existing preimage |
+| Tentative 2026-10-27 | Matched numbered-send unbound backing executes through the existing creator; an explicit backing desire requires exactly one append, never a silently reused SID; bound/missing/mismatched stays pinned with no creation | Adapter contract completion, not a core policy or new eager-spare proposal; native macOS result TBD |
+| Tentative 2026-10-27 | Coalesced claim/effect events stage one early cadence body on the existing 50 ms pump; every dispatched terminal outcome requests one owner reread plus one early body even at unchanged revision | Theoretical bound 250 to 50 ms per stage, not a measured native distribution; no native replay, new timer, or polling thread; the 250 ms routine and 1 s `SCOPED_BACKSTOP_INTERVAL` bound silence for lost/unsupported notifications; pending receipts complete once on the first readable row with the original stamp preserved |
+| Tentative 2026-10-27 | Same-state held plan-truth retention (same current scopes, bindings, homing, and current workareas; fresh rows win; minimized absence stands; any change invalidates) plus a queued baseline-SID source fence before select/create auth spend (genuine pre/post evidence, `None` when unknown); presentation is already engine-stable, so no cache; own-append order growth at the same current stays valid | Adapter-only retention and fences; renderers still revalidate every shape against live native legs; native macOS before/after result TBD |
 
 ## Stage-1 outcome (2026-10-25)
 
@@ -1070,6 +1073,50 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   and display-leg matrices; stale-focus, stale-topology, no-desire, and
   empty-last refusal cases. This part is complete OFFLINE; live native proof
   remains pending.
+
+## Event-wake latency, held-geometry retention, queued-source fence (2026-10-27)
+
+- Cause: the 250 ms cadence owned claim drain and settled-completion
+  reconcile, so both waited out the tick. Original dogfood timings: op-30
+  reconcile wait 256 ms, input-to-reconcile 423 ms, native Dock 43 ms (raw
+  logs private, not recorded here).
+- Fix (macOS only, no core change, no new thread or timer): the engine
+  claim store and both effect owners stage a coalesced wake flag, checked
+  on the existing fixed 50 ms pump to run the cadence body early. This is
+  a theoretical bound change of 250 to 50 ms per stage, NOT a measured
+  native distribution; live/native before-after remains pending.
+- Every dispatched terminal outcome (verified arrival, accepted-with-drift,
+  unproven deadline, `Threw`, proven refusal) requests one whole-owner
+  reread plus exactly one early body even at an unchanged revision; the
+  terminal itself stands, nothing is replayed natively. Pending creation
+  receipts complete exactly once on the first readable matching row with
+  the original stamp preserved and no claimed identity. The existing
+  250 ms routine and 1 s `SCOPED_BACKSTOP_INTERVAL` bound silence for
+  lost/unsupported notifications.
+- Same-state held plan-truth retention (adapter only): a same-view hold
+  (same current scopes, workspace bindings, window homing, and current
+  workareas) preserves the last applied authorized desired geometry
+  instead of publishing empty plan truth, then refreshes once on
+  observed recovery. Fresh rows always win; minimized absence stands; any
+  view, binding, lifetime, or workarea change invalidates. Native frames
+  were already stable across holds (holds forbid setters) and the engine
+  presentation is already stable across holds (read-only over retained
+  state), so neither takes a cache.
+- Queued-source fence (adapter only): a tap claim whose observation-time
+  baseline SID no longer names the live current refuses before any select
+  effect or creation auth spend, with genuinely re-read pre/post evidence
+  (`None` when unknown). Own-append order growth at the same current keeps
+  the binding valid and still executes exactly once.
+- Review corrections closed: reviewer-confirmed Worker additions (baseline
+  fence on both select legs before auth spend; workareas in the retention
+  key) plus two mechanical strict-clippy fixes with no behavior change
+  (`filter_map`-to-`map`, test-helper type alias).
+- Gates on this cut: locked macOS build PASS; locked tests PASS (47
+  suites, 2,842 passed, 0 failed across core/protocol/macos; macOS-only
+  re-run after the lint fixes: 14 suites, 1,417 passed, 0 failed); strict
+  all-target clippy PASS; `fmt --all --check` PASS; no shared-source
+  change. This part is complete OFFLINE; live native proof remains
+  pending.
 
 ## Risks and open evidence
 

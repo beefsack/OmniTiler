@@ -580,7 +580,11 @@ use crate::runtime_native::handle_scoped_observation;
 /// binding or explicit creation desire, observation-time baseline) so the
 /// drain actuates exactly the core-resolved target and reports its proven
 /// native outcome back under the same id. `None` (duplicate path) stores
-/// the claim unbound: the drain refuses without actuation.
+/// the claim unbound: the drain refuses without actuation. Every store -
+/// bound or unbound - sets the shared claim wake
+/// (`select_claim_pending`): even a refusal needs its drain-site
+/// settlement, so the main pump reconciles on the event instead of the
+/// next 250 ms tick. Refusal paths that store nothing set nothing.
 fn store_select_claim(
     shared: &Arc<Mutex<Shared>>,
     claim: crate::runtime_types::ClaimedSelect,
@@ -603,6 +607,7 @@ fn store_select_claim(
     };
     let mut guard = lock_shared(shared);
     guard.select_pending = Some(stored);
+    guard.select_claim_pending = true;
     guard.diagnostics.input_select_enqueued += 1;
     drop(guard);
     emit(shared, 0, 0, 0, "input", token, 0);
@@ -2503,6 +2508,7 @@ mod trailing_join_tests {
             native_cell: crate::runtime_shared::NativeContextCell::new(),
             select_pending: None,
             select_busy: false,
+            select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
             focus_evidence: None,
@@ -2520,6 +2526,7 @@ mod trailing_join_tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
@@ -2621,6 +2628,128 @@ mod trailing_join_tests {
             "planner-owned operation identity binds"
         );
         assert_eq!(guard.diagnostics.input_select_enqueued, 1);
+    }
+
+    #[test]
+    fn published_claim_arms_pump_wake_and_take_consumes_once() {
+        // Core 1-8 ms -> claim-drain wait: the engine admission path sets the
+        // shared claim wake exactly when it stores an actionable claim, so the
+        // main pump drains on the next 50 ms iteration instead of the next
+        // 250 ms tick. Fully synchronous (direct engine call plus the real
+        // handle take, no sleeps): the flag is the publication signal, not a
+        // timing guess. The actual publication flag matters here, not just a
+        // gate boolean: this test drives the real `store` and the real take.
+        struct RefusingAx;
+        impl crate::runtime_backend::AxBackendFactory for RefusingAx {
+            fn create(
+                &self,
+                _pid: u32,
+            ) -> Result<Box<dyn crate::runtime_backend::AxBackend>, String> {
+                Err("test stub creates nothing".to_owned())
+            }
+        }
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_occupied_trailing());
+        let handle = crate::runtime::RuntimeHandle {
+            shared: Arc::clone(&shared),
+            inbox: Arc::clone(&inbox),
+            focus_queue: Arc::clone(&focus_queue),
+            ax_factory: Arc::new(RefusingAx),
+        };
+        assert!(
+            !handle.take_select_claim_pending(),
+            "idle slot wakes nothing: steady state runs no extra body"
+        );
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 0 }),
+            true,
+        );
+        let first_op = lock_shared(&shared)
+            .select_pending
+            .clone()
+            .expect("claim stored")
+            .operation_id
+            .clone();
+        assert!(
+            first_op.as_deref().is_some_and(|op| op.starts_with("op-")),
+            "stored claim carries its operation identity"
+        );
+        assert!(
+            handle.take_select_claim_pending(),
+            "storing an actionable claim arms the pump wake once"
+        );
+        assert!(
+            !handle.take_select_claim_pending(),
+            "wake consumed at most once per publication: no spurious extra body"
+        );
+        // Single-flight: a concurrent press while the slot holds refuses
+        // instead of replacing, so the first claim (and its already-consumed
+        // wake) stands undisturbed and the refusal arms nothing.
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 1 }),
+            true,
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_select_refused,
+            1,
+            "concurrent press refuses while pending"
+        );
+        assert!(
+            !handle.take_select_claim_pending(),
+            "refused press arms no wake"
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .select_pending
+                .clone()
+                .expect("first claim kept")
+                .operation_id,
+            first_op,
+            "single-flight keeps the first claim: no silent replacement"
+        );
+        // Draining spends nothing extra and re-arms cleanly: the claim take
+        // leaves no residual wake, and a later publication wakes again (no
+        // stuck latch, no lost wake).
+        let claimed = handle
+            .claim_select_for_drain()
+            .expect("pending claim drains");
+        assert_eq!(claimed.operation_id, first_op);
+        assert!(
+            !handle.take_select_claim_pending(),
+            "claim take leaves no residual wake"
+        );
+        handle.release_select_after_drain();
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 1 }),
+            true,
+        );
+        assert!(
+            lock_shared(&shared).select_pending.is_some(),
+            "lane free after drain admits again"
+        );
+        assert!(
+            handle.take_select_claim_pending(),
+            "later publication re-arms the wake"
+        );
     }
 
     #[test]
@@ -4615,6 +4744,7 @@ mod drag_gesture_handoff_tests {
             native_cell: crate::runtime_shared::NativeContextCell::new(),
             select_pending: None,
             select_busy: false,
+            select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
             focus_evidence: None,
@@ -4632,6 +4762,7 @@ mod drag_gesture_handoff_tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),

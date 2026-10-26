@@ -103,6 +103,14 @@ impl SelectLane {
 
 pub(crate) struct SelectHandoff {
     lane: std::sync::Mutex<SelectLane>,
+    /// Main-thread wake hint: set once when the owner stages a terminal
+    /// completion, consumed once by the main pump (`take_settled`) to run
+    /// the cadence body early instead of waiting for the next 250 ms tick.
+    /// Coalesced (bursts merge into one wake); cleared whenever a poll
+    /// takes the staged completion, so a promptly reconciled settle never
+    /// causes a spurious extra cadence run. Never a timer, never a new
+    /// thread: one atomic checked on the existing 50 ms pump.
+    settled: Arc<AtomicBool>,
     pending_creations: std::sync::Mutex<Vec<crate::workspace_select::PendingCreation>>,
 }
 
@@ -114,8 +122,16 @@ impl SelectHandoff {
                 inflight: None,
                 completion: None,
             }),
+            settled: Arc::new(AtomicBool::new(false)),
             pending_creations: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Consume the settle wake hint once: true when the owner staged a
+    /// terminal completion since the last take (or the last poll that took
+    /// one). Coalesced across bursts; never blocks.
+    pub(crate) fn take_settled(&self) -> bool {
+        self.settled.swap(false, Ordering::SeqCst)
     }
 
     fn submit(&self, job: SelectJob) -> Result<(), &'static str> {
@@ -144,6 +160,7 @@ impl SelectHandoff {
         }
         lane.inflight = None;
         lane.completion = Some(completion);
+        self.settled.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -152,7 +169,13 @@ impl SelectHandoff {
         if lane.inflight.is_some() || lane.pending.is_some() {
             return None;
         }
-        lane.completion.take()
+        let completion = lane.completion.take()?;
+        // The staged completion is now owned by the caller: clear the
+        // settle wake so a promptly reconciled settle wakes nothing
+        // extra. (A newer completion cannot exist yet: the lane refuses
+        // submits while a completion stands unpolled.)
+        self.settled.store(false, Ordering::SeqCst);
+        Some(completion)
     }
 
     /// Flag every queued and inflight job cancelled and pulse their settle
@@ -188,6 +211,7 @@ impl SelectHandoff {
         lane.pending = None;
         lane.inflight = None;
         lane.completion = None;
+        self.settled.store(false, Ordering::SeqCst);
         had
     }
 }
@@ -343,6 +367,14 @@ impl SelectThread {
     /// runs or when idle).
     pub fn poll_completion(&self) -> Option<SelectCompletion> {
         self.handoff.poll_completion()
+    }
+
+    /// Consume the owner settle wake hint once (see
+    /// [`SelectHandoff::take_settled`]): true when a terminal completion
+    /// staged since the last take. The main pump checks this to run the
+    /// cadence body early; the cadence poll clears it by taking.
+    pub fn take_settled(&self) -> bool {
+        self.handoff.take_settled()
     }
 
     /// Nonblocking request-to-cancel plus an owner wake so an idle owner
@@ -532,6 +564,17 @@ impl SelectController {
                 .min(u128::from(u64::MAX)) as u64,
         );
         Some((completion, reaped))
+    }
+
+    /// Consume the owner settle wake hint once (see
+    /// [`SelectThread::take_settled`]): true when a terminal completion
+    /// staged since the last take. The main pump checks this to run the
+    /// cadence body early; the cadence poll clears it by taking.
+    pub fn take_settled(&self) -> bool {
+        self.thread
+            .as_ref()
+            .map(|thread| thread.take_settled())
+            .unwrap_or(false)
     }
 
     /// Cancel the inflight select (lock/secure/stale paths): flags and

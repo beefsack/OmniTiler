@@ -855,6 +855,29 @@ pub(crate) fn drain_claimed_select_with(
                 "select refuses: fresh row unprovable ({e})"
             )));
         }
+        // Queued-tap source fence: the claim's observation-time baseline
+        // (genuine native current at dispatch) must still name the live
+        // current before any actuation. An externally moved source view
+        // refuses with genuinely re-read evidence, never a guess. Baseline
+        // `None` (unreadable at dispatch) skips this leg; revision drift
+        // stays indicator-only so own-append growth (same current) executes.
+        if let Some(want_baseline) = baseline
+            && want_baseline != before.current
+        {
+            let (pre, post) = confirm_post(&mut *backend, Some(before.current));
+            return Err(SelectFailure {
+                reason: format!(
+                    "stale queued select discarded: source view moved between admission and drain (baseline {want_baseline} != live current {}; no select dispatched",
+                    before.current
+                ),
+                setter: FrameSetter::Refused,
+                pre,
+                post,
+                baseline,
+                creation: None,
+                attempt_ms,
+            });
+        }
         if !before.spaces.contains(&sid) {
             let (pre, post) = confirm_post(&mut *backend, Some(before.current));
             return Err(SelectFailure {
@@ -1043,6 +1066,28 @@ pub(crate) fn drain_claimed_select_with(
             setter: FrameSetter::Refused,
             pre: None,
             post: None,
+            baseline,
+            creation: None,
+            attempt_ms,
+        });
+    }
+    // Same queued-tap source fence as the reuse leg above: a baseline
+    // naming a departed source view refuses before any append. Placed
+    // before the spend gate so a stale claim never consumes the single
+    // creation authorization; post-dispatch typed setter truth below is
+    // untouched.
+    if let Some(want_baseline) = baseline
+        && want_baseline != before.current
+    {
+        let (pre, post) = confirm_post(&mut *backend, Some(before.current));
+        return Err(SelectFailure {
+            reason: format!(
+                "stale queued select discarded: source view moved between admission and drain (baseline {want_baseline} != live current {}; no create dispatched",
+                before.current
+            ),
+            setter: FrameSetter::Refused,
+            pre,
+            post,
             baseline,
             creation: None,
             attempt_ms,

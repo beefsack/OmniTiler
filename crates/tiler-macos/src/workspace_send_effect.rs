@@ -50,6 +50,7 @@
 //! this lane: one submission proves once per edge on the owner thread.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tiler_core::session::DomainKey;
 use tiler_core::world_report::FrameSetter;
@@ -890,6 +891,14 @@ struct Lane {
 #[derive(Debug, Default)]
 pub struct SendEffectHandoff {
     inner: Mutex<Lane>,
+    /// Main-thread wake hint: set once when the owner stages a terminal
+    /// completion, consumed once by the main pump (`take_settled`) to run
+    /// the cadence body early instead of waiting for the next 250 ms tick.
+    /// Coalesced (bursts merge into one wake); cleared whenever a poll
+    /// takes the staged completion, so a promptly reconciled settle never
+    /// causes a spurious extra cadence run. Never a timer, never a new
+    /// thread: one atomic checked on the existing 50 ms pump.
+    settled: std::sync::Arc<AtomicBool>,
     /// Local pending native creation receipts: one per attempted trailing
     /// desire whose post-order is not yet readable. Same seam as the select
     /// lane ([`crate::workspace_select::SelectionState`]): the owner
@@ -976,7 +985,16 @@ impl SendEffectHandoff {
         lane.inflight = None;
         lane.completion = Some(completion);
         lane.cancel_requested = false;
+        self.settled.store(true, Ordering::SeqCst);
         true
+    }
+
+    /// Consume the settle wake hint once: true when the owner staged a
+    /// terminal completion since the last take (or the last poll that took
+    /// one). Coalesced across bursts; never blocks.
+    #[must_use]
+    pub fn take_settled(&self) -> bool {
+        self.settled.swap(false, Ordering::SeqCst)
     }
 
     /// Nonblocking main-thread poll: take the completion only when it
@@ -989,6 +1007,11 @@ impl SendEffectHandoff {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let completion = lane.completion.take()?;
+        // The staged completion is now owned by the caller: clear the
+        // settle wake so a promptly reconciled settle wakes nothing extra.
+        // (A newer completion cannot exist yet: single-flight admits no new
+        // owner work until the main thread submits again.)
+        self.settled.store(false, Ordering::SeqCst);
         if completion.operation_id != target.operation_id()
             || completion.app_generation != target.app_generation()
             || completion.revision != target.revision()
@@ -1044,6 +1067,10 @@ impl SendEffectHandoff {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let completion = lane.completion.take()?;
+        // Owned by the caller now (restored below for the sibling path or
+        // returned): clear the settle wake; the polling body handles the
+        // sibling path in the same tick, so nothing extra wakes.
+        self.settled.store(false, Ordering::SeqCst);
         if completion.operation_id != request.operation_id
             || completion.app_generation != request.app_generation
         {
@@ -1073,6 +1100,10 @@ impl SendEffectHandoff {
         let had = lane.pending.is_some() || lane.inflight.is_some() || lane.completion.is_some();
         lane.pending = None;
         lane.completion = None;
+        // A dropped staged completion will never be polled: clear its
+        // wake. A flagged inflight still lands its terminal completion
+        // through `finish`, which re-sets the wake then.
+        self.settled.store(false, Ordering::SeqCst);
         if lane.inflight.is_some() {
             lane.cancel_requested = true;
         }
@@ -1107,6 +1138,7 @@ impl SendEffectHandoff {
         lane.inflight = None;
         lane.completion = None;
         lane.cancel_requested = false;
+        self.settled.store(false, Ordering::SeqCst);
         had
     }
 
@@ -1514,6 +1546,78 @@ mod tests {
             pre_view: None,
             post_view: None,
         }
+    }
+
+    #[test]
+    fn handoff_settle_wake_sets_once_and_clears_on_poll() {
+        // The main pump runs the cadence body early on a staged terminal
+        // completion instead of waiting for the next 250 ms tick (worst
+        // case settle-to-reconcile drops to one 50 ms pump quantum).
+        let lane = SendEffectHandoff::new();
+        assert!(!lane.take_settled(), "idle lane wakes nothing");
+        let pinned = target();
+        lane.submit(pinned.clone()).expect("submits");
+        lane.take_for_owner().expect("takes");
+        assert!(
+            !lane.take_settled(),
+            "inflight without completion wakes nothing"
+        );
+        assert!(
+            lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Accepted,
+                SendEffectOutcome::Applied
+            )),
+            "matching finish stages"
+        );
+        assert!(lane.take_settled(), "staged completion wakes the pump once");
+        assert!(
+            !lane.take_settled(),
+            "wake consumed at most once per staging"
+        );
+        // A refused terminal still wakes: ambiguous outcomes reconcile on
+        // the event, never on the 1 s backstop. Repopulate without
+        // consuming so the poll take below proves the clear.
+        lane.poll_completion_for(&pinned)
+            .expect("main polls the first completion");
+        lane.submit(pinned.clone()).expect("submits again");
+        lane.take_for_owner().expect("takes again");
+        assert!(
+            lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Refused,
+                SendEffectOutcome::RefusedProven
+            )),
+            "refused finish stages"
+        );
+        let done = lane
+            .poll_completion_for(&pinned)
+            .expect("main polls the completion");
+        assert_eq!(done.outcome, SendEffectOutcome::RefusedProven);
+        assert!(
+            !lane.take_settled(),
+            "poll take clears the wake: no spurious extra cadence run"
+        );
+        // A stale finish (nothing inflight) stages nothing and wakes
+        // nothing; a cancel that drops a staged completion clears its wake.
+        assert!(
+            !lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Accepted,
+                SendEffectOutcome::Applied
+            )),
+            "no inflight refuses"
+        );
+        assert!(!lane.take_settled(), "stale finish wakes nothing");
+        lane.submit(pinned.clone()).expect("submits");
+        lane.take_for_owner().expect("takes");
+        assert!(lane.finish(completion_for(
+            &pinned,
+            FrameSetter::Accepted,
+            SendEffectOutcome::Applied
+        )));
+        assert!(lane.cancel(), "completed cancels");
+        assert!(!lane.take_settled(), "cancelled completion wakes nothing");
     }
 
     #[test]

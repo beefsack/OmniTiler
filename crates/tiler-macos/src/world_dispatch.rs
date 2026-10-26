@@ -27,8 +27,8 @@ use tiler_core::world_report::{OneShotEffect, ScopeAuthority, WorldCommand, Worl
 
 use crate::focus_route::FocusRoute;
 use crate::runtime::{
-    DeferredSelectionFocus, DesiredFrame, FocusBaselines, FocusCommand, FocusRequest, FrameCommand,
-    Shared, emit, lock_focus, lock_shared, parse_window_id,
+    AppliedGeometryKey, DeferredSelectionFocus, DesiredFrame, FocusBaselines, FocusCommand,
+    FocusRequest, FrameCommand, Shared, emit, lock_focus, lock_shared, parse_window_id,
 };
 use crate::runtime_core::RetainedCore;
 use crate::runtime_thread::{CoherencePending, FocusSlot, FrameSlot, Inbox};
@@ -1127,6 +1127,98 @@ fn hold_token(reason: tiler_core::world_report::HoldReason) -> &'static str {
     }
 }
 
+/// Held-reply stable-geometry retention (pure, testable): a same-state
+/// held reply preserves the last applied authorized desired geometry
+/// instead of publishing an empty plan truth, then refreshes once on
+/// observed recovery. The state key (current scopes, workspace bindings,
+/// window homing, current native workareas/bounds) grounds the retention:
+/// any view, binding, lifetime, or workarea change moves the key and the
+/// fresh reply publishes as-is (clear, never a stale overlay). Carried rows
+/// are exactly the last applied rows for windows the fresh reply still
+/// lists as held (same current scope, non-minimized — a minimized lifetime
+/// has no managed geometry, so its absence stands); fresh rows always win,
+/// and nothing is ever carried into a scope that is not current (no
+/// off-current write). The presentation needs no cache: the engine computes
+/// it read-only over retained state, so a same-view held reply carries
+/// identical shapes (proven by
+/// `held_same_view_reply_preserves_stable_presentation_and_desired`).
+/// No second policy owner: only last applied authorized same-state
+/// geometry is preserved, never fabricated. Renderers still revalidate
+/// every shape against live native legs (foreground token, current-space
+/// membership, fresh minimized/fullscreen/session vetoes) before painting.
+fn retain_stable_geometry(
+    prior_desired: &[DesiredFrame],
+    prior_key: Option<&AppliedGeometryKey>,
+    current: &BTreeSet<(String, String)>,
+    workareas: &BTreeMap<(String, String), (Rect, Rect)>,
+    reply: &WorldReply,
+    fresh_desired: Vec<DesiredFrame>,
+) -> (Vec<DesiredFrame>, AppliedGeometryKey) {
+    use tiler_core::world_report::HoldReason;
+    let mut bindings: Vec<(String, String, Option<String>)> = reply
+        .workspaces
+        .iter()
+        .map(|row| {
+            (
+                row.output.0.clone(),
+                row.id.clone(),
+                row.native_binding.clone(),
+            )
+        })
+        .collect();
+    bindings.sort();
+    let fresh_key = AppliedGeometryKey {
+        current: current.clone(),
+        bindings,
+        homing: reply
+            .windows
+            .iter()
+            .map(|row| {
+                (
+                    row.lifetime.0.clone(),
+                    (row.output.0.clone(), row.workspace.clone()),
+                )
+            })
+            .collect(),
+        workareas: workareas.clone(),
+    };
+    let same_state = prior_key.is_some_and(|key| *key == fresh_key);
+    let held_current = reply.windows.iter().any(|row| {
+        row.frame_authority.hold_reason().is_some()
+            && current.contains(&(row.output.0.clone(), row.workspace.clone()))
+    });
+    if !same_state || !held_current {
+        return (fresh_desired, fresh_key);
+    }
+    let fresh_windows: BTreeSet<String> =
+        fresh_desired.iter().map(|row| row.window.clone()).collect();
+    let mut merged = fresh_desired;
+    for prior in prior_desired {
+        if fresh_windows.contains(&prior.window) {
+            continue;
+        }
+        let Some(row) = reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == prior.window)
+        else {
+            continue;
+        };
+        let held = match row.frame_authority.hold_reason() {
+            Some(HoldReason::Minimized) | None => false,
+            Some(_) => true,
+        };
+        if !held {
+            continue;
+        }
+        if !current.contains(&(row.output.0.clone(), row.workspace.clone())) {
+            continue;
+        }
+        merged.push(prior.clone());
+    }
+    (merged, fresh_key)
+}
+
 /// Consume one applied world reply: current-scope controlled frames into
 /// per-app latest-wins slots, focus effects into the outbox plus the
 /// owning slot, view-transfer hold settling for pending selects, and the
@@ -1288,11 +1380,58 @@ fn consume_world_reply(
     // Applied-reply presentation publish: exactly the applied reply's
     // shapes ride shared state for the tile main thread, which renders
     // these shapes with liveness plus fresh native safety vetoes before
-    // painting. Duplicates and refusals never reach here (no clobber).
+    // painting — except a same-state hold keeps the last stable desired
+    // geometry instead of publishing an empty plan truth (see
+    // `retain_stable_geometry`; the presentation itself is stable across
+    // holds, so it publishes fresh). Duplicates and refusals never reach
+    // here (no clobber).
+    // Retained current native geometry grounding the retention key
+    // above: per-current-scope (visible work area, full bounds) from the
+    // live native domains, translated to logical scopes through this
+    // reply's native bindings (same live lookup as `current`). A
+    // workarea-only topology move during a hold changes this map and
+    // clears the retention; own-append growth leaves every current
+    // domain's rects untouched, so retention (and the global revision,
+    // deliberately excluded) never churns on it.
+    let workareas: BTreeMap<(String, String), (Rect, Rect)> = {
+        let guard = lock_shared(shared);
+        match guard.native_context.clone() {
+            Some(ctx) => ctx
+                .domains
+                .iter()
+                .filter(|d| d.current)
+                .map(|d| {
+                    let logical = reply
+                        .workspaces
+                        .iter()
+                        .find(|row| {
+                            row.output == d.output
+                                && row.native_binding.as_deref() == Some(d.workspace.0.as_str())
+                        })
+                        .map(|row| row.id.clone())
+                        .unwrap_or_else(|| d.workspace.0.clone());
+                    ((d.output.0.clone(), logical), (d.visible, d.bounds))
+                })
+                .collect(),
+            None => BTreeMap::new(),
+        }
+    };
+    let (desired, geometry_key) = {
+        let guard = lock_shared(shared);
+        retain_stable_geometry(
+            &guard.last_desired,
+            guard.last_geometry_key.as_ref(),
+            &current,
+            &workareas,
+            reply,
+            desired,
+        )
+    };
     {
         let mut guard = lock_shared(shared);
         guard.last_presentation = reply.presentation.clone();
         guard.last_pager_bindings = pager_bindings;
+        guard.last_geometry_key = Some(geometry_key);
     }
     emit_world_frames(
         session,
@@ -2009,7 +2148,14 @@ fn settle_select_transfers(
         .find(|target| target.operation_id == operation_id)
         .is_some_and(|target| target.held);
     if held {
-        lock_shared(shared).select_pending = None;
+        {
+            let mut guard = lock_shared(shared);
+            guard.select_pending = None;
+            // The dropped claim will never be polled: clear its publish
+            // wake so no spurious early body fires for it. A later store
+            // re-arms through the same flag.
+            guard.select_claim_pending = false;
+        }
         emit(shared, pid, generation, seq, "input", "select-held", 0);
         return;
     }
@@ -2191,6 +2337,7 @@ mod tests {
             native_cell: crate::runtime_shared::NativeContextCell::new(),
             select_pending: None,
             select_busy: false,
+            select_claim_pending: false,
             selection_focus_pending: None,
             selection_focus_floor_seq: 0,
             focus_evidence: None,
@@ -2208,6 +2355,7 @@ mod tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
@@ -2758,5 +2906,729 @@ mod tests {
         assert!(drop_selection_focus_for_operation(&shared, Some("op-3")));
         assert!(lock_shared(&shared).selection_focus_pending.is_none());
         assert_eq!(lock_shared(&shared).diagnostics.stale_dropped, 1);
+    }
+
+    #[test]
+    fn held_same_view_reply_preserves_stable_presentation_and_desired() {
+        // Offline held-presentation verification through the REAL engine
+        // plus the REAL `consume_world_reply` (not a bare helper): a
+        // controlled reply followed by a same-view incomplete-inventory
+        // hold with unchanged native frames. The hold authorizes no
+        // writes, but the stable plan truth (desired geometry) and the
+        // stable shapes (presentation/pager) must survive it and refresh
+        // once on recovery.
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::geometry::Rect;
+        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+        use tiler_core::world_report::{
+            HoldReason, PresentationIngress, ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION,
+            WindowFact, WorldReport,
+        };
+
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+            Rect { x, y, w, h }
+        }
+        fn screen(complete: bool) -> ScreenReport {
+            ScreenReport {
+                output: OutputId("out-a".to_owned()),
+                full_rect: Some(rect(0, 0, 800, 600)),
+                work_area: Some(rect(0, 0, 800, 560)),
+                gap: 0,
+                outer_gap: 0,
+                complete,
+                primary: true,
+            }
+        }
+        fn fact() -> WindowFact {
+            WindowFact {
+                window: WindowId("4242_7".to_owned()),
+                output: OutputId("out-a".to_owned()),
+                rect: Some(rect(0, 0, 400, 300)),
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                minimized: false,
+                observed_workspace: None,
+                native_workspace: None,
+            }
+        }
+        fn ingress() -> PresentationIngress {
+            PresentationIngress {
+                foreground: "4242_7".to_owned(),
+                foreground_frame: Some(rect(0, 0, 400, 300)),
+                border_enabled: true,
+                underlay_enabled: false,
+                border_gap_px: 0,
+                border_width_px: 3,
+                underlay_extension_px: 3,
+                chord_held: false,
+                ..PresentationIngress::disabled()
+            }
+        }
+        fn report(seq: u64, complete: bool) -> WorldReport {
+            let windows = vec![fact()];
+            let mut presentation = ingress();
+            presentation.pager_frames = vec![tiler_core::world_report::PresentationPagerFrame {
+                window: WindowId("4242_7".to_owned()),
+                live: Some(rect(0, 0, 400, 300)),
+                float_frame: None,
+                tile_frame: None,
+            }];
+            presentation.pager_order = vec![WindowId("4242_7".to_owned())];
+            WorldReport {
+                contract_version: WORLD_CONTRACT_VERSION,
+                owner: "owner-a".to_owned(),
+                adapter_incarnation: "adapter-1".to_owned(),
+                core_generation: "gen-1".to_owned(),
+                observation_seq: seq,
+                request_seq: seq,
+                request_id: format!("req-{seq}"),
+                command_seq: None,
+                command: None,
+                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
+                screens: vec![screen(complete)],
+                windows,
+                views: Vec::new(),
+                closed: vec![],
+                host_owned_workspace_domains: false,
+                equal_workspace_count: false,
+                birth_clear: false,
+                native: Vec::new(),
+                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
+                migration_source_refill:
+                    tiler_core::output_selection::MigrationSourceRefill::default(),
+                anchor_fallback: tiler_core::admission::AnchorFallback::default(),
+                no_space_result: tiler_core::admission::NoSpaceResult::default(),
+                born_maximized: tiler_core::born_maximized::BornMaximized::default(),
+                switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+                focus_follows_cursor: false,
+                cursor_warp: false,
+                cursor: None,
+                cursor_hit: None,
+                focused_global: "4242_7".to_owned(),
+                action_foreground: None,
+                action_cached: None,
+                action_outputs: Vec::new(),
+                default_tiled: true,
+                inventory_complete: true,
+                gesture_barrier: false,
+                gesture: None,
+                monotonic_ms: seq * 1000,
+                frames: Vec::new(),
+                member_attempts: Vec::new(),
+                view_attempts: Vec::new(),
+                clear_attempts: Vec::new(),
+                creation_attempts: Vec::new(),
+                presentation,
+            }
+        }
+
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let controlled = match engine.handle_report(&report(1, true)) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("controlled report must accept, got {other:?}"),
+        };
+        assert!(
+            controlled
+                .scopes
+                .iter()
+                .all(|scope| scope.authority == ScopeAuthority::Controlled),
+            "first reply actuates: {controlled:?}"
+        );
+        assert!(
+            controlled
+                .windows
+                .iter()
+                .any(|row| row.lifetime.0 == "4242_7" && row.effective_frame.is_some()),
+            "first reply carries geometry: {controlled:?}"
+        );
+        let held = match engine.handle_report(&report(2, false)) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("incomplete-inventory report must accept held, got {other:?}"),
+        };
+        assert!(
+            held.scopes
+                .iter()
+                .any(|scope| scope.authority
+                    == ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
+            "second reply holds the scope: {held:?}"
+        );
+        assert!(
+            held.windows
+                .iter()
+                .all(|row| row.effective_frame.is_none() && row.allocation.is_none()),
+            "held rows carry no geometry (core publish): {held:?}"
+        );
+        // Same view (same homing, same bindings): only the hold differs.
+        let homing = |reply: &tiler_core::world_report::WorldReply| {
+            reply
+                .windows
+                .iter()
+                .map(|row| {
+                    (
+                        row.lifetime.0.clone(),
+                        row.output.0.clone(),
+                        row.workspace.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            homing(&controlled),
+            homing(&held),
+            "same view across the hold"
+        );
+        // Engine characterization: a same-view hold carries identical
+        // shapes (presentation is read-only over retained state), so the
+        // presentation overwrite below is already a no-op and needs no
+        // cache — only the desired plan truth needs retention.
+        assert_eq!(
+            held.presentation, controlled.presentation,
+            "same-view hold carries stable presentation"
+        );
+
+        let shared = focus_shared();
+        live_focus_app(&shared, 4242, 1);
+        let mut session = focus_session();
+        let mut retained = RetainedCore::default();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReply| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                "select",
+                "accepted",
+                0,
+                0,
+                0,
+            );
+        };
+        dispatch(&mut session, &mut retained, &controlled);
+        let desired_stable = lock_shared(&shared).last_desired.clone();
+        assert!(
+            !desired_stable.is_empty(),
+            "controlled reply publishes plan truth"
+        );
+        let presentation_stable = lock_shared(&shared).last_presentation.clone();
+        assert!(
+            !presentation_stable.pager.is_empty(),
+            "controlled reply publishes pager content"
+        );
+        let emitted_after_controlled = lock_shared(&shared).diagnostics.frames_emitted;
+
+        dispatch(&mut session, &mut retained, &held);
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            emitted_after_controlled,
+            "held reply authorizes no writes"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_stable,
+            "same-view hold keeps stable plan truth"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_presentation,
+            presentation_stable,
+            "same-view hold keeps stable presentation"
+        );
+
+        // Recovery refreshes once: a controlled reply for the same view
+        // publishes fresh geometry again.
+        let recovered = match engine.handle_report(&report(3, true)) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("recovery report must accept, got {other:?}"),
+        };
+        assert!(
+            recovered
+                .scopes
+                .iter()
+                .all(|scope| scope.authority == ScopeAuthority::Controlled),
+            "recovery reply actuates: {recovered:?}"
+        );
+        dispatch(&mut session, &mut retained, &recovered);
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_stable,
+            "recovery republishes the same stable plan truth"
+        );
+        assert!(
+            lock_shared(&shared).diagnostics.frames_emitted > emitted_after_controlled,
+            "recovery authorizes writes again"
+        );
+    }
+
+    fn stable_held_row(
+        window: &str,
+        output: &str,
+        workspace: &str,
+        reason: tiler_core::world_report::HoldReason,
+    ) -> tiler_core::world_report::WindowDesire {
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::world_report::ScopeAuthority;
+        tiler_core::world_report::WindowDesire {
+            lifetime: WindowId(window.to_owned()),
+            output: OutputId(output.to_owned()),
+            workspace: workspace.to_owned(),
+            allocation: None,
+            effective_frame: None,
+            frame_authority: ScopeAuthority::Hold(reason),
+            membership_authority: ScopeAuthority::Hold(reason),
+            frame_operation: None,
+            clear_operation: None,
+            floating: false,
+            float_origin: None,
+        }
+    }
+
+    fn stable_current() -> BTreeSet<(String, String)> {
+        [("out-a".to_owned(), "ws-a".to_owned())]
+            .into_iter()
+            .collect()
+    }
+
+    fn stable_workareas() -> BTreeMap<(String, String), (Rect, Rect)> {
+        [(
+            ("out-a".to_owned(), "ws-a".to_owned()),
+            (
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 560,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+            ),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    fn stable_prior_row() -> DesiredFrame {
+        DesiredFrame {
+            window: "4242_7".to_owned(),
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 560,
+        }
+    }
+
+    /// Shared fixture for the retention gate tests: the minted key, the
+    /// same-state held reply, its current scopes, and its workareas.
+    type StableHoldFixture = (
+        AppliedGeometryKey,
+        WorldReply,
+        BTreeSet<(String, String)>,
+        BTreeMap<(String, String), (Rect, Rect)>,
+    );
+
+    fn stable_keyed_hold() -> StableHoldFixture {
+        // First apply (no prior key) publishes fresh and mints the key;
+        // the held reply below shares its exact state.
+        let current = stable_current();
+        let workareas = stable_workareas();
+        let prior = stable_prior_row();
+        let mut controlled = empty_reply();
+        controlled.windows = vec![tiler_core::world_report::WindowDesire {
+            lifetime: tiler_core::directional::WindowId("4242_7".to_owned()),
+            output: tiler_core::directional::OutputId("out-a".to_owned()),
+            workspace: "ws-a".to_owned(),
+            allocation: Some(tiler_core::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 560,
+            }),
+            effective_frame: Some(tiler_core::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 560,
+            }),
+            frame_authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            membership_authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            frame_operation: None,
+            clear_operation: None,
+            floating: false,
+            float_origin: None,
+        }];
+        let (desired, key) = retain_stable_geometry(
+            &[],
+            None,
+            &current,
+            &workareas,
+            &controlled,
+            vec![prior.clone()],
+        );
+        assert_eq!(desired, vec![prior]);
+        let mut held = empty_reply();
+        held.windows = vec![stable_held_row(
+            "4242_7",
+            "out-a",
+            "ws-a",
+            tiler_core::world_report::HoldReason::IncompleteInventory,
+        )];
+        (key, held, current, workareas)
+    }
+
+    #[test]
+    fn stable_geometry_same_state_hold_carries_and_fresh_wins() {
+        let prior = stable_prior_row();
+        let (key, held, current, workareas) = stable_keyed_hold();
+        // Same-state hold carries the last applied row; the key is stable.
+        let (desired, next_key) = retain_stable_geometry(
+            std::slice::from_ref(&prior),
+            Some(&key),
+            &current,
+            &workareas,
+            &held,
+            Vec::new(),
+        );
+        assert_eq!(desired, vec![prior.clone()]);
+        assert_eq!(next_key, key);
+        // Fresh rows always win: no duplication when geometry is present.
+        let (desired, _) = retain_stable_geometry(
+            std::slice::from_ref(&prior),
+            Some(&key),
+            &current,
+            &workareas,
+            &held,
+            vec![prior.clone()],
+        );
+        assert_eq!(desired.len(), 1);
+    }
+
+    #[test]
+    fn stable_geometry_minimized_absence_stands() {
+        let prior = stable_prior_row();
+        let (key, _, current, workareas) = stable_keyed_hold();
+        // A minimized lifetime has no managed geometry: the same-state
+        // hold drops the prior row instead of resurrecting it.
+        let mut minimized = empty_reply();
+        minimized.windows = vec![stable_held_row(
+            "4242_7",
+            "out-a",
+            "ws-a",
+            tiler_core::world_report::HoldReason::Minimized,
+        )];
+        let (desired, next_key) = retain_stable_geometry(
+            &[prior],
+            Some(&key),
+            &current,
+            &workareas,
+            &minimized,
+            Vec::new(),
+        );
+        assert!(desired.is_empty());
+        assert_eq!(next_key, key);
+    }
+
+    #[test]
+    fn stable_geometry_clears_on_changed_lifetime() {
+        let prior = stable_prior_row();
+        let (key, _, current, workareas) = stable_keyed_hold();
+        // An added lifetime moves the key: the fresh reply publishes
+        // as-is (clear, never a stale carry).
+        let mut added = empty_reply();
+        added.windows = vec![
+            stable_held_row(
+                "4242_7",
+                "out-a",
+                "ws-a",
+                tiler_core::world_report::HoldReason::IncompleteInventory,
+            ),
+            stable_held_row(
+                "4242_8",
+                "out-a",
+                "ws-a",
+                tiler_core::world_report::HoldReason::IncompleteInventory,
+            ),
+        ];
+        let (desired, next_key) = retain_stable_geometry(
+            &[prior],
+            Some(&key),
+            &current,
+            &workareas,
+            &added,
+            Vec::new(),
+        );
+        assert!(desired.is_empty());
+        assert_ne!(next_key, key);
+    }
+
+    #[test]
+    fn stable_geometry_clears_on_workarea_only_change() {
+        // Same view, same bindings, same lifetimes — but the retained
+        // native work area moved (dock/resolution change mid-hold): the
+        // fresh reply publishes as-is instead of keeping stale geometry.
+        let prior = stable_prior_row();
+        let (key, held, current, _) = stable_keyed_hold();
+        let mut moved = stable_workareas();
+        let entry = moved
+            .get_mut(&("out-a".to_owned(), "ws-a".to_owned()))
+            .expect("stable scope present");
+        entry.0.h = 500;
+        let (desired, next_key) =
+            retain_stable_geometry(&[prior], Some(&key), &current, &moved, &held, Vec::new());
+        assert!(desired.is_empty());
+        assert_ne!(next_key, key);
+    }
+
+    #[test]
+    fn stable_geometry_never_writes_off_current() {
+        let prior = stable_prior_row();
+        let workareas = stable_workareas();
+        // Same homing as the held reply below, but the row's scope is
+        // not current: nothing is carried there.
+        let key = AppliedGeometryKey {
+            current: [("out-a".to_owned(), "ws-b".to_owned())]
+                .into_iter()
+                .collect(),
+            bindings: Vec::new(),
+            homing: [("4242_7".to_owned(), ("out-a".to_owned(), "ws-a".to_owned()))]
+                .into_iter()
+                .collect(),
+            workareas: workareas.clone(),
+        };
+        let mut held = empty_reply();
+        held.windows = vec![stable_held_row(
+            "4242_7",
+            "out-a",
+            "ws-a",
+            tiler_core::world_report::HoldReason::IncompleteInventory,
+        )];
+        let off_current: BTreeSet<(String, String)> = [("out-a".to_owned(), "ws-b".to_owned())]
+            .into_iter()
+            .collect();
+        let (desired, _) = retain_stable_geometry(
+            &[prior],
+            Some(&key),
+            &off_current,
+            &workareas,
+            &held,
+            Vec::new(),
+        );
+        assert!(desired.is_empty());
+    }
+
+    #[test]
+    fn stable_geometry_needs_a_hold() {
+        let prior = stable_prior_row();
+        let (key, _, current, workareas) = stable_keyed_hold();
+        // Same state but no hold anywhere: a geometry loss publishes
+        // as-is instead of being papered over.
+        let mut unheld = empty_reply();
+        unheld.windows = vec![tiler_core::world_report::WindowDesire {
+            lifetime: tiler_core::directional::WindowId("4242_7".to_owned()),
+            output: tiler_core::directional::OutputId("out-a".to_owned()),
+            workspace: "ws-a".to_owned(),
+            allocation: None,
+            effective_frame: None,
+            frame_authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            membership_authority: tiler_core::world_report::ScopeAuthority::Controlled,
+            frame_operation: None,
+            clear_operation: None,
+            floating: false,
+            float_origin: None,
+        }];
+        let (desired, _) = retain_stable_geometry(
+            &[prior],
+            Some(&key),
+            &current,
+            &workareas,
+            &unheld,
+            Vec::new(),
+        );
+        assert!(desired.is_empty());
+    }
+
+    fn workarea_ctx(visible_h: i32) -> Arc<crate::runtime_types::NativeContext> {
+        use tiler_core::directional::{OutputId, WorkspaceId};
+        Arc::new(crate::runtime_types::NativeContext {
+            revision: 9,
+            domains: vec![crate::runtime_types::NativeDomain {
+                cg_id: 1,
+                uuid: None,
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId("space-7".to_owned()),
+                space: 7,
+                current: true,
+                readable: true,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                visible: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: visible_h,
+                },
+            }],
+            skipped: Vec::new(),
+        })
+    }
+
+    fn workarea_reply(controlled: bool) -> tiler_core::world_report::WorldReply {
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::world_report::{ScopeAuthority, TilingMode};
+        let mut reply = empty_reply();
+        reply.workspaces = vec![tiler_core::world_report::WorkspaceDesire {
+            id: "ws-a".to_owned(),
+            output: OutputId("out-a".to_owned()),
+            native_binding: Some("space-7".to_owned()),
+            scope: "out-a".to_owned(),
+            order: 0,
+            tiling_mode: TilingMode::Tiled,
+            existence: true,
+            hold: None,
+        }];
+        let authority = if controlled {
+            ScopeAuthority::Controlled
+        } else {
+            ScopeAuthority::Hold(tiler_core::world_report::HoldReason::IncompleteInventory)
+        };
+        let frame = controlled.then_some(Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 560,
+        });
+        reply.windows = vec![tiler_core::world_report::WindowDesire {
+            lifetime: WindowId("4242_7".to_owned()),
+            output: OutputId("out-a".to_owned()),
+            workspace: "ws-a".to_owned(),
+            allocation: frame,
+            effective_frame: frame,
+            frame_authority: authority,
+            membership_authority: authority,
+            frame_operation: None,
+            clear_operation: None,
+            floating: false,
+            float_origin: None,
+        }];
+        reply
+    }
+
+    #[test]
+    fn consume_hold_clears_retention_on_workarea_only_change() {
+        // End-to-end through the REAL `consume_world_reply` with a live
+        // native context: an unchanged-workarea hold preserves stable plan
+        // truth, a workarea-only topology move during the hold clears it,
+        // and recovery republishes. No native writes ride the retention
+        // (frames only move on controlled recovery).
+        let shared = focus_shared();
+        live_focus_app(&shared, 4242, 1);
+        let mut session = focus_session();
+        let mut retained = RetainedCore::default();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        lock_shared(&shared).native_context = Some(workarea_ctx(560));
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReply| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                "select",
+                "accepted",
+                0,
+                0,
+                0,
+            );
+        };
+        let controlled = workarea_reply(true);
+        let held = workarea_reply(false);
+        dispatch(&mut session, &mut retained, &controlled);
+        let desired_stable = lock_shared(&shared).last_desired.clone();
+        assert_eq!(
+            desired_stable.len(),
+            1,
+            "controlled reply publishes plan truth"
+        );
+        let key_stable = lock_shared(&shared)
+            .last_geometry_key
+            .clone()
+            .expect("controlled reply mints the key");
+        let emitted_after_controlled = lock_shared(&shared).diagnostics.frames_emitted;
+
+        dispatch(&mut session, &mut retained, &held);
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            emitted_after_controlled,
+            "held reply authorizes no writes"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_stable,
+            "unchanged-workarea hold preserves stable plan truth"
+        );
+        assert_eq!(
+            lock_shared(&shared).last_geometry_key,
+            Some(key_stable.clone()),
+            "unchanged workarea keeps the key"
+        );
+
+        // Workarea-only move (same view, same bindings, same lifetimes,
+        // same revision): the held reply must clear, never keep stale
+        // geometry sized for the old work area.
+        lock_shared(&shared).native_context = Some(workarea_ctx(500));
+        dispatch(&mut session, &mut retained, &held);
+        assert!(
+            lock_shared(&shared).last_desired.is_empty(),
+            "fresh workarea clears the held retention"
+        );
+        assert_ne!(
+            lock_shared(&shared).last_geometry_key,
+            Some(key_stable),
+            "workarea move rotates the key"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            emitted_after_controlled,
+            "clearing retention authorizes no native writes"
+        );
+
+        // Recovery refreshes: a controlled reply republishes fresh geometry
+        // and writes again.
+        dispatch(&mut session, &mut retained, &controlled);
+        assert_eq!(
+            lock_shared(&shared).last_desired,
+            desired_stable,
+            "recovery republishes plan truth"
+        );
+        assert!(
+            lock_shared(&shared).diagnostics.frames_emitted > emitted_after_controlled,
+            "recovery authorizes writes again"
+        );
     }
 }

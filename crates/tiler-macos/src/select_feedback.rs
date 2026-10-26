@@ -25,6 +25,10 @@ impl RuntimeHandle {
     /// so concurrent engine enqueues serialize/refuse instead of overlapping
     /// (`None` when nothing is pending or a drain is already in progress).
     /// Short critical section only - never held across the blocking effect.
+    /// Taking the claim also consumes the publish wake (`select_claim_pending`):
+    /// the wake that ran this body early is spent, and a claim stored after
+    /// this take re-arms through `store` for the next pump - nothing is lost
+    /// either way.
     /// Pair every `Some` with [`RuntimeHandle::release_select_after_drain`].
     pub fn claim_select_for_drain(&self) -> Option<ClaimedSelect> {
         let mut guard = lock_shared(&self.shared);
@@ -32,7 +36,19 @@ impl RuntimeHandle {
             return None;
         }
         guard.select_busy = true;
+        guard.select_claim_pending = false;
         guard.select_pending.take()
+    }
+
+    /// Consume the published-claim wake hint once: true when the engine
+    /// stored an actionable claim since the last take (or the last claim,
+    /// drop, or settle that cleared it). The main pump checks this on its
+    /// existing 50 ms iteration to run the cadence body early; the drain
+    /// site clears it by claiming. Coalesced across bursts; never blocks.
+    /// Steady state (no publication) stays quiet, so idle polling never
+    /// quickens.
+    pub fn take_select_claim_pending(&self) -> bool {
+        std::mem::replace(&mut lock_shared(&self.shared).select_claim_pending, false)
     }
 
     /// Release the select claim after the main-thread drain settles
@@ -220,6 +236,7 @@ impl RuntimeHandle {
             if guard.select_busy {
                 return false;
             }
+            guard.select_claim_pending = false;
             guard.select_pending.take()
         };
         let Some(claim) = dropped else {
@@ -255,5 +272,164 @@ impl RuntimeHandle {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use crate::runtime::Shared;
+    use crate::runtime_types::{InputSemanticAction, RuntimeConfig};
+    use crate::world_sequencer::ObservationClock;
+
+    struct StubAx;
+    impl crate::runtime_backend::AxBackendFactory for StubAx {
+        fn create(&self, _pid: u32) -> Result<Box<dyn crate::runtime_backend::AxBackend>, String> {
+            Err("test stub creates nothing".to_owned())
+        }
+    }
+
+    fn test_handle() -> RuntimeHandle {
+        let shared = Arc::new(std::sync::Mutex::new(Shared {
+            config: RuntimeConfig::default(),
+            handles_live: 0,
+            generation_counter: 0,
+            log_counter: 0,
+            start: Instant::now(),
+            apps: BTreeMap::new(),
+            clock: Arc::new(ObservationClock::new()),
+            midflight_hook: std::sync::Mutex::new(None),
+            post_accept_hook: std::sync::Mutex::new(None),
+            topology: None,
+            display_inputs: None,
+            select_wake: None,
+            topology_revision: 0,
+            native_context: None,
+            native_cell: crate::runtime_shared::NativeContextCell::new(),
+            select_pending: None,
+            select_busy: false,
+            select_claim_pending: false,
+            selection_focus_pending: None,
+            selection_focus_floor_seq: 0,
+            focus_evidence: None,
+            zombies: Vec::new(),
+            engine_handle: None,
+            input_handle: None,
+            logger_handle: None,
+            input_thread: None,
+            terminal: None,
+            admission_closed: false,
+            stop_engine: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stop_input: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stop_logger: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            log_tx: None,
+            diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
+            log: VecDeque::new(),
+            last_desired: Vec::new(),
+            last_geometry_key: None,
+            last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            last_pager_bindings: Vec::new(),
+            presentation_style: crate::active_border::PresentationStylePx::default(),
+        }));
+        RuntimeHandle {
+            shared: Arc::clone(&shared),
+            inbox: Arc::new(crate::runtime_thread::Inbox::new(16)),
+            focus_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
+            ax_factory: Arc::new(StubAx),
+        }
+    }
+
+    /// Engine-publication shape: the store sets the slot and the wake under
+    /// one lock, so a take and a claim never disagree about what is pending.
+    fn publish(handle: &RuntimeHandle, operation_id: &str) {
+        let mut guard = lock_shared(&handle.shared);
+        let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 });
+        claim.operation_id = Some(operation_id.to_owned());
+        guard.select_pending = Some(claim);
+        guard.select_claim_pending = true;
+    }
+
+    #[test]
+    fn claim_wake_quiets_steady_state_and_spends_once() {
+        // Steady state (no publication) wakes nothing: the gate stays shut
+        // and the body runs only on the cadence backstop.
+        let handle = test_handle();
+        assert!(!handle.take_select_claim_pending());
+        assert!(handle.claim_select_for_drain().is_none());
+        assert!(!handle.take_select_claim_pending());
+    }
+
+    #[test]
+    fn claim_between_check_and_drain_is_not_lost() {
+        // The take consumes the wake while the slot stays the truth: a claim
+        // stored before the take still drains after it (check-then-drain
+        // loses nothing), and the claim take clears the wake so no spurious
+        // extra body follows.
+        let handle = test_handle();
+        publish(&handle, "op-1");
+        assert!(handle.take_select_claim_pending(), "publication wakes once");
+        assert!(
+            !handle.take_select_claim_pending(),
+            "wake consumed at most once"
+        );
+        let claimed = handle
+            .claim_select_for_drain()
+            .expect("slot is truth: consumed wake loses no claim");
+        assert_eq!(claimed.operation_id.as_deref(), Some("op-1"));
+        assert!(
+            !handle.take_select_claim_pending(),
+            "claim take leaves no residual wake"
+        );
+        handle.release_select_after_drain();
+        // A later publication re-arms (no stuck latch).
+        publish(&handle, "op-2");
+        assert!(handle.take_select_claim_pending());
+    }
+
+    #[test]
+    fn latest_publication_wins_and_stale_discard_clears() {
+        // Single-flight latest-wins: an overwriting publication replaces the
+        // slot and keeps one coalesced wake; the drain takes the latest.
+        let handle = test_handle();
+        publish(&handle, "op-1");
+        publish(&handle, "op-2");
+        assert!(
+            handle.take_select_claim_pending(),
+            "bursts coalesce into one wake"
+        );
+        assert!(!handle.take_select_claim_pending());
+        let claimed = handle
+            .claim_select_for_drain()
+            .expect("latest claim drains");
+        assert_eq!(claimed.operation_id.as_deref(), Some("op-2"));
+        handle.release_select_after_drain();
+        // Stale clear: dropping the pending claim clears the wake, so the
+        // pump never runs an early body for a claim that will never drain.
+        publish(&handle, "op-3");
+        assert!(handle.discard_select_pending(), "pending claim dropped");
+        assert!(
+            !handle.take_select_claim_pending(),
+            "drop clears the wake: no lost-wake gap, no spurious early body"
+        );
+        assert!(handle.claim_select_for_drain().is_none());
+        assert!(!handle.discard_select_pending(), "empty drop stays quiet");
+    }
+
+    #[test]
+    fn busy_drain_refuses_second_claim_without_wake_churn() {
+        // While a drain holds the slot, a second claim is refused (never
+        // queued behind it) and the spent wake is not re-armed by the
+        // refusal.
+        let handle = test_handle();
+        publish(&handle, "op-1");
+        assert!(handle.take_select_claim_pending());
+        assert!(handle.claim_select_for_drain().is_some());
+        assert!(handle.claim_select_for_drain().is_none());
+        assert!(!handle.take_select_claim_pending());
+        handle.release_select_after_drain();
     }
 }

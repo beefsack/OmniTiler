@@ -1103,6 +1103,17 @@ impl LiveSendController {
         }
     }
 
+    /// Consume the effect-owner settle wake hint once: true when a
+    /// terminal completion staged since the last take (or the last poll
+    /// that took one). The main pump checks this to run the cadence body
+    /// early; the cadence polls clear it by taking. False with no owner.
+    pub fn take_settled(&self) -> bool {
+        self.thread
+            .as_ref()
+            .map(|thread| thread.handoff().take_settled())
+            .unwrap_or(false)
+    }
+
     /// Nonblocking poll for a trailing request's proof-less completion
     /// (preparation refused or was cancelled before binding): feedback-only
     /// settlement under the request's operation identity - no target to

@@ -189,6 +189,72 @@ fn serialized_admission_frees_only_on_poll() {
 }
 
 #[test]
+fn settle_wake_sets_once_clears_on_poll_and_covers_refusals() {
+    // A staged terminal completion wakes the main pump (early cadence
+    // run) instead of waiting for the next 250 ms tick: worst case
+    // settle-to-reconcile drops to one 50 ms pump quantum. The wake is
+    // coalesced (one bit, not a count), consumed at most once, and
+    // cleared by the poll take - so steady state never quickens and a
+    // promptly reconciled settle causes no spurious extra run. Ambiguous
+    // (refused) terminals wake exactly like arrivals: recovery readback
+    // runs on the event, never on the 1 s backstop.
+    let wake = SpaceSelectWake::new();
+    let published = displays();
+    let script = Script::new(vec![
+        ScriptedOutcome {
+            result: Ok(effect(1001, 1002)),
+            proof: None,
+        },
+        ScriptedOutcome {
+            result: Err(refusal("injected ambiguous")),
+            proof: None,
+        },
+    ]);
+    let thread = SelectThread::spawn_with(script.executor());
+    assert!(!thread.take_settled(), "idle owner wakes nothing");
+    let job = |op: &str| SelectJob {
+        claim: tap_claim(InputSemanticAction::WorkspaceSelect { index: 2 }, op),
+        display_index: 0,
+        pinned_cgid: 7,
+        pinned_uuid: FIX_UUID.to_owned(),
+        published_displays: published.clone(),
+        published_separate: Some(true),
+        trailing_enabled: true,
+        latch: Arc::new(wake.subscribe()),
+        wake: wake.clone(),
+        cancel: Arc::new(AtomicBool::new(false)),
+        submitted_at: Instant::now(),
+    };
+    thread.submit(job("op-1")).expect("first submits");
+    // Bounded wait for the owner to stage (5 ms sleeps like poll_block).
+    let t0 = Instant::now();
+    while !thread.take_settled() {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "owner settle never woke"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!thread.take_settled(), "wake consumed at most once");
+    let done = thread.poll_completion().expect("completion staged");
+    assert_eq!(done.operation_id.as_deref(), Some("op-1"));
+    assert!(done.result.is_ok());
+    assert!(!thread.take_settled(), "no residual wake after poll");
+    // An ambiguous terminal stages and wakes the same way; this cycle
+    // never touches the flag before the poll, so the false below proves
+    // the poll take clears it (the staging path sets it unconditionally,
+    // as the first cycle proved).
+    thread.submit(job("op-2")).expect("lane free after poll");
+    let done = poll_block(&thread);
+    assert_eq!(done.operation_id.as_deref(), Some("op-2"));
+    assert!(done.result.is_err(), "refused terminal still stages");
+    assert!(
+        !thread.take_settled(),
+        "poll take clears even a refused settle"
+    );
+}
+
+#[test]
 fn reply_plan_previous_actuates_bound_target() {
     // Reply-driven previous toggle: the claim carries the core-resolved
     // target plus its live binding and baseline (no owner history). The

@@ -1648,13 +1648,51 @@ mod native {
 
     /// Main-thread cadence gate over explicit inputs (pure, testable): the
     /// 250 ms cadence stays the idle backstop, but a pending display/Space
-    /// notification (stashed before the gate, so the 50 ms app pump never
-    /// loses it) runs the cadence body early - topology and the
-    /// send/select completion polls settle on the event instead of the next
+    /// notification, a staged effect completion, or a published engine claim
+    /// (each stashed before the gate, so the 50 ms app pump never loses it)
+    /// runs the cadence body early - topology, the send/select completion
+    /// polls, and the claim drain settle on the event instead of the next
     /// cadence. The early run resets the cadence clock, so idle polling
     /// never permanently quickens.
-    fn cadence_due(elapsed: Duration, display_pending: bool) -> bool {
-        elapsed >= CADENCE || display_pending
+    ///
+    /// Scheduling truth: the settle/claim flags are plain takes checked once
+    /// per 50 ms `pump_runloop_once(50)` iteration - an event-to-reconcile
+    /// bound of one pump quantum, NOT an immediate CF runloop wake. No
+    /// `CFRunLoopWakeUp` cross-thread handle is installed (that would need
+    /// `unsafe` plus a new wake architecture for a bounded gain of at most
+    /// one 50 ms quantum); the fixed 50 ms quantization stays.
+    fn cadence_due(elapsed: Duration, event_pending: bool) -> bool {
+        elapsed >= CADENCE || event_pending
+    }
+
+    /// Whether a terminal effect settlement requests one whole-owner
+    /// reread (pure, testable): true on EVERY staged terminal - verified
+    /// arrival, accepted-with-drift, unproven deadline, `Threw`, or proven
+    /// refusal - never filtered by outcome. The caller bumps the existing
+    /// shared invalidation generation
+    /// ([`crate::runtime::RuntimeHandle::request_owner_reread`]), so every
+    /// per-app tile owner rereads once on its next pump even when the
+    /// snapshot revision is unchanged (the `arrival` trigger covers any
+    /// unchanged-revision bump; the backstop recovers silence). Never a
+    /// native retry, never a guessed completion: the terminal stands as
+    /// staged and only the owners' next read is requested.
+    fn terminal_settlement_requests_reread(had_terminal: bool) -> bool {
+        had_terminal
+    }
+
+    /// Whether a terminal settlement re-arms one early cadence body
+    /// (pure, testable): exactly one extra body on the next pump, consumed
+    /// once (a body with no new terminal clears it again). Reason: the
+    /// post-terminal native topology re-read plus the creation-receipt
+    /// observe plus the reread-bump propagation must not wait out the
+    /// 250 ms cadence when the pre-poll snapshot in this body predates the
+    /// settlement. Not a timer, not a settle delay: a bounded one-shot flag
+    /// with the single reason `post-terminal-reread`. Pending creation
+    /// receipts need no duplicate timer: they already complete on the next
+    /// good snapshot's observe (this re-armed body, else the next 250 ms
+    /// backstop tick), never held indefinitely.
+    fn post_terminal_early_body_due(had_terminal: bool) -> bool {
+        had_terminal
     }
 
     /// Current visible work areas in CG top-left points for the native
@@ -2257,6 +2295,20 @@ mod native {
         // its wakeup instead of losing it. Cleared when the cadence body
         // consumes it.
         let mut display_pending = false;
+        // Staged effect-completion wake stashed the same way: either
+        // effect owner (select or send) stages its terminal completion
+        // off-main, and the next 50 ms pump notices via the handoff flag
+        // instead of waiting for the 250 ms tick. Same keep-on-skip rule:
+        // a body skipped at the lock/secure gates keeps the wakeup.
+        let mut effects_pending = false;
+        // Published-claim wake stashed the same way: the engine stored an
+        // actionable claim off-main, and the next 50 ms pump notices via the
+        // shared slot flag instead of waiting for the 250 ms tick. Same
+        // keep-on-skip rule: a body skipped at the lock/secure gates keeps
+        // the wakeup. Consumed at the drain site below (the slot itself is
+        // the truth there); a busy-deferred claim relies on the settle wake
+        // or the backstop, never a retained stash loop.
+        let mut claim_pending = false;
         // Last publisher-woken border-only join (fast path below throttles
         // against this; starts at first-pump so an early burst joins).
         let mut last_border_fast = Instant::now();
@@ -2329,6 +2381,28 @@ mod native {
             if display_flag.take_changed() {
                 display_pending = true;
             }
+            // Terminal effect completions stage off-main (select Dock-swipe
+            // settlement, send forward/return effects, including ambiguous
+            // `Threw` outcomes): notice them here so the cadence body below
+            // reconciles on the event instead of the next 250 ms tick.
+            // Two atomics per pump (the polls themselves clear the flags
+            // when they take, so steady state stays quiet). Truthfully a
+            // flag checked at the fixed 50 ms quantum - NOT an immediate
+            // runloop wake (see `cadence_due`): settle-to-reconcile waits
+            // at most one pump quantum, never a full cadence.
+            let select_settled = select_controller.take_settled();
+            let send_settled = send_controller.take_settled();
+            if select_settled || send_settled {
+                effects_pending = true;
+            }
+            // Engine-published claim: take the shared slot wake every 50 ms
+            // pump so the cadence body below drains on the event instead of
+            // the next 250 ms tick. The take (not the slot read) is what
+            // wakes: the slot itself stays the drain-site truth, so a claim
+            // stored between this take and the drain still drains there.
+            if handle.take_select_claim_pending() {
+                claim_pending = true;
+            }
             // Border-only fast path: a publisher publish/invalidation sets
             // the wakeup flag, and this re-runs ONLY the border join (no
             // topology, no tiling, no AX) - throttled so AX-frequency
@@ -2356,12 +2430,17 @@ mod native {
                     &handle,
                 );
             }
-            if cadence_due(last_cadence.elapsed(), display_pending) {
+            if cadence_due(
+                last_cadence.elapsed(),
+                display_pending || effects_pending || claim_pending,
+            ) {
                 last_cadence = Instant::now();
             } else {
                 // The app pump still took the guard flag above (stashed in
-                // `display_pending`), so an early run skipped here keeps its
-                // wakeup for the next pump - nothing is lost by waiting.
+                // `display_pending`), the settle flags above (stashed in
+                // `effects_pending`), and the claim flag above (stashed in
+                // `claim_pending`), so an early run skipped here keeps all
+                // wakeups for the next pump - nothing is lost by waiting.
                 continue;
             }
             // Consume the stashed notification at the topology site below
@@ -2728,7 +2807,23 @@ mod native {
             // no send-driven previous-history notes). Focus follows through
             // the observation loop (the proof held focus on the subject at
             // every edge; no focus substitution actuation repairs a send).
+            // Terminal settlements this body (any staged send/select
+            // completion, whatever its outcome): drives the owner reread
+            // bump plus the one-shot post-terminal early body below.
+            let mut had_terminal = false;
             if let Some(settle) = send_controller.poll() {
+                had_terminal = true;
+                // Every staged send terminal - verified arrival,
+                // accepted-with-drift, unproven deadline, `Threw`, or proven
+                // refusal - requests one whole-owner reread even at an
+                // unchanged snapshot revision (the pre-poll snapshot in this
+                // body predates the settlement; the owners' next pump must
+                // re-observe rather than trust the backstop alone). The
+                // terminal itself stands as staged; this only bumps the
+                // existing generation, never retries native work.
+                if terminal_settlement_requests_reread(true) {
+                    handle.request_owner_reread();
+                }
                 let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
                 // Owner-verified trailing append: the created SID adopts
                 // into lifecycle ownership here (token or not: the Space
@@ -2802,6 +2897,15 @@ mod native {
             // append), while the proven outcome reports back under the
             // claim's operation identity.
             if let Some((completion, reaped)) = select_controller.poll() {
+                had_terminal = true;
+                // Same whole-owner reread on every staged select terminal
+                // (verified arrival, accepted-with-drift, unproven, `Threw`,
+                // or refusal): the select owner has no verified-arrival
+                // bump of its own, so this main-thread bump is the only
+                // unchanged-revision reread signal for select drift.
+                if terminal_settlement_requests_reread(true) {
+                    handle.request_owner_reread();
+                }
                 adopt_select_completion(&handle, &mut trailing_lifecycle, &completion);
                 // Frontmost owner for arrival-bound focus release below
                 // (the evidence update above already stamped this tick's
@@ -2846,6 +2950,25 @@ mod native {
                     }
                 }
             }
+            // The settle polls above took whatever staged (each take clears
+            // its handoff wake): the wake that ran this body early is spent.
+            // A settle landing after the polls re-arms through `finish` and
+            // wakes the next pump. When this body itself settled a terminal,
+            // re-arm exactly one early body (`post-terminal-reread`) so the
+            // post-settlement native topology re-read, the pending creation
+            // receipt observe, and the reread-bump propagation above never
+            // wait out the 250 ms cadence. The re-armed body consumes the
+            // one-shot (no new terminal clears it again) - bounded, never
+            // a periodic timer. Proof-less trailing refusals and submit-time
+            // refusals never actuated, so they neither bump nor re-arm.
+            effects_pending = post_terminal_early_body_due(had_terminal);
+            // The stashed claim wake is spent at this drain site: the slot
+            // itself is the truth below, so a claim stored between the
+            // pre-gate take and this site still drains here. A busy-deferred
+            // claim relies on the settle wake (or the 250 ms backstop), never
+            // a retained stash loop; lock/secure skips above keep the stash
+            // (same as the display stash) because they never reach this site.
+            claim_pending = false;
             // Explicit cross-lane exclusion: the send owner and the select
             // owner never actuate concurrently. While either lane is
             // inflight the pending claim waits for a later tick (the slot
@@ -3683,9 +3806,93 @@ mod native {
             // (topology plus the completion polls settle on the event).
             assert!(cadence_due(Duration::from_millis(0), true));
             assert!(cadence_due(Duration::from_millis(50), true));
+            // A staged effect completion wakes the same gate: the settle
+            // flags (`effects_pending`) OR into the event arm, so a
+            // verified arrival reconciles on the next 50 ms pump instead
+            // of the next 250 ms tick. Worst case settle-to-reconcile
+            // drops from one full cadence to one pump quantum; steady
+            // state (no event) never quickens.
+            let settle_at_ms = [0u64, 10, 125, 249];
+            for at in settle_at_ms {
+                assert!(
+                    cadence_due(Duration::from_millis(at), true),
+                    "settle at +{at}ms must run the body early"
+                );
+                assert!(
+                    !cadence_due(Duration::from_millis(at), false),
+                    "no settle at +{at}ms must wait out the cadence"
+                );
+            }
             // The cadence itself still fires with no event.
             assert!(cadence_due(Duration::from_millis(250), false));
             assert!(cadence_due(Duration::from_secs(10), false));
+        }
+
+        #[test]
+        fn published_claim_schedule_bound_is_one_pump_quantum() {
+            // Deterministic schedule math for the claim->drain wait (NOT a
+            // runtime hard bound: a busy drain defers the claim to a later
+            // tick by design, and lock/secure gates drop it). Pumps tick
+            // every 50 ms; the cadence backstop is 250 ms; the claim publishes
+            // at `phase` ms after the last body. Before the claim wake, the
+            // drain waits for the backstop (`250 - phase`). After, the first
+            // pump takes the shared flag and the gate runs the body early.
+            const PUMP_MS: u64 = 50;
+            const CADENCE_MS: u64 = 250;
+            let phases = [0u64, 10, 125, 249];
+            let mut worst_before = 0u64;
+            let mut worst_after = 0u64;
+            for phase in phases {
+                let before = CADENCE_MS - phase;
+                worst_before = worst_before.max(before);
+                let first_tick = (phase / PUMP_MS + 1) * PUMP_MS;
+                let after = first_tick - phase;
+                worst_after = worst_after.max(after);
+                // The early run at that tick is flag-driven (gates passing):
+                // with no event the same tick stays shut, so the backstop
+                // alone would have waited. At the backstop tick itself both
+                // arms agree, so only the early ticks prove the flag.
+                let elapsed = Duration::from_millis(first_tick);
+                assert!(
+                    cadence_due(elapsed, true),
+                    "claim at +{phase}ms must run the body at +{first_tick}ms"
+                );
+                if first_tick < CADENCE_MS {
+                    assert!(
+                        !cadence_due(elapsed, false),
+                        "no claim at +{phase}ms must wait past +{first_tick}ms"
+                    );
+                }
+            }
+            assert_eq!(
+                worst_before, 250,
+                "before: a claim just after a body waits the full cadence"
+            );
+            assert_eq!(
+                worst_after, 50,
+                "after: the claim wake bounds the wait to one pump quantum"
+            );
+        }
+
+        #[test]
+        fn every_terminal_requests_owner_reread_and_one_post_body() {
+            // Every staged terminal - verified arrival, accepted-with-drift,
+            // unproven deadline, `Threw`, or proven refusal - requests the
+            // same whole-owner reread: no outcome filtering (the helpers
+            // take only `had_terminal`, never a setter or reason), so drift
+            // at an unchanged revision cannot miss its reread. The re-armed
+            // early body is exactly one one-shot (`post-terminal-reread`):
+            // a terminal body schedules it, a terminal-free body clears it,
+            // so pending creation receipts observe at worst on the next
+            // early body (never indefinitely) with no duplicate timer - the
+            // existing 1 s owner backstop
+            // (`SCOPED_BACKSTOP_INTERVAL`) plus the 250 ms cadence already
+            // bound silence, and this one-shot only shortens the post-terminal
+            // topology re-read to one 50 ms pump quantum.
+            assert!(terminal_settlement_requests_reread(true));
+            assert!(!terminal_settlement_requests_reread(false));
+            assert!(post_terminal_early_body_due(true));
+            assert!(!post_terminal_early_body_due(false));
         }
     }
 }

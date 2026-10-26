@@ -10,7 +10,7 @@
 //! [`crate::runtime_apps`]. No threads are spawned here; no behavior changes
 //! with the move (call sites keep working through `runtime` re-exports).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::time::Instant;
 
@@ -205,6 +205,33 @@ pub(crate) struct DeferredSelectionFocus {
     pub prior_frontmost: Option<u32>,
 }
 
+/// State key grounding held-reply geometry retention: the current
+/// (output, logical workspace) scopes, the reply's workspace bindings,
+/// window homing, and the retained current native workareas plus full
+/// bounds per current scope. A held reply under an identical key preserves
+/// the last applied authorized geometry (same view, same bindings, same
+/// lifetimes, same workareas); any change clears it. Workarea-only
+/// topology movement during a hold clears the retention (stale geometry is
+/// never kept across a dock/resolution change); the global topology
+/// revision is deliberately NOT part of the key, so an own-append revision
+/// bump with unchanged scopes and geometry keeps retention instead of
+/// churning. Adapter-owned, plan-truth only — the renderers still
+/// revalidate every shape against live native legs before painting, so
+/// retention can never resurrect a stale overlay.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AppliedGeometryKey {
+    pub(crate) current: BTreeSet<(String, String)>,
+    pub(crate) bindings: Vec<(String, String, Option<String>)>,
+    pub(crate) homing: BTreeMap<String, (String, String)>,
+    /// Per-current-scope native geometry: `(visible work area, full
+    /// bounds)` in integer CG top-left points, keyed by (output, logical
+    /// workspace). Sourced from the retained current native domains at
+    /// reply-consume time; empty while native context is absent (synthetic
+    /// mode), where the other key legs already discriminate.
+    pub(crate) workareas:
+        BTreeMap<(String, String), (tiler_core::geometry::Rect, tiler_core::geometry::Rect)>,
+}
+
 pub(crate) struct Shared {
     pub(crate) config: RuntimeConfig,
     /// Live [`RuntimeHandle`] count, held solely by handles (clones bump,
@@ -277,6 +304,15 @@ pub(crate) struct Shared {
     /// longer names its SID or whose revision drifted.
     pub(crate) select_pending: Option<ClaimedSelect>,
     pub(crate) select_busy: bool,
+    /// Main-thread wake hint for the pending claim above: set once when the
+    /// engine publishes an actionable claim, consumed once by the main pump
+    /// (`take_select_claim_pending`) to run the cadence body early instead
+    /// of waiting for the next 250 ms tick. Coalesced (bursts merge into one
+    /// wake); cleared whenever the slot is claimed, dropped, or settled
+    /// away, so a reconciled claim never causes a spurious extra cadence
+    /// run. Never a timer, never a new thread: one bool checked on the
+    /// existing 50 ms pump under the same short lock as the slot itself.
+    pub(crate) select_claim_pending: bool,
     /// Deferred selection focus bound at engine-reply dispatch (see
     /// [`DeferredSelectionFocus`]): at most one, latest-wins. Keyed by
     /// operation identity so only the matching select completion can
@@ -320,6 +356,13 @@ pub(crate) struct Shared {
     pub(crate) diagnostics: RuntimeDiagnostics,
     pub(crate) log: VecDeque<LifecycleLogEntry>,
     pub(crate) last_desired: Vec<DesiredFrame>,
+    /// State key for the last applied reply's geometry (current scopes,
+    /// workspace bindings, window homing): a same-key held reply retains
+    /// the last applied authorized geometry instead of publishing empty
+    /// shapes (see [`crate::world_dispatch::consume_world_reply`]). Any
+    /// view, binding, or lifetime change moves the key and clears the
+    /// retention — never a stale overlay, never an off-current write.
+    pub(crate) last_geometry_key: Option<AppliedGeometryKey>,
     /// Latest applied reply presentation (border/underlay/pager shapes plus
     /// the tick-time foreground token). The engine publishes exactly the
     /// applied reply's presentation here; the tile main thread renders only

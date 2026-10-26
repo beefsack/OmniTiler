@@ -707,6 +707,209 @@ fn reply_indicator_mismatch_refuses_stale_click_with_unchanged_reads() {
 }
 
 #[test]
+fn reply_own_append_growth_keeps_tap_binding_fresh() {
+    // Own trailing append between admission and drain grows the order
+    // (revision 9 -> 10) without remapping existing SIDs: a tap claim
+    // bound at admission still names the same desktop, so the production
+    // drain proceeds exactly once with genuine readback. Growth never
+    // stales a binding — contrast vanish/reorder, which refuse above.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 3, 21],
+            current: 20,
+        },
+        revision: Some(10),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let mut claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    claim.topology_revision = Some(9);
+    let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect("growth keeps the binding fresh");
+    assert_eq!(success.setter, FrameSetter::Accepted);
+    assert_eq!(
+        fake.selects,
+        vec![3],
+        "exactly one dispatch, never replayed"
+    );
+    assert_eq!((success.pre, success.post), (Some(20), Some(3)));
+    assert_eq!(success.effect.baseline, Some(20));
+    assert!(success.effect.changed);
+}
+
+#[test]
+fn reply_external_source_move_refuses_before_actuation() {
+    // Queued tap admitted at baseline 20, but an external switch moved the
+    // source view to 30 before the drain: the bound reuse leg refuses with
+    // genuinely re-read evidence (pre/post both name the live current) and
+    // dispatches nothing, even though the target binding still resolves.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 30, 3],
+            current: 30,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("externally moved source refuses");
+    assert!(
+        failure.reason.contains("source view moved"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!((failure.pre, failure.post), (Some(30), Some(30)));
+    assert_eq!(failure.baseline, Some(20));
+    assert!(failure.creation.is_none());
+    assert!(fake.selects.is_empty(), "no select dispatched");
+    assert_eq!(fake.creates, 0, "no create dispatched");
+}
+
+#[test]
+fn reply_external_source_move_refuses_creation_before_append() {
+    // Same external move on the creation leg: the drain refuses before the
+    // spend gate, so the single creation authorization stays unspent and no
+    // native append runs.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 30],
+            current: 30,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-new", "macos-display-1")),
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("externally moved source refuses before append");
+    assert!(
+        failure.reason.contains("source view moved"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!((failure.pre, failure.post), (Some(30), Some(30)));
+    assert_eq!(failure.baseline, Some(20));
+    assert!(failure.creation.is_none());
+    assert_eq!(fake.creates, 0, "no append dispatched");
+    assert!(fake.selects.is_empty(), "no select dispatched");
+    // Authorization unspent: a later drain at the moved source admits again.
+    let retry = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-9",
+        "macos-display-1",
+        "ws-new",
+        None,
+        Some(("op-native-1", "ws-new", "macos-display-1")),
+        Some(30),
+    );
+    drain_claimed_select_with(&mut state, &mut fake, retry, &open_gates(), true)
+        .expect("fresh baseline at the moved source proceeds");
+    assert_eq!(fake.creates, 1);
+}
+
+#[test]
+fn reply_external_source_move_unreadable_post_fabricates_nothing() {
+    // Stale source with an unreadable confirming re-read: the refusal
+    // carries the genuine pre-write read and no invented post.
+    struct OnceReadable {
+        row: SelectionSnapshot,
+        reads: usize,
+    }
+    impl SelectionBackend for OnceReadable {
+        fn display_count(&mut self) -> Result<usize, String> {
+            Ok(1)
+        }
+        fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            self.reads += 1;
+            if self.reads == 1 {
+                Ok(self.row.clone())
+            } else {
+                Err("post-order unreadable".to_owned())
+            }
+        }
+        fn revision(&mut self) -> Option<u64> {
+            None
+        }
+        fn check_output(&mut self, output: &str) -> Result<(), String> {
+            assert_eq!(output, "macos-display-1");
+            Ok(())
+        }
+        fn empty(&mut self, _: u64) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create(
+            &mut self,
+            _: &SelectionSnapshot,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
+            unreachable!("stale source never creates");
+        }
+        fn select(
+            &mut self,
+            _: &SelectionSnapshot,
+            _: u64,
+        ) -> Result<(), crate::workspace_select::DispatchError> {
+            unreachable!("stale source never selects");
+        }
+    }
+    let mut backend = OnceReadable {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 30, 3],
+            current: 30,
+        },
+        reads: 0,
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-1",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(20),
+    );
+    let failure = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
+        .expect_err("stale source refuses");
+    assert!(
+        failure.reason.contains("source view moved"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!((failure.pre, failure.post), (Some(30), None));
+}
+
+#[test]
 fn reply_revision_drift_refuses_indicator() {
     let mut fake = Fake {
         revision: Some(10),
