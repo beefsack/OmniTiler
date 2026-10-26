@@ -1198,8 +1198,8 @@ pub(super) fn run_observation_tick(
         ref member_tokens,
         ref member_identity,
         ref member_tags,
-        ref member_rects,
-        ref float_rects,
+        ref mut member_rects,
+        ref mut float_rects,
         ref hint_logged,
         ref sticky,
         ref floated,
@@ -1492,7 +1492,34 @@ pub(super) fn run_observation_tick(
         &mut proven_h,
         &mut proven_v,
     );
+    // Hide-commit snapshot seeds: exact-lifetime freshly proven frames read
+    // before the hide posts. Routed into the tile/float caches under the
+    // same lane row assembly uses, so the next hidden report stages the
+    // proven frame instead of the pre-write slot.
+    let hidden_seeds = native.take_hidden_seeds();
     drop(native);
+    super::world_native::apply_hidden_seeds(
+        hidden_seeds,
+        member_tokens,
+        member_rects,
+        float_rects,
+        |key| {
+            let sticky = sticky.contains_key(key);
+            let durable =
+                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
+            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
+            crate::native_guards::float_lane(
+                sticky,
+                automatic,
+                durable,
+                born_first_exit.contains(key),
+                floated.contains(key),
+                restart_reject_hold.contains(key),
+                born_fullscreen.contains(key),
+                true,
+            )
+        },
+    );
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
     }
@@ -1597,8 +1624,8 @@ pub(super) fn run_world_command(
         ref member_tokens,
         ref member_identity,
         ref member_tags,
-        ref member_rects,
-        ref float_rects,
+        ref mut member_rects,
+        ref mut float_rects,
         ref hint_logged,
         ref sticky,
         ref floated,
@@ -1962,7 +1989,32 @@ pub(super) fn run_world_command(
         &mut proven_h,
         &mut proven_v,
     );
+    // Hide-commit snapshot seeds, routed exactly like the observation path
+    // above (see `run_observation_tick`).
+    let hidden_seeds = native.take_hidden_seeds();
     drop(native);
+    super::world_native::apply_hidden_seeds(
+        hidden_seeds,
+        member_tokens,
+        member_rects,
+        float_rects,
+        |key| {
+            let sticky = sticky.contains_key(key);
+            let durable =
+                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
+            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
+            crate::native_guards::float_lane(
+                sticky,
+                automatic,
+                durable,
+                born_first_exit.contains(key),
+                floated.contains(key),
+                restart_reject_hold.contains(key),
+                born_fullscreen.contains(key),
+                true,
+            )
+        },
+    );
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
     }

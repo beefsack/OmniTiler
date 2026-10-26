@@ -468,6 +468,13 @@ pub(super) struct LiveNative<'a> {
     pub member_tags: &'a BTreeMap<WindowKey, String>,
     pub member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
     pub hidden_claims: &'a mut BTreeMap<WindowKey, HiddenRecord>,
+    /// Hide-commit snapshot seeds drained by the owner tick after apply:
+    /// exact-lifetime freshly proven physical frames read before the hide
+    /// post made them unreadable. The tick routes each seed into the
+    /// tile/float snapshot cache under the same lane row assembly uses, so
+    /// the next hidden report stages the proven frame instead of the
+    /// pre-write slot.
+    pub hidden_seeds: Vec<(WindowKey, Rect)>,
     /// Same-pass nonactivating departure hidden by this actuator instance:
     /// the entry foreground when the nonactivating view switch started,
     /// kept only when its hide committed and it still read invisible. The
@@ -567,6 +574,7 @@ impl<'a> LiveNative<'a> {
             vis_posts: VisibilityPostTrace::default(),
             desired_frames,
             areas,
+            hidden_seeds: Vec::new(),
         }
     }
 
@@ -945,6 +953,18 @@ impl<'a> LiveNative<'a> {
         if !self.identity_ok(key, expected) {
             return Err(AdmitOutcome::IdentityChanged);
         }
+        // Fresh proven frame for the hidden snapshot cache: the
+        // exact-lifetime physical frame read before the hide post makes it
+        // unreadable. Identity and lifetime already proved above; a failed
+        // read keeps the existing fallback (nothing fabricated).
+        let seed_frame = (self.prims.observe)(key.hwnd, self.me, self.fulls, &mut self.tokens)
+            .ok()
+            .filter(|w| {
+                w.hwnd == key.hwnd
+                    && w.identity.pid == key.pid
+                    && w.identity.process_creation == key.creation
+            })
+            .map(|w| w.visible);
         let stored = self.stored_tag(key).unwrap_or_default().to_owned();
         let allow_topmost = crate::product_hide::project_topmost_hide_allowed(
             self.float_topmost_prev.get(key).copied(),
@@ -981,6 +1001,9 @@ impl<'a> LiveNative<'a> {
                 iconic,
             },
         );
+        if let Some(frame) = seed_frame {
+            self.hidden_seeds.push((key.clone(), frame));
+        }
         Ok(())
     }
 
@@ -1177,6 +1200,36 @@ impl<'a> LiveNative<'a> {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    /// Drain hide-commit snapshot seeds for the owner tick: exact-lifetime
+    /// freshly proven frames, oldest first.
+    pub(super) fn take_hidden_seeds(&mut self) -> Vec<(WindowKey, Rect)> {
+        std::mem::take(&mut self.hidden_seeds)
+    }
+}
+
+/// Drain hide-commit seeds into the owner snapshot caches. Each seed lands
+/// in the tile or float cache under the same lane row assembly uses, keyed
+/// by the exact member lifetime: a recycled HWND (different key) matches
+/// nothing and seeds nothing. Unreadable-at-hide members carry no seed and
+/// keep the existing fallback.
+pub(super) fn apply_hidden_seeds(
+    seeds: Vec<(WindowKey, Rect)>,
+    member_tokens: &BTreeMap<WindowKey, String>,
+    member_rects: &mut HashMap<String, Rect>,
+    float_rects: &mut HashMap<String, Rect>,
+    is_float: impl Fn(&WindowKey) -> bool,
+) {
+    for (key, frame) in seeds {
+        let Some(token) = member_tokens.get(&key) else {
+            continue;
+        };
+        if is_float(&key) {
+            float_rects.insert(token.clone(), frame);
+        } else {
+            member_rects.insert(token.clone(), frame);
+        }
     }
 }
 

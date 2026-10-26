@@ -2878,6 +2878,235 @@ fn set_calls() -> usize {
     S_SET_CALLS.with(|m| m.borrow().len())
 }
 
+/// Hide-commit snapshot seeding shared rig: one tiled member whose cache
+/// holds the pre-write slot while the live window already proves the
+/// post-write frame.
+struct HideSeedRig {
+    env: Env,
+    leaving: WindowKey,
+    out: String,
+    ws2: String,
+    old: Rect,
+    proven: Rect,
+}
+
+fn hide_seed_rig(base_hwnd: u64) -> HideSeedRig {
+    let mut env = env_with(base_hwnd);
+    let ws1 = "ws1".to_owned();
+    let ws2 = "ws2".to_owned();
+    let out = env.state.output_token(DEV1);
+    let leaving = win_key(base_hwnd, 2201, "proc-71");
+    admit_member(&mut env, &leaving, &ws1, "w1", false);
+    let old = rect(0, 0, 800, 600);
+    let proven = rect(0, 0, 1024, 640);
+    // Pre-write slot, frozen by the observation tick before the write.
+    env.state.member_rects.insert("w1".to_owned(), old);
+    // The live window proves the post-write frame (accepted setter with an
+    // exact readback on the previous pass).
+    script_live(&leaving, "w1", proven, plain_facts());
+    S_ADMIT.with(|m| {
+        m.borrow_mut().insert(
+            leaving.hwnd,
+            Ok(script_claim(leaving.hwnd, &identity_of(&leaving))),
+        )
+    });
+    // The scripted hide post returns an association-valid claim so capture
+    // can ride the snapshot instead of holding on the claim.
+    S_HIDE.with(|m| {
+        m.borrow_mut().insert(
+            leaving.hwnd,
+            Ok(valid_claim(leaving.hwnd, &identity_of(&leaving))),
+        )
+    });
+    HideSeedRig {
+        env,
+        leaving,
+        out,
+        ws2,
+        old,
+        proven,
+    }
+}
+
+fn seed_test_areas() -> Vec<super::super::MonitorArea> {
+    vec![super::super::MonitorArea {
+        device: DEV1.to_owned(),
+        work: rect(0, 0, 1920, 1040),
+        full: rect(0, 0, 1920, 1080),
+    }]
+}
+
+/// Production lane routing mirrored from the owner tick drain: one seed
+/// lands in the tile/float cache under the same lane row assembly uses.
+fn drain_seeds(state: &mut super::super::TileLoop, seeds: Vec<(WindowKey, Rect)>) {
+    let sticky = &state.sticky;
+    let fixed_auto_seen = &state.fixed_auto_seen;
+    let fixed_tile_overrides = &state.fixed_tile_overrides;
+    let fixed_origin_overrides = &state.fixed_origin_overrides;
+    let born_first_exit = &state.born_first_exit;
+    let floated = &state.floated;
+    let restart_reject_hold = &state.restart_reject_hold;
+    let born_fullscreen = &state.born_fullscreen;
+    super::apply_hidden_seeds(
+        seeds,
+        &state.member_tokens,
+        &mut state.member_rects,
+        &mut state.float_rects,
+        |key| {
+            let sticky = sticky.contains_key(key);
+            let durable =
+                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
+            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
+            crate::native_guards::float_lane(
+                sticky,
+                automatic,
+                durable,
+                born_first_exit.contains(key),
+                floated.contains(key),
+                restart_reject_hold.contains(key),
+                born_fullscreen.contains(key),
+                true,
+            )
+        },
+    );
+}
+
+fn hidden_fact_rect(env: &Env, areas: &[super::super::MonitorArea]) -> Rect {
+    let staged = capture_world(&env.state.inputs(), Some(&[]), &[], areas, 0);
+    staged
+        .windows
+        .iter()
+        .find(|f| f.window.0 == "w1")
+        .expect("w1 fact")
+        .rect
+        .expect("hidden snapshot rides a rect")
+}
+
+#[test]
+fn hide_seeds_hidden_snapshot_with_fresh_proven_frame() {
+    // Stress-home-away regression: a tiled write lands accepted with an
+    // exact readback, then the member hides in the same pass. The staged
+    // hidden snapshot must carry the freshly proven frame, not the pre-write
+    // slot: the core prefers the staged fact over the readback
+    // (`world_frames::attempt_observed`), so a stale snapshot pins the
+    // permanent clamp lane while the fresh one clears it
+    // (observed == target).
+    let mut rig = hide_seed_rig(120_101);
+    let mut native = assemble_with_views(
+        &mut rig.env,
+        scripted(),
+        Some((rig.out.clone(), rig.ws2.clone())),
+    );
+    assert!(native.switch_view(&rig.out, &rig.ws2).expect("switch"));
+    assert!(
+        native.hidden_claims.contains_key(&rig.leaving),
+        "leaving member hides in place"
+    );
+    let seeds = native.take_hidden_seeds();
+    assert_eq!(seeds, vec![(rig.leaving.clone(), rig.proven)]);
+    drop(native);
+    // Post-hide the window reads invisible: no live row rides.
+    S_VISIBLE.with(|m| m.borrow_mut().remove(&rig.leaving.hwnd));
+    let areas = seed_test_areas();
+    // Before the drain the report still stages the pre-write slot: the exact
+    // stale-fact shape that pins the core clamp lane against the proven
+    // exact readback.
+    assert_eq!(hidden_fact_rect(&rig.env, &areas), rig.old);
+    // Production drain, then the report stages the proven frame, which
+    // clears the attempt instead of clamping it.
+    drain_seeds(&mut rig.env.state, seeds);
+    assert_eq!(rig.env.state.member_rects.get("w1"), Some(&rig.proven));
+    assert_eq!(hidden_fact_rect(&rig.env, &areas), rig.proven);
+}
+
+#[test]
+fn hide_seeds_float_snapshot_for_floated_member() {
+    // Float lane routes to `float_rects` and leaves the tile slot alone.
+    let mut rig = hide_seed_rig(120_102);
+    rig.env.state.floated.insert(rig.leaving.clone());
+    let old_float = rect(10, 10, 200, 200);
+    rig.env.state.float_rects.insert("w1".to_owned(), old_float);
+    let mut native = assemble_with_views(
+        &mut rig.env,
+        scripted(),
+        Some((rig.out.clone(), rig.ws2.clone())),
+    );
+    assert!(native.switch_view(&rig.out, &rig.ws2).expect("switch"));
+    let seeds = native.take_hidden_seeds();
+    assert_eq!(seeds, vec![(rig.leaving.clone(), rig.proven)]);
+    drop(native);
+    S_VISIBLE.with(|m| m.borrow_mut().remove(&rig.leaving.hwnd));
+    let areas = seed_test_areas();
+    assert_eq!(hidden_fact_rect(&rig.env, &areas), old_float);
+    drain_seeds(&mut rig.env.state, seeds);
+    assert_eq!(rig.env.state.float_rects.get("w1"), Some(&rig.proven));
+    assert_eq!(
+        rig.env.state.member_rects.get("w1"),
+        Some(&rig.old),
+        "tile slot untouched for the float lane"
+    );
+    assert_eq!(hidden_fact_rect(&rig.env, &areas), rig.proven);
+}
+
+#[test]
+fn hide_without_live_frame_keeps_stale_fallback_without_seed() {
+    // No live proof at hide time (identity and lifetime still verify, but
+    // the frame no longer reads): the hide commits, no seed is recorded, and
+    // the report keeps the existing fallback instead of fabricating geometry
+    // from the desired target.
+    let mut rig = hide_seed_rig(120_103);
+    S_VISIBLE.with(|m| m.borrow_mut().remove(&rig.leaving.hwnd));
+    S_OBSERVE.with(|m| m.borrow_mut().remove(&rig.leaving.hwnd));
+    let mut native = assemble_with_views(
+        &mut rig.env,
+        scripted(),
+        Some((rig.out.clone(), rig.ws2.clone())),
+    );
+    assert!(native.switch_view(&rig.out, &rig.ws2).expect("switch"));
+    assert!(
+        native.hidden_claims.contains_key(&rig.leaving),
+        "hide still commits without a live frame"
+    );
+    assert!(
+        native.take_hidden_seeds().is_empty(),
+        "no live proof, no seed"
+    );
+    drop(native);
+    let areas = seed_test_areas();
+    assert_eq!(
+        hidden_fact_rect(&rig.env, &areas),
+        rig.old,
+        "existing fallback retained"
+    );
+}
+
+#[test]
+fn hide_identity_drift_refuses_without_seed() {
+    // Recycled HWND: the live process no longer names the member lifetime.
+    // The hide refuses and records nothing.
+    let mut rig = hide_seed_rig(120_104);
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            rig.leaving.hwnd,
+            ProcessIdentity {
+                pid: 9999,
+                ..identity_of(&rig.leaving)
+            },
+        )
+    });
+    let mut native = assemble_with_views(
+        &mut rig.env,
+        scripted(),
+        Some((rig.out.clone(), rig.ws2.clone())),
+    );
+    assert!(
+        native.switch_view(&rig.out, &rig.ws2).is_err(),
+        "identity drift holds ambiguously"
+    );
+    assert!(!native.hidden_claims.contains_key(&rig.leaving));
+    assert!(native.take_hidden_seeds().is_empty());
+}
+
 #[path = "world_native_composition_tests.rs"]
 mod composition;
 #[path = "world_native_dpi_tests.rs"]

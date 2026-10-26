@@ -92,6 +92,36 @@ pub const fn hidden_snapshot_rect(
     }
 }
 
+/// Hidden float routing for one member: sticky wins unconditionally; the
+/// D4 automatic-fixed latch floats unless an explicit tile win dominates;
+/// marker-derived adapter float intent (floats, restart-holds, born holds)
+/// floats unless a first-exit mark already returned the member to the tiled
+/// lane. Pure predicate shared by row assembly and hide-commit snapshot
+/// seeding so both route the same member to the same cache.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub const fn float_lane(
+    sticky: bool,
+    fixed_auto: bool,
+    fixed_suppress: bool,
+    born_first_exit: bool,
+    floated: bool,
+    restart_hold: bool,
+    born_fullscreen: bool,
+    hidden: bool,
+) -> bool {
+    if sticky {
+        return true;
+    }
+    if fixed_auto && !fixed_suppress {
+        return true;
+    }
+    if born_first_exit && (!hidden || !floated) {
+        return false;
+    }
+    floated || restart_hold || born_fullscreen
+}
+
 /// Portable writable-token subset: non-hidden members whose Engine token is
 /// present in the fresh eligible observation. Retained members without a
 /// fresh frame and hidden members never take geometry writes; hidden

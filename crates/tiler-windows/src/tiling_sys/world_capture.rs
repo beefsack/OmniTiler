@@ -674,21 +674,17 @@ fn capture_floating(
     hidden: bool,
 ) -> bool {
     let sticky = state.sticky.contains_key(key);
-    if sticky {
-        return true;
-    }
     let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
-    if fixed_auto && !fixed_suppress {
-        return true;
-    }
-    let first_exit =
-        state.born_first_exit.contains(key) && (!hidden || !state.floated.contains(key));
-    if first_exit {
-        return false;
-    }
-    state.floated.contains(key)
-        || state.restart_reject_hold.contains(key)
-        || state.born_fullscreen.contains(key)
+    crate::native_guards::float_lane(
+        sticky,
+        fixed_auto,
+        fixed_suppress,
+        state.born_first_exit.contains(key),
+        state.floated.contains(key),
+        state.restart_reject_hold.contains(key),
+        state.born_fullscreen.contains(key),
+        hidden,
+    )
 }
 
 /// The three fixed-size lanes, preserved distinctly: the explicit tile-win
