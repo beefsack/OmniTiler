@@ -9,7 +9,8 @@
 // facts object, script caller via the session bus holding org.kde.KWin), fed
 // the RECORDED cross-language fixture bytes from test-fixtures/stage5 (real
 // broker output over the real JS route: P5, pre-move P6, post-move covering
-// paints, proven A preview and drains, valid-B repaint), and asserting on
+// paints, proven A preview and drains, valid-B repaint, and the rapid
+// same-source serial-B covering capture), and asserting on
 // the stubbed item state the production refresh actually re-evaluates.
 //
 // Publication is proven through the real waiter, never a getter: the first
@@ -40,7 +41,8 @@
 // paints (the recorded broker fixtures) recover through the full refresh.
 // The harness provides the private bus (run the binary under
 // dbus-run-session); no KWin, no live state. The only waits are the
-// production waiter lease (bounded, failure-deadline watchdog only): no
+// production waiter lease plus one same-connection Introspect delivery
+// barrier per armed bump (bounded, failure-deadline watchdogs only): no
 // product sleeps, settles, or polling.
 //
 // Fixture provenance: envelope-*.json are real startWorldAdapterEntry
@@ -219,13 +221,16 @@ QString immediateSnapshot(const QString &objectPath)
     return waitFacts(objectPath, waitRequest(QStringLiteral("unknown-stage5"), QStringLiteral("9"), 1000), 10000);
 }
 
-// Arm a waiter with the current instance/rev, let the server hold it (the
-// settle loop must see no early reply: identity and rev are current), fire
-// the handler event, and await the publication wake. Pre-fix the event
-// never publishes, so the held waiter expires through the bounded lease
-// (changed:0); post-fix the event wakes it with the advanced counter
-// (changed:1). earlyReply reports whether anything completed during the
-// arm settle (must be false: the arm matched the live facts).
+// Arm a waiter with the current instance/rev, prove the server processed
+// the Wait through a same-connection Introspect barrier (D-Bus FIFO per
+// sender: the barrier reply proves the Wait was dispatched, armed when
+// identity/rev are current), fire the handler event, and await the
+// publication wake. Pre-fix the event never publishes, so the held waiter
+// expires through the bounded lease (changed:0); post-fix the event wakes
+// it with the advanced counter (changed:1). earlyReply reports whether the
+// Wait completed immediately at the barrier (must be false: the arm matched
+// the live facts). The 10 s barrier bound is a failure deadline only, never
+// an ordering oracle. No same-process introspection is consulted.
 QString armedBumpWait(const QString &objectPath, const QString &instance, const QString &rev,
     const std::function<KWin::Stage5Refresh()> &event, bool *earlyReply)
 {
@@ -234,13 +239,28 @@ QString armedBumpWait(const QString &objectPath, const QString &instance, const 
     msg.setArguments({waitRequest(instance, rev, 1000)});
     auto *watcher = new QDBusPendingCallWatcher(g_script.asyncCall(msg));
     {
+        QDBusMessage barrier = QDBusMessage::createMethodCall(g_effect.baseService(), objectPath,
+            QStringLiteral("org.freedesktop.DBus.Introspectable"), QStringLiteral("Introspect"));
+        QDBusPendingCallWatcher barrierWatcher(g_script.asyncCall(barrier));
         QEventLoop loop;
         QTimer timer;
         timer.setSingleShot(true);
         QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-        QObject::connect(watcher, &QDBusPendingCallWatcher::finished, &loop, &QEventLoop::quit);
-        timer.start(500);
+        QObject::connect(&barrierWatcher, &QDBusPendingCallWatcher::finished, &loop, &QEventLoop::quit);
+        timer.start(10000);
         loop.exec();
+        if (!barrierWatcher.isFinished()) {
+            std::fprintf(stderr, "HARNESS-ERROR: facts Wait delivery barrier timed out\n");
+            std::exit(2);
+        }
+        {
+            QDBusPendingReply<QString> barrierReply = barrierWatcher;
+            if (!barrierReply.isValid() || barrierReply.value().isEmpty()) {
+                std::fprintf(stderr, "HARNESS-ERROR: facts Wait delivery barrier rejected: %s\n",
+                    barrierReply.error().message().toUtf8().constData());
+                std::exit(2);
+            }
+        }
     }
     *earlyReply = watcher->isFinished();
     QString value;
@@ -273,6 +293,11 @@ QString armedBumpWait(const QString &objectPath, const QString &instance, const 
 }
 
 struct Leg {
+    Leg(const Leg &) = delete;
+    Leg &operator=(const Leg &) = delete;
+    Leg(Leg &&) = delete;
+    Leg &operator=(Leg &&) = delete;
+    Leg() = default;
     KWin::PresentationRouter router;
     KWin::PresentationFactsSource *facts = nullptr;
     KWin::PresentationStage5 *stage = nullptr;
@@ -280,9 +305,12 @@ struct Leg {
     QString instance;
 };
 
-Leg makeLeg(const QString &path)
+// Construct one leg in place: the caller's Leg never moves, so the
+// stage's pointer to the caller-owned router stays valid. (Returning the
+// owning value would depend on optional copy elision to keep that
+// pointer live.)
+void initLeg(Leg &leg, const QString &path)
 {
-    Leg leg;
     leg.path = path;
     leg.facts = new KWin::PresentationFactsSource(g_effect, QCoreApplication::instance());
     if (!g_effect.registerObject(path, leg.facts, QDBusConnection::ExportScriptableContents)) {
@@ -291,7 +319,6 @@ Leg makeLeg(const QString &path)
     }
     leg.stage = new KWin::PresentationStage5(leg.router);
     leg.instance = leg.facts->instance();
-    return leg;
 }
 
 void destroyLeg(Leg &leg)
@@ -374,7 +401,8 @@ int main(int argc, char **argv)
     // them (instance aside). GREEN now and post-fix: the class behavior
     // under test is already correct; only the stage publication is not.
     {
-        Leg leg = makeLeg(QStringLiteral("/com/omnitiler/ActiveBorderProof"));
+        Leg leg;
+        initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorderProof"));
         seed(leg);
         QString avanc0 = immediateSnapshot(leg.path);
         {
@@ -392,15 +420,18 @@ int main(int argc, char **argv)
     }
 
     // L1 tracked double-frame with the preview stale path: P5 displayed,
-    // first bump publishes nothing (RED), the covering capture restores
-    // border+underlay, the proven A preview shows, the second bump hides
-    // every surface while the production refresh re-evaluates the border
-    // only (D2: underlay and preview stubs stay visibly stale), the stale
-    // pre-move P6 cannot paint, and the recorded witness-2 A drain (real
-    // broker bytes, producer A, coverage current) recovers all three
-    // through the full endpoint refresh.
+    // first bump publishes nothing (RED), the still-newer pre-move P6
+    // captured before the invalidation is delivered must not paint
+    // (coverage, never mere revision: P6 rev/obs is newer than the P5
+    // fence), the covering capture restores border+underlay, the proven A
+    // preview shows, the second bump hides every surface while the
+    // production refresh re-evaluates the border only (D2: underlay and
+    // preview stubs stay visibly stale), and the recorded witness-2 A
+    // drain (real broker bytes, producer A, coverage current) recovers all
+    // three through the full endpoint refresh.
     {
-        Leg leg = makeLeg(QStringLiteral("/com/omnitiler/ActiveBorder1"));
+        Leg leg;
+        initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder1"));
         SurfaceStub stub;
         seed(leg);
         CHECK(leg.router.counter == 0);
@@ -432,6 +463,18 @@ int main(int argc, char **argv)
             CHECK(!earlyReply);
             CHECK(leg.router.counter == 1);
             checkAdvancedFacts(woken, inst, fixtureDir, "facts-cover.json", "2", "1");
+        }
+        // In-transit pre-move P6 (rev/obs newer than the displayed P5
+        // fence, same old coverage) completes after the native move, before
+        // any post-move capture is accepted. Coverage rejects it: no stale
+        // paint, no display touch, fence retained for the covering capture.
+        {
+            const auto stale = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
+            CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
+            CHECK(!stale.refresh.border);
+            CHECK(!stale.refresh.repaint);
+            CHECK(stub.border);
+            CHECK(stub.underlay);
         }
         const auto cover =
             applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
@@ -468,13 +511,6 @@ int main(int argc, char **argv)
         CHECK(!stub.underlay); // D2-partial-refresh (actual: still true).
         CHECK(!stub.preview); // D2-partial-refresh (actual: still true).
 
-        // Stale pre-move P6 (newer rev/obs, same old coverage) is rejected
-        // without touching the held display: no stale paint.
-        const auto stale = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
-        CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
-        CHECK(!stale.refresh.border);
-        CHECK(!stale.refresh.repaint);
-
         // The recorded witness-2 A drain (real broker bytes for the
         // published witness) recovers all three surfaces through the full
         // endpoint refresh: the endpoint machinery itself is intact.
@@ -490,13 +526,15 @@ int main(int argc, char **argv)
 
     // L2 member double-frame with the original geometry race and the preview
     // stale path: P5 displayed, first member bump publishes nothing (RED),
-    // the covering capture restores, the proven A preview shows, the second
-    // member bump hides every surface while the production refresh
-    // re-evaluates the anchor plus the underlay only (D2: border and preview
-    // stubs stay visibly stale), the in-flight pre-move P6 must not paint,
-    // and the recorded witness-2 A drain repaints.
+    // the still-newer pre-move P6 captured before the invalidation is
+    // delivered must not paint (coverage, never mere revision), the covering
+    // capture restores, the proven A preview shows, the second member bump
+    // hides every surface while the production refresh re-evaluates the
+    // anchor plus the underlay only (D2: border and preview stubs stay
+    // visibly stale), and the recorded witness-2 A drain repaints.
     {
-        Leg leg = makeLeg(QStringLiteral("/com/omnitiler/ActiveBorder2"));
+        Leg leg;
+        initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder2"));
         SurfaceStub stub;
         seed(leg);
         const QString inst = leg.instance;
@@ -510,6 +548,18 @@ int main(int argc, char **argv)
         CHECK(leg.router.counter == 1);
         checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-cover.json", "2", "1");
         stub.apply(bump1, leg.stage->decide(allLiveHost()));
+        CHECK(!stub.underlay);
+        // In-transit pre-move P6 (rev/obs newer than the displayed P5
+        // fence, same old coverage) completes after the member move, before
+        // any post-move capture is accepted. Coverage rejects it: no stale
+        // paint, no resurrection of the hidden underlay.
+        {
+            const auto stale = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
+            CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
+            CHECK(!stale.refresh.border);
+            CHECK(!stale.refresh.repaint);
+            CHECK(!stub.underlay);
+        }
         const auto cover =
             applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
         CHECK(cover.apply == KWin::PresentationApply::Accepted);
@@ -533,15 +583,6 @@ int main(int argc, char **argv)
         CHECK(!stub.border); // D2-partial-refresh (actual: still true).
         CHECK(!stub.underlay);
         CHECK(!stub.preview); // D2-partial-refresh (actual: still true).
-
-        // Race step: the in-flight pre-move P6 (rev/obs newer than P5, stale
-        // coverage) completes after the member move, before any post-move
-        // capture is accepted. It must not paint.
-        const auto stale = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
-        CHECK(stale.apply == KWin::PresentationApply::StaleIgnored);
-        CHECK(!stale.refresh.border);
-        CHECK(!stale.refresh.repaint);
-        CHECK(!stub.underlay);
 
         // The later recorded drain repaints (recovery leg).
         const auto drain =
@@ -576,7 +617,8 @@ int main(int argc, char **argv)
     // current) repaints all three.
     {
         static constexpr char kBInstance[] = "9d4e6a2c-1b3f-4d8e-9f0a-2c5e7a1b3d4f";
-        Leg leg = makeLeg(QStringLiteral("/com/omnitiler/ActiveBorder3"));
+        Leg leg;
+        initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder3"));
         SurfaceStub stub;
         seed(leg);
         const QString inst = leg.instance;
@@ -706,7 +748,8 @@ int main(int argc, char **argv)
     // still cannot resurrect). Both activation bumps are never published
     // (D1).
     {
-        Leg leg = makeLeg(QStringLiteral("/com/omnitiler/ActiveBorder4"));
+        Leg leg;
+        initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder4"));
         SurfaceStub stub;
         seed(leg);
         const QString inst = leg.instance;
@@ -753,8 +796,13 @@ int main(int argc, char **argv)
         stub.apply(activation2, leg.stage->decide(allLiveHost()));
         CHECK(!stub.border);
         CHECK(!stub.underlay);
-        const auto stale2 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p6.json", inst), "", "0");
+        // In-transit pre-return paint (rev/obs newer than the cover fence,
+        // stale coverage) delivered after the second activation, before the
+        // return capture: must not resurrect the cleared paint.
+        const auto stale2 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "", "0");
         CHECK(stale2.apply == KWin::PresentationApply::StaleIgnored);
+        CHECK(!stale2.refresh.border);
+        CHECK(!stale2.refresh.repaint);
         CHECK(!stub.border);
         const auto cover2 =
             applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover2.json", inst), "", "0");
@@ -786,6 +834,99 @@ int main(int argc, char **argv)
         const auto foreignCover = applyStr(leg, foreign, "", "0");
         CHECK(foreignCover.apply == KWin::PresentationApply::StaleIgnored);
         CHECK(!stub.border);
+        destroyLeg(leg);
+    }
+
+    // L5 rapid same-source gesture serial handover: the proven A preview
+    // shows while A (gesture-1/1) is live; B (gesture-1/2, same native
+    // source) goes live with no covering capture between them. The
+    // already-produced A paint delivered while B is live must not show its
+    // preview (coverage is still current: the serial alone isolates it),
+    // while border and underlay still repaint from the accepted projection.
+    // The start-B boundary drops the latch and bumps with no floors (RED:
+    // unpublished), so the decision hides every surface but the production
+    // refresh re-evaluates the preview only (D2). The recorded serial-B
+    // covering capture (real broker bytes for the published witness, B
+    // producer, coverage current) repaints all three through the full
+    // endpoint refresh.
+    {
+        Leg leg;
+        initLeg(leg, QStringLiteral("/com/omnitiler/ActiveBorder5"));
+        SurfaceStub stub;
+        seed(leg);
+        const QString inst = leg.instance;
+        const auto p5 = applyStr(leg, dispatchBytes(fixtureDir, "dispatch-p5.json", inst), "", "0");
+        CHECK(p5.apply == KWin::PresentationApply::Accepted);
+        stub.apply(p5.refresh, leg.stage->decide(allLiveHost()));
+        CHECK(stub.border);
+        CHECK(stub.underlay);
+
+        // First tracked bump publishes nothing (RED); the covering capture
+        // restores, and the proven A preview shows while A is live.
+        const KWin::Stage5Refresh bump1 = leg.stage->onTrackedFrame();
+        CHECK(leg.router.counter == 1);
+        checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-cover.json", "2", "1");
+        stub.apply(bump1, leg.stage->decide(allLiveHost()));
+        CHECK(!stub.border);
+        const auto cover =
+            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-cover.json", inst), "", "0");
+        CHECK(cover.apply == KWin::PresentationApply::Accepted);
+        stub.apply(cover.refresh, leg.stage->decide(allLiveHost()));
+        CHECK(stub.border);
+        CHECK(stub.underlay);
+        const auto preview =
+            applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "gesture-1", "1");
+        CHECK(preview.apply == KWin::PresentationApply::Accepted);
+        stub.apply(preview.refresh, leg.stage->decide(gestureHost("gesture-1", "1")));
+        CHECK(stub.border);
+        CHECK(stub.underlay);
+        CHECK(stub.preview);
+
+        // Rapid handover: B (same instance, serial 2) is live before any
+        // covering capture. Re-delivering the proven A paint (coverage
+        // still current, equal order re-applies) must not show the A
+        // preview: the serial alone isolates it, while border and underlay
+        // still repaint from the accepted projection.
+        {
+            const auto crossed =
+                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-preview.json", inst), "gesture-1", "2");
+            CHECK(crossed.apply == KWin::PresentationApply::Accepted);
+            CHECK(crossed.refresh.preview);
+            stub.apply(crossed.refresh, leg.stage->decide(gestureHost("gesture-1", "2")));
+            CHECK(stub.border);
+            CHECK(stub.underlay);
+            CHECK(!stub.preview);
+        }
+
+        // Start B: the boundary drops the latch and bumps with no floors
+        // (RED: unpublished). Every surface is invalid now, but only the
+        // preview re-evaluates.
+        const KWin::Stage5Refresh startB = leg.stage->onGestureBoundary();
+        CHECK(leg.router.counter == 2);
+        checkAdvancedFacts(immediateSnapshot(leg.path), inst, fixtureDir, "facts-inv2.json", "3", "2");
+        {
+            const KWin::Stage5Visibility insideB = leg.stage->decide(gestureHost("gesture-1", "2"));
+            CHECK(!insideB.border);
+            CHECK(!insideB.underlay);
+            CHECK(!insideB.preview);
+            stub.apply(startB, insideB);
+            CHECK(!stub.border); // D2-partial-refresh (actual: still true).
+            CHECK(!stub.underlay); // D2-partial-refresh (actual: still true).
+            CHECK(!stub.preview);
+        }
+
+        // Covering serial-B capture (real broker bytes for the published
+        // witness, B producer): repaints all three through the full
+        // endpoint refresh.
+        {
+            const auto valid =
+                applyStr(leg, dispatchBytes(fixtureDir, "dispatch-s2.json", inst), "gesture-1", "2");
+            CHECK(valid.apply == KWin::PresentationApply::Accepted);
+            stub.apply(valid.refresh, leg.stage->decide(gestureHost("gesture-1", "2")));
+            CHECK(stub.border);
+            CHECK(stub.underlay);
+            CHECK(stub.preview);
+        }
         destroyLeg(leg);
     }
 

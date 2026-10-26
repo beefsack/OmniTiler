@@ -18,8 +18,8 @@
   causal-witness draft has disconnected native fact publication and incomplete
   cross-surface hide routing. The last complete pre-extraction verification
   passed service 312, JS 720 and native CTest 34, but did not prove that production
-  boundary. New recorded-route regressions remain incomplete and intentionally
-  red; see the latest 2026-10-27 outcome. Native acceptance remains
+  boundary. Corrected, reviewed recorded-route regressions now reproduce both
+  defects and remain intentionally red; see the latest 2026-10-27 outcome. Native acceptance remains
   TBD and this record stays active for the whole port. Host integration and the
   documented unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
@@ -1744,6 +1744,32 @@
 - Field names remain **tentative**, as in the causal-witness draft. Physical
   drag/release/delivered-Esc, rapid A/B, member movement, focus return,
   stale-hide/fresh-repaint and exact teardown checks remain outstanding.
+
+### Stage 5 corrected harness and failing-first evidence (2026-10-27)
+
+- The recorded-route harness now passes independent source review. This
+  supersedes the harness rejection above, not the unaccepted production status.
+  Facts use actual private-bus replies joined to recorded full captures, real
+  broker projections, real JS dispatch and the extracted native endpoint.
+  KWin signal delivery and painting remain source-reviewed/offline boundaries.
+- A same-connection asynchronous Introspect reply causally acknowledges facts
+  waiter delivery; successful nonempty replies are required. The former 500 ms
+  settle is gone; timers bound failures only. In-place nonmovable ownership
+  removes optional-NRVO dependence. Both geometry legs now deliver P6 newer
+  than displayed P5 after invalidation and before covering repaint. Same-source
+  gesture serial A/B rejection and valid B recovery have explicit coverage.
+- A private-bus test startup failure in the Nix sandbox was repaired by passing
+  the existing D-Bus package's session config explicitly when available. No
+  dependency or production behavior changed.
+- Failing-first native run: three companion private-bus tests pass; recovery
+  fails with **44 assertions**, exactly **34 unpublished-facts assertions** and
+  **10 stale-surface assertions**. The causal waiter barrier succeeds. Focused
+  broker fixtures **3/3**, focused JS **16/16**, full JS **736/736**, typecheck
+  and whitespace pass. These are regression evidence, not Stage 5 acceptance.
+- Tentative technical choices remain the waiter delivery barrier and existing
+  witness/producer field names. Next: publish every native invalidation advance,
+  refresh all three surfaces together, and rerun independent route review and
+  complete gates. No shared-core or product-policy change is needed.
 
 <a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
 ## N6 core-intents outcome (2026-10-26)

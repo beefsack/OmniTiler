@@ -188,6 +188,20 @@ if(BUILD_TESTING)
     # no live state). Located before the first use so a missing binary
     # fails the first configure instead of hiding behind a cached value.
     find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
+    # Sandbox-hermetic private bus (narrow env plumbing, no new
+    # dependency): dbus-daemon defaults to /etc/dbus-1/session.conf, which
+    # is absent in the Nix sandbox, so point dbus-run-session at the
+    # session.conf colocated with the resolved binary (same package family
+    # as the Qt D-Bus client). Host /usr layouts resolve the same way;
+    # otherwise fall back to the bare `--` separator.
+    get_filename_component(DBUS_BIN_DIR "${DBUS_RUN_SESSION}" DIRECTORY)
+    get_filename_component(DBUS_PREFIX "${DBUS_BIN_DIR}" DIRECTORY)
+    set(DBUS_SESSION_CONF "${DBUS_PREFIX}/share/dbus-1/session.conf")
+    if(EXISTS "${DBUS_SESSION_CONF}")
+        set(DBUS_RUN_SESSION_ARGS "--config-file=${DBUS_SESSION_CONF}" "--")
+    else()
+        set(DBUS_RUN_SESSION_ARGS "--")
+    endif()
     # Stage 5 handler tests (Qt-only, KWin-independent): the exact
     # production PresentationStage5 handlers the effect delegates to
     # (same counter/publication/coverage/refresh code, no forwarding
@@ -208,7 +222,7 @@ if(BUILD_TESTING)
     target_compile_options(omnitiler-active-border-stage5-test PRIVATE -Wall -Wextra -Werror)
 
     add_test(NAME native-effect-stage5-handlers
-        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-stage5-test>)
+        COMMAND ${DBUS_RUN_SESSION} ${DBUS_RUN_SESSION_ARGS} $<TARGET_FILE:omnitiler-active-border-stage5-test>)
     set_tests_properties(native-effect-stage5-handlers PROPERTIES TIMEOUT 120)
 
     # Stage 5 publication/recovery and cross-surface refresh regressions
@@ -236,7 +250,7 @@ if(BUILD_TESTING)
         STAGE5_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../test-fixtures/stage5")
 
     add_test(NAME native-effect-stage5-recovery
-        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-stage5-recovery-test>)
+        COMMAND ${DBUS_RUN_SESSION} ${DBUS_RUN_SESSION_ARGS} $<TARGET_FILE:omnitiler-active-border-stage5-recovery-test>)
     set_tests_properties(native-effect-stage5-recovery PROPERTIES TIMEOUT 120)
 
     # Offline transport test for the versioned script facts waiter: the
@@ -261,7 +275,7 @@ if(BUILD_TESTING)
     # as the Qt D-Bus client already linked; no new dependency): the test
     # binary must never touch a real session bus (no KWin, no live state).
     add_test(NAME native-effect-facts-transport
-        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-active-border-facts-test>)
+        COMMAND ${DBUS_RUN_SESSION} ${DBUS_RUN_SESSION_ARGS} $<TARGET_FILE:omnitiler-active-border-facts-test>)
     set_tests_properties(native-effect-facts-transport PROPERTIES TIMEOUT 120)
 
     # Authoritative gesture lifecycle tests (decision B): the Qt-only store
@@ -292,7 +306,7 @@ if(BUILD_TESTING)
     target_compile_options(omnitiler-gesture-facts-test PRIVATE -Wall -Wextra -Werror)
 
     add_test(NAME native-effect-gesture-facts-transport
-        COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:omnitiler-gesture-facts-test>)
+        COMMAND ${DBUS_RUN_SESSION} ${DBUS_RUN_SESSION_ARGS} $<TARGET_FILE:omnitiler-gesture-facts-test>)
     set_tests_properties(native-effect-gesture-facts-transport PROPERTIES TIMEOUT 120)
 
     endif()

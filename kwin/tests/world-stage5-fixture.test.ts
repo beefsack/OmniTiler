@@ -534,6 +534,45 @@ describe("stage5 recorded fixtures (production JS legs)", () => {
         }
     });
 
+    it("valid serial-B projection renders the recorded dispatch bytes for live B/2", () => {
+        const h = makeSubscriberHarness({
+            invalidation: { instance: "effect-1", counter: "2" },
+            gesture: { instance: "gesture-1", serial: "2", coreId: "9" },
+        });
+        try {
+            h.answerFixture("projection-s2.json");
+            assert.equal(h.paints.length, 1);
+            assert.equal(h.paints[0], fixture("dispatch-s2.json"));
+            const rendered = JSON.parse(h.paints[0] as string) as {
+                preview: { producerInstance: string; producerSerial: string };
+            };
+            assert.equal(rendered.preview.producerInstance, "gesture-1");
+            assert.equal(rendered.preview.producerSerial, "2");
+        } finally {
+            h.stop();
+        }
+    });
+
+    it("coverage-current A drain crossed into same-source B/2 strips only the preview", () => {
+        const h = makeSubscriberHarness({
+            invalidation: { instance: "effect-1", counter: "3" },
+            gesture: { instance: "gesture-1", serial: "2", coreId: "9" },
+        });
+        try {
+            h.answerFixture("projection-a3.json");
+            assert.equal(h.paints.length, 1, "border/underlay still paint from the accepted projection");
+            assert.equal(h.paints[0], fixture("dispatch-a3-b.json"));
+            const rendered = JSON.parse(h.paints[0] as string) as {
+                preview: unknown;
+                border: { visible: number };
+            };
+            assert.equal(rendered.preview, null, "A preview drained inside same-source B must hide");
+            assert.equal(rendered.border.visible, 1);
+        } finally {
+            h.stop();
+        }
+    });
+
     it("coverage-current A drain crossed into B strips only the preview", () => {
         const h = makeSubscriberHarness({
             invalidation: { instance: "effect-1", counter: "3" },

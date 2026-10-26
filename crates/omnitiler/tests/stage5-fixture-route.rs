@@ -93,6 +93,33 @@ fn stage5_fixture_route_matches_recorded_projections() {
     }
 }
 
+/// A second recorded chain pins the rapid same-source serial handover:
+/// gesture A (1/1) opens and shows, then B (1/2, same native source) goes
+/// live with no covering capture between them. The B capture carries the
+/// advanced witness with B as its proven producer. A fresh service replays
+/// the shared prefix (P5, pre-move P6, covering capture, proven A preview)
+/// so the B capture is order-newer; the retired-instance rule would refuse
+/// a B serial fed after an unrelated instance, so this chain never lets an
+/// unrelated gesture retire the shared source.
+#[test]
+fn stage5_fixture_route_same_source_serial_b() {
+    let (service, generation) = discovered();
+    for (envelope, req, projection) in [
+        ("envelope-p5.json", "fix-p5", "projection-p5.json"),
+        ("envelope-p6.json", "fix-p6", "projection-p6.json"),
+        ("envelope-cover.json", "fix-cover", "projection-cover.json"),
+        ("envelope-preview.json", "fix-preview", "projection-preview.json"),
+        ("envelope-s2.json", "fix-s2", "projection-s2.json"),
+    ] {
+        let served = route_fixture(&service, &generation, envelope, req);
+        let recorded = read_fixture(projection);
+        assert_eq!(
+            served, recorded,
+            "{envelope}: served projection must equal the recorded broker bytes"
+        );
+    }
+}
+
 /// Each recorded envelope's witness lane (built by the real JS route from
 /// the real facts bytes) equals the covered witness of the projection the
 /// broker served for it: the facts -> capture -> coverage chain joins on
@@ -108,6 +135,7 @@ fn stage5_fixture_witness_chain_joins() {
         ("envelope-a2.json", "projection-a2.json"),
         ("envelope-a3.json", "projection-a3.json"),
         ("envelope-preview-b.json", "projection-preview-b.json"),
+        ("envelope-s2.json", "projection-s2.json"),
     ] {
         let envelope_value: serde_json::Value =
             serde_json::from_str(&read_fixture(envelope)).expect("envelope is JSON");
@@ -142,6 +170,7 @@ fn stage5_fixture_witness_chain_joins() {
         ("facts-cover.json", "projection-preview.json"),
         ("facts-inv2.json", "projection-cover2.json"),
         ("facts-inv2.json", "projection-a2.json"),
+        ("facts-inv2.json", "projection-s2.json"),
         ("facts-inv3.json", "projection-a3.json"),
         ("facts-inv3.json", "projection-preview-b.json"),
     ] {
