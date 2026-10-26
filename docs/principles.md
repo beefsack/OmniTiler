@@ -94,6 +94,29 @@ Project principles, approved by the user.
 - Otherwise degrade as narrowly as possible, log the cause, and keep
   functioning, reconciling differences as they are observed.
 
+## Ordering and Races
+
+- Hosts deliver events, replies and the results of our own requests
+  asynchronously, and each host orders them differently. Never assume an
+  ordering the host does not guarantee; in particular, never assume an event,
+  reply or observation reflects state after a request we sent.
+- Core commands carry user intent and are resolved against core-retained state
+  at execution, not against values the platform sampled earlier. Platform code
+  sends only what the user actually chose or what the input itself carries
+  (stable identities, live input coordinates).
+- Freshness and identity are proven causally (generations, tokens, identities
+  minted at the source), never inferred from timing, geometry similarity,
+  window identity or age.
+- Platform code cites the host ordering guarantees it relies on, and tests
+  cover the interleavings that matter, including those only some hosts
+  produce.
+- Never add a delay, sleep or settle wait to work around unknown host timing
+  or ordering. Find the host hook, event or readback that proves the needed
+  state (for example, an event showing a window can now take focus) and act
+  on it. If the host offers none, document the gap where it is used and
+  degrade truthfully; a timer remains only a genuine deadline or recovery
+  bound ([Efficiency](#efficiency)).
+
 ## Gaming Compatibility
 
 - Gaming compatibility must be flawless. Games, including borderless and
