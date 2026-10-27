@@ -22,6 +22,15 @@ decisions of 2026-09-24 are under
   session-memory gates, exception/non-leaf storage and unknown-foreground policy.
   Observation/departure ingestion is unchanged; Steam spam only partly addressed.
   [Record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28).
+- P1 | Windows latest-world rendering | Approved 2026-10-27; process every
+  queued command in order, skip superseded unissued worlds structurally. Preserve
+  safety, exact-desktop/effect/hidden-write/flight fences; no waits or retries.
+  Batch-local numbered/trailing and history selection coalescing delivered;
+  catch-up renders nothing, linked-send barrier and fresh flush gates covered.
+  Independent review, offline gates and both zero-delay fixture cases pass.
+  Cross-family/cross-tick intake remains separate; subject/proof-dependent
+  commands stay per-command. CLI stress does not measure keyboard-burst savings.
+  [Record](changes/windows-workspace-return-focus.md#windows-batch-local-coalescing-outcome-2026-10-28).
 - P2 | Windows pager flicker on workspace switch | User dogfood 2026-10-27:
   pager briefly disappears and reappears on workspace changes. Cause remains
   unproven: bounded in-product pager tracing (`18a7a71b`) excludes switch-time

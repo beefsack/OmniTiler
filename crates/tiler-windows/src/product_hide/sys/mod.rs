@@ -302,6 +302,29 @@ pub fn read_member_tag(hwnd_u64: u64) -> Option<String> {
     }
 }
 
+// Test-only admission write-seam proof (offline): counts entries into
+// `install_member_tag`, the single native write the admission preamble can
+// perform (`SetProp` of our own member-tag property, fail-closed). Reads in
+// `admit_observed` never touch this seam. Production behavior is unchanged:
+// the counter is never read outside tests.
+#[cfg(test)]
+thread_local! {
+    static INSTALL_TAG_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Reset the member-tag install-attempt counter (test-only).
+#[cfg(test)]
+pub fn reset_install_tag_attempts() {
+    INSTALL_TAG_ATTEMPTS.with(|slot| slot.set(0));
+}
+
+/// Read the member-tag install-attempt counter (test-only).
+#[cfg(test)]
+#[must_use]
+pub fn install_tag_attempts() -> u64 {
+    INSTALL_TAG_ATTEMPTS.with(|slot| slot.get())
+}
+
 /// Stamp a fresh random window-lifetime tag for visible membership, then
 /// read it back. Only call when admitting a window with no trusted stored
 /// tag (first sight or same-process reuse repair), after the caller bound
@@ -312,6 +335,8 @@ pub fn read_member_tag(hwnd_u64: u64) -> Option<String> {
 /// appeared, and removing here could strip another owner's tag. Inert
 /// residue fails closed on its own.
 pub fn install_member_tag(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
+    #[cfg(test)]
+    INSTALL_TAG_ATTEMPTS.with(|slot| slot.set(slot.get() + 1));
     for _ in 0..4 {
         let tag = generate_claim_tag(owner_pid);
         debug_assert!(valid_claim_tag(&tag));

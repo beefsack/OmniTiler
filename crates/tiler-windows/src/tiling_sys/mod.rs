@@ -131,11 +131,12 @@ use self::owner_work::OwnerWorkGuard;
 use self::pending_drop::{PendingDrop, queue_pending_drop, service_pending_drop};
 #[cfg(test)]
 use self::pending_seams::{
-    INJECTED_ELEV_PROBE, INJECTED_ELEVATED, INJECTED_OBSERVE, INJECTED_STOP, INJECTED_SUSPEND,
-    INJECTED_ZORDER, clear_pending_seams, inject_pending_elev_probe, inject_pending_elevated,
+    INJECTED_ELEV_PROBE, INJECTED_ELEVATED, INJECTED_ELEVATED_SEQ, INJECTED_OBSERVE, INJECTED_STOP,
+    INJECTED_SUSPEND, INJECTED_SUSPEND_SEQ, INJECTED_ZORDER, clear_pending_seams,
+    inject_pending_elev_probe, inject_pending_elevated, inject_pending_elevated_seq,
     inject_pending_fg_class, inject_pending_foreground, inject_pending_observe,
-    inject_pending_parents, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
-    inject_pending_zorder,
+    inject_pending_parents, inject_pending_stop, inject_pending_suspend,
+    inject_pending_suspend_seq, inject_pending_tag, inject_pending_zorder,
 };
 use self::pending_seams::{
     live_cloaked, live_fg_class, live_foreground_window, live_is_iconic, live_is_visible,
@@ -1185,3 +1186,11 @@ mod limited_fullscreen_tests;
 #[cfg(test)]
 #[path = "tests_pending_drop.rs"]
 mod pending_drop_tests;
+
+/// Windows latest-only workspace-selection scheduling (offline, native-free):
+/// pure select bursts order every command through the core once while only
+/// the latest reply plans/applies natively. See the module doc for the
+/// barrier and gate bounds.
+#[cfg(test)]
+#[path = "tests_latest_only.rs"]
+mod latest_only_tests;

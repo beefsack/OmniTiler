@@ -9,6 +9,9 @@
   record the rendering intent, but leave contract/architecture changes proposed.
 - Compare command-time active-window ownership with the earlier transactional
   arrival proposal; preserve both designs and expose attribution limits.
+- Implement the independent approved command-memory and Windows latest-world
+  scheduling portions, failing-first. Keep existing foreground attribution,
+  view authority and one-shot focus contracts where parked decisions intervene.
 - Current direction: command-owned memory, prompt intentional focus updates and
   latest-only rendering; defer/reconcile is superseded. Reduce ambiguity before
   choosing its policy; see the [measurements and staged design](#ambiguity-reduction-measurements-and-staged-design-2026-10-27).
@@ -1467,6 +1470,26 @@ The proven blocker is foreground safety, not target classification or core targe
   a bounded physical Alt-Tab capture before its conditional implementation.
   Keep this record active; no policy, safety-proof or protocol change is adopted.
 
+## Independent implementation scope (2026-10-28)
+
+- Approved outcomes: record core-selected active windows when commands execute;
+  process commands in order while Windows skips superseded unissued rendering.
+- Acceptance: per-path failing-first core regressions; ordered queued-command
+  coalescing with current safety/effect/hidden-write/flight fences; full native
+  core and Windows suites, formatting and strict clippy; fixture zero-delay
+  stress and independent recovery proof with measured actuation counts.
+- Units: core command-path audit and linked-focus recording; Windows intake and
+  latest-render scheduling; independent safety review; offline and native gates.
+- Parked: arrival-ready phased proof, unknown-foreground policy, fresh authority
+  for never-issued focus, and physical SWITCHEND attribution. Current host-focus
+  convergence remains unchanged; this scope cannot claim to eliminate the
+  unattributed Steam contamination or recognize every genuine click.
+- Audit confirms `world_tiling_views.rs` emits selection focus without recording
+  the chosen linked window. Direct and floating/no-focus directional paths also
+  need recording coverage. Existing Engine commits already cover ordinary tiled
+  directional focus and transfers. Exception/non-leaf storage may require a
+  separate core-model decision and is not silently added.
+
 ## Command-owned memory outcome (2026-10-28)
 
 - Delivered subset: direct linked focus, view-return fallback and global-workspace
@@ -1527,3 +1550,102 @@ The proven blocker is foreground safety, not target classification or core targe
   imports); its tests were not represented as passing. No live action was run.
 - Next core action: decide only the parked memory/model and foreground-policy
   subsets above; the linked, safely bindable command-choice work is complete.
+
+## Windows batch-local coalescing outcome (2026-10-28)
+
+- **Tentative (pending user review):** coalesce pure numbered/trailing selection
+  batches and previous/relative history batches within their existing drains.
+  Dispatch every eligible command in order, acknowledge exact carried receipts,
+  and run the native diff only for the surviving selection. Numbered sends
+  flush the pending selection first and retain their full membership pass.
+  No cross-queue ordering or cross-tick pending slot is invented.
+- **Tentative (pending user review):** superseded commands service an owed
+  observation-only fence before their single dispatch, using core-only capture,
+  delivery and acknowledgment. Rejection catch-up is core-only too. No retry,
+  wait, timer, effect remint, grant transfer or observation-ingestion change.
+  The full command route retains its existing refusal/recovery behavior.
+- Superseded legs perform no rendering, including observation catch-up. They
+  retain fail-closed admission: installing the owned lifetime-tag property on
+  a newly proven member is a native identity-binding write, not rendering.
+  Removing that proof would weaken later write authorization. Offline admission
+  coverage counts this install seam separately and confirms an unproven stranger
+  stays unbound; it does not claim a live new-member tag install never occurs.
+- Final flush rechecks suspension, elevation and topology existence; all existing
+  native game/fullscreen/unreadable-foreground/exact-desktop checks, effect
+  fencing, hidden-write fences, in-flight focus rules and bounded pager tracing
+  remain intact. Superseded incorporation does not advance native diff/proof
+  watermarks, clear a gesture terminal, or create successful native receipts.
+
+| Intake family | Delivered scope / mechanical barrier |
+| --- | --- |
+| Numbered/trailing selection | Latest-only within one digit-intent batch |
+| Previous/relative workspace history | Latest-only within one history-intent batch; every toggle/step still executes in core |
+| Directional focus, including no-focus crossing | Per-command: chord-origin advancement and the next live foreground/output context depend on the prior native focus |
+| Directional move | Per-command: fresh subject/frame/focus and clear/arrival proof depend on the preceding application |
+| Numbered/relative/directional sends | Full membership barriers: distinct windows' transfers are not overwritten state; chained subjects depend on homing receipts and origin/follow focus |
+| Workspace migration | Per-command: next source/view resolution depends on applied view proof |
+| Toggles, resize, launch, close, gesture, settings/lifetime | Unchanged per-command/external boundaries; no elision of effects or distinct subject obligations |
+| CLI and mixed queues | Unchanged: one pending request per control file and separately drained families, not one source-ordered buffered command stream |
+
+- Eighteen focused tests pass. Command and observation apply counters cover the
+  real native-diff entry points, so catch-up cannot hide an intermediate render.
+  Three alternating commands advance three revisions but only one native pass;
+  forced catch-up adds one incorporated observation and no render. Disabling
+  pre-dispatch fence service makes that test fail; restoring it passes. A linked
+  send produces the real window transfer after the full selection barrier.
+  Trailing selection, history toggle/relative ordering and two-output final views
+  match sequential reference executions. Suspension/elevation flips at flush
+  produce no native pass. Gesture coverage pins the single-slot stash only, not
+  mid-burst terminal acknowledgment; moving-cursor burst coverage remains open.
+- Independent final Windows safety review found no blocker. Its low coverage
+  findings for trailing selection, history toggle and two-output state received
+  tests; the narrower gesture/moving-cursor limits above remain explicit.
+- Locked core/protocol/Windows tests pass (3069 passed, one existing ignored;
+  Windows library 1171). Strict locked all-target clippy with `-D warnings`,
+  workspace format check and `git diff --check` pass. Live-library parser and
+  45 fault mocks, stress parser/seam and definition mocks pass.
+
+### Accepted native verification
+
+- Fixture-only, ordinary-integrity native Windows; source dirty `83f22aa7`.
+  Stress owner SHA-256
+  `0390A4B985032CAEE406DA1A02ED502185E85AB246A2FE8C1D9DA80F00274C97`;
+  fixture SHA-256
+  `650C87CB9AEB1340D3C4E1671A2757F23C56F0510D8D118474017689886DB592`.
+  Source/change lists, exact launch identities, settings bytes, taskbar/SPI,
+  display baseline and raw replies/logs are retained outside the repository.
+  A changed-file list alone does not establish source byte equality.
+- Required bounded recovery proof precedes the accepted stress legs: two
+  identity-verified fixture windows hide; the exact owned watcher and primary
+  are terminated; independent readback proves both still hidden after primary
+  exit. Standalone restore reports two restored windows and a cleaned ledger;
+  independent visibility plus settings/taskbar/SPI readbacks match baseline.
+  The proof artifact is separately hashed in retained evidence. Graceful and
+  exact-identity forced exit of a non-hooking fixture were also proven.
+- Earlier six runs at 0/10/50 ms passed but lacked the independent pre-run
+  hide/restore proof. They are excluded from acceptance, not retroactively
+  validated by their cleanup. The two runs below followed the corrected proof;
+  each completed exact-owner stop/restore, fixture shutdown, settings restoration
+  and clean run-owned process/ledger/control state. An unrelated unproven fixture
+  process with no test windows was preserved, never claimed as run-owned cleanup.
+
+| Accepted case, added delay | Commands | Show posts | Hide posts | Native focus setters |
+| --- | --- | --- | --- | --- |
+| home-away, 0 ms | 102 | 50 | 50 | 73 |
+| trio-churn, 0 ms | 102 | 75 | 75 | 74 |
+
+- Counts include command and observation applies, deduplicated by fresh revision
+  with paired pager projections excluded. Stress windows contain 291 and 288
+  fresh revisions respectively. Excluded bootstrap/setup contributes zero
+  visibility posts and zero/one focus setter respectively; no cleanup-tail apply
+  is included. Count posted visibility APIs and `primitive_called:true`, not
+  desired operations or attempted effects.
+- No comparable HEAD-only baseline was built, so no native count reduction is
+  claimed. CLI publication uses single-pending request files (61 transport gaps
+  per case); these successful zero-added-delay legs do not demonstrate keyboard
+  bursts or a measured coalescing speedup. Injected-key filtering is unchanged.
+- Next: review the tentative bounded scheduler choices; general cross-family or
+  subject/proof-independent intake needs a separately justified extension.
+  Staged arrival-ready authority, unknown-foreground A/B, R2, SWITCHEND and
+  exception/non-leaf memory remain parked. This combined investigation stays
+  active for those decisions; the bounded Windows implementation is complete.

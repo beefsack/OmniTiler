@@ -20,6 +20,97 @@ use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_
 use std::collections::HashMap;
 use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReply};
 
+// Test-only native-planning proof for latest-only scheduling (offline,
+// native-free): counts `apply_accepted` passes. The command counter covers
+// the full command path (`run_world_command`); the observation counter
+// covers `run_observation_tick`, including the synchronous catch-up the
+// command paths service on dispatch refusal/rejection. Core-only superseded
+// dispatches never increment either: they plan/apply zero native writes
+// themselves. Production behavior is unchanged: the counters are never read
+// outside tests.
+#[cfg(test)]
+thread_local! {
+    static COMMAND_APPLY_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static OBSERVATION_APPLY_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Reset the command-path apply counter (test-only).
+#[cfg(test)]
+pub(super) fn reset_command_apply_count() {
+    COMMAND_APPLY_COUNT.with(|slot| slot.set(0));
+}
+
+/// Read the command-path apply counter (test-only).
+#[cfg(test)]
+#[must_use]
+pub(super) fn command_apply_count() -> u64 {
+    COMMAND_APPLY_COUNT.with(|slot| slot.get())
+}
+
+/// Reset the observation-path apply counter (test-only).
+#[cfg(test)]
+pub(super) fn reset_observation_apply_count() {
+    OBSERVATION_APPLY_COUNT.with(|slot| slot.set(0));
+}
+
+/// Read the observation-path apply counter (test-only).
+#[cfg(test)]
+#[must_use]
+pub(super) fn observation_apply_count() -> u64 {
+    OBSERVATION_APPLY_COUNT.with(|slot| slot.get())
+}
+
+/// Reset both apply counters (test-only).
+#[cfg(test)]
+pub(super) fn reset_all_apply_counts() {
+    reset_command_apply_count();
+    reset_observation_apply_count();
+}
+
+/// Read the combined apply-pass total (test-only).
+#[cfg(test)]
+#[must_use]
+pub(super) fn total_apply_count() -> u64 {
+    command_apply_count() + observation_apply_count()
+}
+
+/// Which native-application leg a dispatched command takes. `Apply` runs
+/// the full plan/apply pass; `Superseded` orders through the core exactly
+/// once with no native planning or application on this leg. Owed
+/// observation-only catch-up is fenced identically but serviced
+/// asymmetrically: the full leg applies it natively through the observation
+/// path, while the superseded leg inspects the fence before dispatching,
+/// services it once through a native-free core-only observation (exact
+/// receipts acked, no planning, no applied watermark, no trace proof, no
+/// gesture clearing), then dispatches the command exactly once. A refused or
+/// rejected superseded command stays dropped (never queued, never
+/// re-dispatched): the next command's own pre-dispatch inspection services
+/// any fence still owed. Intermediate states never render but every
+/// dispatched command still orders.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandApplyMode {
+    Apply,
+    Superseded,
+}
+
+/// Acknowledge exactly the delivered close receipts the core incorporated
+/// and prune exact-equality pairs from the adapter close map. Shared by
+/// both command legs so the ack contract cannot drift between them.
+fn ack_close_receipts(
+    world: &mut super::world_owner::WorldOwner,
+    pending_closed: &mut std::collections::BTreeMap<String, super::retained::PendingClosed>,
+    reply: &tiler_core::world_report::WorldReply,
+    applied_homing: &mut std::collections::HashMap<String, (String, String)>,
+) -> super::world_sequencer::AckOutcome {
+    let mut pending = std::mem::take(pending_closed);
+    let (ack_outcome, pruned) = world.ack(reply, &mut pending);
+    *pending_closed = pending;
+    for token in pruned {
+        applied_homing.remove(&token);
+    }
+    ack_outcome
+}
+
 impl TileLoop {
     /// Clear the stashed terminal override on genuine incorporation proof:
     /// a freshly accepted reply carrying a gesture terminal whose id
@@ -1480,6 +1571,8 @@ pub(super) fn run_observation_tick(
         &mut clear_attempts,
         tick_ms,
     );
+    #[cfg(test)]
+    OBSERVATION_APPLY_COUNT.with(|slot| slot.set(slot.get() + 1));
     let hover_hit = captured.cursor_hit.as_ref().map(|hit| hit.0.clone());
     let hover_changed = world.hover_trace_changed(
         hover_hit.as_deref(),
@@ -1645,18 +1738,180 @@ pub(super) fn run_observation_tick(
     }
 }
 
-/// Route one explicit [`WorldCommand`] through the single owner: dispatch
-/// with the command, deliver, apply, and acknowledge like the observation
-/// path. The command is never queued or replayed: while observation-only
-/// catch-up is pending the dispatch refuses and the caller resubmits after,
-/// and a core rejection drops the command. Either fence services the owed
-/// observation-only catch-up synchronously on this turn's tick products
-/// before returning, so the next command never strands behind an idle wait
-/// for an unrelated wake.
-// Ten inputs are the disjoint production command products; bundling would
-// hide the borrow split the runtime relies on.
+/// Core-only observation catch-up for the superseded command leg: dispatch
+/// one observation, deliver through the staged production path, and
+/// acknowledge the exact carried receipts with no native planning or
+/// application. The diff applied watermark, trace proof, gesture stash,
+/// proven receipt maps, and hidden seeds all stay untouched: those belong to
+/// the latest full pass. Neither apply oracle counter moves. Returns true
+/// only when the ack applied current (the fence cleared); stale/ignored
+/// outcomes keep the fence and return false with no loop, no timer, no wait.
+/// The admission preamble is identical to the full-leg dispatch preamble
+/// (mechanical binding only, fail-closed): it may bind newly proven members
+/// exactly as a full-leg tick would, so this leg is native-free only in the
+/// plan/apply sense, never in the admission sense.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_world_command(
+fn run_observation_core_only(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    areas: &[MonitorArea],
+    foreground_hwnd: u64,
+    fulls: &[tiler_core::geometry::Rect],
+    cursor: Option<(i32, i32)>,
+) -> bool {
+    let tick = state.tick;
+    let log_path = state.log_path.clone();
+    admit_observed(state, me, observed);
+    admit_retained_and_marks(state, me, observed, retained, areas);
+    snapshot_frames(state, observed);
+    super::rows::refresh_world_hints(state, observed, retained);
+    let presentation_native_order = state.last_native_order.clone();
+    let gesture = state.gesture_ingress(cursor);
+    let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
+    // Commands never run on the game lane, so the pause flag stays clear
+    // here like the command dispatch below.
+    let presentation_paused = false;
+    let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
+        state.presentation_tick_inputs(me, fulls, foreground_hwnd);
+    let presentation_border_enabled = state.border.enabled;
+    let presentation_underlay_enabled = state.underlay.enabled;
+    let TileLoop {
+        ref mut world,
+        ref member_tokens,
+        ref member_identity,
+        ref member_tags,
+        ref mut member_rects,
+        ref mut float_rects,
+        ref hint_logged,
+        ref sticky,
+        ref floated,
+        ref restart_reject_hold,
+        ref born_fullscreen,
+        ref born_first_exit,
+        ref fixed_auto_seen,
+        ref fixed_tile_overrides,
+        ref fixed_origin_overrides,
+        ref mut hidden_claims,
+        ref minimized_omitted,
+        ref mut pending_closed,
+        ref scope,
+        ref settings_live,
+        ref output_tokens,
+        ref active_output,
+        ref mut applied_homing,
+        ref mut applied_views,
+        inner_gap,
+        outer_gap,
+        ref active,
+        ..
+    } = *state;
+    world.invalidate();
+    let tick_ms = super::trace::log_mono_ms();
+    let inputs = TileLoop::owner_inputs(
+        member_tokens,
+        member_identity,
+        member_tags,
+        member_rects,
+        float_rects,
+        hint_logged,
+        sticky,
+        floated,
+        restart_reject_hold,
+        born_fullscreen,
+        born_first_exit,
+        fixed_auto_seen,
+        fixed_tile_overrides,
+        fixed_origin_overrides,
+        hidden_claims,
+        minimized_omitted,
+        pending_closed,
+        scope,
+        settings_live,
+        output_tokens,
+        active_output.as_str(),
+        applied_homing,
+        applied_views,
+        inner_gap,
+        outer_gap,
+        active,
+        cursor,
+        hit_hwnd,
+        gesture.clone(),
+        presentation_foreground.clone(),
+        presentation_chord,
+        presentation_move.clone(),
+        presentation_border_enabled,
+        presentation_underlay_enabled,
+        presentation_style,
+        presentation_paused,
+        presentation_native_order.clone(),
+    );
+    let report = match world.try_dispatch_observation(
+        &inputs,
+        Some(observed),
+        retained,
+        areas,
+        foreground_hwnd,
+        tick_ms,
+    ) {
+        Ok(report) => report,
+        Err(_) => return false,
+    };
+    let outcome = world.deliver_production(&report);
+    let (delivery, reply) = match outcome {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => ("accepted", reply),
+        tiler_core::world_engine::WorldOutcome::Duplicate(reply) => ("duplicate", reply),
+        tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => {
+            ("command-consumed", reply)
+        }
+        tiler_core::world_engine::WorldOutcome::Rejected { .. } => {
+            world.note_rejected_or_lost(&report.request_id);
+            return false;
+        }
+    };
+    // Honest row, never a native outcome: this leg planned/applied nothing.
+    super::trace::log_json_at(
+        &log_path,
+        serde_json::json!({
+            "event": "world-apply",
+            "tick": tick,
+            "request": report.request_id.clone(),
+            "delivery": delivery,
+            "command": "observation",
+            "native": "catchup-core-only-skipped",
+        }),
+    );
+    match ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing) {
+        // Incorporated and current: obligations acked and the fence cleared,
+        // with no native planning, no applied watermark, no trace proof, and
+        // no gesture clearing. The latest full pass owns all of those.
+        super::world_sequencer::AckOutcome::Applied(_) => true,
+        super::world_sequencer::AckOutcome::Stale(_)
+        | super::world_sequencer::AckOutcome::Ignored { .. } => false,
+    }
+}
+
+/// Shared command dispatch core: admission preamble, catch-up fence check
+/// (superseded leg only), capture, single dispatch, deliver, then either the
+/// full native plan/apply pass (`Apply`) or the superseded order-only tail
+/// (`Superseded`). The superseded leg inspects the owed observation-only
+/// catch-up before dispatching and services it once through a native-free
+/// core-only observation on this turn's tick products, then dispatches the
+/// command exactly once: no re-dispatch, no replay, no loop, no timer, no
+/// wait. A refused superseded command stays dropped; the next command's own
+/// pre-dispatch inspection services any fence still owed. The full leg keeps
+/// its existing behavior: a refused command stays dropped while owed
+/// catch-up is applied natively through the observation path on this turn's
+/// tick products. Either leg services a core rejection's newly armed fence
+/// synchronously on this turn's tick products (natively on the full leg,
+/// core-only on the superseded leg); the rejected command stays dropped
+/// (never queued, never replayed).
+// Ten inputs are the disjoint production command products plus the leg
+// mode; bundling would hide the borrow split the runtime relies on.
+#[allow(clippy::too_many_arguments)]
+fn run_world_command_impl(
     state: &mut TileLoop,
     me: &crate::model::ProcessIdentity,
     store: &crate::storage::LedgerStore,
@@ -1668,6 +1923,7 @@ pub(super) fn run_world_command(
     fulls: &[tiler_core::geometry::Rect],
     command: WorldCommand,
     cursor: Option<(i32, i32)>,
+    mode: CommandApplyMode,
 ) -> Option<tiler_core::world_report::WorldReply> {
     let trace = state.trace;
     let tick = state.tick;
@@ -1677,6 +1933,23 @@ pub(super) fn run_world_command(
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
+    // Superseded fence first: when observation-only catch-up is owed, service
+    // it once through the native-free core-only observation before the single
+    // command dispatch below, so the dispatch itself never meets a fence this
+    // turn armed. The full leg never runs this: its post-refusal path below
+    // applies owed catch-up natively instead.
+    if mode == CommandApplyMode::Superseded && state.world.catchup_required() {
+        run_observation_core_only(
+            state,
+            me,
+            observed,
+            retained,
+            areas,
+            foreground_hwnd,
+            fulls,
+            cursor,
+        );
+    }
     // The native stacking snapshot stashed by the latest observation;
     // capture maps it to opaque lifetimes for the pager order.
     let presentation_native_order = state.last_native_order.clone();
@@ -1812,10 +2085,19 @@ pub(super) fn run_world_command(
                         "reason": reason,
                     }),
                 );
-                if matches!(
+                let catchup_owed = matches!(
                     dispatch,
                     super::world_sequencer::DispatchError::CatchupRequired
-                ) {
+                );
+                // The superseded leg already serviced the fence before its
+                // single dispatch: a refusal here (fence still owed, busy
+                // flight, exhausted counters) drops the command honestly with
+                // no second service and no re-dispatch. The next command's
+                // own pre-dispatch inspection services any fence still owed.
+                if mode == CommandApplyMode::Superseded {
+                    return None;
+                }
+                if catchup_owed {
                     // Owed catch-up serviced synchronously on this turn's
                     // tick products: the fence stays (the refused command
                     // never queues or replays) but the next command must
@@ -1867,24 +2149,76 @@ pub(super) fn run_world_command(
             world.note_rejected_or_lost(&report.request_id);
             // The rejection just armed observation-only catch-up; service
             // it synchronously on this turn's tick products instead of
-            // stranding the next command behind an unrelated wake. The
-            // rejected command stays dropped (never queued, never replayed).
-            run_observation_tick(
-                state,
-                me,
-                store,
-                dir,
-                observed,
-                retained,
-                areas,
-                foreground_hwnd,
-                fulls,
-                cursor,
-                false,
-            );
+            // stranding the next command behind an unrelated wake. The full
+            // leg applies it natively; the superseded leg stays native-free
+            // (core-only). Either way the rejected command stays dropped
+            // (never queued, never replayed).
+            if mode == CommandApplyMode::Superseded {
+                run_observation_core_only(
+                    state,
+                    me,
+                    observed,
+                    retained,
+                    areas,
+                    foreground_hwnd,
+                    fulls,
+                    cursor,
+                );
+            } else {
+                run_observation_tick(
+                    state,
+                    me,
+                    store,
+                    dir,
+                    observed,
+                    retained,
+                    areas,
+                    foreground_hwnd,
+                    fulls,
+                    cursor,
+                    false,
+                );
+            }
             return None;
         }
     };
+    if mode == CommandApplyMode::Superseded {
+        // Order-only tail: the core incorporated this report under
+        // `delivery`, but this leg plans/applies zero native writes itself.
+        // Fence service on this leg is likewise native-free (the pre-dispatch
+        // core-only observation above, or the core-only service on a core
+        // rejection); only the full leg applies catch-up natively. The latest
+        // reply's own `world-apply` row carries the actual native outcome;
+        // this row must never read as one.
+        super::trace::log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "world-apply",
+                "tick": tick,
+                "request": report.request_id.clone(),
+                "delivery": delivery,
+                "command": command_kind,
+                "native": "superseded-skipped",
+            }),
+        );
+        let ack_outcome = ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing);
+        match ack_outcome {
+            // Incorporated and current: obligations acked, desired snapshot
+            // advanced core-side, but NO native planning, NO applied
+            // watermark, NO trace proof, NO gesture clearing. The latest
+            // full pass owns all of those.
+            super::world_sequencer::AckOutcome::Applied(_) => return Some(reply),
+            // Stale but correlated: incorporation acked where it happened,
+            // catch-up scheduled. Return the cached reply like the full
+            // path so the caller can still count the command as ordered;
+            // the next dispatch services the owed catch-up through the
+            // same fence as today.
+            super::world_sequencer::AckOutcome::Stale(_) => {
+                return world.last_reply().cloned();
+            }
+            super::world_sequencer::AckOutcome::Ignored { .. } => return None,
+        }
+    }
     let inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
@@ -2030,6 +2364,8 @@ pub(super) fn run_world_command(
         &mut clear_attempts,
         tick_ms,
     );
+    #[cfg(test)]
+    COMMAND_APPLY_COUNT.with(|slot| slot.set(slot.get() + 1));
     let hover_hit = captured.cursor_hit.as_ref().map(|hit| hit.0.clone());
     let hover_changed = world.hover_trace_changed(
         hover_hit.as_deref(),
@@ -2156,12 +2492,7 @@ pub(super) fn run_world_command(
     for attempt in clear_attempts {
         world.note_clear_attempt(attempt);
     }
-    let mut pending = std::mem::take(pending_closed);
-    let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
-    *pending_closed = pending;
-    for token in pruned {
-        applied_homing.remove(&token);
-    }
+    let ack_outcome = ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing);
     match ack_outcome {
         super::world_sequencer::AckOutcome::Applied(_) => {
             world.note_diff_applied(&reply);
@@ -2193,6 +2524,136 @@ pub(super) fn run_world_command(
         }
         super::world_sequencer::AckOutcome::Ignored { .. } => None,
     }
+}
+
+/// Route one explicit [`WorldCommand`] through the single owner: dispatch
+/// with the command, deliver, apply, and acknowledge like the observation
+/// path. The command is never queued or replayed: while observation-only
+/// catch-up is pending the dispatch refuses and the caller resubmits after,
+/// and a core rejection drops the command. Either fence services the owed
+/// observation-only catch-up synchronously on this turn's tick products
+/// before returning, so the next command never strands behind an idle wait
+/// for an unrelated wake.
+// Ten inputs are the disjoint production command products; bundling would
+// hide the borrow split the runtime relies on.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_world_command(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    store: &crate::storage::LedgerStore,
+    dir: &std::path::Path,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    areas: &[MonitorArea],
+    foreground_hwnd: u64,
+    fulls: &[tiler_core::geometry::Rect],
+    command: WorldCommand,
+    cursor: Option<(i32, i32)>,
+) -> Option<tiler_core::world_report::WorldReply> {
+    run_world_command_impl(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground_hwnd,
+        fulls,
+        command,
+        cursor,
+        CommandApplyMode::Apply,
+    )
+}
+
+/// Route one explicit [`WorldCommand`] through the single owner WITHOUT
+/// native application by the dispatch itself: dispatch with the command,
+/// deliver, and acknowledge the exact carried receipts, but plan/apply zero
+/// native writes on this leg.
+///
+/// Adapter-only structural latest-only scheduling for superseded pure
+/// workspace selections: every queued command still orders through the core
+/// exactly once (counters, engine adoption, and flight receipts advance per
+/// command), while only the batch's latest reply runs the native planning
+/// pass in [`run_world_command`]. No timers, waits, or staged-arrival
+/// changes: owed observation-only catch-up is inspected before the single
+/// dispatch and serviced once through a native-free core-only observation
+/// (never the applying observation path), then the command dispatches
+/// exactly once. A refused command stays dropped (never queued, never
+/// re-dispatched); a rejected command stays dropped (never queued, never
+/// replayed), with its newly armed fence serviced synchronously through the
+/// same native-free core-only observation.
+///
+/// Never sets the selection-arrival grant (only the latest applied reply may
+/// arm one; grants are never copied between reports), never touches the diff
+/// gate's applied watermark or trace proof, and never clears the stashed
+/// gesture override: those belong to the latest applied incorporation only.
+/// Close receipts still prune on exact equality even with no apply: an
+/// incorporated report acks what it carried, and nothing attempted is
+/// reported as successfully applied (the caller logs `superseded`, never
+/// `ok`). All native hidden-write/effect/exact-desktop/flight gates stay
+/// intact because they run inside the latest reply's own apply pass,
+/// unchanged; a stale latest effect still drops honestly under the existing
+/// rule there.
+///
+/// Scope is pure selection bursts (see `workspace_tick`): barrier commands
+/// always take the full path and flush any pending select first.
+// Ten inputs are the disjoint production command products; bundling would
+// hide the borrow split the runtime relies on.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_world_command_core_only(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    store: &crate::storage::LedgerStore,
+    dir: &std::path::Path,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    areas: &[MonitorArea],
+    foreground_hwnd: u64,
+    fulls: &[tiler_core::geometry::Rect],
+    command: WorldCommand,
+    cursor: Option<(i32, i32)>,
+) -> Option<tiler_core::world_report::WorldReply> {
+    run_world_command_impl(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground_hwnd,
+        fulls,
+        command,
+        cursor,
+        CommandApplyMode::Superseded,
+    )
+}
+
+/// Observe once through the production observation path and route one
+/// [`WorldCommand`] core-only (no native planning or application on the
+/// command leg). Enumeration failure (`None`) holds with no dispatch.
+/// Returns the incorporated reply when the owner ordered it, so the caller
+/// can count every queued command while no native planning or application
+/// runs until the latest full pass (the shared admission preamble still
+/// binds fail-closed like the full path).
+pub(super) fn observe_and_command_core_only(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    store: &crate::storage::LedgerStore,
+    dir: &std::path::Path,
+    fulls: &[tiler_core::geometry::Rect],
+    areas: &[MonitorArea],
+    command: WorldCommand,
+) -> Option<tiler_core::world_report::WorldReply> {
+    let cursor = super::observation::sample_cursor();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    let foreground = live_foreground_window();
+    let observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
+    run_world_command_core_only(
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls, command, cursor,
+    )
 }
 
 /// Observe once through the production observation path and route one

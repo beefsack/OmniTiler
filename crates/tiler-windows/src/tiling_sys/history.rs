@@ -66,18 +66,162 @@ pub(super) fn select_resolved_log(
     })
 }
 
-/// Drain one bounded batch of workspace history intents through the world
-/// owner. Toggle and relative steps select views only, never movers. The
-/// core owns history outright (`SelectPrevious` / `SelectRelative`); this
-/// tick only routes and logs the honest outcome per intent. Fullscreen and
-/// elevated foreground gate dispatch like digits; the takeover-off switch
-/// disables all interception.
+/// Core command for one history intent: toggle, single-step back, or
+/// single-step forward. All three are pure view selects with no mover
+/// subject; the core resolves the target from the cursor-first switch
+/// target and the retained history.
+fn history_command(op: WorkspaceHistoryOp) -> tiler_core::world_report::WorldCommand {
+    match op {
+        WorkspaceHistoryOp::Previous => {
+            tiler_core::world_report::WorldCommand::SelectPrevious { output: None }
+        }
+        WorkspaceHistoryOp::Prev => tiler_core::world_report::WorldCommand::SelectRelative {
+            output: None,
+            delta: -1,
+        },
+        WorkspaceHistoryOp::Next => tiler_core::world_report::WorldCommand::SelectRelative {
+            output: None,
+            delta: 1,
+        },
+    }
+}
+
+/// Full native application for one gate-passing history intent: fresh
+/// observation, full plan/apply, exact final-state diagnostics from the
+/// applied reply. Unchanged from the pre-latest-only path: the applied
+/// reply IS the outcome, and all native gates run inside it.
+#[allow(clippy::too_many_arguments)]
+fn apply_history(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    log_path: &Path,
+    op: WorkspaceHistoryOp,
+    edge: crate::snapkey::SnapEdge,
+    tick: u64,
+) {
+    // Flush-time gate recheck (same gates as intake): a game change
+    // between the queued intent's arrival and this flush drops the
+    // pending intent instead of applying it. Never dispatches.
+    if suspend_read(state, me, fulls).veto.block {
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "workspace-history",
+                "op": op.as_str(),
+                "edge": edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "suspended",
+            }),
+        );
+        return;
+    }
+    if foreground_elevated(me) {
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "workspace-history",
+                "op": op.as_str(),
+                "edge": edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "elevated-foreground",
+            }),
+        );
+        return;
+    }
+    if areas.is_empty() {
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "workspace-history",
+                "op": op.as_str(),
+                "edge": edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "unknown-output",
+            }),
+        );
+        return;
+    }
+    // The adapter selects no output: numbered/relative/previous/trailing
+    // resolve in core from the cursor-first switch target. Diagnostics
+    // below read the resolved target back from the applied reply.
+    let before = state.world.core_projections().2;
+    let command = history_command(op);
+    let reply =
+        super::world_tick::observe_and_command(state, me, store, dir, fulls, areas, command);
+    let line = match reply.as_ref() {
+        Some(applied) => {
+            state.tick += 1;
+            match resolved_select_view(state, &before, applied) {
+                Some((device, view)) => select_resolved_log(
+                    "workspace-history",
+                    tick,
+                    &device,
+                    &view,
+                    op.as_str(),
+                    0,
+                    edge.as_str(),
+                    "ok",
+                ),
+                None => workspace_history_log(state, tick, op.as_str(), edge.as_str(), "ok"),
+            }
+        }
+        None => workspace_history_log(state, tick, op.as_str(), edge.as_str(), "unverified"),
+    };
+    log_json_at(log_path, line);
+}
+
+/// Core-only ordering for a superseded history intent: fresh observation
+/// per dispatch (observations never render), exact receipts acked, no
+/// native planning or application on this leg (the shared admission
+/// preamble still binds fail-closed like the full path). `Some` means the
+/// core ordered the command (log `superseded`, never `ok`: nothing
+/// attempted is successful application); `None` means it never ordered
+/// (log `unverified`, same as the full path's fence outcome).
+#[allow(clippy::too_many_arguments)]
+fn supersede_history(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    log_path: &Path,
+    op: WorkspaceHistoryOp,
+    edge: crate::snapkey::SnapEdge,
+    tick: u64,
+) {
+    let command = history_command(op);
+    let ordered = super::world_tick::observe_and_command_core_only(
+        state, me, store, dir, fulls, areas, command,
+    );
+    if ordered.is_some() {
+        state.tick += 1;
+    }
+    log_json_at(
+        log_path,
+        workspace_history_log(
+            state,
+            tick,
+            op.as_str(),
+            edge.as_str(),
+            if ordered.is_some() {
+                "superseded"
+            } else {
+                "unverified"
+            },
+        ),
+    );
+}
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_history_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,
-    _store: &LedgerStore,
-    _dir: &Path,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     events: Vec<QueuedWorkspaceHistoryIntent>,
@@ -103,6 +247,14 @@ pub(super) fn workspace_history_tick(
         }
         return;
     }
+    // Batch-scoped pending latest history select: every intent orders
+    // through the core exactly once, but only the latest reply plans and
+    // applies natively. A superseded intent dispatches core-only on arrival
+    // of the next intent; the surviving intent applies fully at batch end.
+    // All three ops are pure view selects with no mover subject and no
+    // origin binding, so intermediate native writes are strictly
+    // overwritten by the latest view. Never crosses ticks.
+    let mut pending_history: Option<QueuedWorkspaceHistoryIntent> = None;
     for intent in events {
         if !intent.consumed || !intent.announce {
             if state.trace {
@@ -146,48 +298,48 @@ pub(super) fn workspace_history_tick(
             );
             continue;
         }
-        // The adapter selects no output: numbered/relative/previous/trailing
-        // resolve in core from the cursor-first switch target. Diagnostics
-        // below read the resolved target back from the applied reply.
-        let before = state.world.core_projections().2;
-        let command = match intent.op {
-            WorkspaceHistoryOp::Previous => {
-                tiler_core::world_report::WorldCommand::SelectPrevious { output: None }
-            }
-            WorkspaceHistoryOp::Prev => tiler_core::world_report::WorldCommand::SelectRelative {
-                output: None,
-                delta: -1,
-            },
-            WorkspaceHistoryOp::Next => tiler_core::world_report::WorldCommand::SelectRelative {
-                output: None,
-                delta: 1,
-            },
+        // Mechanical topology-existence fence (no policy): with no live
+        // area the core has no registry to resolve from.
+        if areas.is_empty() {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "workspace-history",
+                    "op": intent.op.as_str(),
+                    "edge": intent.edge.as_str(),
+                    "disposition": "consumed",
+                    "outcome": "unknown-output",
+                }),
+            );
+            continue;
         };
-        let op = intent.op.as_str();
-        let edge = intent.edge;
-        let tick = state.tick;
-        let reply =
-            super::world_tick::observe_and_command(state, me, _store, _dir, fulls, areas, command);
-        let line = match reply.as_ref() {
-            Some(applied) => {
-                state.tick += 1;
-                match resolved_select_view(state, &before, applied) {
-                    Some((device, view)) => select_resolved_log(
-                        "workspace-history",
-                        tick,
-                        &device,
-                        &view,
-                        op,
-                        0,
-                        edge.as_str(),
-                        "ok",
-                    ),
-                    None => workspace_history_log(state, tick, op, edge.as_str(), "ok"),
-                }
-            }
-            None => workspace_history_log(state, tick, op, edge.as_str(), "unverified"),
-        };
-        log_json_at(&log_path, line);
+        // Order the previously pending history select core-only now: it is
+        // superseded by this arrival, so its reply must never plan or
+        // apply natively. Each dispatch observes fresh; only the surviving
+        // select applies below.
+        if let Some(prev) = pending_history.take() {
+            let prev_tick = state.tick;
+            supersede_history(
+                state, me, store, dir, fulls, areas, &log_path, prev.op, prev.edge, prev_tick,
+            );
+        }
+        pending_history = Some(intent);
+    }
+    // Flush the surviving history select (if any) through the full path.
+    if let Some(pending) = pending_history.take() {
+        let pending_tick = state.tick;
+        apply_history(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            &log_path,
+            pending.op,
+            pending.edge,
+            pending_tick,
+        );
     }
 }
 

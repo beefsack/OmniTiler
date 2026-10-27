@@ -593,6 +593,25 @@ impl WorldSequencer {
         true
     }
 
+    /// Read-only fence inspection (production): whether observation-only
+    /// catch-up is currently owed. Lets the superseded command leg service
+    /// the fence before its single dispatch without arming, clearing, or
+    /// consuming anything.
+    #[must_use]
+    pub(super) fn catchup_required(&self) -> bool {
+        self.observation_only_catchup
+    }
+
+    /// Force observation-only catch-up (test-only): arms the fence a stale
+    /// ack or rejection would set, so latest-only tests can prove a
+    /// superseded burst stays native-free through the fence without
+    /// fabricating engine divergence. No production caller.
+    #[cfg(test)]
+    pub(super) fn arm_catchup_for_test(&mut self) {
+        self.observation_only_catchup = true;
+        self.obs_dirty = true;
+    }
+
     /// Generation reset under an explicit NEW identity: clears sequencer
     /// flight/ordering/desired/command state plus pending raw attempts, and
     /// rebuilds the engine under the Windows profile. Attempt maps clear

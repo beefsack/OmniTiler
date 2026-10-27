@@ -36,6 +36,14 @@ Tentative index (user review pending; not approved product rules):
   returns false. Failed binding/residue and exception/non-leaf storage stay
   parked, with no promised repair; observation/departure ingestion is unchanged
   ([record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28)).
+- Windows batch-local selection coalescing, tentative (pending user review):
+  numbered/trailing and previous/relative history batches incorporate every
+  eligible command, render only their survivor under fresh existing gates,
+  and flush before membership sends. Superseded catch-up services its fence
+  before one command dispatch, without rendering or retry. Fail-closed native
+  identity binding remains; other intake families remain per-command where
+  live subject/proof dependencies or separate queues prevent mechanical
+  coalescing ([scope and evidence](changes/windows-workspace-return-focus.md#windows-batch-local-coalescing-outcome-2026-10-28)).
 - Windows pager bounded ordered native diagnostics and drain-context correlation,
   tentative (pending user review); no rendering-policy change
   ([record](changes/windows-pager-workspace-flicker.md#decisions))

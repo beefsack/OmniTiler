@@ -61,6 +61,20 @@ thread_local! {
     pub(super) static INJECTED_ZORDER: std::cell::RefCell<
         Option<Vec<crate::native_guards::WindowKey>>,
     > = const { std::cell::RefCell::new(None) };
+    /// Scripted per-read suspend verdicts (test-only, offline): each
+    /// `suspend_read` pops the front while non-empty, so a test can flip
+    /// the gate between a batch's intake reads and its flush recheck.
+    /// Empty falls through to [`INJECTED_SUSPEND`]. Cleared by
+    /// [`clear_pending_seams`].
+    pub(super) static INJECTED_SUSPEND_SEQ: std::cell::RefCell<std::collections::VecDeque<bool>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    /// Scripted per-read elevation verdicts (test-only, offline): each
+    /// elevation classification pops the front while non-empty, so a test
+    /// can flip the gate between intake and flush. Empty falls through to
+    /// the coarse [`INJECTED_ELEVATED`] / probe seams. Cleared by
+    /// [`clear_pending_seams`].
+    pub(super) static INJECTED_ELEVATED_SEQ: std::cell::RefCell<std::collections::VecDeque<bool>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Inject one observed/enumeration snapshot for offline ticks (test-only).
@@ -88,6 +102,15 @@ pub(super) fn inject_pending_suspend(blocked: Option<bool>) {
     INJECTED_SUSPEND.with(|slot| slot.set(blocked));
 }
 
+/// Script an ordered suspend verdict per gate read (test-only, offline):
+/// intake and flush rechecks each consume one entry in order.
+#[cfg(test)]
+pub(super) fn inject_pending_suspend_seq(seq: Vec<bool>) {
+    INJECTED_SUSPEND_SEQ.with(|slot| {
+        *slot.borrow_mut() = seq.into_iter().collect();
+    });
+}
+
 #[cfg(test)]
 pub(super) fn inject_pending_stop(stopped: bool) {
     INJECTED_STOP.with(|slot| slot.set(stopped));
@@ -113,6 +136,15 @@ pub(super) struct InjectedElevProbe {
 #[cfg(test)]
 pub(super) fn inject_pending_elevated(elevated: Option<bool>) {
     INJECTED_ELEVATED.with(|slot| slot.set(elevated));
+}
+
+/// Script an ordered elevation verdict per gate read (test-only, offline):
+/// intake and flush rechecks each consume one entry in order.
+#[cfg(test)]
+pub(super) fn inject_pending_elevated_seq(seq: Vec<bool>) {
+    INJECTED_ELEVATED_SEQ.with(|slot| {
+        *slot.borrow_mut() = seq.into_iter().collect();
+    });
 }
 
 /// Script the elevation probe's native inputs (test-only, offline): the
@@ -193,6 +225,12 @@ pub(super) fn clear_pending_seams() {
     INJECTED_PARENTS_ACTIVE.with(|active| active.set(false));
     INJECTED_ZORDER.with(|slot| {
         *slot.borrow_mut() = None;
+    });
+    INJECTED_SUSPEND_SEQ.with(|slot| {
+        slot.borrow_mut().clear();
+    });
+    INJECTED_ELEVATED_SEQ.with(|slot| {
+        slot.borrow_mut().clear();
     });
     clear_test_hints();
 }

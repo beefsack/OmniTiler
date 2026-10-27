@@ -212,6 +212,35 @@ pub(super) fn suspend_read(
     fulls: &[Rect],
 ) -> ForegroundRead {
     #[cfg(test)]
+    if let Some(blocked) = INJECTED_SUSPEND_SEQ.with(|slot| slot.borrow_mut().pop_front()) {
+        use crate::native_guards::ForegroundVetoReason;
+        let _ = (state, me, fulls);
+        if blocked {
+            return ForegroundRead {
+                veto: crate::native_guards::ForegroundVeto {
+                    block: true,
+                    reason: ForegroundVetoReason::Fullscreen,
+                },
+                desktop: false,
+                visible: true,
+                captioned: false,
+                dwm_readable: true,
+                cloaked: false,
+            };
+        }
+        return ForegroundRead {
+            veto: crate::native_guards::ForegroundVeto {
+                block: false,
+                reason: ForegroundVetoReason::None,
+            },
+            desktop: false,
+            visible: false,
+            captioned: false,
+            dwm_readable: false,
+            cloaked: false,
+        };
+    }
+    #[cfg(test)]
     if let Some(blocked) = INJECTED_SUSPEND.with(|slot| slot.get()) {
         use crate::native_guards::ForegroundVetoReason;
         let _ = (state, me, fulls);
@@ -288,7 +317,9 @@ pub(super) fn suspend_limited(
     fulls: &[Rect],
 ) -> (ForegroundRead, u64) {
     #[cfg(test)]
-    if INJECTED_SUSPEND.with(|slot| slot.get()).is_some() {
+    if INJECTED_SUSPEND.with(|slot| slot.get()).is_some()
+        || INJECTED_SUSPEND_SEQ.with(|slot| !slot.borrow().is_empty())
+    {
         // Offline suspension fixtures stay native-free: no foreground HWND
         // is knowable without a native capture, so the limited lane reads
         // unknown (0, fail closed to full suspension) here.

@@ -228,6 +228,19 @@ pub(super) fn foreground_elevated(me: &ProcessIdentity) -> bool {
 /// non-medium) without changing any skip case or product policy.
 pub(super) fn foreground_elevated_detailed(me: &ProcessIdentity) -> ElevatedFacts {
     #[cfg(test)]
+    if let Some(elevated) = INJECTED_ELEVATED_SEQ.with(|slot| slot.borrow_mut().pop_front()) {
+        let _ = me;
+        return ElevatedFacts {
+            elevated,
+            detail: "skipped-injected",
+            open: "skipped",
+            integrity_read: "skipped",
+            integrity: "unknown",
+            foreground: 0,
+            captured: false,
+        };
+    }
+    #[cfg(test)]
     if let Some(elevated) = INJECTED_ELEVATED.with(|slot| slot.get()) {
         let _ = me;
         return ElevatedFacts {
@@ -284,6 +297,19 @@ pub(super) fn foreground_pager_elevated(me: &ProcessIdentity) -> bool {
 /// Same skip/fail-closed legs as [`foreground_elevated_detailed`]; only the
 /// read-RID leg uses [`is_pager_elevated_rid`].
 pub(super) fn foreground_pager_elevated_detailed(me: &ProcessIdentity) -> ElevatedFacts {
+    #[cfg(test)]
+    if let Some(elevated) = INJECTED_ELEVATED_SEQ.with(|slot| slot.borrow_mut().pop_front()) {
+        let _ = me;
+        return ElevatedFacts {
+            elevated,
+            detail: "skipped-injected",
+            open: "skipped",
+            integrity_read: "skipped",
+            integrity: "unknown",
+            foreground: 0,
+            captured: false,
+        };
+    }
     #[cfg(test)]
     if let Some(elevated) = INJECTED_ELEVATED.with(|slot| slot.get()) {
         let _ = me;

@@ -349,6 +349,30 @@ impl WorldOwner {
         let generation = self.seq.core_generation().to_owned();
         self.seq.note_rejected_or_lost(&generation, request_id)
     }
+
+    /// Read-only fence inspection (production): whether observation-only
+    /// catch-up is currently owed. No production mutation.
+    pub(super) fn catchup_required(&self) -> bool {
+        self.seq.catchup_required()
+    }
+
+    /// Force observation-only catch-up (test-only seam): arms the fence a
+    /// stale ack or rejection would set. No production caller.
+    #[cfg(test)]
+    pub(super) fn arm_catchup_for_test(&mut self) {
+        self.seq.arm_catchup_for_test();
+    }
+
+    /// Test-only command-ordering proof: the next command sequence the
+    /// sequencer will assign. Advances exactly once per dispatched explicit
+    /// command (core-only superseded dispatches included); observation-only
+    /// catch-up never moves it. Lets latest-only regressions prove every
+    /// queued command was ordered while native application ran once.
+    #[must_use]
+    #[cfg(test)]
+    pub(super) fn next_command_seq(&self) -> u64 {
+        self.seq.next_command_seq()
+    }
 }
 
 #[cfg(test)]
