@@ -1710,6 +1710,47 @@
   client result rather than widening the retry policy speculatively. The whole
   KDE port remains active; no native height-fix acceptance is claimed.
 
+### Post-repair cap investigation (2026-10-27)
+
+- The physical retest does not recover full height. It does verify the re-arm:
+  serial 3 records the old mismatching readback at revision 37 (line 396),
+  controlled authority and a fresh full-height attempt at revision 38
+  (lines 411-413), then a corroborated short readback and clamp at revision 39
+  (line 418). Do not widen retry policy to override that corroborated result.
+- After the neighbour leaves the destination, the stationary window's full-slot
+  desire is `(8,52,2032,1092)`, but native and pager geometry are
+  `(8,52,1920,1036)`. Successful bracketing broker reads retain revision and
+  observation `65`, the correct full-slot desire and `hold/constraint-clamp`.
+  The observed size exactly matches the other output's work-area dimensions.
+  This is not a wrong core target; the stationary window's full-slot attempts
+  are not in the dropped-neighbour-only diagnostic, so their precise order is
+  not reconstructed from write counts.
+- An exact-window read finds client geometry equal to frame geometry,
+  `minSize=136x126`, `maxSize=2147483647x2147483647`, and destination-output
+  membership. Thus there is no currently advertised finite maximum and no
+  decoration delta explaining this cap. The one-shot read helper was evaluated,
+  unloaded, and its exact script object verified absent; no window writes,
+  focus changes, timers or callbacks were used.
+- The documented KWin `v6.7.4` pin and a matching release-source comparison at
+  `v6.8.1` agree: scripted `frameGeometry` routes through `moveResize`, not
+  `constrainFrameSize`. At `v6.8.1`, `src/xdgshellwindow.cpp:569-595` sends the
+  nonempty requested size minus decoration padding; `configure_bounds` is sent
+  only for an empty requested client size. Commit handling (`:614-664`) derives
+  the frame size from client window geometry. No other-output work-area cap
+  was found on this explicit resize route; pixel snapping cannot explain the
+  large exact work-area-size difference. The adapter writes desired width and
+  height verbatim (`world-native.ts::setGeometry`). No new OmniTiler defect is
+  established by this evidence.
+- Remaining boundary: correlate the actual Wayland configure size and any
+  earlier `configure_bounds` with the client's acknowledged serial and
+  `set_window_geometry`/buffer size. A client retaining an old advisory bound
+  is a hypothesis, not a conclusion or an advertised `maxSize` constraint.
+  Recommendation: a separate bounded client protocol-metadata reproduction,
+  then report the responsible Ghostty/toolkit or KWin behavior. No speculative
+  size override, artificial maximum, extra retries or production change is
+  selected. Full-height/full-width acceptance remains open. This update changes
+  records only; builds and native tests are not rerun for it.
+
 ## Active-drag preview continuity plan (2026-10-27)
 
 - Preserve the latest completed core preview for the same active native gesture
