@@ -7,7 +7,7 @@ Historical implementation detail is recoverable in Git history.
 Status 2026-10-24: shared core + Windows world-model rearchitecture (v2) is
 complete, with final native missing proofs accepted
 ([closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)).
-KDE/macOS remain unported: [adapter guide](porting/world-adapter-guide.md),
+KDE/macOS ports remain incomplete: [adapter guide](porting/world-adapter-guide.md),
 [KDE notes](porting/kde-port-notes.md),
 [macOS notes](porting/macos-port-notes.md).
 Superseded excerpts moved out on 2026-10-24 live in
@@ -161,8 +161,9 @@ Tentative index (user review pending; not approved product rules):
   source counter and refreshes stale surfaces; active-drag preview now uses
   the continuity exception below, while other stale paint stays hidden until
   covering capture. The recorded actual-facts/broker/JS/native-endpoint route
-  passes after failing-first proof. Signal delivery and painting still require
-  physical checks. Field names remain tentative technical vocabulary, not a
+  passes after failing-first proof. Static member-move and focus leave/return
+  freshness passes physically; rapid A/B and in-flight old-paint checks remain.
+  Field names remain tentative technical vocabulary, not a
   new shared-core protocol. [Outcome](changes/kde-world-v2-port.md#stage-5-renderer-causal-freshness-accepted-offline-2026-10-27).
 - **Fullscreen suspension, option B, approved; implemented offline 2026-10-27:** a
   neutral core rule hides borders, underlays, overlays and drop preview on the
@@ -178,8 +179,10 @@ Tentative index (user review pending; not approved product rules):
   and remaining-output pager content; KDE omits matching resolution-output drop
   previews mechanically. Fullscreen transitions invalidate every native surface
   on entry and exit. Windows/macOS production code is unchanged; Windows retains
-  its adapter suspension. Technical names are tentative. Native painting and
-  physical shortcut acceptance remain outstanding.
+  its adapter suspension. Technical names are tentative. Physical mixed-scale
+  dual-output checks pass output-local hiding, unaffected other output, sends,
+  switch hide/reveal and exit restoration; shortcuts acting on the fullscreen
+  window remain unconfirmed.
   [Contract and evidence](changes/kde-world-v2-port.md#focused-fullscreen-presentation-suspension-2026-10-27).
 - **N5, option B, approved; pending implementation:** shared classification
   separates workspace membership from immediate layout/action eligibility.
@@ -268,9 +271,12 @@ pending.
   directional R4 policy change is selected.
 - Borders and underlays remain exact-current in this repair. Their motion hides
   are understood consequences of strict coverage, not permission to relax it.
-- Placement and gesture-local gap bookkeeping are accepted offline; the reported
-  physical height shortfall remains undiagnosed. Bounded terminal rectangle
-  diagnostics support a fixture-only retest before any further height fix.
+- Placement is physically confirmed; gesture-local gap bookkeeping is accepted
+  offline. The Ghostty cross-output height/width shortfall is an external
+  client/toolkit sizing issue: OmniTiler requests the correct size. No extra
+  retries or artificial resize workarounds are planned. The exact Ghostty versus
+  toolkit ownership and stale-bounds mechanism remain unresolved. A draft
+  upstream report exists and is pending filing; it has not been filed.
   [Evidence and limits](changes/kde-world-v2-port.md#mixed-scale-cross-output-drop-outcome-2026-10-27).
 
 ## World command intent and birth ownership (2026-10-26)
@@ -3743,6 +3749,9 @@ platform API behavior.
   - User decision 2026-10-07 (R-DRAG-04): Esc keeps cancelling a drag on both
     platforms (host KWin/Windows move convention; i3 also cancels) despite
     7/8 references dropping at the pointer; a setting may be explored later.
+    **Amended 2026-10-27:** Esc-cancel support is titlebar-drag only. KDE
+    modifier-drag (Meta) plus Esc collides with the desktop lock-screen shortcut;
+    no fix is planned. Physical titlebar-drag Esc cancellation passes.
   - Gap-drag (user 2026-10-10): no anchor at gap 0; gap-drag exists only when
     gaps are above 0, with edge-drag covering gap 0. P3, post-0.1.
   - Tiled move drops use the existing Rust core drop resolver through the

@@ -202,15 +202,16 @@ decisions of 2026-09-24 are under
   marker investigation ([guide](porting/world-adapter-guide.md#coordinates-and-safety)).
   Include tentative host-owned native-only evidence, hybrid creation correlation,
   native attempt preimages, released-source backing/fresh adoption and trailing
-  spare count ([KDE record](changes/kde-world-v2-port.md)); assess future GNOME
+  spare count; border presentation during motion (anchored descriptor), after
+  macOS drag evidence ([KDE record](changes/kde-world-v2-port.md)); assess future GNOME
   and ChromeOS fit as well as the three landed ports.
   Review distinct `NativeWorkspaceId`/`LogicalWorkspaceId` newtypes (both plain
   `String` today): adapters flatten composite native identities into canonical
   opaque keys; core never parses them.
   Port delivery does not pre-approve these interface changes.
-- P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v1 consumers and the
-  TypeScript born-maximized copy remain intentionally stale; the port replaces
-  them together with no dual route, per the finalized
+- P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v2 cutover and removal
+  of the TypeScript born-maximized copy are delivered offline, with no dual
+  route, per the finalized
   [guide](porting/world-adapter-guide.md) and
   [KDE notes](porting/kde-port-notes.md). Approved port work: host-owned
   bootstrap/bindings and outside native changes; remote raw classification facts
@@ -221,19 +222,50 @@ decisions of 2026-09-24 are under
   Deferred investigations: Activities/multi-desktop, async configure. Four
   minimal port discriminator rows keep untested native outcomes TBD; Activities
   defaults tentative pending KDE evidence. v1 KDE rows below keep their
-  historical evidence; replacement belongs to this port. Status (2026-10-26):
+  historical evidence; replacement belongs to this port. Status (2026-10-27):
   Stages 0-3 complete offline. Stage 4: raw capture, shortcuts and N6 (neutral
   workspace-tiling toggle, core-owned birth clear, raw deleted/unmanaged
   mapping) landed; native gesture transport (decision B Esc fence, native
-  `{instance, serial}` identity) accepted offline, physical drag/release/Esc
-  leg pending. Stage 5 renderer causal freshness (gesture identity plus an
-  effect-side invalidation counter) accepted offline 2026-10-27; KWin signal
-  delivery and painting await physical fixture checks. User-approved and pending implementation: neutral
-  focused-fullscreen overlay suspension (shortcuts and workspace semantics
-  unchanged), N5 split of membership from immediate eligibility, execution-time
-  float-toggle geometry, execution-time output targeting for implicit
-  commands. Stages 6-8 not started. Tentative adoption decisions and the
-  oversized decorated-hint bound stay queued for cross-platform review.
+  `{instance, serial}` identity) accepted offline; titlebar-drag Esc physically
+  passes. Stage 5 static border/underlay freshness after member moves and focus
+  leave/return passes physically on two mixed-scale outputs. After `c0435a3c`,
+  preview continuity improves with an acceptable small appearance delay, and
+  cross-output drop placement is physically confirmed. Focused-fullscreen
+  suspension is implemented: physical output-local hide, unaffected other output,
+  send, switch hide/reveal and exit restoration pass; window shortcuts unconfirmed.
+  Stages 4/5 remain partial and Stages 6-8 not started.
+  - **NEXT | Moving-border offline comparison:** approved, not started;
+    prototype/measurement only, no production API approval. Compare **Core-live**
+    (latest-wins observation through the existing report path; core-computed
+    absolute shapes) with **Core-anchored** (neutral core descriptor of subject,
+    eligibility, style and relative outsets; renderer paints against the live
+    native frame). Anchored structural witness stays exact while geometry is
+    live; underlay and preview are unchanged. Discriminate continuous motion
+    outrunning core completion; old paint after focus, close/reuse, fullscreen or
+    layout change must not revive; underlay stays group-defined while border
+    follows; no cross-gesture resurrection. Measure each stage separately.
+    Current KDE strict coverage hides the border during drags; Windows redraws
+    the last reply without an exactness gate. Final shared API waits for the
+    cross-platform core review after macOS drag evidence.
+  - Review tentative technical names:
+    `with_focused_fullscreen_presentation_suspension()`,
+    `suspended_output`/`suspendedOutput`, and native `structuralFloor`.
+  - Neutral fullscreen command for an exit shortcut: future question, not yet
+    discussed. Local `world-observe.ts::isFixedSizeWindow` still feeds
+    admission-focus gates and automatic keep-above; consume core desires or
+    retain temporarily, undecided.
+  - Approved implementation packages pending: N5 membership/eligibility split,
+    execution-time float toggle and execution-time implicit output targeting.
+  - Deferred: investigate operation-pair outer-gap bookkeeping outside the drag
+    path, following the gesture-local `world_gesture.rs` fix.
+  - Physical checks pending: fullscreen-window shortcuts, rapid A/B drags after
+    `c0435a3c`, fixture-only teardown/restoration for stage acceptance. Static
+    checks do not prove adversarial in-flight old-paint rejection.
+  - Ghostty cross-output height/width shortfall is external client/toolkit
+    sizing; no OmniTiler retry or artificial resize workaround. Draft upstream
+    report pending filing ([decision](decisions.md#cross-output-gesture-release-placement-2026-10-27)).
+  Tentative adoption decisions and the oversized decorated-hint bound stay
+  queued for cross-platform review.
   [Record](changes/kde-world-v2-port.md).
 - P2 | KDE native pager warning and quick fix (user 2026-10-26) | KDE uses
   the native Plasma workspace pager widget; OmniTiler draws no KDE pager, so
@@ -730,7 +762,11 @@ decisions of 2026-09-24 are under
   during drag and drag/move/resize work in multithreaded Rust, C++/TypeScript
   thin shims, relying on Rust thread safety; include later platforms. First
   research KWin effect/script threading constraints; interaction with KWin may
-  change. Linked with Push code down and Live sibling reflow while dragging.
+  change. If preview or border lag remains a concern, separately measure the
+  per-motion round trip, including the 120 ms capture coalescing window and
+  D-Bus hops; reduce latency rather than hide valid presentation
+  ([decision](decisions.md#active-drag-preview-continuity-2026-10-27)).
+  Linked with Push code down and Live sibling reflow while dragging.
 - P2 | Smooth KWin upgrades | Future research (user 2026-10-13): patch-release
   effect loading compatibility (IID/version binding), OBS rebuild latency and
   pin options. Aim for the smoothest possible user upgrades; exact pin remains

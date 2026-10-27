@@ -14,14 +14,16 @@
   Windows preserves its existing birth route. Deleted raw windows close and
   unmanaged host windows are absent before core admission.
   Role and remaining local-fixed policy remain; gesture transport is accepted
-  offline with physical input still pending. Stage 5 renderer causal freshness
-  is accepted offline: corrected recorded-route regressions reproduce both
-  native publication and cross-surface hide defects before their repairs and
-  pass afterwards. Complete-route source review and all required gates pass;
-  see the latest 2026-10-27 outcome. KWin signal delivery and painting still
-  require physical checks. Native acceptance remains TBD and this record stays
-  active for the whole port. Host integration and documented unknown host facts
-  remain later work.
+  offline; physical titlebar-drag Esc and cross-output placement pass. Stage 5
+  renderer causal freshness is accepted offline: corrected recorded-route
+  regressions reproduce native publication and cross-surface hide defects before
+  their repairs and pass afterwards. Complete-route source review and all required
+  gates pass; see the latest 2026-10-27 outcome. Static border/underlay member-move and focus
+  leave/return freshness, and output-local fullscreen suspension pass physically
+  on two mixed-scale outputs. Rapid A/B, fullscreen-window shortcuts and exact
+  fixture teardown/restoration remain pending. Full native acceptance remains
+  TBD and this record stays active for the whole port. Host integration and
+  documented unknown host facts remain later work.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -43,11 +45,32 @@
 | 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
-| 4. Shared policy only | Partial offline: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear accepted offline. Role, local-fixed and gesture policy remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
-| 5. Pure presentation and coordinates | Renderer causal freshness and active-drag preview continuity accepted offline; structural invalidations hide stale surfaces, mover motion preserves structurally valid same-gesture preview. Borders/underlays stay exact-current. No KDE pager renderer. Physical acceptance remains TBD | Service 317, core/protocol 1,460, Windows Linux 725, JS 750, host effect build/CTest 36, Nix CTest 37, acceptance 6/6 and source guards pass. KWin signals/painting remain subject to physical checks |
+| 4. Shared policy only | Partial: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear and gesture transport accepted offline. Titlebar-drag Esc and cross-output placement pass physically. Role/local-fixed and approved N5/float/output packages remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
+| 5. Pure presentation and coordinates | Renderer freshness and preview continuity accepted offline; borders/underlays stay exact-current. Physical static member-move/focus return, output-local fullscreen suspension and improved preview continuity pass. No KDE pager renderer. Rapid A/B, fullscreen shortcuts and fixture teardown/restoration pending | Service 317, core/protocol 1,460, Windows Linux 725, JS 750, host effect build/CTest 36, Nix CTest 37, acceptance 6/6 and source guards pass. Physical scope and remaining gaps below; no full stage acceptance |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; active-border color with default system accent; KDE uses the native Plasma pager, so core pager-focused-window color does not apply | Declaration/source checks and adapter tests; border override; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
+
+### Physical checkpoint (2026-10-27)
+
+- Two physical outputs, mixed 125%/100% scale: fullscreen suspension hides
+  presentation only on the fullscreen output; the other output is unaffected.
+  Fullscreen-window send, workspace switch hide/reveal and exit restoration pass.
+  Shortcuts acting on the fullscreen window were not explicitly reported and
+  remain unconfirmed.
+- Static Stage 5 border/underlay freshness after member moves and focus
+  leave/return passes. After `c0435a3c`, drop preview continuity is improved;
+  the small remaining appearance delay is acceptable. Cross-output drop
+  placement and titlebar-drag Esc cancellation pass physically.
+- Esc-cancel support is titlebar-only: Meta-drag plus Esc collides with the
+  desktop lock-screen shortcut; no fix is planned. Strict border coverage still
+  hides the moving border. The approved, unstarted Core-live/Core-anchored
+  offline comparison is [next in the backlog](../backlog.md#open-work), not a
+  production API decision; shared API review waits for macOS drag evidence.
+- Remaining: fullscreen-window shortcuts, rapid A/B drags after `c0435a3c`,
+  in-flight old-paint rejection beyond the static checks, and a fixture-only
+  teardown/restoration pass. These partial physical results do not close the
+  whole port or replace independent native state joins.
 
 ## Stage 1 implementation boundary
 
@@ -1792,6 +1815,10 @@
   selected. No production or contract change is needed from this evidence.
   The numeric facts suffice for diagnosis; the original sensitive trace is no
   longer required. Records only; builds/native tests are not rerun.
+- Final disposition: external Ghostty/toolkit sizing, not an OmniTiler size
+  request defect; no extra retries or artificial resize workaround. A draft
+  upstream report exists, pending filing, and has not been filed. Exact
+  Ghostty/toolkit ownership and the stale-bounds mechanism remain unresolved.
 
 ## Active-drag preview continuity plan (2026-10-27)
 
@@ -1826,8 +1853,10 @@
 
 ### Active-drag preview continuity: accepted offline (2026-10-27)
 
-- Physical retest reports improved preview continuity. This does not establish
-  every structural/terminal case or complete native acceptance.
+- Physical retest reports improved preview continuity with a small appearance
+  delay judged acceptable; cross-output placement and titlebar Esc pass. Rapid
+  A/B and the remaining structural/terminal cases are not fully accepted
+  ([physical checkpoint](#physical-checkpoint-2026-10-27)).
 - Native all-motion invalidation remains monotonic and published on every
   advance. The local `structuralFloor` (tentative technical name) records that
   counter at the last structural event. Existing same-instance capture coverage
@@ -2193,12 +2222,12 @@
   Fullscreen suspension, N5, float-toggle geometry, output targeting and stages
   6/7/8 remain outside this outcome. Known macOS-on-Linux limitations remain
   unchanged and are not included in the passing scoped counts.
-- Physical checks outstanding: fixture-only drag/release/delivered Esc; rapid
-  consecutive A/B gestures; tracked/member movement with stale hide then covering
-  repaint of every surface; focus leave/return with an in-flight old paint;
-  exact fixture teardown and native restoration. No live mutation was performed.
-  Next: perform those physical checks under the live-testing and fixture rules;
-  no further offline causal-freshness repair or product decision is identified.
+- Physical follow-up: static member-move and focus leave/return freshness passes;
+  rapid A/B, adversarial in-flight old-paint rejection and exact fixture
+  teardown/restoration remain ([checkpoint](#physical-checkpoint-2026-10-27)).
+  The offline package itself performed no live mutation. No further offline
+  causal-freshness repair is identified; moving-border presentation is a separate
+  comparison, not a relaxation of this accepted contract.
 
 ## Focused-fullscreen presentation suspension (2026-10-27)
 
@@ -2249,12 +2278,13 @@
   JS typecheck/build, host-matched effect build, workspace fmt, whitespace and
   API guard pass. Nix's extra CTest is ECM `appstreamtest`, not a missing host
   test. Known macOS-on-Linux exclusions are unchanged and not passing claims.
-- Native/physical checks outstanding: fixture-only fullscreen enter/exit and
-  focus leave/return on each output, all-surface stale-hide/fresh-repaint,
-  fullscreen-window send/switch hide/reveal and physical window shortcuts,
-  independent native state joins and exact teardown/restoration. The fixture
-  supports `mode: borderless_fullscreen`; no live mutation or automated input
-  was performed here. A neutral fullscreen-exit command remains a future question.
+- Physical output-local hide, unaffected other output, fullscreen-window send,
+  switch hide/reveal and exit restoration pass. Window shortcuts remain
+  unconfirmed; independent native joins and fixture teardown/restoration are
+  still required ([checkpoint](#physical-checkpoint-2026-10-27)). The fixture
+  supports `mode: borderless_fullscreen`; the offline package performed no live
+  mutation or automated input. A neutral fullscreen-exit command remains a future
+  question, not yet discussed.
   This completes only the approved fullscreen package; the wider port stays active.
 
 <a id="n6-core-intents-outcome-and-blocker-2026-10-26"></a>
