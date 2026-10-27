@@ -241,6 +241,9 @@ decisions of 2026-09-24 are under
   Review distinct `NativeWorkspaceId`/`LogicalWorkspaceId` newtypes (both plain
   `String` today): adapters flatten composite native identities into canonical
   opaque keys; core never parses them.
+  Decide whether fullscreen (and maximize/sticky) toggles become a neutral core
+  command; today KDE Meta+F11 and Windows Win+F11 are host-native toggles with
+  local safety checks (user deferral 2026-10-28).
   Port delivery does not pre-approve these interface changes.
 - P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v2 cutover and removal
   of the TypeScript born-maximized copy are delivered offline, with no dual
@@ -277,9 +280,19 @@ decisions of 2026-09-24 are under
   and select-away/back membership/frame/foreground checkpoints; independent
   compositor hide/reveal, renderer coverage, focus/send/both-output/close and
   full ownership closure remain TBD. An unscoped-start incident moved one
-  non-fixture window's position (size unchanged); stopped and recorded,
-  restoration pending user action, not accepted. Activities/multi-desktop and
-  async configure stay deferred investigations.
+  non-fixture window's position (size unchanged); stopped and recorded; the
+  window was later closed by the user, so frame restoration is moot, but the
+  post-incident shortcut/effect inventory comparison is still owed. User
+  2026-10-28: prove compositor hide/reveal with a test-only scripted KWin
+  effect (never shipped) loaded only during live legs, reading
+  `EffectWindow.visible` for fixture windows, unloaded afterwards with
+  effect-inventory restoration proof; promote to a native-effect diagnostic only
+  if the KDE stress runner later needs it. Then rerun hide/reveal and a fresh
+  focus/send/both-output/close leg under the stop-at-first-refusal rule.
+  Activities/multi-desktop and async configure stay deferred investigations
+  until Stage 8 and the KDE physical checks complete (user 2026-10-28), then
+  run evidence-only: pinned KWin source plus fixture-only legs filling
+  discriminator rows, no core/adapter changes; proposals return to the user.
   - **DONE offline | Moving-border comparison (2026-10-28):** reproducible
     test-only real-core comparison: Core-live absolute replay trails motion
     (max/mean position error 160/129.14 coordinate units); Core-anchored tracks
@@ -291,17 +304,18 @@ decisions of 2026-09-24 are under
     Tentative recommendation: carry anchored presentation into review, not
     production. Shipping behavior unchanged; final shared API waits for the
     cross-platform core review after macOS drag evidence.
-  - Review tentative technical names:
-    `with_focused_fullscreen_presentation_suspension()`,
-    `suspended_output`/`suspendedOutput`, and native `structuralFloor`.
-  - Neutral fullscreen command for an exit shortcut: future question, not yet
-    discussed. Local `world-observe.ts::isFixedSizeWindow` still feeds
-    admission-focus gates and automatic keep-above; consume core desires or
-    retain temporarily, undecided.
+  - Local fixed-size consumers: `world-observe.ts::isFixedSizeWindow` still
+    feeds the admission-focus gate (`world-apply.ts`) and automatic keep-above
+    (`world-native.ts`). User 2026-10-28: move both to core ownership (core
+    withholds admission activation; neutral opt-in keep-above-tiles desire that
+    KDE applies mechanically) and delete the local consumers. First inventory
+    existing core decisions and Windows handling; any core shape returns to the
+    user for approval before implementation.
   - N5 membership/eligibility split implemented offline; native role/hidden
     checks and Activities remain unverified. Windows/macOS behavior unchanged.
-  - Approved implementation packages pending: execution-time float toggle and
-    execution-time implicit output targeting.
+  - Execution-time float toggle: approved, not started; blocked on the open
+    macOS first-float placement question under the macOS port item.
+    Execution-time implicit output targeting is closed by `a68036b3`.
   - Deferred: investigate operation-pair outer-gap bookkeeping outside the drag
     path, following the gesture-local `world_gesture.rs` fix.
   - Physical checks pending: fullscreen-window shortcuts, rapid A/B drags after
@@ -1226,6 +1240,20 @@ decisions of 2026-09-24 are under
   source analysis: FancyWM core submodules and niri/sway/river/awesome/dwm
   (distinct from the completed bounded matrix source-fill passes).
   [Evidence](changes/archive/prior-art-catalogue.md).
+- P2 | Windows: sticky-rehome explicit-send current sampling (open decision) |
+  Windows sticky-rehome sends an explicit `Send` with a sampled current
+  workspace. Recommendation: evaluate a separately approved execution-time
+  current-view intent rather than an optional-output change to the explicit
+  `Send` contract ([audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
+  For a Windows session.
+- P1 | macOS: first-float placement under execution-time float toggle (open
+  decision) | The approved option A ([decision](decisions.md#kde-port-and-race-decisions-2026-10-26))
+  resolves float geometry at execution from the remembered float rectangle,
+  else the current frame. macOS sends `float_rect: None` and core currently
+  centers 60% for a first float, which macOS actuates; option A would change
+  that to the current frame. Decide for macOS (accept the change or keep an
+  exception) before the float-toggle package starts. Windows also needs fresh
+  post-placement facts for parity.
 - P1 | macOS port | Started 2026-10-14 (user), superseding the after-KDE-0.1
   sequencing. Port contract finalized 2026-10-24:
   [world adapter guide](porting/world-adapter-guide.md) plus

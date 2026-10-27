@@ -189,7 +189,8 @@ Tentative index (user review pending; not approved product rules):
   until cross-platform core review. Otherwise fullscreen windows remain ordinary
   windows: workspace sends move them, switches hide them, window shortcuts act
   on them. A fullscreen-exit shortcut such as Alt+Enter needs a neutral fullscreen
-  command, a separate future question.
+  command, a separate future question, deferred 2026-10-28 to the full
+  core/platform interface review.
   KDE enables a neutral construction opt-in; existing fullscreen facts determine
   the observed output. Core publishes optional `suspendedOutput`, hidden shapes
   and remaining-output pager content; KDE omits matching resolution-output drop
@@ -266,6 +267,18 @@ pending.
   outcome stays TBD in its discriminator row.
 - **Raw KWin lifecycle mapping:** `deleted` maps to close; `managed=false`
   (override-redirect surfaces) maps to absent.
+- **Fullscreen suspension and preview-continuity names (2026-10-28):** keep
+  `with_focused_fullscreen_presentation_suspension()`,
+  `suspended_output`/`suspendedOutput` and the KDE-native `structuralFloor`.
+- **2026-10-28 package choices:** accepted the tentative choices recorded in
+  the [KDE port record](changes/kde-world-v2-port.md) for the moving-border
+  comparison (harness gates and vocabulary; anchored recommendation carried to
+  review, no API selected), N5 (`RetainedMembership { membership, eligible }`
+  names; explicit tile intent overrides automatic transient float), output
+  targeting (compliant routes kept, closed by regressions), Stage 6 (bounded
+  `windowAt` decoding with count one; border selector test seam) and Stage 7
+  (read-only per-output-desktop detection, navigation-only Virtual Desktops
+  opener, shared labels distinguished by tooltips).
 
 ## Active-drag preview continuity (2026-10-27)
 
@@ -2187,6 +2200,12 @@ platform API behavior.
       appears) and uses its canonical directional letter hold slot.
       [Discriminator](spec/reference-outcomes.md#windows-output-send-held-key-discriminator).
 ## Fixed-Size Admission
+- **User 2026-10-28, KDE local consumers:** automatic fixed-size admission
+  activation and keep-above-tiles move to core ownership (core withholds
+  admission activation; a neutral opt-in keep-above-tiles desire that KDE
+  applies mechanically); the KDE adapter's local consumers are deleted.
+  Inventory existing core decisions and Windows handling first; any core shape
+  returns to the user for approval before implementation.
 - User decisions 2026-10-08 and 2026-10-10 (fixed-size admission R-SPC-04
   D1-D8; D1 per-axis zero and D5/D6/D7 delivered offline,
   native checks pending):
