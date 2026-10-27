@@ -1298,11 +1298,16 @@ decisions of 2026-09-24 are under
   Test iteration: single integration target and non-lifecycle event waits
   reduce full command wall time to 11.514s first-launch / 9.082s warm;
   five lifecycle exit/reap polls remain for causal join synchronization
-  ([evidence](changes/macos-world-v2-port.md#test-iteration-speed-2026-10-27)).
-  Diagnose the occasional offline focus-walk first-dispatch timeout separately;
-  its cause is unproven and retry/full no-scaffold checks passed.
+  ([evidence](changes/macos-world-v2-port.md#test-iteration-speed-2026-10-27));
+  an exact-generation join repair failed review and is parked (waits retained).
+  Focus-walk first-dispatch flake diagnosed 2026-10-28: first chord can precede
+  the startup observation; test-only repair (wait for applied startup
+  observation, fence, then one chord) pending.
   (a) direct-wake latency unit with measured native before/after numbers;
-  (b) ordered ingress queue carrying every command to core;
+  blocked on reconciling the retained live baseline receipt (18
+  protected-window mismatches, cause unattributed);
+  (b) delivered offline 2026-10-28: every user command reaches core FIFO, T3
+  supersession retained (`3d64b5c5`);
   (c) macOS native stress runner against the shared spec (shared oracles stay
   Windows-owned per the [stress record](changes/platform-neutral-stress-acceptance.md));
   (d) pager core-trailing-workspace check;
