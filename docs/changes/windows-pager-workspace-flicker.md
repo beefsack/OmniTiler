@@ -56,21 +56,66 @@
   not ready, clean ledger, no pending workspace/directional/send/migration/stop
   markers, settings bytes and all captured taskbar/SPI fields unchanged.
 
+### Offline continuation (2026-10-28)
+
+- Audit confirmed more defects in the corrected driver: millisecond sampler
+  durations reached `AddSeconds`, dispatch had no sampler-ready handshake,
+  and fixture/job cleanup did not cover every failure path. Neither old driver
+  is suitable for another live leg.
+- A replacement external native-event helper was rejected before live use.
+  Its reported 47 passing seam checks did not validate the real native backend or
+  production trace schema. Direct execution of `review-regressions.ps1` with
+  `pwsh -NoProfile -File` produced six expected-red findings (exit 1):
+  - Production-shaped select rows cannot join: the helper requires `serial`,
+    absent from `select_primary_line` in `tiling_sys/cli_workspace.rs` and
+    `workspace_log` in `tiling_sys/history.rs`.
+  - A thrown cleanup stage still yields aggregate `ok=true`.
+  - The cloak P/Invoke names a nonexistent export instead of binding the
+    managed overload to `DwmGetWindowAttribute`.
+  - The event range covers destroy/show/hide/reorder, not cloak transitions.
+  - The live capture branch sleeps without a Windows message pump.
+  - Taskbar-relative z-order is reversed versus `order_vs_taskbar` in
+    `ffi/pager.rs`: encountering the taskbar while walking `PREV` means the
+    pager is below it, not above it.
+- The replacement driver also lacks termination-proof, restoration-proof,
+  main-experiment and final-cleanup bodies. Do not launch it. Its passing
+  parser/seam suite is not a validated live harness. Review findings and
+  failing checks remain with the external evidence, not production code.
+- `scripts/windows-dev.ps1` is safe to dot-source: its dot-source guard returns
+  before live action blocks. An initial claim to the contrary was refuted by
+  source inspection; AST statement counts alone do not establish execution.
+- No new live effects, appearance evidence, production changes or product
+  red/green regression resulted. A read-only final process inventory found no
+  owner, live fixture or legacy test-window processes. This is not a new
+  restoration proof; the earlier full recovery evidence remains above.
+
 ## Blocker and next action
 
-- Diagnosis remains incomplete after two failed evidence drivers. No production
-  changes, offline red/green regression or live fix verification are claimed.
-- Before any further live leg, validate a bounded evidence helper offline,
-  including identity assertions, millisecond/second units, sampler readiness
-  before command dispatch, physical coordinates, hash/PNG correctness, exact
-  fixture joins, tickless trace events, and cleanup after each injected failure.
+- Diagnosis remains incomplete after two failed live evidence drivers and an
+  offline-rejected replacement. Stop this bounded investigation here. No
+  production fix, product red/green regression or live fix verification is
+  claimed; retain the active record and backlog item.
+- Exact next action: pin the join to actual production select/admission rows,
+  preserving tickless gate events, then validate a real pumping native-event
+  backend and its low-level failure paths offline. Require correct cloak
+  entrypoint/event coverage, z-order direction, millisecond bounds, readiness
+  before dispatch, exact executable/PID/lifetime binding, and cleanup that
+  fails whenever any required stage fails. Do not substitute all-in-one fake
+  sampler/pump results for exercising the backend. Do not launch any of the
+  three rejected drivers.
 - Then prove non-hooking graceful/forced termination and one-window independent
-  hide/restore recovery before the main fixture-only appearance experiment.
-  Require actual before/through/after appearance evidence before selecting a fix.
-- Leave this record active and retain the backlog item. Repaint, short native
-  transients and coverage remain hypotheses; latest-world coalescing is neither
-  diagnosed nor implemented here.
+  hide/restore recovery before a bounded fixture-only native-event experiment.
+  Native hide/cloak/z-order events can establish a mechanism if observed;
+  stable sampled facts cannot exclude brief disappearance or isolate repaint.
+- A user physical high-frame-rate capture of the pager before/through/after a
+  switch would establish the reported appearance and timing, not its cause.
+  If the native probe finds no transient, correlate that capture with native
+  events and paint/erase instrumentation before selecting a fix. Repaint,
+  coverage and short native transients remain hypotheses. Latest-world
+  coalescing is neither diagnosed nor implemented here.
 
 ## Decisions
 
-- None yet.
+- Tentative (pending user review): prefer a native-event-first causal probe
+  before another pixel-sampling harness. This is an investigation method, not
+  a rendering-policy change; it supplies no appearance proof on its own.
