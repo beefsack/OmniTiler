@@ -1495,15 +1495,15 @@ The proven blocker is foreground safety, not target classification or core targe
 | Tiled directional focus | Existing `verify_focus` commit; disabling its `last_active` apply leaves observed B while the effect names A; restored green |
 | Floating/sticky directional focus and float moves | Non-leaf/exception subset parked; characterization pins emitted floating target without overwriting tiled memory |
 | No-focus cross-output focus | Chooses the destination's already-remembered leaf; characterization pins effect/memory agreement, not a new memory choice |
-| Local move and neighbor swap | Keep the mover active; admission requires mover equals observed focus, and convergence already records it. Characterizations stay green even with move commit/wrapper recording disabled; not claimed as red proofs |
+| Local move and neighbor swap | Keep the mover active; admission requires mover equals observed focus. Direct command-seam tests skip the report sweep; Engine pre-command convergence and move commit redundantly record B. Disabling either alone stays green; disabling both leaves stale C while each effect names B. Restored green for both paths |
 | Cross-output move | Existing `verify_move` commit; disabling it with wrapper recording absent leaves destination's stale C rather than mover A; restored green |
-| Send/move with follow | Existing lifecycle commit; disabling its `last_active` apply leaves destination memory empty rather than mover A; restored green |
-| Send without follow | Existing lifecycle successor commit; disabling its memory apply leaves source memory empty rather than survivor A; restored green. Direct/relative/numbered and directional sends reuse these transfer paths |
+| Send/move with follow | Existing lifecycle commit; disabling its `last_active` apply leaves destination memory empty rather than mover A for same-output sends, or stale D rather than mover A for direction-only cross-output sends; both restored green |
+| Send without follow | Existing lifecycle successor commit; disabling its memory apply leaves source memory empty rather than the chosen survivor for both same-output and direction-only cross-output sends; both restored green. Direct/relative/numbered and operation aliases share `execute_send`; direction-only sends use `execute_output_send`, with the same lifecycle owner |
 | Workspace select/arrival/`retain_view` | Shared by direct, numbered, relative, previous and trailing selects. Direct fallback test avoids the report sweep: remembered A becomes ineligible, effect chooses B; recorder disabled leaves A, restored green. Redundant select chooses nothing new |
 | Global-workspace swap fallback | New recorder is load-bearing: domain relocation alone retains ineligible B1; explicit fallback effect names B2. Disabling recorder leaves B1, restored green |
 | Close/remove fallback | Convergence-owned, no close `WorldCommand` or command focus effect. With closed B absent and empty observed focus, existing MRU chooses A. Disabling convergence memory update leaves no resolvable remembered window; restored green |
 
-- Twenty focused regressions pass. The original purported view test only
+- Twenty-four focused regressions pass. The original purported view test only
   exercised direct focus; a later full send/select sweep pre-recorded selection
   memory. Neither is counted as fallback red evidence; the direct `retain_view`
   discriminator replaces that oracle. Existing Engine ownership probes were
@@ -1518,7 +1518,7 @@ The proven blocker is foreground safety, not target classification or core targe
   conservative A versus permissive B unknown-foreground policy is decided.
   Staged arrival authority, R2 and SWITCHEND attribution also remain parked.
 - Offline verification: locked core/protocol/Windows tests pass (core library
-  968; Windows library 1160, one existing ignored; integration/doc tests pass),
+  972; Windows library 1160, one existing ignored; integration/doc tests pass),
   strict locked all-target clippy for those crates, workspace format check and
   diff check pass. Other buildable suites: settings exporter 14, live fixture
   119 and macOS integration 150 pass. macOS library has 1336 passes and 19

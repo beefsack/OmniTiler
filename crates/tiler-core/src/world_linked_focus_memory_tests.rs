@@ -1372,3 +1372,275 @@ fn close_focused_falls_back_to_mru_survivor_without_command_effect() {
         "session focus follows the surviving leaf"
     );
 }
+
+#[test]
+fn local_move_direct_records_mover_without_sweep() {
+    // Direct command-seam characterization (no-new-choice, not
+    // failing-first against `verify_move`): stale `last_active` names
+    // win-c while the staged report names win-b as observed focus and
+    // mover. No `handle_report` sweep runs, but the Engine pre-command
+    // convergence inside `execute_command` (`Engine::handle` ->
+    // `converge_for_single_domain` for `CoreCommand::Move`) still names
+    // win-b first: the `FocusMismatch` gate requires mover == observed
+    // focus, so same-domain convergence necessarily records the mover
+    // before the plan commits, and `verify_move` then writes the same
+    // choice again. Disabling either write alone stays green
+    // (redundant double-write); disabling both turns the memory
+    // assertion red while the effect still names win-b.
+    let (mut engine, key) = bootstrap_three_tiled();
+    stale_memory_to(&mut engine, 2, "win-c", "win-a");
+    assert_eq!(
+        remembered_window(&engine, &key),
+        Some(WindowId("win-c".to_owned())),
+        "precondition: last_active names win-c"
+    );
+    let windows = vec![
+        fact("win-a", "out-a", 0),
+        fact("win-b", "out-a", 200),
+        fact("win-c", "out-a", 400),
+    ];
+    let command = WorldCommand::MoveDirectional {
+        window: WindowId("win-b".to_owned()),
+        direction: "left".to_owned(),
+        same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
+    };
+    let probe = report(
+        3,
+        two_screens(),
+        windows,
+        "win-b",
+        Some(12),
+        Some(command.clone()),
+    );
+    engine.stage_facts(&probe);
+    engine.build_staged_domains(&probe);
+    let applied = engine.execute_command(&probe, 12, &command, &BTreeSet::new(), None, None);
+    let target = match applied {
+        CommandApplied::Effect(effect) => effect.target,
+        CommandApplied::NoEffect => panic!("local move must stage a focus effect"),
+        CommandApplied::Rejected { kind, message } => {
+            panic!("local move must not refuse: {kind} {message}")
+        }
+    };
+    assert_eq!(
+        target,
+        WindowId("win-b".to_owned()),
+        "local move keeps focus on the mover"
+    );
+    assert_eq!(
+        remembered_window(&engine, &key),
+        Some(WindowId("win-b".to_owned())),
+        "direct move records the mover before native writes"
+    );
+    assert_eq!(
+        focused_window(&engine, &key),
+        Some(WindowId("win-b".to_owned())),
+        "session focus follows the recorded effect target"
+    );
+}
+
+#[test]
+fn swap_neighbor_move_direct_records_mover_without_sweep() {
+    // Same direct seam as the local move, but the `SwapWithNeighbor`
+    // same-axis variant. Same no-new-choice ownership: the Engine
+    // pre-command convergence (`converge_for_single_domain` for
+    // `CoreCommand::Move`) names win-b before the plan commits, since
+    // the `FocusMismatch` gate requires mover == observed focus, and
+    // `verify_move` rewrites the same choice. Disabling either write
+    // alone stays green; disabling both turns memory red with the
+    // effect still naming win-b.
+    let (mut engine, key) = bootstrap_three_tiled();
+    stale_memory_to(&mut engine, 2, "win-c", "win-a");
+    assert_eq!(
+        remembered_window(&engine, &key),
+        Some(WindowId("win-c".to_owned())),
+        "precondition: last_active names win-c"
+    );
+    let windows = vec![
+        fact("win-a", "out-a", 0),
+        fact("win-b", "out-a", 200),
+        fact("win-c", "out-a", 400),
+    ];
+    let command = WorldCommand::MoveDirectional {
+        window: WindowId("win-b".to_owned()),
+        direction: "left".to_owned(),
+        same_axis: crate::directional::SameAxisMove::SwapWithNeighbor,
+    };
+    let probe = report(
+        3,
+        two_screens(),
+        windows,
+        "win-b",
+        Some(12),
+        Some(command.clone()),
+    );
+    engine.stage_facts(&probe);
+    engine.build_staged_domains(&probe);
+    let applied = engine.execute_command(&probe, 12, &command, &BTreeSet::new(), None, None);
+    let target = match applied {
+        CommandApplied::Effect(effect) => effect.target,
+        CommandApplied::NoEffect => panic!("swap must stage a focus effect"),
+        CommandApplied::Rejected { kind, message } => {
+            panic!("swap must not refuse: {kind} {message}")
+        }
+    };
+    assert_eq!(
+        target,
+        WindowId("win-b".to_owned()),
+        "swap keeps focus on the mover"
+    );
+    assert_eq!(
+        remembered_window(&engine, &key),
+        Some(WindowId("win-b".to_owned())),
+        "direct swap records the mover before native writes"
+    );
+}
+
+#[test]
+fn send_directional_follow_records_mover_in_target() {
+    // Direction-only cross-output send (`SendDirectional` right from
+    // out-a): the distinct `execute_output_send` path (not the
+    // same-output `execute_send` path), same `verify_lifecycle` memory
+    // owner. Target MRU names win-d; follow lands win-a there. The
+    // sweep cannot mask the target: the mover is still observed in the
+    // source, so only the lifecycle commit can name win-a in the
+    // target. Disabling that write leaves target memory on win-d while
+    // the effect still names win-a.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 200),
+            fact("win-c", "out-b", 810),
+            fact("win-d", "out-b", 920),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-d".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-d".to_owned())]);
+    let target_pre = home_of(&engine, &WindowId("win-d".to_owned())).expect("win-d linked");
+    assert_eq!(
+        remembered_window(&engine, &target_pre),
+        Some(WindowId("win-d".to_owned())),
+        "precondition: target MRU names win-d"
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(12),
+            Some(WorldCommand::SendDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                follow: true,
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&reply),
+        vec![WindowId("win-a".to_owned())],
+        "directional follow names the mover"
+    );
+    let target_key = home_of(&engine, &WindowId("win-a".to_owned())).expect("mover linked");
+    assert_ne!(
+        target_key.output.0, "out-a",
+        "mover actually crossed outputs"
+    );
+    assert_eq!(
+        remembered_window(&engine, &target_key),
+        Some(WindowId("win-a".to_owned())),
+        "directional follow records the mover in the target before native writes"
+    );
+}
+
+#[test]
+fn send_directional_stay_records_survivor_in_source() {
+    // Direction-only cross-output send without follow: the same
+    // `execute_output_send` path with `follow: false`. Stay keeps the
+    // source selected with the focused-removal MRU fallback, so the
+    // source stack needs depth below the mover: focus win-b, then
+    // re-focus win-a, then stay-send win-a. The survivor win-b is a new
+    // choice the sweep cannot make (it converges the source to the
+    // observed mover win-a), so only the lifecycle commit can record
+    // it. Disabling that write leaves no resolvable source memory (the
+    // old win-a leaf moved away) while the effect still names win-b.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 200),
+            fact("win-c", "out-b", 810),
+            fact("win-d", "out-b", 920),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-b",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-a".to_owned())]);
+    let source_pre = home_of(&engine, &WindowId("win-b".to_owned())).expect("win-b linked");
+    assert_eq!(
+        remembered_window(&engine, &source_pre),
+        Some(WindowId("win-a".to_owned())),
+        "precondition: source MRU names the mover with depth below"
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(12),
+            Some(WorldCommand::SendDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                follow: false,
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&reply),
+        vec![WindowId("win-b".to_owned())],
+        "directional stay names the source survivor"
+    );
+    let source_key = home_of(&engine, &WindowId("win-b".to_owned())).expect("survivor linked");
+    assert_eq!(
+        remembered_window(&engine, &source_key),
+        Some(WindowId("win-b".to_owned())),
+        "directional stay records the survivor before native writes"
+    );
+}
