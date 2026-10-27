@@ -163,19 +163,22 @@ describe("world presentation subscriber", () => {
         assert.equal(painted["preview"], null);
     });
 
-    it("coalesces invalidations into one flight and refetches before painting", () => {
+    it("coalesces invalidations into one flight, sends despite the race, then converges", () => {
         const h = setup();
         h.sub.notifyGeneration(GEN);
         h.sub.notifyInvalidated();
         h.sub.notifyInvalidated();
         assert.equal(h.calls.length, 1, "single flight while a read flies");
-        // Finding E: the in-flight reply was invalidated while outstanding,
-        // so it is known-stale. It never paints; the subscriber refetches
-        // current first.
+        // Continuity across all-motion invalidation: the in-flight reply
+        // was invalidated while outstanding, but it still sends (the native
+        // renderer decides every surface on exact causal proof) instead of
+        // hiding the valid same-gesture preview; one bounded refetch then
+        // converges on the covering projection.
         h.answerAll((r) => projection(r, "13", "13"));
-        assert.equal(h.paints.length, 0, "no old render at all");
-        assert.equal(h.calls.length, 1, "one chained refetch pending");
-        // The refetch was issued after the invalidations, so it paints.
+        assert.equal(h.paints.length, 1, "dirty read still sends");
+        assert.equal(h.calls.length, 1, "one refetch converges");
+        // The refetch serves the same cached projection, which the (rev,
+        // obs) dedupe skips without resending and without looping.
         h.answerAll((r) => projection(r, "13", "13"));
         assert.equal(h.paints.length, 1);
         assert.equal(h.calls.length, 0);
@@ -468,22 +471,30 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 2, "identical projection repaints after reset");
     });
 
-    it("skips stale-during-flight paints without losing the chained fetch", () => {
+    it("sends dirty reads for continuity, then converges with one refetch", () => {
         const h = setup();
         h.sub.notifyGeneration(GEN);
         const first = h.calls.splice(0)[0] as Call;
-        // Invalidate twice during the flight, then complete it: the reply
-        // is known-stale and must not render at all.
+        // Invalidate twice during the flight: the reply still sends
+        // (continuity across all-motion invalidation; the native renderer
+        // decides every surface on exact causal proof) instead of hiding
+        // the valid preview, and one bounded refetch then converges.
         h.sub.notifyInvalidated();
         h.sub.notifyInvalidated();
         const firstReq = (JSON.parse(first.payload) as { req: string }).req;
         first.callback(projection(firstReq, "20", "20"));
-        assert.equal(h.paints.length, 0, "no old render at all");
-        assert.equal(h.calls.length, 1, "exactly one chained refetch");
-        // The refetch paints current content once.
-        h.answerAll((r) => projection(r, "21", "21"));
+        assert.equal(h.paints.length, 1, "dirty read still sends");
+        assert.equal(h.calls.length, 1, "one refetch converges");
+        // The refetch serves the same cached projection, which the (rev,
+        // obs) dedupe skips without resending and without looping.
+        h.answerAll((r) => projection(r, "20", "20"));
         assert.equal(h.paints.length, 1);
-        const painted = JSON.parse(h.paints[0] as string) as Record<string, unknown>;
+        assert.equal(h.calls.length, 0);
+        // Newer content on the converged read paints once.
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "21", "21"));
+        assert.equal(h.paints.length, 2);
+        const painted = JSON.parse(h.paints[1] as string) as Record<string, unknown>;
         assert.equal(painted["rev"], "21");
     });
 

@@ -83,13 +83,17 @@
 //   fencing). Newer `(rev, obs)` applies; equal `(rev, obs)` re-applies
 //   idempotently.
 // - `latest` is the effect-owned causal witness (advanced by
-//   noteNativeInvalidation on geometry, activation/focus, and gesture
-//   boundaries). `covered` is the witness the held paint covers: paints
-//   apply only when covered matches latest exactly (same instance, equal
-//   counter); same-instance older coverage never applies (in-transit paints
-//   crossing a native invalidation are the reachable stale case), and a
-//   foreign instance with a set latest never applies (reused counters across
-//   instances never compare).
+//   noteNativeInvalidation on frames including genuine mover motion,
+//   activation/focus, fullscreen transitions, visibility changes, layout
+//   add/remove, and gesture boundaries). `covered` is the witness the held
+//   paint covers: paints apply when covered matches latest exactly (same
+//   instance, equal counter), or when covered reaches the seeded
+//   `structuralFloor` in the same instance (pre-motion paint stays
+//   appliable while strict shapes hide by their own gates); same-instance
+//   older coverage below the floor never applies (in-transit paints
+//   crossing a structural invalidation are the reachable stale case), and
+//   a foreign instance with a set latest never applies (reused counters
+//   across instances never compare).
 // - `borderFloor`/`underlayFloor` snapshot the pre-bump latest when native
 //   frame geometry changes on the border target / any held underlay member.
 //   A set floor hides its shape until a paint covers strictly past it in the
@@ -198,10 +202,21 @@ struct PresentationPaint {
     PaintOrder fence;
     // Causal witness: the renderer's latest native invalidation plus the
     // witness the held paint covers. A paint applies only when covered
-    // matches latest exactly (same instance); older or foreign coverage
+    // matches latest exactly (same instance), or when it reaches the
+    // structural floor below (same instance, covered at or past the
+    // floor): motion advances the monotonic witness without touching the
+    // floor, so a newer-order pre-motion paint is accepted on the
+    // structural path while strict shapes stay hidden by their own gates
+    // until exactly covering paint arrives. Older or foreign coverage
     // never applies.
     CoverWitness latest;
     CoverWitness covered;
+    // Structural floor copy, re-seeded from effect authority at every
+    // endpoint dispatch (never established by arriving paint, like
+    // latest): the monotonic counter value as of the last structural
+    // invalidation in this instance. Unset outside the router-seeded route
+    // (direct consumer use keeps the exact-only gate).
+    CoverWitness structuralFloor;
     // Geometry-dirt floors (finding F, causal witness form): the pre-bump
     // latest snapshotted when native frame geometry changed on the
     // dependent windows. A set floor hides its shape until a paint covers
@@ -705,9 +720,13 @@ inline PresentationApply applyPresentationPaint(
     // source ever seeded by effect authority) never applies, a foreign
     // instance never applies (reused counters across instances never
     // compare), and only exactly equal same-instance coverage applies -
-    // older coverage is known-stale and future coverage is unproven. No
-    // arriving paint may establish latest: the effect-owned router
-    // re-seeds it from authority at every endpoint dispatch.
+    // older coverage is known-stale and future coverage is unproven -
+    // unless it reaches the seeded structural floor in the same instance:
+    // a newer-order pre-motion paint is accepted on that structural path
+    // (motion leaves the floor untouched) while its strict shapes stay
+    // hidden by their own gates until exactly covering paint arrives. No
+    // arriving paint may establish latest or the floor: the effect-owned
+    // router re-seeds both from authority at every endpoint dispatch.
     // A mismatched generation with a set fence is accepted as a new stream:
     // the rotation path always precedes a new stream with the
     // stream-resetting clear on the same ordered channel, so a mismatch
@@ -725,8 +744,17 @@ inline PresentationApply applyPresentationPaint(
     if (!state->latest.set) {
         return PresentationApply::StaleIgnored;
     }
-    if (incomingCover.instance != state->latest.instance
-        || incomingCover.counter != state->latest.counter) {
+    const bool exactCurrent = incomingCover.instance == state->latest.instance
+        && incomingCover.counter == state->latest.counter;
+    // Structural path: same instance, covered at or past the seeded floor
+    // (an unset floor proves nothing: direct consumer use keeps the
+    // exact-only gate), never past latest (future coverage is unproven).
+    const bool structuralCurrent = state->structuralFloor.set
+        && incomingCover.instance == state->structuralFloor.instance
+        && incomingCover.counter >= state->structuralFloor.counter
+        && incomingCover.instance == state->latest.instance
+        && incomingCover.counter <= state->latest.counter;
+    if (!exactCurrent && !structuralCurrent) {
         return PresentationApply::StaleIgnored;
     }
     state->has = true;
@@ -775,12 +803,14 @@ inline void clearPaintDisplay(PresentationPaint *state)
     const PaintOrder fence = state->fence;
     const CoverWitness latest = state->latest;
     const CoverWitness covered = state->covered;
+    const CoverWitness structuralFloor = state->structuralFloor;
     const CoverWitness borderFloor = state->borderFloor;
     const CoverWitness underlayFloor = state->underlayFloor;
     *state = PresentationPaint{};
     state->fence = fence;
     state->latest = latest;
     state->covered = covered;
+    state->structuralFloor = structuralFloor;
     state->borderFloor = borderFloor;
     state->underlayFloor = underlayFloor;
 }

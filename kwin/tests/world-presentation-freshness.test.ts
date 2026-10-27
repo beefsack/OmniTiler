@@ -214,4 +214,136 @@ describe("world presentation freshness (production subscriber routing)", () => {
         h.answerAll((r) => projection(r, "8", "8", { coveredInstance: "effect-1", coveredInvalid: "6" }));
         assert.equal(h.paints.length, 2, "foreign-instance paint never applies");
     });
+
+    it("motion: dirty read still sends the live preview, then refetches to converge", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        // Gesture A is live; its producing preview paints while A is open.
+        h.setLiveGesture({ instance: "gesture-1", serial: "1", coreId: "1" });
+        const previewA = {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        };
+        h.answerAll((r) => projection(r, "12", "12", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 1);
+        // An invalidation lands during the next read flight (all-motion
+        // supersession: pointer/mover motion bumped the witness). The
+        // reply still sends instead of hiding the valid same-gesture
+        // preview: the native renderer decides every surface on exact
+        // causal proof (the structural floor plus live producer), so a
+        // structurally-stale send would be rejected natively with no
+        // display touch. The send below carries current coverage.
+        h.sub.notifyInvalidated();
+        assert.equal(h.calls.length, 1, "continuity read issued");
+        h.sub.notifyInvalidated();
+        const previewB = {
+            rect: [10, 10, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        };
+        h.answerAll((r) => projection(r, "13", "13", { coveredInvalid: "5", preview: previewB }));
+        assert.equal(h.paints.length, 2, "motion-superseded preview still paints while the gesture is live");
+        const painted = JSON.parse(h.paints[1] as string) as Record<string, unknown>;
+        assert.deepEqual(painted["preview"], previewB, "the live gesture's own preview paints with exact values");
+        assert.equal(painted["coveredInvalid"], "5", "current coverage rides the paint");
+        // The send converges: one bounded refetch serves the same cached
+        // projection, which the (rev, obs) dedupe skips without resending.
+        assert.equal(h.calls.length, 1, "one refetch converges on the covering projection");
+        h.answerAll((r) => projection(r, "13", "13", { coveredInvalid: "5", preview: previewB }));
+        assert.equal(h.paints.length, 2, "converged refetch never resends");
+        assert.equal(h.calls.length, 0, "no loop without new events");
+    });
+
+    it("structural: dirty read with stale coverage sends while the native gates decide", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        h.setLiveGesture({ instance: "gesture-1", serial: "1", coreId: "1" });
+        const previewA = {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        };
+        h.answerAll((r) => projection(r, "12", "12", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 1);
+        // A structural change lands during the read flight: the witness
+        // advances past the served coverage. The subscriber still sends
+        // (it cannot distinguish motion from structure); the native
+        // per-surface gates block the stale paint (exact monotonic cover
+        // for borders/underlay, the structural floor for the preview).
+        // The send below therefore carries provably stale cover bytes.
+        h.sub.notifyInvalidated();
+        assert.equal(h.calls.length, 1, "read issued");
+        h.setInvalidation({ instance: "effect-1", counter: "6" });
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "13", "13", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 2, "stale-cover send is recorded (the native renderer rejects it)");
+        const sent = JSON.parse(h.paints[1] as string) as Record<string, unknown>;
+        assert.equal(sent["coveredInvalid"], "5", "the send carries the pre-change cover (natively blocked)");
+        // The covering capture's notification re-drives a clean read that
+        // paints current content.
+        h.answerAll((r) => projection(r, "14", "14", { coveredInvalid: "6", preview: previewA }));
+        assert.equal(h.paints.length, 3, "covering paint renders once settled");
+        const settled = JSON.parse(h.paints[2] as string) as Record<string, unknown>;
+        assert.equal(settled["coveredInvalid"], "6");
+    });
+
+    it("continuity: clean read with stale cover but a live-producer preview still sends", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        // Gesture A is live; its producing preview paints while A is open.
+        h.setLiveGesture({ instance: "gesture-1", serial: "1", coreId: "1" });
+        const previewA = {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        };
+        h.answerAll((r) => projection(r, "12", "12", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 1);
+        // The witness advances past the served cover with no further
+        // notification before the read completes: the read is clean but
+        // stale (ordinary continuous native-frame drag). The live-producer
+        // preview relaxes the coverage gate — the send carries the stale
+        // cover for the native endpoint to decide — then refetches to
+        // converge.
+        h.sub.notifyInvalidated();
+        assert.equal(h.calls.length, 1, "read issued");
+        h.setInvalidation({ instance: "effect-1", counter: "6" });
+        h.answerAll((r) => projection(r, "13", "13", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 2, "clean lagging read still sends the live preview");
+        const painted = JSON.parse(h.paints[1] as string) as Record<string, unknown>;
+        assert.deepEqual(painted["preview"], previewA, "the live gesture's own preview paints with exact values");
+        assert.equal(painted["coveredInvalid"], "5", "the send carries the lagging cover (natively decided)");
+        assert.equal(h.calls.length, 1, "one refetch converges on the covering projection");
+        h.answerAll((r) => projection(r, "13", "13", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 2, "converged refetch never resends");
+        assert.equal(h.calls.length, 0, "no loop without new events");
+        // A stale cover with a FOREIGN producer still skips: continuity
+        // never resurrects another gesture's preview.
+        const previewB = {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "2",
+        };
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "14", "14", { coveredInvalid: "5", preview: previewB }));
+        assert.equal(h.paints.length, 2, "foreign-producer stale cover never paints");
+        assert.equal(h.calls.length, 0, "no refetch without a covering capture");
+    });
+
+    it("terminal: preview from a finished gesture strips to border/underlay", () => {
+        const h = setup();
+        h.sub.notifyGeneration(GEN);
+        h.setLiveGesture({ instance: "gesture-1", serial: "1", coreId: "1" });
+        const previewA = {
+            rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",
+            producerInstance: "gesture-1", producerSerial: "1",
+        };
+        h.answerAll((r) => projection(r, "12", "12", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 1);
+        // The gesture finished (release/Esc-cancel): no live identity, so
+        // the old producing preview must strip. Border/underlay still paint
+        // from the accepted projection (fail-closed strip, never a hide).
+        h.setLiveGesture(null);
+        h.sub.notifyInvalidated();
+        h.answerAll((r) => projection(r, "13", "13", { coveredInvalid: "5", preview: previewA }));
+        assert.equal(h.paints.length, 2, "border/underlay still paint after the terminal");
+        const stripped = JSON.parse(h.paints[1] as string) as Record<string, unknown>;
+        assert.equal(stripped["preview"], null, "finished-gesture preview strips (never resurrects)");
+    });
 });

@@ -122,6 +122,23 @@ private:
     void onTrackedFrameChanged();
     void onTrackedFullscreenChanged();
     void onGroupMemberFrameChanged(EffectWindow *window);
+    // Non-tracked structural member routes (exact window identity, never
+    // timing or geometry): an untracked window's fullscreen transition or
+    // desktop-membership change advances the witness exactly once (the
+    // tracked window's own handlers already covered it, so the member
+    // fullscreen route skips the tracked window on the same emission).
+    void onGroupMemberFullscreenChanged(EffectWindow *window);
+    void onGroupMemberDesktopsChanged(EffectWindow *window);
+    // Workspace-structure route for output/desktop/show-desktop/geometry
+    // changes with no per-window signal: union scope plus the structural
+    // tick, then a full refresh.
+    void onWorkspaceStructureChanged();
+    // Genuine mover-motion identity (exact, never timing, geometry, cursor
+    // position, or pointer matching): the changed window names the live
+    // open gesture window and its inner window holds an interactive move.
+    // A resize drag, scripted move, post-finish stray, or unreadable live
+    // state is structural, never motion.
+    bool isGenuineMoverFrame(EffectWindow *window) const;
     // Pure-renderer paint: each shape renders the held accepted core rects
     // verbatim (KWin logical units; item anchoring translates spaces without
     // a second outset or scaling) gated on the live foreground match, the

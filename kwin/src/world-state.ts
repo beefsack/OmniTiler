@@ -55,8 +55,9 @@ export interface CaptureFlight {
     // Raw native gesture identity carried by this exact capture (terminal
     // phases only), or null. The ack after the core GestureSettled binds to
     // this flight identity plus the pending terminal, never to an arbitrary
-    // accepted capture.
-    gesture: { instance: string; serial: string } | null;
+    // accepted capture. The native window rides frozen at send: the settled
+    // id is a numeric core ingress id, never a native row key.
+    gesture: { instance: string; serial: string; win: string } | null;
     // Exact facts this flight delivered (snapshots of the pending attempt
     // maps at dispatch): a bound ready reply consumes exactly-equal
     // entries, so a lost acknowledgement redelivers the same attempt

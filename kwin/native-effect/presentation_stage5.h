@@ -25,11 +25,40 @@
 namespace KWin
 {
 
+// Genuine mover-motion classification (never timing, geometry, cursor
+// position, or pointer matching): the changed window names the live open
+// gesture window, that gesture is open, and the live interactive-move
+// flag is set. A same-window resize drag, scripted move, post-finish
+// stray, or non-interactive frame is structural, never motion. All inputs
+// are live reads supplied by the caller (identities plus the flag); the
+// offline test pins the full matrix so a weaker check cannot return.
+inline bool classifyMoverMotion(const QString &changedBareId, const QString &openWinId, bool gestureOpen,
+    bool interactiveMove)
+{
+    return gestureOpen && !changedBareId.isEmpty() && changedBareId == openWinId && interactiveMove;
+}
+
+// Visible-to-visible preview-rect advance: the accepted preview rect may
+// advance while shown (motion continuity delivers newer completed
+// previews for the same gesture; covering captures replace older ones).
+// Consume it verbatim (KWin logical units, no outset or scaling) instead
+// of pinning the first rect. Returns true when the item must move/resize.
+inline bool advanceDragPreviewRect(QRect &current, const QRect &incoming)
+{
+    if (current == incoming) {
+        return false;
+    }
+    current = incoming;
+    return true;
+}
+
 // Per-route refresh set: which host surfaces the caller refreshes after the
-// route runs. Every invalidation route refreshes all surfaces so stale items
-// hide immediately until fresh covering paint arrives. Activation, endpoint,
-// and reset routes refresh every surface; stale endpoint coverage refreshes
-// nothing.
+// route runs. Structural invalidation routes refresh all surfaces so stale
+// items hide immediately until fresh covering paint arrives (the
+// mover-motion route refreshes only its dirtied border/underlay: the
+// structurally covered preview stays visible without refresh). Activation,
+// endpoint, and reset routes refresh every surface; stale endpoint coverage
+// refreshes nothing.
 struct Stage5Refresh {
     bool border = false;
     bool anchor = false;
@@ -54,8 +83,9 @@ struct Stage5HostView {
 };
 
 // Decided visibility per surface, from the held accepted paint plus one
-// injected host view. Every drawn surface additionally requires held
-// coverage equal to the actual latest witness.
+// injected host view. Drawn borders/underlay additionally require held
+// coverage equal to the actual latest witness; the drawn preview requires
+// coverage at or past the structural floor instead (same instance).
 struct Stage5Visibility {
     bool border = false;
     bool underlay = false;
@@ -82,13 +112,25 @@ public:
     QString factsInstance() const;
 
     // Counter-advance routes; each returns the surfaces the caller
-    // refreshes. Activation hides display-only then bumps every scope.
-    // Tracked-frame, member-frame, fullscreen-mode, and gesture boundaries
-    // bump their scope then refresh every surface (border, anchor,
-    // underlay, preview) so no stale item remains visible.
+    // refreshes. The tracked-frame route bumps once with the union scope
+    // (the member handler skips the tracked window on the same emission),
+    // member-frame, fullscreen-mode, layout, visibility, and gesture
+    // boundaries bump their scope plus the structural tick, then refresh
+    // all surfaces so no stale item remains visible. The mover-motion
+    // route is the exception: it bumps monotonically with the union scope
+    // but WITHOUT the structural tick (the valid same-gesture preview
+    // persists) and refreshes only its dirtied border/underlay surfaces;
+    // the preview is never refreshed there (it stays visible).
     Stage5Refresh onActivation();
     Stage5Refresh onTrackedFrame();
     Stage5Refresh onMemberFrame();
+    Stage5Refresh onMotionFrame(bool tracked);
+    Stage5Refresh onLayoutChanged();
+    // Member visibility route (minimize/restore, hide/show): union scope
+    // plus the structural tick, unconditionally, then border/underlay/
+    // preview refresh; the anchor still remaps only for held members via
+    // onMemberVisibility below.
+    Stage5Refresh onVisibilityChanged(const QString &bareId);
     Stage5Refresh onFullscreenChanged();
     Stage5Refresh onGestureBoundary();
     // Member visibility change: no bump, re-anchor plus underlay only, and
@@ -113,11 +155,17 @@ public:
     Stage5Refresh hideForEndpointLoss();
     Stage5Refresh resetStream();
 
-    // Pure-renderer visibility decisions: the held accepted shapes show
-    // only on the live foreground match, the geometry-fresh floors, held
-    // coverage equal to the actual latest witness, the matching live
-    // producer for the preview, plus the endpoint gate. No eligibility or
-    // geometry derivation.
+    // Pure-renderer visibility decisions: the held accepted border and
+    // underlay shapes show only on the live foreground match, the
+    // geometry-fresh floors, held coverage equal to the actual latest
+    // witness, plus the hide-only vetoes. The underlay needs the same plus
+    // a valid anchor (the core Found already encodes the trigger). The
+    // preview needs structurally current coverage (covered at or past the
+    // structural floor in the same instance: motion bumps the monotonic
+    // witness without touching the floor, so the valid same-gesture
+    // preview persists while strict borders hide) plus the matching live
+    // producer, live move liveness, and the endpoint gate. No eligibility
+    // or geometry derivation.
     Stage5Visibility decide(const Stage5HostView &host) const;
 
 private:

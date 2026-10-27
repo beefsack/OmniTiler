@@ -228,10 +228,43 @@ describe("presentation native static contract", () => {
             assert.match(memberStage, /refresh\.preview = true/);
             assert.match(memberStage, /publishInvalidation\(\)/);
             const visibilityBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberVisibilityChanged(EffectWindow");
-            assert.match(visibilityBody, /m_router\.paint\.underlayMembers\.isEmpty\(\)/);
+            // Visibility is structural: minimize/restore or hide/show
+            // bumps the witness unconditionally (observed facts, never
+            // held membership), so no isEmpty/contains gate lives in the
+            // handler; the anchor still remaps only for held members via
+            // the extracted route.
+            assert.doesNotMatch(visibilityBody, /m_router\.paint\.underlayMembers\.isEmpty\(\)/);
             assert.doesNotMatch(visibilityBody, /m_router\.paint\.underlayMembers\.contains\(/);
-            assert.match(visibilityBody, /m_stage\.onMemberVisibility\(bare\)/);
+            assert.match(visibilityBody, /m_stage\.onVisibilityChanged\(bare\)/);
             assert.match(stageImpl, /underlayMembers\.contains\(bareId\)/);
+            // Untracked fullscreen and desktop membership bump through
+            // their own member routes (the tracked window's own handlers
+            // already covered it, so the member fullscreen route skips the
+            // tracked window on the same emission). Workspace structure
+            // with no per-window signal routes through one shared method.
+            const memberFullscreen = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberFullscreenChanged(EffectWindow");
+            assert.match(memberFullscreen, /window == m_trackedWindow/);
+            assert.match(memberFullscreen, /m_stage\.onFullscreenChanged\(\)/);
+            assert.match(memberFullscreen, /applyStageRefresh\(refresh\)/);
+            const memberDesktops = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberDesktopsChanged(EffectWindow");
+            assert.match(memberDesktops, /m_stage\.onLayoutChanged\(\)/);
+            assert.match(memberDesktops, /applyStageRefresh\(refresh\)/);
+            const workspaceStructure = extractBody(effectImpl, "void ActiveWindowBorderEffect::onWorkspaceStructureChanged()");
+            assert.match(workspaceStructure, /m_stage\.onLayoutChanged\(\)/);
+            assert.match(workspaceStructure, /applyStageRefresh\(refresh\)/);
+            for (const hook of [
+                /windowFullScreenChanged, this, &ActiveWindowBorderEffect::onGroupMemberFullscreenChanged/,
+                /windowDesktopsChanged, this, &ActiveWindowBorderEffect::onGroupMemberDesktopsChanged/,
+                /screenAdded, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+                /screenRemoved, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+                /desktopAdded, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+                /desktopRemoved, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+                /desktopChanged, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+                /showingDesktopChanged, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+                /virtualScreenGeometryChanged, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+            ]) {
+                assert.match(effectImpl, hook);
+            }
         }
         assert.match(effectHeader, /onTrackedFrameChanged\(\);/);
         assert.match(effectHeader, /onGroupMemberFrameChanged\(EffectWindow \*window\);/);

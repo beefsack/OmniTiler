@@ -96,7 +96,8 @@ fn ingress_id(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn report(
+fn report_on(
+    screens: Vec<ScreenReport>,
     request_seq: u64,
     observation_seq: u64,
     windows: Vec<WindowFact>,
@@ -116,7 +117,7 @@ fn report(
         command_seq: None,
         command: None,
         workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-        screens: screens(),
+        screens,
         windows,
         views: Vec::new(),
         closed,
@@ -158,6 +159,28 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report(
+    request_seq: u64,
+    observation_seq: u64,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    gesture: Option<GestureIngress>,
+    closed: Vec<WindowId>,
+    inventory_complete: bool,
+) -> WorldReport {
+    report_on(
+        screens(),
+        request_seq,
+        observation_seq,
+        windows,
+        focused,
+        gesture,
+        closed,
+        inventory_complete,
+    )
 }
 
 /// Two tiled windows on out-a, focused on win-a: the stable gesture rig.
@@ -2578,3 +2601,9 @@ fn rejected_report_consumes_no_gesture_identity() {
     );
     preview_of(&previewed);
 }
+
+// Cross-output gesture release suite: pair-targeted slot agreement,
+// retained transfer fences, and gap bookkeeping live in the child;
+// shared rig helpers above are used via `super::*`.
+#[path = "world_gesture_tests/cross_output.rs"]
+mod cross_output;

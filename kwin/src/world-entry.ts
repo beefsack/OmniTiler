@@ -470,6 +470,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // for presentation/preview rides `gestureIdentityForPresentation`
     // below (broker-settled truth only); no freshness enforcement.
     let gestureSnapshot: NativeGestureSnapshot | null = null;
+    // Content-gated changed-line diagnostics (never timers): the gesture
+    // lane logs only identity/phase transitions and the facts lane only
+    // regime transitions, so continuous pointer/mover motion and
+    // per-frame invalidation bumps stay silent while opens, phase
+    // changes, new serials, chord/style regimes, and generation rotations
+    // remain diagnosable.
+    let lastGestureChangedLog = "";
+    let lastEffectChangedLog = "";
     let gestureWaiterOutstanding = false;
     let gestureWaiterNonce = 0;
     let gestureWaiterGen: string | null = null;
@@ -499,6 +507,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // terminal), never terminal-only, so the NEXT package can expose the
     // current native identity with its proven core id while open.
     let gestureBoundAssoc: { instance: string; serial: string; coreId: string; gen: string } | null = null;
+    // One pending post-actuation follow-up observation (single slot,
+    // pruned on generation rotation and stop).
+    let dropFollowup: { serial: string; win: string } | null = null;
     // Exact pending ack retries: initial send plus this many fast attempts
     // total, 2 s apart, then the exact pending ack persists and retries at
     // the existing 25 s host-deadline cadence (no hot loop, no new
@@ -1343,6 +1354,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         gestureSnapshot = null;
                         gestureTerminalPending = null;
                         gestureBoundAssoc = null;
+                        dropFollowup = null;
                         clearGestureAck();
                         clearTerminalCaptureRetry();
                         lastResolvedCaptureSource = null;
@@ -1862,7 +1874,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         });
         armEffectWaiter();
         if (parsed.changed) {
-            log(`omnitiler:world:effect-facts-changed instance=${token(parsed.instance)} rev=${token(parsed.rev)}`);
+            // Content-gated like the gesture lane: per-frame invalidation
+            // bumps stay silent while regime transitions (effect restart,
+            // chord toggle, style change) stay diagnosable. The facts
+            // revision advances on every bump, so it must not key the
+            // gate; chord plus style numbers identify the regime.
+            const effectChangeKey =
+                `${state.boundGen ?? ""}\u0000${parsed.instance}\u0000${parsed.chord ? 1 : 0}\u0000${parsed.borderGap}\u0000${parsed.borderWidth}\u0000${parsed.underlayExtension}`;
+            if (effectChangeKey !== lastEffectChangedLog) {
+                lastEffectChangedLog = effectChangeKey;
+                log(`omnitiler:world:effect-facts-changed instance=${token(parsed.instance)} rev=${token(parsed.rev)}`);
+            }
             state.invalidate();
             scheduleDispatch();
         }
@@ -2060,6 +2082,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             scheduleGestureRecovery();
             return;
         }
+        // Every gesture update advances the watermark and dispatches a
+        // capture with the fresh cursor so the core owns the next preview.
+        // No entry-side motion classification: the native witness
+        // distinguishes motion from structure (the facts lane carries each
+        // bump), and a superseded in-flight reply may still drive a
+        // preview read while the native per-surface gates decide.
         gestureSnapshot = parsed;
         const terminal = parsed.phase === "released" || parsed.phase === "cancelled";
         if (terminal) {
@@ -2069,7 +2097,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // possible and no terminal is ever lost to a quiet flag. The
             // exact pending ack is never abandoned while core-settled: fast
             // retries yield to the host-deadline cadence instead.
-            log(`omnitiler:world:gesture-facts-terminal phase=${parsed.phase} serial=${parsed.serial}`);
+            log(`omnitiler:world:gesture-facts-terminal phase=${parsed.phase} serial=${parsed.serial} cursor=${parsed.cursor === null ? "-" : `${parsed.cursor[0]},${parsed.cursor[1]}`}`);
             state.invalidate();
             scheduleDispatch();
             return;
@@ -2077,7 +2105,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         gestureTerminalPending = null;
         armGestureWaiter();
         if (parsed.changed) {
-            log(`omnitiler:world:gesture-facts-changed phase=${parsed.phase} serial=${parsed.serial}`);
+            // Per-motion changed lines would flood the log on every
+            // pointer move: log only identity/phase transitions (open,
+            // phase change, new serial), never pure cursor progress. The
+            // generation prefix keeps rotations diagnosable.
+            const gestureChangeKey =
+                `${state.boundGen ?? ""}\u0000${parsed.instance}\u0000${parsed.serial}\u0000${parsed.phase}`;
+            if (gestureChangeKey !== lastGestureChangedLog) {
+                lastGestureChangedLog = gestureChangeKey;
+                log(`omnitiler:world:gesture-facts-changed phase=${parsed.phase} serial=${parsed.serial}`);
+            }
             state.invalidate();
             scheduleDispatch();
         }
@@ -2579,6 +2616,78 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
+    // Terminal drop diagnostic (terminal-only): `drop-settled` JSON per
+    // proven settlement on the accepted path, `drop-observed` JSON on the
+    // next accepted capture (observed, not final). Native-window keyed.
+    const logDropDiagnostics = (parsed: WorldReply, flight: CaptureFlight, fresh: WorldObservation): void => {
+        const findWin = (win: string): { rect: { x: number; y: number; w: number; h: number }; out: string; ws: string } | null => {
+            for (const domain of fresh.domains) {
+                for (const w of domain.windows) {
+                    if (w.win === win) {
+                        return { rect: w.rect, out: w.out, ws: w.ws };
+                    }
+                }
+            }
+            return null;
+        };
+        const pending = dropFollowup;
+        if (pending !== null) {
+            dropFollowup = null;
+            const seen = findWin(pending.win);
+            log(`omnitiler:world:drop-observed ${JSON.stringify({ serial: pending.serial, win: pending.win, frame: seen === null ? null : seen.rect, at: seen === null ? null : { out: seen.out, ws: seen.ws } })}`);
+        }
+        const g = flight.gesture;
+        if (g === null || g.win === "") {
+            return;
+        }
+        const settled = parsed.gestureSettled;
+        const assoc = parsed.gestureAssoc;
+        if (settled === null || settled === undefined || assoc === null || assoc === undefined) {
+            return;
+        }
+        if (typeof settled.id !== "string" || settled.id === "" || settled.id !== assoc.coreId) {
+            return;
+        }
+        if (assoc.instance !== g.instance || assoc.serial !== g.serial) {
+            return;
+        }
+        // Destination desired allocation and frame from the accepted reply
+        // row, keyed by the native gesture window.
+        let dest: { out: string; ws: string } | null = null;
+        let desired: readonly [number, number, number, number] | null = null;
+        let desiredFrame: readonly [number, number, number, number] | null = null;
+        for (const row of parsed.windows) {
+            if (row.win === g.win) {
+                dest = { out: row.out, ws: row.ws };
+                desired = row.alloc;
+                desiredFrame = row.frame;
+                break;
+            }
+        }
+        // Pre-actuation observed frame from the fresh capture (taken before
+        // apply), keyed the same way.
+        const seen = findWin(g.win);
+        // Destination work area when cheap.
+        let work: { x: number; y: number; w: number; h: number } | null = null;
+        if (dest !== null) {
+            for (const screen of fresh.screens) {
+                if (screen.out === dest.out) {
+                    work = screen.work;
+                    break;
+                }
+            }
+        }
+        log(`omnitiler:world:drop-settled ${JSON.stringify({
+            rev: parsed.rev, serial: g.serial, instance: g.instance, win: g.win,
+            settled: settled.id, committed: settled.committed,
+            dest, desired, desiredFrame,
+            observedPre: seen === null ? null : seen.rect,
+            observedAt: seen === null ? null : { out: seen.out, ws: seen.ws },
+            work,
+        })}`);
+        dropFollowup = { serial: g.serial, win: g.win };
+    };
+
     // Post-accept capture handling with the requester-only terminal result:
     // binding convergence, close/float convergence, safe actuation,
     // native toggles, and drain scheduling. Runs after the
@@ -2806,6 +2915,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:observe-invalid recovery=on-next-event");
                         return;
                     }
+                    // Terminal drop diagnostic: pre-apply, so the observed
+                    // frame and source homing are pre-actuation evidence.
+                    logDropDiagnostics(parsed, flight, fresh);
                     // Born admission and the one-shot clear are core-owned
                     // (N6): the reply's `clear_operation` desire rides the
                     // normal apply lane below with fresh pre/post proof.
@@ -3014,7 +3126,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // at most one retry timer lives at a time.
     let terminalCaptureRetry: {
         envelope: string; source: string; watermark: string;
-        gesture: { instance: string; serial: string }; attempts: number;
+        gesture: { instance: string; serial: string; win: string }; attempts: number;
         timerCancel: (() => void) | null;
     } | null = null;
     const TERMINAL_CAPTURE_MAX_RETRIES = 2;
@@ -3099,14 +3211,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         // Stamp the exact raw terminal identity this capture carries (if
         // any): the later accept binds its GestureSettled to this flight
-        // identity before any ack may fire.
+        // identity before any ack may fire. The native window freezes here
+        // too: the settled id is numeric, never a native row key.
         try {
             const raw = observation.nativeGesture ?? null;
             flight.gesture = (
                 raw !== null && raw.available &&
                 (raw.phase === "released" || raw.phase === "cancelled")
             )
-                ? { instance: raw.instance, serial: raw.serial }
+                ? { instance: raw.instance, serial: raw.serial, win: raw.win }
                 : null;
         } catch (error) {
             void error;
@@ -3144,7 +3257,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // (timerCancel null) so the redelivery's own failure increments
     // instead of restarting at 1.
     const fireTerminalRetry = (
-        saved: { envelope: string; source: string; watermark: string; gesture: { instance: string; serial: string }; attempts: number },
+        saved: { envelope: string; source: string; watermark: string; gesture: { instance: string; serial: string; win: string }; attempts: number },
         cadenceMs: number,
     ): void => {
         if (stopped) {
@@ -3221,7 +3334,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             });
             return;
         }
-        retryFlight.gesture = { instance: saved.gesture.instance, serial: saved.gesture.serial };
+        retryFlight.gesture = {
+            instance: saved.gesture.instance, serial: saved.gesture.serial, win: saved.gesture.win,
+        };
         transmitCapture(saved.envelope, retryFlight, null);
     };
     const maybeRetryTerminalCapture = (envelope: string, flight: CaptureFlight): void => {
@@ -3260,7 +3375,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } else {
             attempts = 1;
         }
-        const gesture = { instance: flight.gesture.instance, serial: flight.gesture.serial };
+        const gesture = {
+            instance: flight.gesture.instance, serial: flight.gesture.serial, win: flight.gesture.win,
+        };
         if (attempts > TERMINAL_CAPTURE_MAX_RETRIES) {
             // Fast bound reached: the exact pending envelope persists and
             // retries at the existing host-deadline cadence (never a hot
@@ -3464,6 +3581,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // superseded, so no setters run on it. Follow-up
                         // observes the newer watermark (dirty is set).
                         log("omnitiler:world:stale reason=superseded-during-flight recovery=catchup");
+                        // Active-drag preview continuity: a superseded
+                        // accepted reply still drives a preview-only
+                        // presentation read. The broker already cached this
+                        // accepted reply, so the read serves its latest
+                        // completed preview; the native per-surface gates
+                        // (exact monotonic cover for borders/underlay, the
+                        // structural floor plus live producer for the
+                        // same-gesture preview) decide. Structurally-stale
+                        // replies are rejected natively with no display
+                        // touch. Actuation stays strict: no setters run on
+                        // this path either way.
+                        try {
+                            presentationSubscriber.notifyInvalidated();
+                        } catch (error) {
+                            void error;
+                        }
                         takeResultFor(flight.clientCmd, () => {
                             if (state.dirty || pendingQueue.length > 0) {
                                 scheduleDispatch();
@@ -4357,6 +4490,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             gestureTerminalPending = null;
             gestureSnapshot = null;
             gestureBoundAssoc = null;
+            dropFollowup = null;
             clearGestureAck();
             clearTerminalCaptureRetry();
             lastResolvedCaptureSource = null;

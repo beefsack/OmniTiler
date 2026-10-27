@@ -326,9 +326,14 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
         unsubscribeGroupVisibility(window);
         forgetGestureWindow(window);
         m_maximizedWindows.remove(window);
+        // Independent layout removal (a deletion may arrive without a
+        // prior close): the structural witness advances immediately like
+        // the close path above.
+        const Stage5Refresh layoutRefresh = m_stage.onLayoutChanged();
         if (!m_isOpenGL) {
             return;
         }
+        applyStageRefresh(layoutRefresh);
         if (m_trackedWindow == window) {
             setTrackedWindow(nullptr);
         }
@@ -342,9 +347,17 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
         unsubscribeGroupVisibility(window);
         forgetGestureWindow(window);
         m_maximizedWindows.remove(window);
+        // Independent layout removal: the membership and drop target may
+        // have changed with no frame signal, so the structural witness
+        // advances immediately (the forget-gesture boundary above already
+        // covered mover/gesture windows with its own bump; this one
+        // carries the union floors). Pre-event coverage hides with no
+        // repaint.
+        const Stage5Refresh layoutRefresh = m_stage.onLayoutChanged();
         if (!m_isOpenGL) {
             return;
         }
+        applyStageRefresh(layoutRefresh);
         updateBorder();
         updateGroupAnchorAndGeometry();
         updateGroupVisibility();
@@ -364,9 +377,16 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
         subscribeMaximize(window);
         subscribeGroupVisibility(window);
         attachGestureWindow(window);
+        // Independent layout add: membership behind the underlay and the
+        // drop target behind the preview may have changed with no frame
+        // signal, so the structural witness advances immediately (never a
+        // frame signal for membership/target changes). The held preview
+        // hides until the covering capture lands.
+        const Stage5Refresh layoutRefresh = m_stage.onLayoutChanged();
         if (m_isOpenGL) {
             updateGroupAnchorAndGeometry();
             updateGroupVisibility();
+            applyStageRefresh(layoutRefresh);
             emitPresentationTransitionDiag();
         }
     });
@@ -391,6 +411,18 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
         }
         onWindowActivated();
     });
+    // Workspace-structure changes with no per-window signal: outputs and
+    // desktops gained or lost, the active desktop switched, show-desktop
+    // toggled, or output geometry changed. The union scope plus the
+    // structural tick hide held shapes until the covering capture lands;
+    // rendering stays OpenGL-gated while the witness advances regardless.
+    connect(effects, &EffectsHandler::screenAdded, this, [this]() { onWorkspaceStructureChanged(); });
+    connect(effects, &EffectsHandler::screenRemoved, this, [this]() { onWorkspaceStructureChanged(); });
+    connect(effects, &EffectsHandler::desktopAdded, this, [this]() { onWorkspaceStructureChanged(); });
+    connect(effects, &EffectsHandler::desktopRemoved, this, [this]() { onWorkspaceStructureChanged(); });
+    connect(effects, &EffectsHandler::desktopChanged, this, [this]() { onWorkspaceStructureChanged(); });
+    connect(effects, &EffectsHandler::showingDesktopChanged, this, [this]() { onWorkspaceStructureChanged(); });
+    connect(effects, &EffectsHandler::virtualScreenGeometryChanged, this, [this]() { onWorkspaceStructureChanged(); });
 
     if (!m_isOpenGL) {
         return;
@@ -471,6 +503,11 @@ void ActiveWindowBorderEffect::reconfigure(ReconfigureFlags)
     // live triple the effect renders with so a held waiter completes with
     // the same numbers. The source bumps only on material change.
     noteFactsStyle();
+    // Reconfiguration can change what the held shapes mean (gap, width,
+    // and extension expand core geometry): the structural witness advances
+    // immediately so stale-regime paint hides until the covering capture
+    // lands.
+    const Stage5Refresh layoutRefresh = m_stage.onLayoutChanged();
     updateOutline();
     updateDragPreviewFill();
     updateGroupUnderlayFill();
@@ -478,6 +515,8 @@ void ActiveWindowBorderEffect::reconfigure(ReconfigureFlags)
     updateGroupAnchorAndGeometry();
     updateGroupVisibility();
     updateDragPreview();
+    applyStageRefresh(layoutRefresh);
+    emitPresentationTransitionDiag();
 }
 
 void ActiveWindowBorderEffect::updateOutline()
@@ -691,16 +730,17 @@ void ActiveWindowBorderEffect::subscribeGroupVisibility(EffectWindow *window)
         return;
     }
     m_groupVisibilitySubscribed.insert(window);
-    // Existing public visibility signals only. The handler ignores
-    // non-members via the held paint id list, so every window can stay
-    // subscribed across paint changes (a restored lower member is no
-    // longer the anchor but still re-anchors here). Frame changes are
-    // observed on the same per-window set: any held member frame change
-    // dirties the underlay (finding F), since the published outer depends
-    // on every member, not just the anchor.
+    // Existing public visibility signals only. Frame changes are observed
+    // on the same per-window set: any held member frame change dirties
+    // the underlay (finding F), since the published outer depends on every
+    // member, not just the anchor. Fullscreen transitions and desktop
+    // membership changes are structural too (no frame signal carries
+    // them); the handlers below skip nothing by membership.
     connect(window, &EffectWindow::minimizedChanged, this, &ActiveWindowBorderEffect::onGroupMemberVisibilityChanged);
     connect(window, &EffectWindow::windowHiddenChanged, this, &ActiveWindowBorderEffect::onGroupMemberVisibilityChanged);
     connect(window, &EffectWindow::windowFrameGeometryChanged, this, &ActiveWindowBorderEffect::onGroupMemberFrameChanged);
+    connect(window, &EffectWindow::windowFullScreenChanged, this, &ActiveWindowBorderEffect::onGroupMemberFullscreenChanged);
+    connect(window, &EffectWindow::windowDesktopsChanged, this, &ActiveWindowBorderEffect::onGroupMemberDesktopsChanged);
 }
 
 void ActiveWindowBorderEffect::unsubscribeGroupVisibility(EffectWindow *window)
@@ -713,19 +753,28 @@ void ActiveWindowBorderEffect::unsubscribeGroupVisibility(EffectWindow *window)
     disconnect(window, &EffectWindow::minimizedChanged, this, &ActiveWindowBorderEffect::onGroupMemberVisibilityChanged);
     disconnect(window, &EffectWindow::windowHiddenChanged, this, &ActiveWindowBorderEffect::onGroupMemberVisibilityChanged);
     disconnect(window, &EffectWindow::windowFrameGeometryChanged, this, &ActiveWindowBorderEffect::onGroupMemberFrameChanged);
+    disconnect(window, &EffectWindow::windowFullScreenChanged, this, &ActiveWindowBorderEffect::onGroupMemberFullscreenChanged);
+    disconnect(window, &EffectWindow::windowDesktopsChanged, this, &ActiveWindowBorderEffect::onGroupMemberDesktopsChanged);
 }
 
 void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow *window)
 {
-    // Any subscribed window frame change bumps the causal witness: the
-    // published outer depends on every member, so relevance is observed
-    // facts, never held display state. A hidden member, a cleared list,
-    // or a pre-first-paint frame all count; a skipped bump would let an
-    // in-flight older-covered paint resurrect stale underlay.
     if (window == nullptr || window->isDeleted()) {
         return;
     }
-    const Stage5Refresh refresh = m_stage.onMemberFrame();
+    // Dedup: the tracked window is always group-subscribed, so its frame
+    // fires this slot too on the same emission; the tracked route already
+    // bumped once with the union scope, so this event records nothing
+    // more. Splitting by exact window identity keeps one frame to one
+    // bump regardless of slot order.
+    if (window == m_trackedWindow) {
+        return;
+    }
+    // Genuine mover motion (live gesture identity plus the interactive
+    // flag) takes the monotonic-only route; every other subscribed frame
+    // is structural.
+    const Stage5Refresh refresh =
+        isGenuineMoverFrame(window) ? m_stage.onMotionFrame(false) : m_stage.onMemberFrame();
     if (!m_isOpenGL) {
         return;
     }
@@ -735,16 +784,74 @@ void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow *window)
 
 void ActiveWindowBorderEffect::onGroupMemberVisibilityChanged(EffectWindow *window)
 {
-    // Member minimize/restore or hide/show re-anchors to the lowest-stacked
-    // renderable member, preserving the underlay without timers or polling.
-    // Bare-UUID compare only against the held paint list, decided by the
-    // extracted handler; a non-member refreshes nothing. Never logged.
-    if (!m_isOpenGL || window == nullptr || m_router.paint.underlayMembers.isEmpty()) {
+    if (window == nullptr || window->isDeleted()) {
         return;
     }
+    // Visibility is structural: minimize/restore or hide/show changes
+    // membership behind the underlay and may hide the drop target with no
+    // frame signal, so the causal witness advances plus the structural
+    // tick unconditionally (hidden members, cleared lists, and
+    // pre-first-paint windows all count; a skipped bump would let an
+    // in-flight older-covered paint resurrect a stale preview). The stage
+    // still re-anchors only for held members via the extracted route.
+    // Never logged.
     const QString bare = window->internalId().toString(QUuid::WithoutBraces);
-    const Stage5Refresh refresh = m_stage.onMemberVisibility(bare);
-    if (!refresh.anchor) {
+    const Stage5Refresh refresh = m_stage.onVisibilityChanged(bare);
+    if (!m_isOpenGL) {
+        return;
+    }
+    applyStageRefresh(refresh);
+    emitPresentationTransitionDiag();
+}
+
+void ActiveWindowBorderEffect::onGroupMemberFullscreenChanged(EffectWindow *window)
+{
+    if (window == nullptr || window->isDeleted()) {
+        return;
+    }
+    // Dedup: the tracked window's fullscreen transition already bumped
+    // once via onTrackedFullscreenChanged on the same emission.
+    if (window == m_trackedWindow) {
+        return;
+    }
+    // An untracked window's fullscreen transition (enter or exit) is
+    // structural with no frame signal: union scope plus the structural
+    // tick, published so the next actual facts capture covers it.
+    const Stage5Refresh refresh = m_stage.onFullscreenChanged();
+    if (!m_isOpenGL) {
+        return;
+    }
+    applyStageRefresh(refresh);
+    emitPresentationTransitionDiag();
+}
+
+void ActiveWindowBorderEffect::onGroupMemberDesktopsChanged(EffectWindow *window)
+{
+    if (window == nullptr || window->isDeleted()) {
+        return;
+    }
+    // A window entering or leaving a virtual desktop changes membership
+    // behind the underlay and the drop target set with no frame signal:
+    // union scope plus the structural tick, published so the next actual
+    // facts capture covers it.
+    const Stage5Refresh refresh = m_stage.onLayoutChanged();
+    if (!m_isOpenGL) {
+        return;
+    }
+    applyStageRefresh(refresh);
+    emitPresentationTransitionDiag();
+}
+
+void ActiveWindowBorderEffect::onWorkspaceStructureChanged()
+{
+    // Outputs or desktops gained/lost, active desktop switched,
+    // show-desktop toggled, or output geometry changed: the held shapes
+    // were computed for the previous workspace structure, so the union
+    // scope plus the structural tick hide them until the covering capture
+    // lands. The witness advances even without OpenGL (facts truth for
+    // captures); rendering stays OpenGL-gated.
+    const Stage5Refresh refresh = m_stage.onLayoutChanged();
+    if (!m_isOpenGL) {
         return;
     }
     applyStageRefresh(refresh);
@@ -786,6 +893,42 @@ bool ActiveWindowBorderEffect::groupMoveLiveNow() const
         return false;
     }
     return true;
+}
+
+bool ActiveWindowBorderEffect::isGenuineMoverFrame(EffectWindow *window) const
+{
+    // Genuine mover-motion classification by live gesture identity plus the
+    // live interactive-move flag (never timing, geometry, cursor position,
+    // or assumed state): the changed window names the currently open
+    // gesture window and its inner window holds an interactive move. A
+    // resize drag, scripted move, post-finish stray, or unreadable live
+    // state is structural, never motion. Window identities are never
+    // logged.
+    if (window == nullptr || window->isDeleted()) {
+        return false;
+    }
+    if (m_gestureSource == nullptr || !m_gestureSource->hasOpen()) {
+        return false;
+    }
+    const QString openId = m_gestureSource->openWin();
+    if (openId.isEmpty()) {
+        return false;
+    }
+    QString bare;
+    try {
+        bare = window->internalId().toString(QUuid::WithoutBraces);
+    } catch (...) {
+        return false;
+    }
+    bool interactiveMove = false;
+    try {
+        if (Window *inner = window->window()) {
+            interactiveMove = !inner->isDeleted() && inner->isInteractiveMove();
+        }
+    } catch (...) {
+        return false;
+    }
+    return classifyMoverMotion(bare, openId, true, interactiveMove);
 }
 
 void ActiveWindowBorderEffect::attachGestureWindow(EffectWindow *window)
@@ -991,12 +1134,14 @@ void ActiveWindowBorderEffect::onWindowActivated()
 
 void ActiveWindowBorderEffect::onTrackedFrameChanged()
 {
-    // The tracked (active) window frame moved: bump the causal witness
-    // first (observed facts, never display state), publish so the next
-    // actual facts capture covers it, then hide every surface until fresh
-    // covering paint arrives. No live-frame comparison: a move
-    // that returns to its start stays hidden without a fresh paint.
-    const Stage5Refresh refresh = m_stage.onTrackedFrame();
+    // Single union route (Border plus Underlay: the tracked window is
+    // always group-subscribed): one frame advances the witness exactly
+    // once; the member slot skips the tracked window on the same emission.
+    // Genuine mover motion takes the monotonic-only route (the
+    // same-gesture preview persists); every other tracked frame is
+    // structural.
+    const Stage5Refresh refresh =
+        isGenuineMoverFrame(m_trackedWindow) ? m_stage.onMotionFrame(true) : m_stage.onTrackedFrame();
     if (!m_isOpenGL) {
         return;
     }
@@ -1678,6 +1823,18 @@ void ActiveWindowBorderEffect::updateDragPreview()
         effects->addRepaintFull();
     } else {
         if (show) {
+            // Visible-to-visible replacement: the accepted preview rect
+            // may advance while shown (motion-superseded continuity
+            // delivers newer completed previews for the same gesture, and
+            // covering captures replace older ones). Consume the new rect
+            // verbatim instead of pinning the first one.
+            if (advanceDragPreviewRect(m_dragPreviewRect, m_router.paint.previewRect)) {
+                m_dragPreviewItem.setPosition(
+                    QPointF(static_cast<qreal>(m_dragPreviewRect.x()), static_cast<qreal>(m_dragPreviewRect.y())));
+                m_dragPreviewItem.setSize(
+                    QSizeF(static_cast<qreal>(m_dragPreviewRect.width()), static_cast<qreal>(m_dragPreviewRect.height())));
+                effects->addRepaintFull();
+            }
             m_dragPreviewItem.setVisible(show);
         } else {
             m_dragPreviewItem.setVisible(false);

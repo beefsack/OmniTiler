@@ -60,10 +60,13 @@ Stage5Refresh PresentationStage5::onActivation()
 
 Stage5Refresh PresentationStage5::onTrackedFrame()
 {
-    // The tracked (active) window frame moved: bump the causal witness
-    // first (observed facts, never display state), publish so the next
-    // actual facts capture covers it, then the caller hides every surface
-    // until fresh covering paint arrives.
+    // The tracked (active) window frame moved: exactly one causal bump
+    // with the union scope (the tracked window is always group-subscribed,
+    // so the member handler skips it on the same emission) plus the
+    // structural tick, published so the next actual facts capture covers
+    // it. The caller hides every surface until fresh covering paint
+    // arrives. No live-frame comparison: a move that returns to its start
+    // stays hidden without a fresh paint.
     m_router->onTrackedFrame(factsInstance());
     publishInvalidation();
     Stage5Refresh refresh;
@@ -76,11 +79,11 @@ Stage5Refresh PresentationStage5::onTrackedFrame()
 
 Stage5Refresh PresentationStage5::onMemberFrame()
 {
-    // Any subscribed window frame change bumps the causal witness: the
-    // published outer depends on every member, so relevance is observed
-    // facts, never held display state. Publish so the next actual facts
-    // capture covers it. The caller remaps the anchor and re-evaluates
-    // every surface.
+    // Any subscribed non-tracked window frame change bumps the causal
+    // witness plus the structural tick: the published outer depends on
+    // every member, so relevance is observed facts, never held display
+    // state. Publish so the next actual facts capture covers it. The
+    // caller remaps the anchor and re-evaluates every surface.
     m_router->onMemberFrame(factsInstance());
     publishInvalidation();
     Stage5Refresh refresh;
@@ -88,6 +91,63 @@ Stage5Refresh PresentationStage5::onMemberFrame()
     refresh.anchor = true;
     refresh.underlay = true;
     refresh.preview = true;
+    return refresh;
+}
+
+Stage5Refresh PresentationStage5::onMotionFrame(bool tracked)
+{
+    // Genuine mover motion (classified by the caller via live gesture
+    // identity plus the interactive-move flag): exactly one monotonic bump
+    // with the union scope, published so the next actual facts capture
+    // covers it, WITHOUT the structural tick. Strict border/underlay hide
+    // until fresh covering paint while the valid same-gesture preview
+    // stays structurally covered. Refresh only the dirtied surfaces; the
+    // preview is never refreshed here (it stays visible).
+    m_router->onMotionFrame(tracked, factsInstance());
+    publishInvalidation();
+    Stage5Refresh refresh;
+    refresh.border = tracked;
+    refresh.underlay = true;
+    return refresh;
+}
+
+Stage5Refresh PresentationStage5::onLayoutChanged()
+{
+    // Independent layout add/remove: membership behind the underlay and
+    // the drop target behind the preview may have changed with no frame
+    // signal. The causal witness advances across all scopes plus the
+    // structural tick, published so the next actual facts capture covers
+    // it; pre-event coverage hides immediately with no repaint. The caller
+    // refreshes every surface.
+    m_router->onLayoutChanged(factsInstance());
+    publishInvalidation();
+    Stage5Refresh refresh;
+    refresh.border = true;
+    refresh.anchor = true;
+    refresh.underlay = true;
+    refresh.preview = true;
+    return refresh;
+}
+
+Stage5Refresh PresentationStage5::onVisibilityChanged(const QString &bareId)
+{
+    // Member minimize/restore or hide/show: membership behind the underlay
+    // changes and a drop target may vanish with no frame signal, so the
+    // causal witness advances across all scopes plus the structural tick,
+    // unconditionally (hidden members and pre-first-paint windows count),
+    // published so the next actual facts capture covers it. Border,
+    // underlay, and preview refresh so stale shapes hide immediately; the
+    // anchor still remaps only when the window names a held paint member
+    // (extracted no-bump route below keeps its exact contract).
+    m_router->onVisibilityChanged(factsInstance());
+    publishInvalidation();
+    Stage5Refresh refresh;
+    refresh.border = true;
+    refresh.underlay = true;
+    refresh.preview = true;
+    const Stage5Refresh member = onMemberVisibility(bareId);
+    refresh.anchor = member.anchor;
+    refresh.underlay = refresh.underlay || member.underlay;
     return refresh;
 }
 
@@ -204,6 +264,15 @@ Stage5Visibility PresentationStage5::decide(const Stage5HostView &host) const
     const bool fresh = KWin::presentationBorderFresh(&paint);
     const bool underlayFresh = KWin::presentationUnderlayFresh(&paint);
     const bool current = KWin::presentationCoveredCurrent(&paint);
+    // Structural currency for the preview (independent coverage lane):
+    // the held paint covered at or past the structural floor in the same
+    // instance. Motion advances the monotonic witness without touching the
+    // floor, so the valid same-gesture preview persists while strict
+    // borders hide; any structural invalidation moves the floor past
+    // pre-event coverage, hiding the preview immediately with no repaint.
+    const bool structuralCurrent = paint.covered.set && !m_router->instance.isEmpty()
+        && paint.covered.instance == m_router->instance
+        && paint.covered.counter >= m_router->structuralFloor;
     const bool producerLive =
         KWin::previewProducerMatchesLive(&paint, host.liveGestureInstance, host.liveGestureSerial);
     // Pure renderer: the held accepted border shape paints only on a live
@@ -212,8 +281,9 @@ Stage5Visibility PresentationStage5::decide(const Stage5HostView &host) const
     // replays the published stroke so the drawn outer edge equals the
     // published outer rect exactly; color and radius stay live host
     // styling. The underlay needs the same plus a valid anchor (the core
-    // Found already encodes the trigger). The preview needs a proven
-    // producer matching the live open gesture plus live move liveness.
+    // Found already encodes the trigger). The preview needs structurally
+    // current coverage (computed above) plus a proven producer matching
+    // the live open gesture and live move liveness.
     // Fullscreen presentation is owned elsewhere: every fullscreen
     // transition bumps all surfaces through onFullscreenChanged, and the
     // core omits the suspended output's preview from the published
@@ -224,7 +294,7 @@ Stage5Visibility PresentationStage5::decide(const Stage5HostView &host) const
     visibility.underlay = hasPaint && paint.underlayFound && host.foregroundMatches && host.liveEligible
         && host.endpointAvailable && underlayFresh && current && host.anchorOk;
     visibility.preview = hasPaint && paint.previewHas && producerLive && host.moveLive && host.endpointAvailable
-        && current;
+        && structuralCurrent;
     return visibility;
 }
 

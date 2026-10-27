@@ -11,8 +11,13 @@
 //     or unbind (rotation/death: hide immediately, drop flights).
 //   - `notifyInvalidated()`: an accepted capture or wait wake may have
 //     advanced the cached projection. Coalesces while a read flies; a
-//     completion invalidated during flight skips its stale paint and
-//     refetches current first (finding E: no old render at all).
+//     completion invalidated during flight still sends (continuity across
+//     all-motion invalidation: the native renderer decides every surface
+//     on exact causal proof instead of hiding the valid same-gesture
+//     preview), as does a clean read with stale monotonic cover but a
+//     live-producer preview; both refetch to converge on the covering
+//     projection. A structurally-stale send without a live producer is
+//     rejected natively with no display touch.
 //   - `notifyEffectReset()`: the raw presentation-facts instance changed
 //     or went unavailable (effect restart/teardown, already read by the
 //     entry). The fire-and-forget renderer call succeeds vacuously while
@@ -23,18 +28,20 @@
 // Fencing: every read carries a caller-minted `{v:2,req}` correlation; the
 // serving generation binds server-side. Only the latest issued request may
 // paint (older or rotated completions never resurrect or clear newer
-// state), replies invalidated during flight never paint, and identical or
-// older (gen, rev, obs) repeats never re-send: the last painted (or hidden)
-// point is retained across error hides, so a stale retransmit can never
-// resurrect. A paint applies only when its causal coverage equals the
-// renderer's latest known witness (same instance, equal counter): reads
-// that predate a native invalidation skip and refetch current instead
-// (fail-closed hide, never guessed truth). A preview paints only when its
-// producing native identity matches the live open gesture; otherwise the
-// subscriber paints border/underlay only (fail-closed strip). Malformed
-// replies hide; transport silence (lost callback) hides via the watchdog.
-// The renderer remains the native effect; this module never derives
-// geometry, eligibility, or policy.
+// state), and identical or older (gen, rev, obs) repeats never re-send:
+// the last painted (or hidden) point is retained across error hides, so a
+// stale retransmit can never resurrect. A read paints when its causal
+// coverage equals the renderer's latest known witness (same instance,
+// equal counter), or when a live-producer preview rides along despite a
+// monotonic mismatch (clean or dirty: the mismatch is expected all-motion
+// supersession while the native gates decide). Reads with stale coverage
+// and no live-producer preview skip and wait for the covering capture's
+// own notification; without a covering capture nothing new can paint. A
+// preview paints only when its producing native identity matches the live
+// open gesture; otherwise the subscriber paints border/underlay only
+// (fail-closed strip). Malformed replies hide; transport silence (lost
+// callback) hides via the watchdog. The renderer remains the native
+// effect; this module never derives geometry, eligibility, or policy.
 
 import {
     buildPresentationReadRequest,
@@ -92,8 +99,12 @@ export interface WorldPresentationSubscriberEnv {
     readonly getGeneration: () => string | null;
     // Latest known causal witness (Stage 5): the native-invalidation
     // source instance plus counter from the latest fetched effect facts,
-    // or null when unknown (effect absent/stale/malformed). A served
-    // projection paints only when its coverage equals this value.
+    // or null when unknown (effect absent/stale/malformed). A clean read
+    // paints when its coverage equals this value, or when a live-producer
+    // preview rides along despite a monotonic mismatch (clean continuity:
+    // the native renderer decides every surface on exact causal proof).
+    // A reply invalidated during flight still sends (dirty continuity)
+    // under the same native decision.
     readonly getInvalidation: () => { instance: string; counter: string } | null;
     // Live open native gesture identity: the mapped native lifecycle
     // identity behind the current snapshot with its proven core id, or
@@ -443,28 +454,41 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             dirty = true;
             return;
         }
-        if (dirty) {
-            // Finding E: this reply was invalidated while in flight, so it
-            // is known-stale. Skip the paint entirely (no old render at
-            // all) and fetch current before painting anything.
-            env.log(`omnitiler:world:presentation-stale-during-flight req=${token(req)} recovery=refetch`);
-            pump();
-            return;
+        // Continuity across all-motion invalidation (finding E refined): a
+        // reply invalidated while in flight still sends instead of hiding
+        // the valid same-gesture preview. The native renderer decides every
+        // surface on exact causal proof (monotonic cover for
+        // borders/underlay, the structural floor plus live producer for the
+        // preview), so a structurally-stale send is rejected natively with
+        // no display touch. Consume the dirt; the refetch after the send
+        // converges on the covering projection.
+        let relaxed = dirty;
+        if (relaxed) {
+            env.log(`omnitiler:world:presentation-continuity-during-flight req=${token(req)} recovery=paint-then-refetch`);
+            dirty = false;
         }
         if (paintedCovers(parsed.rev, parsed.obs)) {
             // Equal or older (rev, obs): the last painted-or-hidden point
             // already covers this content (including a display-only hide
-            // after an error). Never re-sends, never resurrects.
+            // after an error). Never re-sends, never resurrects. A
+            // relaxed read that lands here refetches to converge on the
+            // covering projection; a strict read stands down.
+            if (relaxed) {
+                dirty = true;
+                pump();
+            }
             return;
         }
         // Causal coverage gate (Stage 5): this read paints only when it
-        // covers the renderer's latest known witness exactly. A read that
-        // predates a native invalidation skips (its paint could not cover
-        // current) and the covering capture's own notification re-drives a
-        // fresh read; without a covering capture nothing new can paint.
-        // Missing proof on either side hides: no drawable coverage is ever
-        // guessed. No self re-arm here (finding E already refetches while
-        // dirty): a persistently stale read waits for the next event.
+        // covers the renderer's latest known witness exactly, unless a
+        // live-producer preview rides along (relaxed below). A strict read
+        // that predates a native invalidation skips (its paint could not
+        // cover current) and waits for the covering capture's own
+        // notification; without a covering capture nothing new can paint.
+        // Relaxed reads bypass this gate (their mismatch is expected
+        // all-motion supersession) while the native gates decide. Missing
+        // proof on either side hides: no drawable coverage is ever
+        // guessed.
         let latest: { instance: string; counter: string } | null = null;
         try {
             latest = env.getInvalidation();
@@ -472,21 +496,18 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             void error;
             latest = null;
         }
-        if (
-            latest === null || parsed.coveredInstance === null || parsed.coveredInvalid === null ||
-            parsed.coveredInstance !== latest.instance || parsed.coveredInvalid !== latest.counter
-        ) {
-            env.log(`omnitiler:world:presentation-stale-coverage req=${token(req)} recovery=refetch-or-next-event`);
-            if (dirty) {
-                pump();
-            }
-            return;
-        }
+        const coverageCurrent = latest !== null && parsed.coveredInstance !== null && parsed.coveredInvalid !== null &&
+            parsed.coveredInstance === latest.instance && parsed.coveredInvalid === latest.counter;
         // Producing-gesture match (Stage 5): a preview paints only when
         // its producing native identity is the live open gesture. A null
         // producer (unproven), a missing live identity, or any mismatch
         // paints border/underlay only (fail-closed strip); the live
         // gesture's own preview arrives with its own covering projection.
+        // Hoisted above the coverage gate: a clean read with stale
+        // monotonic cover but a live-producer preview still sends (clean
+        // continuity), delegating the coverage decision to the native
+        // endpoint instead of hiding a valid same-gesture preview over a
+        // mere motion mismatch.
         let live: { instance: string; serial: string; coreId: string } | null = null;
         try {
             live = env.getGestureIdentity?.() ?? null;
@@ -501,6 +522,15 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             parsed.preview.producerInstance === live.instance &&
             parsed.preview.producerSerial === live.serial
         );
+        if (!relaxed && !coverageCurrent) {
+            if (parsed.preview !== null && previewOk) {
+                relaxed = true;
+                env.log(`omnitiler:world:presentation-continuity-stale-coverage req=${token(req)} recovery=paint-then-refetch`);
+            } else {
+                env.log(`omnitiler:world:presentation-stale-coverage req=${token(req)} recovery=refetch-or-next-event`);
+                return;
+            }
+        }
         const payload = formatPresentationPayload(parsed, previewOk);
         if (payload === null) {
             env.log(`omnitiler:world:presentation-malformed req=${token(req)} recovery=hide`);
@@ -527,7 +557,25 @@ export function createWorldPresentationSubscriber(env: WorldPresentationSubscrib
             return;
         }
         painted = { rev: parsed.rev, obs: parsed.obs };
-        env.log(`omnitiler:world:presentation-painted rev=${token(parsed.rev)} obs=${token(parsed.obs)} preview=${parsed.preview === null || !previewOk ? "null" : "rect"}`);
+        // Submitted (not proven-painted: the endpoint is fire-and-forget)
+        // preview bounds with producer proof for drop correlation.
+        let previewLog = "preview=null";
+        if (parsed.preview !== null && previewOk) {
+            const producerInstance = parsed.preview.producerInstance;
+            const producerSerial = parsed.preview.producerSerial;
+            if (producerInstance !== null && producerSerial !== null) {
+                previewLog = `preview=rect previewRect=${parsed.preview.rect[0]},${parsed.preview.rect[1]},${parsed.preview.rect[2]},${parsed.preview.rect[3]} producer=${token(producerInstance)}/${token(producerSerial)}`;
+            }
+        }
+        env.log(`omnitiler:world:presentation-painted rev=${token(parsed.rev)} obs=${token(parsed.obs)} ${previewLog}`);
+        if (relaxed) {
+            // Converge on the covering projection: the invalidation that
+            // relaxed this flight means a newer capture may already be
+            // cached. One bounded refetch (no loop: the refetch paints or
+            // skips on its own gates and stands down without new events).
+            dirty = true;
+            pump();
+        }
     };
 
     const notifyGeneration = (gen: string | null): void => {

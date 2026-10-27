@@ -15,9 +15,11 @@
 //! No second policy: preview and release synthesize the same [`CoreCommand`]
 //! shapes the operation route carries and run them through the same
 //! [`Engine`] resolver, without consuming a command sequence (gesture
-//! ingress is observation, never a command). Cross-output releases keep the
-//! existing send semantics (membership move plus follow, no pointer
-//! placement); same-output releases keep the resolver placement. The
+//! ingress is observation, never a command). Cross-output releases run
+//! the same source-first pair drop the preview showed (live coordinates,
+//! targeted slot and orientation, membership move plus follow); empty
+//! destinations and points the pair cannot place keep the send
+//! admission. Same-output releases keep the resolver placement. The
 //! adapter keeps only native lifetime/freshness/input fences plus the
 //! render-hide acknowledgement around the committed reply; at-most-once
 //! and completion effects are core-owned through the stable gesture id
@@ -35,8 +37,8 @@ use crate::gesture::{
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, DragHoverPrior, OutputDomain};
-use crate::world_engine::WorldEngine;
-use crate::world_report::{CommandResult, TransferKind, WorldReport};
+use crate::world_engine::{RetainedTransfer, WorldEngine};
+use crate::world_report::{CommandResult, TransferKind, TransferTarget, WorldReport};
 
 /// Retained gesture session: one open native move/size gesture bound to an
 /// exact window lifetime plus its stable adapter gesture id. `start_frame`
@@ -662,9 +664,12 @@ impl WorldEngine {
     }
 
     /// Commit a move release: same-output points keep the resolver
-    /// placement through the local drop; cross-output points keep the
-    /// existing send semantics (membership move plus follow, no pointer
-    /// placement). Unplaceable points refuse with snap-back and no
+    /// placement through the local drop; cross-output points run the
+    /// pair-targeted drop at the live coordinates (the slot and
+    /// orientation the preview showed), retaining the window transfer
+    /// with member/follow settlement exactly like the send path. Empty
+    /// destinations and points the pair cannot place keep the send
+    /// admission. Unplaceable points refuse with snap-back and no
     /// transfer. The committed reply publishes the desired geometry and
     /// the retained transfer plus focus effects; the adapter applies that
     /// reply mechanically with fresh proof.
@@ -736,6 +741,23 @@ impl WorldEngine {
                     };
                 };
                 let operation_id = Self::gesture_operation_id(retained);
+                // Attempt the pair-targeted drop at the live coordinates
+                // (the slot the preview showed). Anything the pair cannot
+                // place falls through to the send admission below, which
+                // also serves empty destinations; send refusals snap back
+                // as before.
+                if let Some(outcome) = self.gesture_pair_drop(
+                    report,
+                    retained,
+                    &operation_id,
+                    &output,
+                    &workspace,
+                    x,
+                    y,
+                    held_scopes,
+                ) {
+                    return outcome;
+                }
                 match self.execute_output_send(
                     report,
                     &operation_id,
@@ -928,18 +950,22 @@ impl WorldEngine {
     }
 
     /// Build the source-first pair Engine event for a cross-output
-    /// preview: identical binding to `operation_drag_pair` (pointer domain
-    /// as destination, source-first combined rows, inset pair bounds),
-    /// without committing and without consuming a command sequence.
-    /// `None` selects the same refusal the operation route returns.
-    fn gesture_pair_preview(
-        &mut self,
+    /// preview or drop: identical binding to `operation_drag_pair`
+    /// (pointer domain as destination, source-first combined rows, inset
+    /// pair bounds), without consuming a command sequence. `None`
+    /// selects the same refusal the operation route returns.
+    ///
+    /// Gap convention follows the directional pair: `outer_gap` carries
+    /// the source gap and `directional_target_outer_gap` the destination
+    /// gap, so both sessions retain their own staged gaps.
+    fn gesture_pair_event(
+        &self,
         report: &WorldReport,
         retained: &RetainedGesture,
         command: &CoreCommand,
         pointer_key: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Option<Option<CommandResult>> {
+    ) -> Option<CoreEvent> {
         let source_key = retained.home.clone();
         let domain_key = pointer_key.clone();
         let source_report = self
@@ -990,7 +1016,7 @@ impl WorldEngine {
         ) else {
             return None;
         };
-        let event = CoreEvent {
+        Some(CoreEvent {
             owner,
             generation: self.core_generation.clone(),
             correlation,
@@ -998,7 +1024,7 @@ impl WorldEngine {
             fingerprint,
             domain: Engine::canonical_component_domain(&inset_target),
             domain_key,
-            outer_gap: domain_report.outer_gap,
+            outer_gap: source_report.outer_gap,
             focused_window: domain_report.focused.clone(),
             windows: combined,
             closed_windows: domain_report.closed.clone(),
@@ -1006,16 +1032,121 @@ impl WorldEngine {
                 (inset_source, source_key),
                 (inset_target, domain_report.key.clone()),
             ]),
-            directional_target_outer_gap: None,
+            directional_target_outer_gap: Some(domain_report.outer_gap),
             target_domain: None,
             target_windows: Vec::new(),
             command: command.clone(),
-        };
+        })
+    }
+
+    /// Resolve one cross-output preview through the shared pair event:
+    /// read-only, never commits. `None` holds the session with no
+    /// overlay, exactly as before.
+    fn gesture_pair_preview(
+        &mut self,
+        report: &WorldReport,
+        retained: &RetainedGesture,
+        command: &CoreCommand,
+        pointer_key: &DomainKey,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Option<Option<CommandResult>> {
+        let event = self.gesture_pair_event(report, retained, command, pointer_key, held_scopes)?;
         match self.engine.handle(&event) {
             CoreReply::DragPreview(plan) => Some(Self::command_result_from_reply(
                 &event.command,
                 &CoreReply::DragPreview(plan),
             )),
+            _ => None,
+        }
+    }
+
+    /// Commit one cross-output drop through the shared pair event at the
+    /// live coordinates: the Engine commits the pointer-targeted
+    /// placement inside `handle`, and the caller retains the window
+    /// transfer with member/follow settlement exactly like the send
+    /// path, so arrival proof and focus behave unchanged. `Some` only
+    /// on a committed placement; `None` (pair inapplicable or refused,
+    /// including empty destinations with no usable session) lets the
+    /// caller fall back to the send admission.
+    #[allow(clippy::too_many_arguments)]
+    fn gesture_pair_drop(
+        &mut self,
+        report: &WorldReport,
+        retained: &RetainedGesture,
+        operation_id: &str,
+        output: &OutputId,
+        workspace: &str,
+        x: i32,
+        y: i32,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Option<GestureOutcome> {
+        // No pair attempt under a pending window flight for the mover
+        // or a migration owning the destination cell: the fallback
+        // refuses through the same send checks.
+        if self.retained.iter().any(|r| match &r.target.kind {
+            TransferKind::Window(w) => w == &retained.window,
+            TransferKind::View | TransferKind::Migration => false,
+        }) {
+            return None;
+        }
+        if self.retained.iter().any(|r| {
+            matches!(&r.target.kind, TransferKind::Migration)
+                && r.target.target_output == *output
+                && r.target.target_workspace == workspace
+        }) {
+            return None;
+        }
+        let pointer_key = DomainKey {
+            output: output.clone(),
+            workspace: WorkspaceId(workspace.to_owned()),
+        };
+        let command = CoreCommand::DragDrop {
+            window: retained.window.0.clone(),
+            x,
+            y,
+            hover_prior: retained.hover.clone(),
+            source: Some(retained.home.clone()),
+        };
+        let event =
+            self.gesture_pair_event(report, retained, &command, &pointer_key, held_scopes)?;
+        match self.engine.handle(&event) {
+            CoreReply::Tiled(_) => {
+                let transfer = RetainedTransfer {
+                    target: TransferTarget {
+                        operation_id: operation_id.to_owned(),
+                        kind: TransferKind::Window(retained.window.clone()),
+                        target_output: output.clone(),
+                        target_workspace: workspace.to_owned(),
+                        follow: true,
+                        held: false,
+                    },
+                    policy: false,
+                    source_output: retained.home.output.clone(),
+                    source_workspace: retained.home.workspace.0.clone(),
+                    members: Vec::new(),
+                    migration_refill: None,
+                    migration_initial_empty: false,
+                    migration_source_index: None,
+                    migration_source_view: None,
+                    migration_target_view: None,
+                    migration_terminal: None,
+                    pending_member: None,
+                    pending_members: BTreeMap::new(),
+                    pending_view: None,
+                };
+                if let TransferKind::Window(window) = &transfer.target.kind {
+                    let target = DomainKey {
+                        output: transfer.target.target_output.clone(),
+                        workspace: WorkspaceId(transfer.target.target_workspace.clone()),
+                    };
+                    self.commit_send_member(window, &target);
+                }
+                self.retained.push(transfer);
+                Some(GestureOutcome::Settled {
+                    committed: true,
+                    result: None,
+                })
+            }
             _ => None,
         }
     }
