@@ -88,6 +88,10 @@ decisions of 2026-09-24 are under
   ([guide](porting/world-adapter-guide.md), [KDE](porting/kde-port-notes.md),
   [macOS](porting/macos-port-notes.md)).
   User-approved 2026-10-26: three-way placement subsumes launch targeting.
+  Output-targeting race option A audited/implemented offline 2026-10-28:
+  implicit callers already defer to core; execution-time cursor/focus/history
+  regressions added, all-platform production unchanged. Explicit-send current
+  sampling remains separate ([evidence](changes/archive/output-targeting-race-audit.md)).
 - P1 | Empty-workspace focus across outputs | User physical 2026-10-20:
   Win+digit to an empty workspace on one output focused a window on another,
   so a following workspace send moved that window. Desired behavior is

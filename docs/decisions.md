@@ -204,11 +204,15 @@ Tentative index (user review pending; not approved product rules):
   at execution from the remembered float rectangle, else the current frame.
   Explicit rectangles are only for genuine user placement, such as drag drop.
   Prove Windows float-placement parity.
-- **Output-targeting race audit, option A, approved; pending implementation:**
+- **Output-targeting race audit, option A, implemented offline (2026-10-28):**
   implicit selection/send/move commands leave output unset; core resolves the
   configured cursor/focused output at execution. Explicit outputs require a
   genuine user choice, such as a per-monitor indicator click or CLI `--output`.
-  Prove per-platform behavior unchanged or report visible differences.
+  Current KDE, Windows and macOS implicit callers already satisfy this contract;
+  new regressions pin execution-time cursor/focus and queued retained-history
+  resolution plus explicit-output precedence. Production code is unchanged on
+  all platforms; native acceptance is not claimed. Explicit-send current-view
+  sampling remains separate. [Audit and evidence](changes/archive/output-targeting-race-audit.md).
 - **KDE pager, approved:** no OmniTiler KDE pager; use the native Plasma pager.
   Core pager-focused-window color does not apply on KDE. This supersedes earlier
   proposed KDE pager rendering/styling work; the backlog item is already recorded.
@@ -309,7 +313,8 @@ pending.
   originally parked geometry-bearing float toggles, implicit output/source
   selection and explicit-send current sampling. Float-toggle geometry and
   implicit output targeting are now approved in the dated decisions above;
-  implementation and explicit-send current sampling remain separate work.
+  output targeting is implemented offline. Float-toggle implementation and
+  explicit-send current sampling remain separate work.
 - **Tentative user decision 2026-10-26:** independently proven birth-clear
   authority may proceed while geometry convergence remains held. Maximize
   clear is a mode transition authorized by the window's own birth facts and

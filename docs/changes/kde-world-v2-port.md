@@ -2553,6 +2553,13 @@
   `crates/tiler-macos/src/`. KDE native sticky/maximize/fullscreen toggles remain
   outside `WorldCommand`; their live native reads are not cached reply mode,
   but no new neutral toggle API or race-semantics change is selected here.
+- **Output audit correction, 2026-10-28:** the historical table's Windows
+  navigation/macOS preselection and macOS production explicit-send descriptions
+  are stale. Current implicit callers already defer output/source resolution to
+  core on KDE, Windows and macOS. Option A is implemented offline through
+  execution-time cursor/focus/history regressions with production unchanged;
+  genuine explicit outputs and the separate explicit-send current-sampling item
+  remain untouched. [Audit and gates](archive/output-targeting-race-audit.md).
 - PARKED neutrality concern: the retained Windows synchronous preamble can hide
   admission/hold gaps that host-owned asynchronous adapters expose. Options:
   keep separate proven native preambles, or converge on core-owned admission

@@ -4714,3 +4714,234 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
         "floating inverse stays sessionless"
     );
 }
+
+#[test]
+fn queued_implicit_selection_resolves_at_execution_cursor() {
+    // Output-targeting race: the intent shapes (output None) are queued
+    // while the cursor sits over out-a; each execution resolves the
+    // report-time cursor output over the retained views/history, never the
+    // intent-time cursor.
+    let numbered = WorldCommand::SelectNumbered {
+        output: None,
+        index: 2,
+    };
+    let previous = WorldCommand::SelectPrevious { output: None };
+    let relative = WorldCommand::SelectRelative {
+        output: None,
+        delta: 1,
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    // Initial observation: cursor over out-a, focus on win-a.
+    let mut first_report = report(
+        1,
+        1,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0)],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+        true,
+        false,
+    );
+    first_report.cursor = Some((100, 300));
+    let first = accepted(&mut engine, &first_report);
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let view_b = output_view(&first, "out-b").expect("view b");
+    // New observation before execution: the cursor moves to out-b while the
+    // queued None shape is unchanged, so it steers out-b, not out-a.
+    let mut over_b = report(
+        2,
+        2,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0)],
+        vec![],
+        vec![],
+        "win-a",
+        Some(11),
+        Some(numbered),
+        true,
+        false,
+    );
+    over_b.cursor = Some((900, 300));
+    let second = accepted(&mut engine, &over_b);
+    let moved_b = output_view(&second, "out-b").expect("moved b");
+    assert_ne!(moved_b, view_b, "execution cursor steers to out-b");
+    assert_eq!(
+        output_view(&second, "out-a").as_deref(),
+        Some(view_a.as_str())
+    );
+    // Same cursor: previous replays the just-recorded retained history.
+    let mut back = report(
+        3,
+        3,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0)],
+        vec![("out-b", moved_b.as_str())],
+        vec![],
+        "win-a",
+        Some(12),
+        Some(previous),
+        true,
+        false,
+    );
+    back.cursor = Some((900, 300));
+    let third = accepted(&mut engine, &back);
+    assert_eq!(
+        output_view(&third, "out-b").as_deref(),
+        Some(view_b.as_str()),
+        "previous replays execution-time history"
+    );
+    assert_eq!(
+        output_view(&third, "out-a").as_deref(),
+        Some(view_a.as_str())
+    );
+    // Cursor returns to out-a before the next queued intent executes: the
+    // same None shape now steers out-a, leaving out-b alone.
+    let mut over_a = report(
+        4,
+        4,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0)],
+        vec![("out-b", view_b.as_str())],
+        vec![],
+        "win-a",
+        Some(13),
+        Some(relative),
+        true,
+        false,
+    );
+    over_a.cursor = Some((100, 300));
+    let fourth = accepted(&mut engine, &over_a);
+    assert_ne!(
+        output_view(&fourth, "out-a").as_deref(),
+        Some(view_a.as_str()),
+        "returned cursor steers the later execution to out-a"
+    );
+    assert_eq!(
+        output_view(&fourth, "out-b").as_deref(),
+        Some(view_b.as_str())
+    );
+}
+
+#[test]
+fn focused_mode_and_explicit_selection_survive_disagreeing_cursor() {
+    // Output-targeting race across a focus change: both intent values are
+    // queued while focus sits on win-a; focused-mode execution resolves the
+    // changed focus output and the explicit output passes through, each
+    // ignoring a disagreeing cursor.
+    let implicit = WorldCommand::SelectNumbered {
+        output: None,
+        index: 2,
+    };
+    let explicit = WorldCommand::SelectNumbered {
+        output: Some(OutputId("out-a".to_owned())),
+        index: 2,
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    // Initial observation: cursor over out-a, focus on win-a.
+    let mut first_report = report(
+        1,
+        1,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0)],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+        true,
+        false,
+    );
+    first_report.cursor = Some((100, 300));
+    let first = accepted(&mut engine, &first_report);
+    let view_a = output_view(&first, "out-a").expect("view a");
+    // New observation: win-b arrives on out-b under the moved cursor while
+    // focus stays on win-a.
+    let mut arrive = report(
+        2,
+        2,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        vec![],
+        vec![],
+        "win-a",
+        None,
+        None,
+        true,
+        false,
+    );
+    arrive.cursor = Some((900, 300));
+    let arrived = accepted(&mut engine, &arrive);
+    let view_b = output_view(&arrived, "out-b").expect("view b");
+    // Focus changes to win-b before any queued intent executes.
+    let mut refocus = report(
+        3,
+        3,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        vec![],
+        vec![],
+        "win-b",
+        None,
+        None,
+        true,
+        false,
+    );
+    refocus.cursor = Some((100, 300));
+    accepted(&mut engine, &refocus);
+    // Focused mode: the cursor names out-a but the pre-queued None shape
+    // resolves the changed focus output out-b, leaving out-a alone.
+    let mut focused_leg = report(
+        4,
+        4,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        vec![],
+        vec![],
+        "win-b",
+        Some(11),
+        Some(implicit),
+        true,
+        false,
+    );
+    focused_leg.switch_target = crate::cursor_targeting::SwitchTarget::Focused;
+    focused_leg.cursor = Some((100, 300));
+    let fourth = accepted(&mut engine, &focused_leg);
+    let moved_b = output_view(&fourth, "out-b").expect("moved b");
+    assert_ne!(
+        moved_b, view_b,
+        "changed focus wins over the disagreeing cursor"
+    );
+    assert_eq!(
+        output_view(&fourth, "out-a").as_deref(),
+        Some(view_a.as_str())
+    );
+    // Explicit output survives every disagreement: cursor and focus both
+    // name out-b, yet the explicit out-a select still moves out-a only.
+    let mut explicit_leg = report(
+        5,
+        5,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        vec![("out-b", moved_b.as_str())],
+        vec![],
+        "win-b",
+        Some(12),
+        Some(explicit),
+        true,
+        false,
+    );
+    explicit_leg.cursor = Some((900, 300));
+    let fifth = accepted(&mut engine, &explicit_leg);
+    assert_ne!(
+        output_view(&fifth, "out-a").as_deref(),
+        Some(view_a.as_str()),
+        "explicit output honored despite cursor/focus"
+    );
+    assert_eq!(
+        output_view(&fifth, "out-b").as_deref(),
+        Some(moved_b.as_str())
+    );
+}
