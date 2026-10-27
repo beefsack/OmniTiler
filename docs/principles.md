@@ -65,7 +65,18 @@ Project principles, approved by the user.
 ## Layering
 
 - The core is the single model and decision maker: it owns screens, workspaces and their per-screen mapping, windows, focus and cursor position; the policy for every action; and the resulting desired world state, including the shapes and bounds of borders, underlays and drop overlays.
-- Platform code only captures user input, reports host facts and changes made outside the core (displays, settings, windows changed by apps, users or the OS, facts the core cannot know such as "cannot be controlled"), applies the core's desired state with host mechanisms, and draws what the core describes. Platform code never decides policy.
+- Platform code only captures user input, reports host facts and changes made
+  outside the core (displays, settings, windows changed by apps, users or the OS,
+  facts the core cannot know such as "cannot be controlled"), converges the host
+  to the latest desired state with host mechanisms as quickly as it can,
+  skipping superseded intermediate states, and draws what the core describes.
+  Platform code never decides policy.
+- Where applying the desired state can itself disturb host state (for example,
+  the OS activating another window while one is hidden), the platform reports
+  such a change only if it still holds once the latest desired state has been
+  proven applied; transient side effects are not world changes. Nothing about
+  the resulting host state is withheld from the core, and safety checks always
+  use the live host state.
 - Host limitations reach the core as platform-neutral options (for example, every screen always has the same workspace count), never as platform checks.
 - Logic several platforms share that is not part of the core's role goes into a separate shared library, decided case by case.
 - Push as much logic as is sensible down into the shared, system-agnostic
