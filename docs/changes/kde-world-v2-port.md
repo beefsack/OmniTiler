@@ -1609,6 +1609,8 @@
 
 ### Height-shortfall investigation and bounded diagnostics (2026-10-27)
 
+- The investigation below predates the successful paired readback and core
+  repair recorded in the next subsection.
 - Root cause remains unproven. The retained Ghostty capture has the exact
   destination desire `(8,52,1012,1092)` at line 125, followed by geometry-write
   counts `2`, `1`, then `0` at lines 126, 142 and 148. Its first follow-up
@@ -1661,6 +1663,52 @@
   tracing only if the paired evidence requires it. No new core, protocol,
   Windows or macOS production behavior is selected. Only JS needs reloading;
   no native rebuild or Plasma logout is needed for this extension.
+
+### Changed-frame over-suppression repair (2026-10-27)
+
+- Successful paired broker/native/broker reads retain the same generation,
+  revision and observation (`16`), with the mover's desired allocation/frame
+  `(8,52,1012,1092)` and `hold/constraint-clamp`. Native geometry and the broker
+  pager both show `(8,52,1012,1036)`. The neighbour has the same desired size,
+  exact native height and controlled authority. Earlier unavailable reads were
+  caused by stopping the dev session, not a Planner crash.
+- Event order in the new capture: line 132 settles the drop; line 140 retains
+  controlled authority and the old frame `(-262,44,948,1020)` at revision 14.
+  Line 141 records an accepted frame setter targeting `(8,52,1012,1092)` whose
+  immediate readback is still that old frame. The later capture carries this
+  attempt to core; revision 15 (line 153) publishes `hold/constraint-clamp`
+  beside the new, short frame, and applies no geometry (line 154). Revision 16
+  and both broker reads retain that hold. No adapter membership setter is
+  recorded; an adapter output-send/interim-frame sequence is not established.
+- Negative x does not contradict destination membership: the old frame's centre
+  is `(212,554)`, inside the destination. Pinned KWin `v6.7.4`,
+  `src/waylandwindow.cpp:239`, assigns output from frame centre during geometry
+  update. The window can straddle the output edge while belonging to it.
+- Proven defect: `settle_frames` consumes the old attempt against the changed
+  staged observation before publishing. `consume_attempt` treated any readable
+  accepted readback as clamp evidence for that new pair, suppressing its first
+  corrective desire. This explains persistence, not the original 56-pixel loss;
+  client configure/commit order and a scale-transition cause remain unproven.
+- Small neutral core repair: an accepted, mismatching immediate readback that
+  differs from the later observation clears suppression and re-arms immediately.
+  Stable corroborated clamps, exact-readback/later-mismatch behavior, learned
+  minima, stale-replay guards, DPI handling and unreadable/refused attempts are
+  preserved. No waits, timers, protocol or adapter changes. Windows/macOS share
+  this neutral core correction; their production sources are unchanged.
+- Two regressions fail before the repair and pass afterwards: the exact incident
+  rectangles through `consume_attempt`, and report-to-publish re-arming followed
+  by a corroborated clamp and exact-arrival clearing. Existing frame-policy
+  coverage passes **48/48**; independent review accepts the repair. Fresh locked
+  scoped builds/tests/strict clippy pass: Rust **2,512**, JS **753/753**,
+  acceptance **6/6**, typecheck/build, workspace fmt, whitespace and API guard.
+  Native sources are unchanged; native build/CTest was not rerun.
+- Offline repair accepted; full-height Ghostty recovery still needs a physical
+  retest. Reload the Planner; existing JS diagnostics remain sufficient. No
+  native reload or Plasma logout is required. Perform the same drop and retain
+  paired desired/native readbacks while the Planner stays running. If the fresh
+  corrective write is also held at 1036, investigate that newly corroborated
+  client result rather than widening the retry policy speculatively. The whole
+  KDE port remains active; no native height-fix acceptance is claimed.
 
 ## Active-drag preview continuity plan (2026-10-27)
 

@@ -101,6 +101,43 @@ fn clamp_suppresses_identical_pair_and_rearms_on_change() {
 }
 
 #[test]
+fn mismatched_readback_with_changed_staged_fact_clears_without_clamp() {
+    // Incident shape: an accepted write targeting the full tile reads back
+    // the pre-write geometry, while the staged fact for the same report has
+    // already moved to a genuinely different short frame. That write proves
+    // nothing about the new pair, so it must not pin a stable clamp for it:
+    // suppression clears and the next publish re-arms.
+    let desired = rect(8, 52, 1012, 1092);
+    let readback = rect(-262, 44, 948, 1020);
+    let staged = rect(8, 52, 1012, 1036);
+    assert!(
+        consume_attempt(
+            None,
+            &attempt("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
+            Some(staged),
+        )
+        .is_none()
+    );
+    // A prior clamp for the old pair does not survive the changed evidence
+    // either: the same unproven pairing clears instead of re-keying.
+    let prior = consume_attempt(
+        None,
+        &attempt("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
+        Some(readback),
+    )
+    .expect("old-pair clamp records");
+    assert!(prior.clamped);
+    assert!(
+        consume_attempt(
+            Some(prior),
+            &attempt("w1", desired, FrameSetter::Accepted, Some(readback), 4318),
+            Some(staged),
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn exact_readback_clears_both_lanes() {
     let desired = rect(0, 0, 800, 600);
     let held = rect(0, 0, 700, 600);
@@ -624,6 +661,108 @@ fn engine_suppresses_stable_clamp_and_clears_on_exact_match() {
         ScopeAuthority::Hold(HoldReason::ConstraintClamp)
     );
     // Exact arrival clears: back to controlled with no memory.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(desired))],
+            vec![],
+            vec![],
+            3000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&fourth, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(engine.frames.is_empty());
+}
+
+#[test]
+fn engine_rearms_when_staged_fact_changed_after_mismatched_readback() {
+    // Incident mechanism through genuine reports: an accepted write against
+    // the desired tile reads back the pre-write geometry, while the staged
+    // fact in the same report is already a different short frame. Publish
+    // must stay controlled (no stable clamp, no backoff), then converge on
+    // exact arrival and still clamp a genuinely re-proven short pair.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1")
+        .effective_frame
+        .expect("tiled desired");
+    let stale = Rect {
+        x: desired.x - 270,
+        y: desired.y,
+        w: desired.w - 64,
+        h: desired.h - 72,
+    };
+    let short = Rect {
+        x: desired.x,
+        y: desired.y,
+        w: desired.w,
+        h: desired.h - 56,
+    };
+    // Same-report pairing of the stale proof with the changed staged fact:
+    // no clamp, controlled publish, nothing learned.
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(short))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Accepted,
+                Some(stale),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&second, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(engine.frames.is_empty());
+    assert_eq!(learned_of(&engine, "w1"), (None, None));
+    // A re-proven short pair (readback corroborates the staged fact) still
+    // pins a real clamp without learning a shrinking floor.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(short))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Accepted,
+                Some(short),
+                2000,
+            )],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&third, "w1").frame_authority,
+        ScopeAuthority::Hold(HoldReason::ConstraintClamp)
+    );
+    assert_eq!(learned_of(&engine, "w1"), (None, None));
+    // Exact arrival still converges and clears.
     let fourth = accepted(
         &mut engine,
         &report(

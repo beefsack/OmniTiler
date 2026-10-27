@@ -98,11 +98,13 @@ impl FrameMemory {
 
 /// Resolve the observed key for one attempt: the current staged fact where
 /// readable, else the immediate readback. The staged fact is the later
-/// stable observation (taken after the previous write had time to settle),
-/// while the readback is the synchronous post-write proof; when they
-/// disagree the stable fact owns the pair, so a premature exact readback
-/// never clears a still-mismatched window. `None` means unreadable
-/// evidence: the core records nothing for the attempt.
+/// observation, which may still be in flight, while the readback is the
+/// synchronous post-write proof; when they disagree the staged fact owns
+/// the pair, so a premature exact readback never clears a still-mismatched
+/// window. A staged fact that disagrees with an already mismatched readback
+/// is not proof of a clamp for the new pair; consumption re-arms instead
+/// (see `consume_attempt`). `None` means unreadable evidence: the core
+/// records nothing for the attempt.
 #[must_use]
 pub(crate) fn attempt_observed(attempt: &FrameAttempt, fact: Option<Rect>) -> Option<Rect> {
     fact.or(attempt.readback)
@@ -120,10 +122,13 @@ pub(crate) fn attempt_observed(attempt: &FrameAttempt, fact: Option<Rect>) -> Op
 ///   changes nothing, so a lost acknowledgement never renews backoff;
 /// - an accepted setter with a changed DPI basis records nothing
 ///   (invalidated placement retries under fresh state);
-/// - an accepted setter with readable post-write proof and a stable
-///   mismatch pins the clamp lane (synchronous readback mismatch, or an
-///   exact synchronous readback with a later stable staged fact holding a
-///   larger size); an accepted setter with unreadable post-write proof is a
+/// - an accepted setter with readable post-write proof and a corroborated
+///   mismatch pins the clamp lane (synchronous readback mismatch matched by
+///   the staged fact, or an exact synchronous readback with a later stable
+///   staged fact holding a larger size); a staged fact that disagrees with
+///   an already mismatched readback proves nothing about the new pair, so
+///   the attempt clears suppression and re-arms instead of clamping;
+///   an accepted setter with unreadable post-write proof is a
 ///   transient like any refused/throwing setter (keyed on the staged
 ///   fact), never a permanent clamp;
 /// - a refused/throwing setter (or an unreadable proof) advances the
@@ -161,15 +166,23 @@ pub(crate) fn consume_attempt(
     {
         return existing;
     }
-    // A readable post-write proof plus a stable mismatch pins the clamp
-    // lane. The proof shows the write dispatched; the staged fact (preferred
-    // above) is the later stable size, covering both the synchronous shape
-    // (readback already mismatched) and the async shape (exact synchronous
-    // readback, stable fact drifted larger). Without a post-write proof the
-    // attempt cannot distinguish an app-held size from a setter that never
-    // landed, so it rides the transient lane even when the setter reported
-    // success.
+    // A readable post-write proof plus a corroborated mismatch pins the
+    // clamp lane: the staged fact matches a mismatched readback
+    // (synchronous shape), or carries a larger size after an exact
+    // readback (async shape). Without a post-write proof the attempt
+    // cannot distinguish an app-held size from a setter that never
+    // landed, so it rides the transient lane even when the setter
+    // reported success.
     let proven_dispatch = attempt.readback.is_some();
+    // Changed pair after a mismatched readback: this write never proved
+    // the new pair, so clear suppression and retry from it (no backoff).
+    if attempt.setter == FrameSetter::Accepted
+        && let Some(readback) = attempt.readback
+        && readback != attempt.target
+        && observed != readback
+    {
+        return None;
+    }
     match attempt.setter {
         FrameSetter::Accepted if proven_dispatch => Some(FrameMemory {
             desired: attempt.target,
