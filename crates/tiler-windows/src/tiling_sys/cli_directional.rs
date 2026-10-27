@@ -135,10 +135,30 @@ pub(super) fn poll_directional_cli_request(
         }
     };
     // Live-foreground origin through the same map the hook binds chords
-    // against; never a carried HWND, never a retarget. The dispatch
-    // re-resolves it against its own fresh observation, so a foreground
-    // change between here and there refuses instead of misacting.
-    let foreground_hwnd = crate::ffi::foreground_window();
+    // against; never a carried HWND, never a retarget. The cached map still
+    // names the pre-reveal set right after a foreground return (the reveal
+    // proves focus before the next observation publishes), so rebuild it
+    // from a fresh observation first: `observe` plus `publish_managed`
+    // only. Admission (`ensure_workspace_assignments`,
+    // `clear_maximize_at_admission`) stays with the dispatch below, which
+    // runs the full sequence itself; rebuilding the map performs no native
+    // writes and no membership or tag mutation; a refused poll may refresh
+    // observation caches only. The dispatch still re-resolves
+    // against its own fresh observation, so a foreground change between
+    // here and there refuses instead of misacting. No invented origins:
+    // the map rebuilds only from eligible observed plus verified
+    // overlay-retained rows. The foreground read is the seam-aware one
+    // (production-identical; scripted in unit tests).
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    let Some(observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        state.tick += 1;
+        let tick = state.tick;
+        log_json_at(&log_path, cli_line(tick, "unmanaged"));
+        return;
+    };
+    publish_managed(state, me, &observed, &retained);
+    let foreground_hwnd = live_foreground_window();
     let origin = state.snap_origins.get(&foreground_hwnd).cloned();
     let Some(origin) = origin.filter(|o| !o.token.is_empty()) else {
         state.tick += 1;
