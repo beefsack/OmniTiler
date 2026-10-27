@@ -71,12 +71,12 @@ Project principles, approved by the user.
   to the latest desired state with host mechanisms as quickly as it can,
   skipping superseded intermediate states, and draws what the core describes.
   Platform code never decides policy.
-- Where applying the desired state can itself disturb host state (for example,
-  the OS activating another window while one is hidden), the platform reports
-  such a change only if it still holds once the latest desired state has been
-  proven applied; transient side effects are not world changes. Nothing about
-  the resulting host state is withheld from the core, and safety checks always
-  use the live host state.
+- Intentional changes made by users or apps are reported to the core promptly,
+  including while the desired state is being applied. Transient side effects
+  of applying the desired state are not world changes. Platforms avoid those
+  side effects where possible and distinguish them by causal evidence, never
+  timing. Actual host state and uncertainty are reported separately from policy
+  changes; safety checks always use the live host state.
 - Host limitations reach the core as platform-neutral options (for example, every screen always has the same workspace count), never as platform checks.
 - Logic several platforms share that is not part of the core's role goes into a separate shared library, decided case by case.
 - Push as much logic as is sensible down into the shared, system-agnostic

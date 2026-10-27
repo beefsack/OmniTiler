@@ -9,8 +9,9 @@
   record the rendering intent, but leave contract/architecture changes proposed.
 - Compare command-time active-window ownership with the earlier transactional
   arrival proposal; preserve both designs and expose attribution limits.
-- Current direction: approved command-owned memory and defer/reconcile replace
-  both attribution options; see the [current design](#defer-and-reconcile-design-2026-10-27).
+- Current direction: command-owned memory, prompt intentional focus updates and
+  latest-only rendering; defer/reconcile is superseded. Attribution and earlier
+  focus remain unresolved; see the [current investigation](#prompt-intent-and-render-side-effects-2026-10-27).
 
 ## Acceptance and approach
 
@@ -552,10 +553,10 @@ The proven blocker is foreground safety, not target classification or core targe
 
 ## Command-owned active-window model comparison (2026-10-27)
 
-- Historical comparison preserved. The user subsequently selected command-owned
-  memory and defer/reconcile, **neither Option 1 nor Option 2**. Its former
-  unknown-suppression recommendation and two model choices below are not the
-  current plan; use the [later design](#defer-and-reconcile-design-2026-10-27).
+- Historical comparison preserved. Command-owned memory and defer/reconcile
+  subsequently replaced these options; defer/reconcile is now also superseded.
+  None of these historical attribution recommendations selects today's unknown
+  policy; use the [current investigation](#prompt-intent-and-render-side-effects-2026-10-27).
 
 ### User model and recommendation
 
@@ -813,24 +814,28 @@ The proven blocker is foreground safety, not target classification or core targe
   coverage. Zero added pacing is not physical-keyboard-rate evidence; real
   game and physical shortcut acceptance stay separate. No live runs occurred.
 - At this comparison stage the next action was choosing the model and unknown
-  policy. Those choices are superseded by the approved defer/reconcile direction
-  below; the comparison is retained, not an outstanding approval request.
+  policy. Defer/reconcile subsequently superseded those choices and has itself
+  been superseded by the prompt-intent investigation. The comparison is retained,
+  not an outstanding request to select its historical options.
 
 ## Defer and reconcile design (2026-10-27)
 
-### Approved semantics and smallest scope
+- **Superseded by the [prompt-intent investigation](#prompt-intent-and-render-side-effects-2026-10-27).**
+  This section records the former design, not current semantics. Its click
+  override, applied-only ingress and R1 release proposal are withdrawn. R2
+  survives only as an independent never-issued-focus authority question.
+
+### Former semantics and smallest scope (superseded)
 
 - Core records its active-window choices when it makes them, without waiting
   for native focus or view completion. The arrival fallback remains eligible
   remembered focus, else MRU, else layout order. A command is not undone because
   its rendering was superseded; rendering itself supplies no new policy state.
   Independent core lifecycle decisions such as a close successor still apply.
-- During latest-world rendering, defer foreground-change publication. After
-  proven application, report the actual resulting foreground if it differs
-  from desired, even when its click/app/OS origin is unknown. This is the
-  approved persistence rule, not either previous attribution policy. No click
-  hook, app-origin classifier or indefinite suppression of an unchanged unknown
-  foreground is the target design.
+- The former rule deferred foreground-change publication during latest-world
+  rendering, then reported actual foreground differing from desired after proven
+  application, even with unknown click/app/OS origin. This persistence rule is
+  withdrawn, not an input-attribution guarantee or the current target design.
 - An earlier click may be superseded by the later authorized focus request; a
   later surviving click is reconciled and remembered. No timing comparison is
   needed to infer click cause: final state is what matters. Existing live safety
@@ -1003,11 +1008,11 @@ The proven blocker is foreground safety, not target classification or core targe
   it after B. Terminal failure must not cause periodic re-prime/refocus or
   silent adoption of a known transient from an abandoned intermediate world.
 
-### No-proof exit and remaining decisions
+### Former no-proof exit and authority question
 
 | ID | Recommendation | Consequence / approval needed |
 | --- | --- | --- |
-| R1: terminal-incomplete reconciliation | Add an explicit failed/unproven render outcome: once the latest native slice has no currently authorized unissued work and synchronous attempt/readback has returned, do not claim applied. Publish actual resulting state with incomplete status; reconcile its persistent foreground difference, without retrying. Treat future late effects as new live observations/reconciliation events, never proof the older attempt had completed | **Not yet approved:** this extends the applied-only release rule to a truthful incomplete boundary. It avoids indefinite foreground deferral for ignored focus/no-event, veto or unprovable async ordering. A single read is not a no-future-effect proof; late movement/focus can still occur. If rejected, strict no-proof means remain deferred, expose actual facts/status and await a real event/new command, with potentially indefinite memory delay |
+| R1: terminal-incomplete reconciliation (withdrawn) | Former proposal: release foreground deferral at a truthful incomplete native boundary instead of waiting indefinitely for applied proof | **Superseded:** prompt intentional ingress does not depend on render completion; there is no R1 release decision in the current design. Unknown provenance is a separate question, not rescued by a completion proxy. [Current investigation](#prompt-intent-and-render-side-effects-2026-10-27) |
 | R2: current unissued focus authorization | For latest-only scheduling, permit a still-current explicit focus intent to receive fresh revision-bound core authorization only with positive proof its prior effect was never claimed/primed/dispatched; retire old id atomically with an intent-level at-most-one dispatch fence | **Not yet approved:** a narrow replacement of stale unissued authority, not retry/replay or grant copying. Existing selection-origin/exact-desktop proof must be reminted under the approved command source and rechecked live. Otherwise final stale effects stay dropped/unfulfilled; terminal result follows R1 |
 
 - R1 preserves outstanding async posts/flight identities as obligations;
@@ -1017,7 +1022,7 @@ The proven blocker is foreground safety, not target classification or core targe
   as residual foreground. A late known own effect invalidates/reopens current
   host reconciliation; it is not automatically promoted to a new external
   focus decision just because an earlier slice ended incomplete.
-- R1 is the central unavoidable design choice. It does not promise a host proof
+- In this withdrawn design R1 was the central no-proof choice. It did not promise a host proof
   that does not exist. No foreground-cause attribution or new global input hook
   is required by either outcome. A target click/game supersession always keeps
   native safety authority regardless of whether R1 releases memory feedback.
@@ -1034,9 +1039,9 @@ The proven blocker is foreground safety, not target classification or core targe
   a setter from every newer observation. If no change to existing one-shot and
   desktop-grant contracts is wanted, retain them and document the unfulfilled
   final-focus case instead of bypassing freshness in Windows.
-- The applied-only principle remains exactly as approved. R1 would need an
-  explicit narrowly documented exception/clarification before implementation;
-  proposing it does not amend the principle or classify incomplete as applied.
+- At this historical stage the applied-only principle still held and R1 would
+  have needed an exception. The later principle revision removes that
+  completion-conditioned ingress rule rather than selecting an R1 exception.
 
 ### Other render disturbances: recommendations only
 
@@ -1104,7 +1109,171 @@ The proven blocker is foreground safety, not target classification or core targe
   split, durable desired-active projection and stale-reconcile binding; Windows
   bounded latest drain, per-property proof/failure accounting and final compare.
   R1/R2 remain explicit choices, not changes smuggled into those three units.
-- **Exact next action:** resolve R1 (no-proof release) and R2 (unissued-current
+- **Former next action, superseded:** resolve R1 (no-proof release) and R2 (unissued-current
   focus authority), then finalize the versioned generic contract and implement
   failing-first. Approved principle/semantics are recorded; runtime design is
   still proposed and no new runtime evidence is claimed.
+
+## Prompt intent and render side effects (2026-10-27)
+
+### Current outcome and boundary
+
+- Retain command-time core choices and latest-only native convergence. Replace
+  defer/reconcile: an intentional B activation after workspace selection wins
+  even before arrival-A's focus request is issued. Core adopts B promptly,
+  invalidates unissued A, and describes B's border in the next reply; no wait
+  for final view/focus proof. "Prompt" is event/core-reply/paint latency, not a
+  synchronous input callback or a guarantee about already-issued Win32 calls.
+- The Layering principle and latest-world decision now express that intent.
+  R1 is unnecessary: unknown rendering completion no longer blocks intentional
+  ingress. No production/test code or wire shape changes in this investigation.
+- **Unresolved:** available passive Windows observations cannot distinguish all
+  genuine clicks/app self-activation from hide-triggered fallback. Source
+  avoidance reduces that problem but does not yet solve empty arrivals or
+  vetoed/ignored setters. The full click and Steam guarantees are not both
+  demonstrated. Do not implement an invented classifier or call the design
+  complete; this note stays active for the outstanding product decisions.
+
+### 1. Why focus waits and what earlier focus would require
+
+- `tiling_sys/world_diff.rs:3057,3451-3475` applies views before focus effects.
+  Hidden/iconic/frameless preimages require a fresh visible framed target
+  (`:3516-3553`); live homing must name a controlled scope and exact proven view
+  (`:3579-3599`). This is our gating, not a Win32 requirement to wait for every
+  departure hide before foregrounding a visible arrival.
+- `tiling_sys/world_native.rs:1467-1499` hides departures then reveals arrivals.
+  `read_view` (`:1714-1820`) proves **all** active members visible and inactive
+  members invisible, not just target eligibility. Thus reveal -> focus -> hide
+  cannot pass today's view gate while departures remain visible. A separate
+  phased arrival authorization/proof would change that contract and needs review;
+  do not relabel a partly shown view as fully applied.
+- Preserve live target/scope/lifetime/modal/hook/move-size checks before and after
+  the prime. `focus_write_vetoed` (`world_native.rs:796-974`) permits a readable
+  ordinary non-fullscreen competing foreground; it does **not** veto every other
+  app. Competing fullscreen and unreadable foregrounds still veto except existing
+  narrowly proven lanes. The NA changed-foreground guard is separate
+  (`world_diff.rs:3600-3727`), including fallback changes. Earlier focus over an
+  unchanged ordinary departure does not itself require broadening the native
+  foreground veto; bypassing the full-view gate is still a contract change.
+- Exact-desktop authority remains fresh-selection/effect/target bound
+  (`world_diff.rs:354-409`, `world_native.rs:2050-2069`) with post-prime desktop
+  reproof (`:2241-2257`). Neither activating show nor durable desired-active
+  memory may bypass these checks. Hidden/cloaked targets remain ineligible
+  (`crates/tiler-core/src/window_policy.rs:127-165`).
+
+### 2. Avoiding activation at the source
+
+- Microsoft's [ShowWindow contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow)
+  explicitly defines `SW_HIDE` as hiding the window **and activating another
+  window**. Its target is unspecified. Async posting is not an activation-origin
+  fence; current hide/reveal claims select pumped/nonactivating lanes
+  (`world_native.rs:1249-1379`), not a guarantee that the OS never changes focus.
+- An exploratory two-window fixture sequence observed A foreground -> hide A ->
+  B foreground; activate B -> hide A -> B unchanged; hide both -> foreground
+  outside the fixture. Native foreground/PID and fixture focus/visibility agreed.
+  **Excluded from accepted live evidence:** required source/artifact provenance
+  and recovery preflight were not captured and raw results were not retained in
+  an evidence directory. Fixture shutdown/process absence were checked. These
+  observations are illustrative only, not a production async-hide verification
+  or proof of the user's Steam cause. No further live leg followed that gap.
+- Candidate: nonactivating reveal -> prove target ready -> perform the existing
+  eligible one-shot focus -> verify landing -> hide departure. It can avoid
+  hiding the foreground when landing succeeds, but requires phased view authority
+  above and revalidation before every remaining write. Failure/unsafe foreground
+  must not trigger a fallback setter or leave an invented completed view.
+  Empty/no-eligible arrivals have no authorized arrival target, so this ordering
+  cannot eliminate every fallback. Activating `SW_SHOW`/`SW_RESTORE` would move
+  focus outside the explicit gated setter and is not a safe shortcut.
+
+### 3. Input evidence and game-safety costs
+
+- Existing keyboard input sees key edges, not an Alt-Tab target; the conditional
+  mouse hook only counts genuine motion (`ffi/llhook.rs:16-24,245-264`). WinEvent
+  foreground edges expressly carry no cause (`tiling_sys/observe.rs:403-420`).
+  Current subscriptions omit SWITCHEND (`tiling_sys/run_loop.rs:387-400`). Paths
+  in these sections are relative to `crates/tiler-windows/src/` unless qualified.
+
+| Source | Useful evidence / causal limit | Game-safety cost and recommendation, not selection |
+| --- | --- | --- |
+| `EVENT_SYSTEM_SWITCHEND` | [Documented](https://learn.microsoft.com/en-us/windows/win32/winauto/event-constants) released Alt-Tab and switched-to HWND, including single-app case without SWITCHSTART. Bind delivery identity/lifetime and validate source order/current applicability; a stale event cannot override a newer command. Does not identify arbitrary clicks, Task View or app activation | Existing out-of-context event mechanism, no new synchronous input-chain hop. Additional callback/drain work still occurs during fullscreen Alt-Tab; cost and native coverage unmeasured. Recommend this narrow first evidence improvement, with fixture validation, not a universal intent detector |
+| Passive raw mouse `RIDEV_INPUTSINK` | [Queued background WM_INPUT](https://learn.microsoft.com/en-us/windows/win32/inputdev/about-raw-input) proves button edges, not recipient HWND. [RAWMOUSE](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse) commonly supplies relative motion, not an event-time screen click point. A later cursor/WindowFromPoint sample cannot reconstruct delivery or prove activation: capture, child/owner routing, click-through, movement and concurrent app activation remain | No synchronous LL input callback, but receives mouse collection traffic including high-rate motion even if only buttons are consumed. [Last registration wins per process/class](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerrawinputdevices), not across other processes. INPUTSINK continues in background/fullscreen unless removed; no NOLEGACY/capture/exclusive flags proposed. Latency/CPU/anti-cheat compatibility unmeasured; do not select always-on use to claim causality |
+| Low-level mouse hook | [Pre-queue callback](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc), coordinates and injected flags improve observation, still no recipient/activation-cause token. It runs in our process, not an injected foreign DLL | Synchronous global input-path hop, hook-thread scheduling, timeout/silent removal. Passing through does not remove latency; fullscreen input traverses it until removal, including suspension-detection gaps. Reject as the default click solution: stronger cost without proof. No anti-cheat compatibility claim |
+| App self-activation | [Foreground event](https://learn.microsoft.com/en-us/windows/win32/winauto/event-constants) reports resulting HWND; [SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow) documents eligibility, not a passive caller/reason feed. No supported general passive discriminator established for app request versus OS fallback. `WM_ACTIVATE/WA_CLICKACTIVE` reaches recipient WndProc, not our out-of-context feed | Existing WinEvents add no new input hook, but cannot supply missing provenance. Foreign injection/message interception is not proposed. Unknown risk must not be described as anti-cheat safe |
+
+- [Out-of-context WinEvents](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook)
+  are queued asynchronously. Neither that guarantee nor queued WM_INPUT supplies
+  a cross-channel click->foreground causal order. Time adjacency, point/target
+  equality, a drain boundary or persistence after apply is not proof.
+
+### 4. Remaining ambiguity and recommended default
+
+- Empty arrivals, refused/ignored focus, delayed client reactions, source loss,
+  capture/click-through, and simultaneous genuine input versus native effects
+  remain ambiguous. The original Steam activation remains **unattributed**, not
+  a proven hide consequence. Own-focus flight identity is existing accounting,
+  not proof every other HWND is external intent.
+- Recommend factual actual foreground + explicit unknown; no remembered-focus
+  update from unknown, no forced refocus, and retain current competing-foreground
+  safety vetoes. Never promote the same unknown transition merely because a new
+  sample or render generation arrived. Confirmed independent intent replaces it
+  promptly. This is a **product decision, not adopted behavior**: it protects A
+  memory but may miss a genuine B click/app activation and its core-owned border.
+  Accepting unknown promptly instead preserves those actions but can reproduce
+  Steam contamination. There is no timing-based third option satisfying both.
+
+### 5. Smallest revised design and failing-first plan
+
+1. **Core:** consistently record accepted command/lifecycle active choices using
+   the earlier command-path audit, before native rendering; no transaction or
+   completion-conditioned history. Separate actual action/subject context from
+   authorization for host-focus observations to mutate focus/MRU/anchors. Prompt
+   established intentional B replaces A and invalidates unissued arrival focus;
+   no setter is emitted merely to echo already-actual B.
+2. **Protocol proposal:** generic opt-in actual-context versus policy-update
+   evidence (`intentional`, known-own accounting, `unattributed`, explicit
+   none/unreadable distinctions), source identity/order/incarnation fencing,
+   and bounded durable desired-active/source-intent projection. Exact fields
+   remain unselected. Strict version/key checks
+   (`crates/tiler-protocol/src/world_protocol.rs:1555-1615`) require coordinated
+   version/capability routing; optional keys alone do not support old decoders.
+   Preserve defaults for non-opted adapters. Unknown policy belongs to core.
+3. **Windows:** latest-only bounded event-driven slices; process established
+   intent before the next unissued write, fence obsolete effects/prime/setter,
+   retain already-issued flights/async obligations, never infer origin from
+   overlap. Border follows B's next core reply without waiting for view completion;
+   safety presentation still uses actual host state. SWITCHEND is a candidate
+   proven input source; general click/app evidence remains a blocker. Do not
+   claim a simulated intentional event proves native click recognition.
+4. **Separate proposals:** phased reveal/focus/hide authorization needs review
+   with unchanged game/fullscreen/exact-desktop vetoes. Former R2 still asks
+   whether a provably never-claimed current intent may obtain fresh one-shot
+   authority; retain existing refusal if not selected. No grant copying/retry.
+
+- Red core test: send W without follow to empty, select, assert W active before
+  native work, leave early, retain W. Audit direct/directional/follow/stay/close,
+  rejected/duplicate commands, exception targets and lifetime invalidation.
+- Red click test: select WS1 with A pending; establish intentional B **before**
+  any A prime/setter; assert B active immediately, no unissued A dispatch, B's
+  border in next core reply, no later snap-back. Repeat with source-bound Alt-Tab;
+  test stale/duplicate/reordered input relative to newer commands and same-target
+  intentional input. Already-issued late A must be accounted honestly, not retried.
+- Red Steam test: reproduce 107 -> deferred reveal 108 -> unattributed B ->
+  departure 109 -> return. Actual B stays visible to safety; expected memory A
+  is conditional on choosing conservative unknown policy, not proof of cause.
+  Pair identical facts with established intentional B and require immediate B;
+  repeat unknown after apply to forbid provenance laundering.
+- Native evidence work: first establish compliant fixture provenance, recovery
+  preflight and retained responses. Compare production nonactivating hide lanes,
+  reveal-first, and focus-before-departure with native lifetime/foreground proof.
+  Cover empty targets and veto/ignore without relaxing any gate. Synthetic
+  Alt-Tab cannot establish physical shortcut/game acceptance; input/game evidence
+  remains separate. No always-on input mechanism selected here.
+- Offline interleavings: target visibility/cloak, full versus phased view proof,
+  old async posts/ABA, new commands between slices, focus-flight identity reuse,
+  before/after-prime safety, exact-desktop effect binding, one-shot double claims,
+  command ordering/fairness and strict wire fixtures. No sleeps, settle clocks,
+  polling, replay, fabricated completion or hidden raw safety facts.
+- **Next action:** decide the unknown-foreground policy and whether to pursue
+  phased earlier-focus authorization or a bounded passive-input experiment.
+  Recommendation: keep all safety gates, test narrow SWITCHEND first, and do
+  not start core/protocol implementation claiming the click gap is solved.

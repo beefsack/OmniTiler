@@ -81,34 +81,34 @@ Tentative index (user review pending; not approved product rules):
   remain open in the [investigation](changes/windows-workspace-return-focus.md#rapid-switching-and-latest-world-rendering-2026-10-27).
 - **User 2026-10-27:** "if an arrival is unfinished before a user navigates away
   then it should change no world state like which window was active."
-  A superseded, unfinished arrival must not change remembered focus or other
-  world state through observations during it or the departure that ends it.
-  This is a binding behavioral constraint, not permission to ignore genuine
-  input or alter safety gates. Completion, independent-input and host-event
-  boundaries are proposed explicitly in the
-  [design](changes/windows-workspace-return-focus.md#arrival-memory-and-latest-world-design-2026-10-27);
-  shared-core/protocol changes still require approval before implementation.
+  **Clarified 2026-10-27:** render side effects during an unfinished arrival,
+  including its superseding departure, never change world state. Intentional
+  user actions always apply, even before rendering finishes; independent core
+  command decisions stand. This is not a completion-conditioned transaction or
+  permission to ignore input or alter safety gates.
 - **User-approved semantics 2026-10-27; tentative implementation record:**
   workspace active-window memory is owned by core decisions when commands are
   processed (including arrival fallback, directional focus, follow sends and
-  core lifecycle successor decisions), not by render completion. Defer and
-  reconcile replaces both attribution Options 1 and 2: while Windows renders
-  the latest desired world, foreground changes are deferred; once that world
-  is proven applied, compare actual versus desired foreground and report a
-  persistent difference as genuine. A click after the last focus request that
-  survives rendering is reported and remembered; an earlier click is overridden
-  by the latest focus request. Outside rendering, foreground changes report
-  immediately. Window lifetime, displays and settings always report promptly.
+  core lifecycle successor decisions), not by render completion. Intentional
+  user/app focus changes report promptly and replace the pending arrival choice:
+  a click after workspace selection but before its unissued focus request must
+  win, update the border on the resulting core reply, and prevent snap-back.
+  Window lifetime, displays and settings always report promptly.
 - The [Layering principle](principles.md#layering) now defines latest-state
-  convergence, skipped intermediate states and reconciled render disturbances.
+  convergence, skipped intermediate states and intentional changes versus
+  render disturbances. Defer/reconcile, its applied-only publication boundary
+  and R1 terminal-incomplete release are superseded: persistence is not intent.
   Live game/fullscreen/unknown-window protections, exact-desktop authority and
-  no-forced-refocus remain unchanged. An unfinished rendering superseded by
-  navigation changes no world state; independent core command decisions stand.
+  no-forced-refocus remain unchanged.
   Core arrival transactions and the [earlier comparison](changes/windows-workspace-return-focus.md#command-owned-active-window-model-comparison-2026-10-27)
   remain historical alternatives, not selected designs. The
-  [current design](changes/windows-workspace-return-focus.md#defer-and-reconcile-design-2026-10-27)
-  leaves no-proof failure handling and unissued-focus authority explicitly open;
-  no production implementation or protocol shape is adopted by this entry.
+  [current investigation](changes/windows-workspace-return-focus.md#prompt-intent-and-render-side-effects-2026-10-27)
+  exposes an unresolved attribution gap for clicks/app activation versus OS
+  fallback. Its unknown policy, earlier-focus choreography and any new input
+  mechanism remain proposals. Former R2 is retained only as the independent
+  question of fresh authority for a never-issued current focus intent, not a
+  reason to defer input. No production implementation or protocol shape is
+  adopted by this entry.
 
 ## Stress acceptance and dispatch (2026-10-27)
 

@@ -73,13 +73,14 @@ The user is unsure of the desired behavior; gather Tier 1 outcomes before decidi
 ### Rapid switching before arrival focus lands
 
 - Earlier D1-D5 and attribution rows below remain historical proposal
-  discriminators. User-approved command-owned memory and defer/reconcile replace
-  both attribution options; see the [current design](../changes/windows-workspace-return-focus.md#defer-and-reconcile-design-2026-10-27).
+  discriminators, not current recommendations. Prompt intentional changes and
+  command-owned memory supersede defer/reconcile; see the
+  [current investigation](../changes/windows-workspace-return-focus.md#prompt-intent-and-render-side-effects-2026-10-27).
 
 | Minimal action sequence | Windows observation / intended outcome | Unsupported outcomes / open decision |
 | --- | --- | --- |
 | Focus A beside B on WS1; select empty WS2; return WS1; leave again before A's arrival focus lands; finish on WS1 without focusing B | Reported trace: stale command apply skips arrival focus; a later observation reveals WS1 without focus; B becomes foreground and the next departure records B, so final return focuses B. User 2026-10-27: a superseded unfinished arrival changes no world state, including remembered focus through intervening observations or departure | Cause of B's foreground transition and exact reference-WM outcomes TBD. Completion/independent-event boundaries are proposed, not selected. [Design](../changes/windows-workspace-return-focus.md#arrival-memory-and-latest-world-design-2026-10-27) |
-| Start unfinished return to A; genuinely click B; immediately leave and return | Recommend respect actual B focus, but discard aborted-visit memory; click-as-completion/new-memory exception requires separate approval | Reference-WM and selected boundary TBD; design D2 |
+| Start unfinished return to A; genuinely click B; immediately leave and return | User 2026-10-27 clarification: intentional B applies immediately and is remembered, independent of render completion; render side effects do not update memory | General native click attribution and reference-WM outcomes TBD; earlier discard-memory D2 superseded |
 | Issue focus A during return; depart before it lands; then receive A's foreground edge | Recommend old flight resolves diagnostically but commits no memory and triggers no corrective focus | Reference-WM outcomes TBD; already-issued physical effect cannot be cancelled; design D4 |
 | Return to A; prove view/visibility but not focus; depart | Recommend remains unfinished; setter acceptance alone never suffices | Exact finished predicate proposed in D1; reference-WM outcomes TBD |
 | Return to A; prove required view/visibility and eligible intended focus while an unrelated overlay is unfinished; depart | Recommend finished only with fresh current-epoch safety/identity proof; unrelated overlay is not a completion dependency | Exact finished predicate proposed in D1; reference-WM outcomes TBD |
@@ -89,9 +90,9 @@ The user is unsure of the desired behavior; gather Tier 1 outcomes before decidi
 | Send W without follow to empty/trailing workspace; select it; inspect active memory before any native rendering; leave early | User model proposes committing core-selected W immediately; render effects cannot overwrite it. Earlier transaction instead waits for completion | Command-time commit versus provisional arrival is under comparison; reference-WM outcomes TBD |
 | During show/hide, observe B foreground with no source proof; later re-sample the same B after apply returns; depart | Option 1 proposes truthful actual B plus persistent uncertainty; no active-memory update. A proven genuine B activation instead updates memory immediately | Unknown suppression can miss genuine clicks/app activation; attribution choice pending, exact origin may be unknowable; reference-WM outcomes TBD |
 | Core selects W on a previously empty destination; leave before its rendering lands | User-approved: record W at core decision time; unfinished rendering/departure does not overwrite it | Native/protocol implementation pending; no core arrival transaction; reference-WM outcomes TBD |
-| Request A focus; A is proven; click B after the final request; finish latest rendering | User-approved: surviving B difference is reconciled and remembered, with no forced refocus | Event/readback and stale-comparison fencing design pending; reference-WM outcomes TBD |
-| Click B; issue latest eligible request A; A lands and latest rendering finishes | User-approved: latest request wins; transient B is not a world change; live safety gates can still veto the request | Native resulting-state proof pending; reference-WM outcomes TBD |
-| Request A focus; Windows silently ignores it; no event follows; actual B remains | Cannot prove latest focus applied; recommend explicit terminal-incomplete state and reconciliation rather than timer/retry/false success | No-proof release R1 is undecided; exact origin need not be identified; reference-WM outcomes TBD |
+| Request A focus; A is proven; intentionally activate B before remaining rendering finishes | B reports promptly and is remembered; no final-apply wait or forced refocus | General native attribution and reference-WM outcomes TBD; defer/reconcile superseded |
+| Select workspace with A pending; intentionally click B before A's native request is issued | Latest user action B wins immediately; core records B, drops unissued A, and describes B's border in the next reply; no snap-back when arrival finishes | Source-bound native click recognition TBD; tests must not treat a later A request from the older selection as newer intent |
+| Request A focus; Windows silently ignores it; no event follows; actual B remains | Report actual B and incomplete native facts truthfully; established intentional changes do not wait for proof of A | R1 release superseded; unattributed B policy and reference-WM outcomes TBD, not inferred from persistence |
 
 <a id="workspace-no-focus-discriminators"></a>
 ### Workspace arrival and navigation without window focus
