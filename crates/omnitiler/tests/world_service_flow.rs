@@ -45,7 +45,7 @@ fn window_json(id: &str, rect: &str, native_ws: Option<&str>) -> String {
           \"normalWindow\":true,\"managed\":true,\"deleted\":false,\
           \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
           \"wantsInput\":true,\"fullScreen\":false,\"maximizeMode\":0,\
-          \"onAllDesktops\":false,\"minimized\":false}}",
+          \"onAllDesktops\":false,\"minimized\":false,\"hidden\":false}}",
         x = frame[0],
         y = frame[1],
         w = frame[2],
@@ -2205,7 +2205,7 @@ const BORN_WIN_C: &str = "550e8400-e29b-41d4-a716-4466554400a3";
 
 /// Captured-shaped KWin raw row with fractional geometry, native overlay
 /// enums, and client size hints. Mirrors `kwin/src/world-observe.ts`
-/// `RawWindowFact` (19 keys, no projected verdicts).
+/// `RawWindowFact` (20 keys, no projected verdicts).
 #[allow(clippy::too_many_arguments)]
 fn born_raw(
     win: &str,
@@ -2232,7 +2232,7 @@ fn born_raw(
           \"normalWindow\":{normal_window},\"managed\":{managed},\"deleted\":{deleted},\
           \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
           \"wantsInput\":true,\"fullScreen\":{full_screen},\"maximizeMode\":{maximize_mode},\
-          \"onAllDesktops\":false,\"minimized\":{minimized}}}"
+          \"onAllDesktops\":false,\"minimized\":{minimized},\"hidden\":false}}"
     )
 }
 

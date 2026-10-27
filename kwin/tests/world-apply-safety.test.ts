@@ -7,6 +7,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { captureWorldObservation } from "../src/world-observe";
+import { applyWorldReply } from "../src/world-apply";
+import { createWorldApplyHost } from "../src/world-native";
+import { WorldAdapterState } from "../src/world-state";
 
 function makeSurface() {
     const ws1 = { id: "ws-1" };
@@ -16,21 +20,21 @@ function makeSurface() {
             internalId: "win-tiled", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
-            minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
+            minimized: false, hidden: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
             minSize: null, maxSize: null,
         },
         {
             internalId: "win-game", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 1920, height: 1080 },
             output: { name: "out-1" }, desktops: [ws1],
-            minimized: false, fullScreen: true, maximizeMode: 0, onAllDesktops: false,
+            minimized: false, hidden: false, fullScreen: true, maximizeMode: 0, onAllDesktops: false,
             minSize: null, maxSize: null,
         },
         {
             internalId: "win-sticky", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws2],
-            minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: true,
+            minimized: false, hidden: false, fullScreen: false, maximizeMode: 0, onAllDesktops: true,
             minSize: null, maxSize: null,
         },
     ];
@@ -222,6 +226,113 @@ describe("world overlay safety", () => {
         }));
         assert.equal((world.wins[0] as { desktops: Array<{ id: string }> }).desktops[0]?.id, "ws-1", "minimized flip blocks the move");
         handle.stop();
+    });
+
+    it("refuses geometry when hidden flips between observation and actuation", () => {
+        // Stale-observation direct apply with the real native driver: the
+        // observation is captured before the flip, so the live safety alias
+        // (hidden into minimized) fences the setter.
+        const { surface, world } = makeSurface();
+        const stale = captureWorldObservation({
+            workspace: surface as never,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: () => null,
+        });
+        assert.ok(stale !== null);
+        (world.wins[0] as { hidden: boolean }).hidden = true;
+        const readProp = (v: object, p: string): unknown => Reflect.get(v as object, p);
+        const host = createWorldApplyHost(surface as object, readProp as never);
+        const state = new WorldAdapterState("adapter-1", "owner-a");
+        state.onDiscovery("gen-1", "broker-1");
+        const result = applyWorldReply({
+            state,
+            observation: stale,
+            reply: {
+                adapter: "broker-1", gen: "gen-1", req: "req-1", obs: state.currentInvalid, rev: "1",
+                ready: true, consumed: false, source: "req-1", nativeInvalid: state.currentInvalid, clock: "0",
+                gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [],
+                warpCursor: null,
+                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+                scopes: [], workspaces: [], outputs: [],
+                windows: [{
+                    win: "win-tiled", out: "out-1", ws: "ws-1",
+                    alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
+                    frame_auth: "controlled", frame_hold: "",
+                    member_auth: "controlled", member_hold: "",
+                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                }],
+                transfers: [], effects: [], result: null,
+            } as never,
+            dispatchWatermark: state.currentInvalid,
+            takeResult: null,
+            log: () => undefined,
+            ...host,
+            switchView: () => true,
+            createDesktop: () => undefined,
+            removeDesktop: () => false,
+            focusWindow: () => true,
+            desktopOccupants: () => ({ total: 0, readable: true }),
+            desktopVisible: () => false,
+            readLiveView: () => null,
+            desktopById: (id: string) => ({ id }),
+            minDesktops: 2,
+        });
+        assert.equal(world.geometryWrites.length, 0, "hidden flip takes no frame write");
+        assert.equal(result.geometryWrites, 0);
+    });
+
+    it("refuses focus when hidden flips before the focus effect", () => {
+        const { surface, world } = makeSurface();
+        const stale = captureWorldObservation({
+            workspace: surface as never,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: () => null,
+        });
+        assert.ok(stale !== null);
+        const before = world.activeWindow;
+        (world.wins[0] as { hidden: boolean }).hidden = true;
+        const readProp = (v: object, p: string): unknown => Reflect.get(v as object, p);
+        const host = createWorldApplyHost(surface as object, readProp as never);
+        const state = new WorldAdapterState("adapter-1", "owner-a");
+        state.onDiscovery("gen-1", "broker-1");
+        const focusWrites: unknown[] = [];
+        applyWorldReply({
+            state,
+            observation: stale,
+            reply: {
+                adapter: "broker-1", gen: "gen-1", req: "req-1", obs: state.currentInvalid, rev: "1",
+                ready: true, consumed: false, source: "req-1", nativeInvalid: state.currentInvalid, clock: "0",
+                gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [],
+                warpCursor: null,
+                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+                scopes: [], workspaces: [], outputs: [],
+                windows: [],
+                transfers: [], effects: [{ id: "fx-9", kind: "focus", target: "win-tiled", rev: "1" }], result: null,
+            } as never,
+            dispatchWatermark: state.currentInvalid,
+            takeResult: null,
+            log: () => undefined,
+            ...host,
+            switchView: () => true,
+            createDesktop: () => undefined,
+            removeDesktop: () => false,
+            focusWindow: (ref) => { focusWrites.push(ref); return true; },
+            desktopOccupants: () => ({ total: 0, readable: true }),
+            desktopVisible: () => false,
+            readLiveView: () => null,
+            desktopById: (id: string) => ({ id }),
+            minDesktops: 2,
+        });
+        assert.deepEqual(focusWrites, [], "hidden flip holds the focus effect");
+        assert.equal(world.activeWindow, before);
     });
 
     it("never steers automatic focus onto a game/excluded row", () => {

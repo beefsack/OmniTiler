@@ -201,6 +201,41 @@ pub const fn classify_membership(facts: &SafetyFacts, transient: bool) -> Member
     }
 }
 
+/// Retained membership outcome for hosts retaining hidden/minimized windows: the
+/// membership verdict ignores `!visible`/`minimized` only (a hidden or
+/// minimized window stays a retained member), while every other safety
+/// exclusion still leaves unmanaged even when transient. `eligible`
+/// is the full [`safety_eligible`] gate: hidden/minimized members are
+/// retained but ineligible for layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetainedMembership {
+    pub membership: MembershipVerdict,
+    pub eligible: bool,
+}
+
+/// Retained membership classification over normalized facts plus the
+/// shared neutral `transient` fact. [`classify_membership`] is unchanged:
+/// membership ignores `!visible`/`minimized` only via relaxed facts, and
+/// eligibility is the full safety gate.
+#[must_use]
+pub const fn classify_retained_membership(
+    facts: &SafetyFacts,
+    transient: bool,
+) -> RetainedMembership {
+    let membership = classify_membership(
+        &SafetyFacts {
+            visible: true,
+            minimized: false,
+            ..*facts
+        },
+        transient,
+    );
+    RetainedMembership {
+        membership,
+        eligible: safety_eligible(facts),
+    }
+}
+
 /// Geometry eligibility for fresh writes: safe AND
 /// not overlaid. This matches Windows `classify`'s boolean geometry
 /// eligibility, NOT generic tile membership: a retained overlaid member keeps
@@ -934,6 +969,95 @@ mod tests {
         assert_eq!(
             classify_membership(&no_activate_only, true),
             MembershipVerdict::LeaveUnmanaged
+        );
+    }
+
+    #[test]
+    fn retained_membership_ignores_hidden_minimized_only() {
+        // Exhaustive: every safety combination crossed with the transient
+        // fact. Only !visible/minimized are ignored for membership; every
+        // other held gate still leaves unmanaged even when transient.
+        // Eligibility is the full safety gate.
+        for bits in 0..512u32 {
+            let facts = SafetyFacts {
+                visible: bits & 1 != 0,
+                minimized: bits & 2 != 0,
+                cloaked: bits & 4 != 0,
+                privileged: bits & 8 != 0,
+                shell: bits & 16 != 0,
+                tool: bits & 32 != 0,
+                owned_dialog: bits & 64 != 0,
+                dialog: bits & 128 != 0,
+                no_activate: bits & 256 != 0,
+            };
+            let relaxed = !facts.cloaked
+                && !facts.privileged
+                && !facts.shell
+                && !facts.tool
+                && !facts.owned_dialog
+                && !facts.dialog
+                && !facts.no_activate;
+            for transient in [false, true] {
+                let expected_membership = if !relaxed {
+                    MembershipVerdict::LeaveUnmanaged
+                } else if transient {
+                    MembershipVerdict::FloatMember
+                } else {
+                    MembershipVerdict::Tile
+                };
+                let expected_eligible = expected_membership != MembershipVerdict::LeaveUnmanaged
+                    && safety_eligible(&facts);
+                let got = classify_retained_membership(&facts, transient);
+                assert_eq!(
+                    got.membership, expected_membership,
+                    "bits={bits:09b} transient={transient}"
+                );
+                assert_eq!(
+                    got.eligible, expected_eligible,
+                    "bits={bits:09b} transient={transient}"
+                );
+            }
+        }
+        // Hidden/minimized ordinary windows stay members but ineligible;
+        // hidden/minimized transients stay floating members but ineligible.
+        let hidden = SafetyFacts {
+            visible: false,
+            ..safety_all_clear()
+        };
+        assert_eq!(
+            classify_retained_membership(&hidden, false),
+            RetainedMembership {
+                membership: MembershipVerdict::Tile,
+                eligible: false,
+            }
+        );
+        assert_eq!(
+            classify_retained_membership(&hidden, true),
+            RetainedMembership {
+                membership: MembershipVerdict::FloatMember,
+                eligible: false,
+            }
+        );
+        let minimized = SafetyFacts {
+            minimized: true,
+            ..safety_all_clear()
+        };
+        assert_eq!(
+            classify_retained_membership(&minimized, false),
+            RetainedMembership {
+                membership: MembershipVerdict::Tile,
+                eligible: false,
+            }
+        );
+        // Other gates still leave unmanaged even when transient.
+        let mut tool = safety_all_clear();
+        tool.tool = true;
+        assert_eq!(
+            classify_retained_membership(&tool, true),
+            RetainedMembership {
+                membership: MembershipVerdict::LeaveUnmanaged,
+                eligible: false,
+            }
         );
     }
 

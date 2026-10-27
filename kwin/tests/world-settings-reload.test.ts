@@ -38,6 +38,7 @@ interface FakeWindow {
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
+    hidden: boolean;
     fullscreen: boolean;
     maximizeMode: number;
     sticky: boolean;
@@ -59,6 +60,7 @@ function win(id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow {
         output: { name: out },
         desktops: [ws],
         minimized: false,
+        hidden: false,
         fullscreen: false,
         maximizeMode: 0,
         sticky: false,

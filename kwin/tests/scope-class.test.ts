@@ -30,6 +30,7 @@ function observe(scope: string | readonly string[] | undefined, wins: Array<{ id
         output: { name: "out-1" },
         desktops: [{ id: "ws-1" }],
         minimized: false,
+        hidden: false,
         fullScreen: false,
         maximizeMode: 0,
         onAllDesktops: false,

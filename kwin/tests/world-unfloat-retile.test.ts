@@ -99,6 +99,7 @@ function makeHarness(initial: LiveSpec[]) {
             output: { name: OUT },
             desktops: qmlLike([{ id: spec.ws }]),
             minimized: spec.minimized,
+            hidden: false,
             fullscreen: spec.fullScreen,
             maximized: spec.maximizeMode !== 0,
             sticky: spec.onAllDesktops,

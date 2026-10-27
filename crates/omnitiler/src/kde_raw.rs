@@ -1,47 +1,54 @@
 //! KDE raw classification capture: KWin-shaped native facts in, projected
-//! v2 `WindowFact`s out. No core/policy changes: this calls the existing
-//! shared [`tiler_core::size_hints`] fixed-size entry point, then shapes the
+//! v2 `WindowFact`s out. Reuses the existing shared
+//! [`tiler_core::size_hints`] fixed-size entry point plus the shared
+//! retained membership classifier, then shapes the
 //! exact projected fact JSON the strict codec decodes. The broker invokes it
 //! on the sole capture lane before stamping, sequencing, or draining.
 //!
-//! Explicit non-goals (deferred pending neutrality/product decisions): the
-//! carried native role/control/ownership facts (`normalWindow` excepted,
-//! which preserves the existing candidate filter, plus the lifecycle
-//! boundary below) are strictly
-//! validated but never mapped to verdicts here. No shared safety flags are
-//! invented and no transient/modal window is floated: ordinary normal
-//! windows keep the exact pre-cutover projection (intent, sticky, fixed),
-//! and minimized rows stay retained facts.
+//! Native role/control/ownership facts are strictly validated; only
+//! `normalWindow`/`dialog` (candidate filter) plus the shared neutral
+//! transient (`transient`/`dialog`/`modal`/known owner, floating as retained
+//! members via the shared retained classifier) map to verdicts here. No
+//! shared safety flags are invented beyond `visible = !hidden` / `minimized`
+//! (never Windows `owned_dialog`/`no_activate`/`cloaked` inference):
+//! ordinary normal windows keep the exact pre-cutover projection (intent,
+//! sticky, fixed), and hidden/minimized rows stay retained facts projected
+//! `minimized` (ineligible for layout, reusing the existing member-ineligible
+//! engine lanes).
 //!
 //! Lifecycle boundary (no new core fields): KWin `managed` (`isClient`,
 //! false for application-handled override-redirect windows) means absent
 //! (never a candidate `WindowFact`, never a close); KWin `deleted`
 //! (`isDeleted`, already closed) means close (the id joins the explicit
 //! close lane, never a candidate `WindowFact`). Deleted takes precedence
-//! over unmanaged. Raw `managed`/`deleted` stay in the capture envelope;
-//! this normalization from actual host facts is the only mapping.
+//! over unmanaged. Raw `managed`/`deleted` stay in the capture envelope.
+//!
+//! Native `hidden` is KWin `m_hidden` (`window.h:590` `Q_PROPERTY(bool
+//! hidden READ isHidden NOTIFY hiddenChanged)`, distinct from
+//! `m_hiddenByShowDesktop`, off-desktop, Activity, or minimized state).
 
 use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 use tiler_core::bounds::{GEOMETRY_BOUND, is_opaque_id, valid_carried_rect};
 use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with};
+use tiler_core::window_policy::{MembershipVerdict, SafetyFacts, classify_retained_membership};
 
 /// Exact raw window keys, sorted. KWin-shaped native facts only: identity,
 /// frame/client rects, client size hints, native membership, role, control,
-/// ownership, and overlay state. Role/control/ownership facts (`normalWindow`
-/// excepted) are strictly validated but deliberately unmapped (deferred
-/// neutrality/product decision). No projected verdicts (`floating`,
+/// ownership, and overlay state. Rust normalizes membership and immediate
+/// eligibility; the producer supplies no verdicts. No projected verdicts (`floating`,
 /// `fitExcluded`, `fixedAuto`, `fixedSuppress`, `hints`, `rect`,
 /// `observedWs`, `nativeWs` refuse as unknown-field) and no app identity
 /// (fixture scope filtering stays adapter-side).
-const RAW_KEYS: [&str; 19] = [
+const RAW_KEYS: [&str; 20] = [
     "clientGeometry",
     "deleted",
     "desktops",
     "dialog",
     "frameGeometry",
     "fullScreen",
+    "hidden",
     "managed",
     "maxSize",
     "maximizeMode",
@@ -321,11 +328,10 @@ pub fn normalize_raw_windows(
             continue;
         }
         let normal_window = req_bool(map, "normalWindow")?;
-        // Strictly validated but deliberately unmapped (deferred
-        // role/control/ownership decision): bindings prefixed unused.
-        let _transient = req_bool(map, "transient")?;
-        let _dialog = req_bool(map, "dialog")?;
-        let _modal = req_bool(map, "modal")?;
+        let hidden = req_bool(map, "hidden")?;
+        let transient_native = req_bool(map, "transient")?;
+        let dialog_native = req_bool(map, "dialog")?;
+        let modal_native = req_bool(map, "modal")?;
         let _wants_input = req_bool(map, "wantsInput")?;
         let full_screen = req_bool(map, "fullScreen")?;
         let on_all_desktops = req_bool(map, "onAllDesktops")?;
@@ -342,7 +348,7 @@ pub fn normalize_raw_windows(
             Some(_) => return Err(unknown_value()),
             None => return Err(malformed()),
         };
-        let _transient_for = match map.get("transientFor") {
+        let transient_for = match map.get("transientFor") {
             Some(Value::Null) => None,
             Some(Value::String(s)) if s.is_empty() => None,
             Some(Value::String(s)) => {
@@ -406,16 +412,33 @@ pub fn normalize_raw_windows(
             None => return Err(malformed()),
         };
 
-        // Preserve the existing normal-window candidate boundary. The
-        // producer also retains that filter until role normalization is
-        // resolved; minimized rows stay retained below. Native
-        // role/control/ownership facts above are strictly validated but
-        // deliberately not mapped to verdicts here (deferred decision);
-        // only the lifecycle boundary (deleted close, unmanaged absent)
-        // maps, decided above.
-        if !normal_window {
+        // Candidate boundary: ordinary normal windows plus real dialogs
+        // (`normalWindow=false, dialog=true`). Arbitrary non-normal
+        // transient/modal surfaces (menus, tooltips, DnD icons) stay
+        // dropped: only an actual dialog opens the non-normal lane.
+        // Minimized/hidden rows stay retained below; the shared retained
+        // classifier decides membership, and `LeaveUnmanaged` omits
+        // explicitly (never collapsing onto the tile lane).
+        if !normal_window && !dialog_native {
             continue;
         }
+        // Shared neutral transient: native `transient`, `dialog`, `modal`,
+        // or a known owner. Native `dialog` maps to transient here, never
+        // to the shared `SafetyFacts.dialog` gate (no Windows
+        // owned_dialog/no_activate/cloaked inference: every other shared
+        // safety flag reads false).
+        let shared_transient =
+            transient_native || dialog_native || modal_native || transient_for.is_some();
+        let safety = SafetyFacts {
+            visible: !hidden,
+            minimized,
+            ..SafetyFacts::default()
+        };
+        let retained = classify_retained_membership(&safety, shared_transient);
+        if retained.membership == MembershipVerdict::LeaveUnmanaged {
+            continue;
+        }
+        let member_floats = retained.membership == MembershipVerdict::FloatMember;
 
         let delta_w = client.and_then(|(_, _, cw, _)| fw.checked_sub(cw));
         let delta_h = client.and_then(|(_, _, _, ch)| fh.checked_sub(ch));
@@ -460,8 +483,18 @@ pub fn normalize_raw_windows(
         let sticky = on_all_desktops;
         let fullscreen = full_screen;
         let maximized = maximize_mode != 0;
-        let floating = adapter_float || sticky || (fixed_auto && !tile_override);
+        // Explicit tile intent suppresses automatic floats (shared transient
+        // default and fixed-size), matching the existing fixed-auto intent
+        // precedence; explicit float intent still floats.
+        let floating = (member_floats && !tile_override)
+            || adapter_float
+            || sticky
+            || (fixed_auto && !tile_override);
         let fit_excluded = floating || sticky || fullscreen || maximized;
+        // Ineligible retained members (hidden/minimized) project
+        // `minimized`, reusing the existing member-ineligible engine lanes
+        // (no allocation, no frame, no clear).
+        let projected_minimized = minimized || !retained.eligible;
         let native_ws = if host_owned && desktops.len() == 1 {
             Some(desktops[0].clone())
         } else {
@@ -485,7 +518,7 @@ pub fn normalize_raw_windows(
             "sticky": sticky,
             "fixedAuto": fixed_auto,
             "fixedSuppress": fixed_suppress,
-            "minimized": minimized,
+            "minimized": projected_minimized,
             "hints": hints_json,
             "observedWs": null,
             "nativeWs": native_ws,
@@ -563,6 +596,7 @@ mod tests {
             "maximizeMode": 0,
             "onAllDesktops": false,
             "minimized": false,
+            "hidden": false,
         })
     }
 
@@ -582,12 +616,39 @@ mod tests {
     }
 
     #[test]
-    fn drops_non_normal_windows() {
+    fn drops_non_normal_non_dialog_windows() {
         let mut bad = raw_win("win-a");
         bad["normalWindow"] = json!(false);
         let mut inner = base_inner(json!([bad]));
         normalize_raw_windows(&mut inner).expect("normalizes");
         assert_eq!(inner["windows"].as_array().expect("array").len(), 0);
+        // Non-normal transient/modal surfaces without dialog stay dropped.
+        for (key, value) in [("transient", json!(true)), ("modal", json!(true))] {
+            let mut w = raw_win("win-a");
+            w["normalWindow"] = json!(false);
+            w[key] = value;
+            let mut inner = base_inner(json!([w]));
+            normalize_raw_windows(&mut inner).expect("normalizes");
+            assert_eq!(
+                inner["windows"].as_array().expect("array").len(),
+                0,
+                "{key} non-dialog stays dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn admits_real_dialog_as_retained_float() {
+        // Actual KWin dialog: normalWindow=false, dialog=true.
+        let mut w = raw_win("win-d");
+        w["normalWindow"] = json!(false);
+        w["dialog"] = json!(true);
+        let mut inner = base_inner(json!([w]));
+        normalize_raw_windows(&mut inner).expect("normalizes");
+        let windows = inner["windows"].as_array().expect("array");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0]["floating"], json!(true));
+        assert_eq!(windows[0]["minimized"], json!(false));
     }
 
     #[test]
@@ -909,9 +970,10 @@ mod tests {
     }
 
     #[test]
-    fn roles_carry_without_verdicts_normal_only_preserved() {
-        // Native transient/modal facts ride the lane but float nothing:
-        // ordinary normal windows keep the exact pre-cutover projection.
+    fn shared_transient_floats_as_retained_member() {
+        // Native transient/dialog/modal (or a known owner) floats via the
+        // shared retained membership path; ordinary normal windows keep the
+        // exact pre-cutover projection.
         for (key, value) in [
             ("transient", json!(true)),
             ("modal", json!(true)),
@@ -922,19 +984,55 @@ mod tests {
             let mut inner = base_inner(json!([w]));
             normalize_raw_windows(&mut inner).expect("normalizes");
             let row = &inner["windows"].as_array().expect("array")[0];
-            assert_eq!(row["floating"], json!(false), "{key}");
+            assert_eq!(row["floating"], json!(true), "{key}");
             assert_eq!(row["fixedAuto"], json!(false), "{key}");
+            assert_eq!(row["minimized"], json!(false), "{key}");
         }
-        // Even a transient window with a known owner stays unmanaged by
-        // verdict: carried facts, no invented float.
+        // A transient window with a known owner floats even when the
+        // native transient flag reads false.
         let mut w = raw_win("win-t");
-        w["transient"] = json!(true);
         w["transientFor"] = json!("win-a");
         let mut inner = base_inner(json!([raw_win("win-a"), w]));
         normalize_raw_windows(&mut inner).expect("normalizes");
         let windows = inner["windows"].as_array().expect("array");
         assert_eq!(windows.len(), 2);
-        assert_eq!(windows[1]["floating"], json!(false));
+        assert_eq!(windows[1]["floating"], json!(true));
+        // Hidden rows project minimized (retained but ineligible).
+        let mut w = raw_win("win-h");
+        w["hidden"] = json!(true);
+        let mut inner = base_inner(json!([w]));
+        normalize_raw_windows(&mut inner).expect("normalizes");
+        let row = &inner["windows"].as_array().expect("array")[0];
+        assert_eq!(row["minimized"], json!(true));
+    }
+
+    #[test]
+    fn tile_override_suppresses_automatic_transient_float() {
+        // Explicit tile intent wins over the automatic shared-transient
+        // default float (same precedence as fixed-auto suppression).
+        for (key, value) in [
+            ("transient", json!(true)),
+            ("modal", json!(true)),
+            ("dialog", json!(true)),
+        ] {
+            let mut w = raw_win("win-a");
+            w[key] = value;
+            let mut inner = base_inner(json!([w]));
+            inner.insert("tileIntent".to_owned(), json!(["win-a"]));
+            normalize_raw_windows(&mut inner).expect("normalizes");
+            let row = &inner["windows"].as_array().expect("array")[0];
+            assert_eq!(row["floating"], json!(false), "{key} tile override tiles");
+            assert_eq!(row["fixedSuppress"], json!(true), "{key}");
+        }
+        // Without the override the same rows float.
+        let mut w = raw_win("win-a");
+        w["transient"] = json!(true);
+        let mut inner = base_inner(json!([w]));
+        normalize_raw_windows(&mut inner).expect("normalizes");
+        assert_eq!(
+            inner["windows"].as_array().expect("array")[0]["floating"],
+            json!(true)
+        );
     }
 
     #[test]

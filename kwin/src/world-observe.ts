@@ -130,6 +130,10 @@ export interface RawWindowFact {
     maximizeMode: number;
     onAllDesktops: boolean;
     minimized: boolean;
+    // KWin `m_hidden` (`src/window.h:590` `Q_PROPERTY(bool hidden READ
+    // isHidden NOTIFY hiddenChanged)` at pinned v6.7.4, distinct from
+    // `m_hiddenByShowDesktop`, off-desktop, Activity, or minimized state).
+    hidden: boolean;
 }
 
 export interface ObservedScreenFact {
@@ -811,16 +815,24 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             continue;
         }
         const ref = item as object;
-        // Preserve the candidate boundary until shared role normalization is
-        // resolved. Non-normal shell/popups need not expose usable managed
-        // geometry or membership and must not hold ordinary candidates.
+        // Candidate boundary includes real dialogs: a non-normal window with
+        // `dialog=true` (actual KWin dialog) rides the raw lane for broker
+        // retained membership; other non-normal transient/modal surfaces
+        // (menus, tooltips) stay dropped. Non-normal shell/popups need not
+        // expose usable managed geometry or membership and must not hold
+        // ordinary candidates.
         const normalWindowRaw = readProp(ref, "normalWindow");
         if (typeof normalWindowRaw !== "boolean") {
             windowsReadable = false;
             continue;
         }
         const normalWindow = normalWindowRaw;
-        if (!normalWindow) {
+        const dialogForCandidate = readReqBool(ref, "dialog");
+        if (dialogForCandidate === null) {
+            windowsReadable = false;
+            continue;
+        }
+        if (!normalWindow && !dialogForCandidate) {
             continue;
         }
         // Scoped runs exclude foreign windows from observation entirely
@@ -881,6 +893,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             const modal = readReqBool(ref, "modal");
             const wantsInput = readReqBool(ref, "wantsInput");
             const minimized = readReqBool(ref, "minimized");
+            const hidden = readReqBool(ref, "hidden");
             // Owning-window identity: explicit null is a true native
             // no-owner; a missing or unreadable owner holds (never a
             // silent null that would forge independence).
@@ -950,7 +963,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             if (
                 rawFrame === null || managed === null || deleted === null ||
                 transient === null || dialog === null || modal === null ||
-                wantsInput === null || minimized === null ||
+                wantsInput === null || minimized === null || hidden === null ||
                 !ownerReadable || fullScreen === null ||
                 maximizeMode === null || onAllDesktops === null
             ) {
@@ -981,6 +994,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 maximizeMode,
                 onAllDesktops,
                 minimized,
+                hidden,
             });
             try {
                 if (env.isFloating !== undefined && env.isFloating(rawId)) {
@@ -1108,6 +1122,13 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             (allDesktopsRaw === undefined && readNativeAlias(readProp, ref, "sticky") === true);
         const floatingNow = adapterFloat || stickyNow || (fixedAuto && !tileOverride);
         const fitExcludedNow = floatingNow || stickyNow || fullscreenNow || maximizedNow;
+        // Immediate-eligibility alias (not native minimization): a native
+        // hidden window is ineligible for geometry/focus/stacking exactly
+        // like a minimized one, so the existing minimized guards cover it.
+        // Raw facts keep minimized and hidden distinct; only this local
+        // carrier aliases.
+        const minimizedNative = readProp(ref, "minimized") === true;
+        const hiddenNative = readProp(ref, "hidden") === true;
         liveById.set(rawId, {
             win: rawId, ref, out: outName as string, ws: home, rect,
             floating: floatingNow,
@@ -1122,7 +1143,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 maxW: convertHintBound(max ? max.w : null, deltaW),
                 maxH: convertHintBound(max ? max.h : null, deltaH),
             },
-            minimized: readProp(ref, "minimized") === true,
+            minimized: minimizedNative || hiddenNative,
             nativeWs,
         });
     }

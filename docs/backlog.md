@@ -259,8 +259,10 @@ decisions of 2026-09-24 are under
     discussed. Local `world-observe.ts::isFixedSizeWindow` still feeds
     admission-focus gates and automatic keep-above; consume core desires or
     retain temporarily, undecided.
-  - Approved implementation packages pending: N5 membership/eligibility split,
-    execution-time float toggle and execution-time implicit output targeting.
+  - N5 membership/eligibility split implemented offline; native role/hidden
+    checks and Activities remain unverified. Windows/macOS behavior unchanged.
+  - Approved implementation packages pending: execution-time float toggle and
+    execution-time implicit output targeting.
   - Deferred: investigate operation-pair outer-gap bookkeeping outside the drag
     path, following the gesture-local `world_gesture.rs` fix.
   - Physical checks pending: fullscreen-window shortcuts, rapid A/B drags after

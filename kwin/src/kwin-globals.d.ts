@@ -217,6 +217,12 @@ interface Window {
     // Declared read-only: adapters fail closed if this public property cannot
     // be observed while evaluating minimized-window exclusions.
     readonly minimized: boolean;
+    // src/window.h:590 Q_PROPERTY `bool hidden READ isHidden NOTIFY
+    // hiddenChanged` at pinned v6.7.4: whether this window is hidden
+    // (usually an auto-hide panel). Distinct from m_hiddenByShowDesktop,
+    // off-desktop, Activity, and minimized state. Read-only: missing or
+    // non-boolean holds the fact set, never an eligible default.
+    readonly hidden: boolean;
     // src/window.h Q_PROPERTY `bool transient READ isTransient NOTIFY
     // transientChanged` plus `Q_PROPERTY(Window *transientFor READ
     // transientFor NOTIFY transientChanged)` at pinned v6.7.4: whether this
@@ -250,6 +256,11 @@ interface Window {
     readonly interactiveMoveResizeStepped: Signal1<Rect>;
     readonly interactiveMoveResizeFinished: Signal;
     readonly moveResizedChanged: Signal;
+    // Notify signal for the `hidden` property (src/window.h:590
+    // `NOTIFY hiddenChanged` at pinned v6.7.4). Attached via the optional
+    // feature-detecting environment seam; each emission schedules a full
+    // world observe like the homing signals below.
+    readonly hiddenChanged: Signal;
     // src/window.h at pinned v6.7.4 declares
     //     Q_PROPERTY(KWin::RectF frameGeometry READ frameGeometry WRITE
     //     moveResize NOTIFY frameGeometryChanged)

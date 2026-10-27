@@ -46,14 +46,14 @@ function makeSurface() {
             internalId: "win-a", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out" }, desktops: [ws1],
-            minimized: false, fullscreen: false, maximized: false, sticky: false,
+            minimized: false, hidden: false, fullscreen: false, maximized: false, sticky: false,
             keepAbove: false, keepBelow: false, minSize: null, maxSize: null,
         },
         {
             internalId: "win-b", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out" }, desktops: [ws2],
-            minimized: true, fullscreen: false, maximized: false, sticky: false,
+            minimized: true, hidden: false, fullscreen: false, maximized: false, sticky: false,
             keepAbove: false, keepBelow: false, minSize: null, maxSize: null,
         },
     ];

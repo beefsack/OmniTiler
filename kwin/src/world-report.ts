@@ -1707,6 +1707,7 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
             `"modal":${w.modal ? "true" : "false"},` +
             `"wantsInput":${w.wantsInput ? "true" : "false"},` +
             `"fullScreen":${w.fullScreen ? "true" : "false"},` +
+            `"hidden":${w.hidden ? "true" : "false"},` +
             `"maximizeMode":${w.maximizeMode},` +
             `"onAllDesktops":${w.onAllDesktops ? "true" : "false"},` +
             `"minimized":${w.minimized ? "true" : "false"}}`;

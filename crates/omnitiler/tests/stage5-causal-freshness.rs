@@ -41,7 +41,7 @@ fn window_json(id: &str, rect: &str) -> String {
           \"normalWindow\":true,\"managed\":true,\"deleted\":false,\
           \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
           \"wantsInput\":true,\"fullScreen\":false,\"maximizeMode\":0,\
-          \"onAllDesktops\":false,\"minimized\":false}}",
+          \"onAllDesktops\":false,\"minimized\":false,\"hidden\":false}}",
         x = frame[0],
         y = frame[1],
         w = frame[2],
@@ -63,7 +63,7 @@ fn bare_window_json(id: &str, rect: &str) -> String {
           \"normalWindow\":true,\"managed\":true,\"deleted\":false,\
           \"transient\":false,\"transientFor\":null,\"dialog\":false,\"modal\":false,\
           \"wantsInput\":true,\"fullScreen\":false,\"maximizeMode\":0,\
-          \"onAllDesktops\":false,\"minimized\":false}}",
+          \"onAllDesktops\":false,\"minimized\":false,\"hidden\":false}}",
         x = frame[0],
         y = frame[1],
         w = frame[2],

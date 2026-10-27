@@ -1301,7 +1301,7 @@ mod tests {
             "transient": false, "transientFor": null,
             "dialog": false, "modal": false, "wantsInput": true,
             "fullScreen": fullscreen, "maximizeMode": 0,
-            "onAllDesktops": false, "minimized": false,
+            "onAllDesktops": false, "minimized": false, "hidden": false,
         })
     }
 

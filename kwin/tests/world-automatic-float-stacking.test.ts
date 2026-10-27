@@ -49,6 +49,7 @@ function makeFloatWin(
         output: { name: opts.out ?? "out" },
         desktops: [{ id: opts.ws ?? "ws1" }],
         minimized: false,
+        hidden: false,
         fullScreen: opts.fullscreen === true,
         maximizeMode: opts.maximized === true ? 3 : 0,
         onAllDesktops: opts.sticky === true,
@@ -357,6 +358,33 @@ describe("world native automatic fixed-float stacking", () => {
         h.toggles.syncAutomaticFloatStacking(floatObservation(h.live, { "win-b": {} }, "") as never);
         assert.deepEqual(h.writes.above, [], "zero writes to the fullscreen applicant");
         assert.deepEqual(h.writes.below, [], "zero below writes");
+    });
+
+    it("a live-hidden applicant takes no stacking write despite a stale plain observation", () => {
+        const h = makeNativeHarness();
+        const ref = makeFloatWin("win-b", h.writes);
+        ref["hidden"] = true;
+        h.live.set("win-b", ref);
+        h.toggles.syncAutomaticFloatStacking(floatObservation(h.live, { "win-b": {} }, "") as never);
+        assert.deepEqual(h.writes.above, [], "zero writes to the hidden applicant");
+        assert.deepEqual(h.writes.below, [], "zero below writes");
+    });
+
+    it("a live-hidden owned float takes no release write and an unreadable hidden fails closed", () => {
+        const h = makeNativeHarness();
+        const ref = makeFloatWin("win-b", h.writes);
+        h.live.set("win-b", ref);
+        h.toggles.syncAutomaticFloatStacking(floatObservation(h.live, { "win-b": {} }, "") as never);
+        assert.deepEqual(h.writes.above, ["win-b=true"]);
+        ref["hidden"] = true;
+        h.toggles.syncAutomaticFloatStacking(floatObservation(h.live, { "win-b": {} }, "") as never);
+        assert.deepEqual(h.writes.above, ["win-b=true"], "suspend writes nothing to the hidden client");
+        h.toggles.releaseAutomaticFloat("win-b", "explicit-unfloat");
+        assert.deepEqual(h.writes.above, ["win-b=true"], "release writes nothing to the hidden client");
+        assert.equal(Reflect.get(ref, "keepAbove"), true, "ownership retained without writes");
+        delete (ref as Record<string, unknown>)["hidden"];
+        h.toggles.releaseAutomaticFloat("win-b", "explicit-unfloat");
+        assert.deepEqual(h.writes.above, ["win-b=true"], "unreadable hidden still writes nothing");
     });
 
     it("stale observation never writes a live-fullscreen owned float, even on release", () => {
@@ -690,6 +718,7 @@ interface EntryWin {
     output: { name: string };
     desktops: EntryDesk[];
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -729,6 +758,7 @@ function entryWin(id: string, out: string, ws: EntryDesk, fixed: boolean, above:
         output: { name: out },
         desktops: [ws],
         minimized: false,
+        hidden: false,
         fullScreen: false,
         maximizeMode: 0,
         onAllDesktops: false,

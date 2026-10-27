@@ -28,6 +28,7 @@ function fakeRef(win: FakeWin): object {
         normalWindow: true,
         output: { name: "out-1" },
         minimized: false,
+        hidden: false,
         fullScreen: false,
         maximizeMode: 0,
         onAllDesktops: false,
@@ -167,6 +168,7 @@ describe("lifecycle boundary report carriage", () => {
             maximizeMode: 0,
             onAllDesktops: false,
             minimized: false,
+            hidden: false,
         };
         const json = buildWorldInnerReportJson({
             observation: { ...obs, windowFacts: [row] },

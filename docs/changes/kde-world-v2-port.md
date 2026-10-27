@@ -1225,7 +1225,7 @@
   `win-min`, matching the current core producer; its projected window facts are
   unchanged. The exact fixture check remains, not an exception for stale data.
 
-### N5. Native role/control normalization (parked)
+### N5. Native role/control normalization (historical investigation)
 
 - Shared `window_policy::classify_membership` leaves held safety exclusions
   unmanaged, otherwise transient windows float. Windows maps owned/dialog
@@ -2756,3 +2756,66 @@
   local-fixed consumer deletion and all race-audit recommendations remain parked.
 - **Exact next action for N6: none.** Continue separately scoped port work; do
   not mark Stage 4 or native acceptance complete from N6's offline result.
+
+## N5 membership and immediate eligibility (2026-10-28)
+
+- Approved scope: retain minimized/host-hidden workspace members while excluding
+  immediate layout/focus/send work; preserve the existing whole-workspace
+  migration and in-flight transfer exceptions. Normalize actual KWin dialogs and
+  normal transients through the shared float path. Windows safety exclusions and
+  macOS production behavior stay unchanged. No Activities implementation or
+  completion claim for the larger port.
+- Implemented offline: neutral `classify_retained_membership` returns
+  `RetainedMembership { membership, eligible }`, reusing the legacy classifier
+  with only visible/minimized relaxed for membership. The legacy entry point,
+  geometry/focus gates and WorldEngine production are unchanged. Every other
+  exclusion still yields unmanaged, including combined transient/hidden facts.
+  KDE explicitly omits unmanaged, and projects ineligibility through the
+  existing `WindowFact.minimized` representation, never `LeaveUnmanaged` as Tile.
+  Native `hidden` is captured independently of minimized; it is not evidence of an
+  inactive Activity, off-desktop state, show-desktop state or Windows cloaking.
+  Admit only normal windows or actual dialogs, not arbitrary non-normal transient
+  surfaces. Ownership and wants-input never manufacture Windows safety facts.
+- KDE `kde_raw.rs`, `world-observe.ts`/`world-report.ts` and producer fixtures
+  carry required `hidden`; normal/dialog candidates map native transient,
+  dialog, modal or known parent to shared transient float. `hiddenChanged`
+  participates in causal recapture/invalidation. The projected v2 wire has no
+  new field or version; raw capture and producer fixtures change together.
+- Independent contract/race review found a live-write gap after capture-only
+  handling. Corrected with the same minimized-eligibility alias in local
+  observation and `world-native.ts` live/automatic-stacking safety reads; missing
+  hidden fails closed. Raw native facts stay distinct. Existing setter-time
+  minimized guards now veto hide flips; fresh hidden windows leave active domains
+  and foreground/pager live frames. Native effect hidden checks already exist.
+  Final independent review accepted the contract and corrected race handling.
+- Failing-first evidence: initial raw hidden/dialog tests fail on missing native
+  capture/admission. Consumer probes temporarily restoring legacy normalization
+  with raw shape accepted fail 11/13 on missing retained members, then pass 13/13
+  after restoring N5. These real service journeys cover occupancy/no allocation,
+  direct focus refusal, directional navigation skipping, ordinary send refusal,
+  whole-workspace migration without geometry and transient restoration. Pending
+  select coverage is no-wedge only, not proof of the pending-transfer exception.
+  Shared exhaustive 512-combination tables cross transient state and pin legacy
+  parity and retained exclusions. Producer dialog/hiddenChanged and real-driver
+  hide-flip tests were also verified red before their changes and green after.
+- Minimized reply rows retain the existing `floating:false` publish invariant;
+  normalized facts preserve transient float and restore tests prove it resumes.
+  Tentative technical choices: retained API names, and explicit tile intent
+  suppressing automatic transient float through the existing override path,
+  rather than forcing a dialog/transient permanently floating.
+- Final gates: locked all-target build/tests/strict clippy for service,
+  core/protocol and Windows Linux subset pass: **2,538/2,538** tests (service 334,
+  core 1,392, protocol 87, Windows 725). JS typecheck/build and **765/765** tests
+  pass, zero failures/skips/cancels. Host-matched static effect/KCM build and
+  **36/36** native CTests pass; Nix native check **37/37** passes. Exact world
+  acceptance **6/6**, workspace fmt/whitespace and KWin API guard pass.
+  The guard audits `hidden`/`hiddenChanged` at KWin `v6.6.4:src/window.h:585,1519`
+  and `v6.7.4:src/window.h:590,1524`. No dependencies changed.
+- Windows production and all legacy classifier outcomes are unchanged; both
+  dialog safety exclusions still yield unmanaged. Linux gates cannot establish
+  native Windows actuation. macOS production and its legacy caller are untouched;
+  its minimized/hidden-app prefilter behavior is not migrated or changed here.
+  No live tests/native acceptance, Activities implementation or broader Stage 4
+  closure is claimed. Visible-but-uncontrollable normalization remains parked.
+- **Exact next action for N5: none offline.** Native role/hidden behavior still
+  awaits fixture-scoped testing; continue the separately approved race packages.

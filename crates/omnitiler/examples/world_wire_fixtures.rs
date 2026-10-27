@@ -244,6 +244,7 @@ fn producer_window(win: &str, out: &str, native_ws: &str, rect: [i64; 4]) -> Val
         "maximizeMode": 0,
         "onAllDesktops": false,
         "minimized": false,
+        "hidden": false,
     })
 }
 

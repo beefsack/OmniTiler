@@ -685,20 +685,23 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
     // Live overlay recheck immediately before every stacking write
     // (exact KWin names, offline alias fallback). Null or any overlay
     // fails closed with zero writes; ownership is retained for retry.
+    // Native hidden aliases into live minimized (immediate eligibility,
+    // not native minimization); a missing/unreadable hidden fails closed.
     const readAutoSafety = (ref: object): { fullscreen: boolean; maximized: boolean; minimized: boolean; sticky: boolean } | null => {
         try {
             const fsRaw = readProp(ref, "fullScreen");
             const fullscreen = typeof fsRaw === "boolean" ? fsRaw : readNativeAlias(readProp, ref, "fullscreen");
             const modeRaw = readProp(ref, "maximizeMode");
             const maximized = typeof modeRaw === "number" ? modeRaw !== 0 : readNativeAlias(readProp, ref, "maximized");
-            const minimized = readProp(ref, "minimized");
+            const minimizedRaw = readProp(ref, "minimized");
+            const hiddenRaw = readProp(ref, "hidden");
             const stickyRaw = readProp(ref, "onAllDesktops");
             const sticky = typeof stickyRaw === "boolean" ? stickyRaw : readNativeAlias(readProp, ref, "sticky");
             if (typeof fullscreen !== "boolean" || typeof maximized !== "boolean" ||
-                typeof minimized !== "boolean" || typeof sticky !== "boolean") {
+                typeof minimizedRaw !== "boolean" || typeof hiddenRaw !== "boolean" || typeof sticky !== "boolean") {
                 return null;
             }
-            return { fullscreen, maximized, minimized, sticky };
+            return { fullscreen, maximized, minimized: minimizedRaw || hiddenRaw, sticky };
         } catch (error) {
             void error;
             return null;
@@ -1043,9 +1046,13 @@ export function createWorldApplyHost(
         readLiveSafety: (ref) => {
             // Native overlay lifetime at setter time, using the exact KWin
             // property names (`fullScreen`, `maximizeMode`, `onAllDesktops`,
-            // `minimized`): the offline lowercase aliases apply only when
+            // `minimized`, required native bool `hidden` at pinned v6.7.4):
+            // the offline lowercase aliases apply only when
             // the native read is absent or type-invalid, never overriding a
-            // well-typed native read. Reads stay lazy and in native-first
+            // well-typed native read. Native hidden aliases into live
+            // minimized (immediate eligibility, not native minimization);
+            // a missing/unreadable hidden fails the whole result (null),
+            // never a false minimized. Reads stay lazy and in native-first
             // order; any throw fails the whole safety result (null), never
             // a single field.
             try {
@@ -1055,7 +1062,15 @@ export function createWorldApplyHost(
                 const maximized = typeof modeRaw === "number"
                     ? modeRaw !== 0
                     : boolOrNull(readNativeAlias(readProp, ref, "maximized"));
-                const minimized = boolOrNull(readProp(ref, "minimized"));
+                const minimizedRaw = readProp(ref, "minimized");
+                const hiddenRaw = readProp(ref, "hidden");
+                if (typeof hiddenRaw !== "boolean") {
+                    return null;
+                }
+                const minimizedBase = boolOrNull(minimizedRaw);
+                const minimized = minimizedBase === null
+                    ? (hiddenRaw ? true : null)
+                    : (minimizedBase || hiddenRaw);
                 const fullScreenRaw = readProp(ref, "fullScreen");
                 const fullscreen = boolOrNull(typeof fullScreenRaw === "boolean"
                     ? fullScreenRaw

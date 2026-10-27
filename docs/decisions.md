@@ -187,13 +187,18 @@ Tentative index (user review pending; not approved product rules):
   switch hide/reveal and exit restoration; shortcuts acting on the fullscreen
   window remain unconfirmed.
   [Contract and evidence](changes/kde-world-v2-port.md#focused-fullscreen-presentation-suspension-2026-10-27).
-- **N5, option B, approved; pending implementation:** shared classification
+- **N5, option B, implemented offline (2026-10-28):** shared classification
   separates workspace membership from immediate layout/action eligibility.
   Minimized and host-hidden windows remain members but are ineligible. Windows
   safety exclusions still yield unmanaged, unchanged. KWin dialog/transient
   facts use the existing float path, not fabricated Windows owned-dialog facts.
-  Regressions must cover member-but-ineligible layout, focus navigation, sends
-  and migration consumers.
+  Producer-shaped regressions cover member-but-ineligible layout, focus
+  navigation, sends and migration consumers. The neutral retained entry point
+  leaves the legacy classifier and Windows/macOS production behavior unchanged.
+  KDE captures native `hidden` separately, projecting immediate ineligibility
+  through existing minimized-member lanes; this is not Activities support.
+  Technical names and explicit tile-intent precedence over automatic transient
+  float remain tentative. [Outcome and limits](changes/kde-world-v2-port.md#n5-membership-and-immediate-eligibility-2026-10-28).
 - **Float-toggle race audit, option A, approved; pending implementation:**
   `ToggleFloat` carries no intent-time rectangle. Core resolves floating geometry
   at execution from the remembered float rectangle, else the current frame.
@@ -320,8 +325,9 @@ pending.
   the adapter boundary: `deleted` emits a close, never a candidate fact;
   `managed=false` is not a manageable host window and emits no `WindowFact`.
   Keep both raw facts in capture for Rust normalization. No core
-  controllability/liveness fields are selected. This does not resolve N5's
-  `classify_membership` / `LeaveUnmanaged` retention question.
+  controllability/liveness fields are selected. N5 now resolves retention through
+  a separate retained-classification entry point; `LeaveUnmanaged` still omits a
+  candidate and is never projected as Tile.
 - Windows keeps its existing birth admission route: automatic core birth
   reconciliation must not bypass preamble-only refusal gates or duplicate an
   asynchronous restore. A minimal neutral opt-in capability for automatic

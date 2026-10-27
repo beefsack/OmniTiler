@@ -24,6 +24,8 @@ interface FakeWin {
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
+    minimized: boolean;
+    hidden: boolean;
     keepAbove: boolean;
     keepBelow: boolean;
     output: { name: string } | undefined;
@@ -34,7 +36,7 @@ interface FakeWin {
 function makeWin(over: Partial<FakeWin> = {}): { ref: FakeWin; order: string[] } {
     const order: string[] = [];
     const ref = {
-        internalId: "win-a", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true, minimized: false,
+        internalId: "win-a", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true, minimized: false, hidden: false,
         frameGeometry: { x: 0, y: 0, width: 100, height: 100 },
         fullScreen: false,
         maximizeMode: 0,
@@ -338,6 +340,7 @@ describe("world apply host live safety", () => {
     it("prefers canonical native properties over contradictory aliases", () => {
         const ref = {
             minimized: false,
+            hidden: false,
             fullScreen: true,
             maximizeMode: 3,
             onAllDesktops: false,
@@ -356,6 +359,7 @@ describe("world apply host live safety", () => {
     it("falls back to aliases when native properties are absent", () => {
         const ref = {
             minimized: false,
+            hidden: false,
             fullscreen: true,
             maximized: true,
             sticky: true,
@@ -371,6 +375,7 @@ describe("world apply host live safety", () => {
     it("falls back to aliases when native reads are type-invalid", () => {
         const ref = {
             minimized: 0,
+            hidden: false,
             fullScreen: "yes",
             maximizeMode: "3",
             onAllDesktops: 1,
@@ -384,6 +389,23 @@ describe("world apply host live safety", () => {
             maximized: false,
             sticky: true,
         });
+    });
+
+    it("aliases native hidden into live minimized and fails closed without hidden", () => {
+        assert.deepEqual(safetyOf({ minimized: false, hidden: true } as object), {
+            minimized: true,
+            fullscreen: null,
+            maximized: null,
+            sticky: null,
+        });
+        assert.deepEqual(safetyOf({ minimized: true, hidden: false } as object), {
+            minimized: true,
+            fullscreen: null,
+            maximized: null,
+            sticky: null,
+        });
+        assert.equal(safetyOf({ minimized: false } as object), null);
+        assert.equal(safetyOf({ minimized: false, hidden: "yes" } as object), null);
     });
 
     it("fails the whole safety result when a read throws", () => {

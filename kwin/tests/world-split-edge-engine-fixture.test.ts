@@ -176,6 +176,7 @@ interface FakeWindow {
     output: FakeScreen;
     desktops: FakeDesktop[];
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -261,6 +262,7 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         output,
         desktops: [desktop],
         minimized: false,
+        hidden: false,
         fullScreen: false,
         maximizeMode: 0,
         onAllDesktops: false,

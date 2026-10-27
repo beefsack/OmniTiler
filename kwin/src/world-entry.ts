@@ -4113,11 +4113,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
 
     // Per-window homing subscriptions (approach2/5 native drag/send
-    // adoption, pin ab7df7cc): `Window::outputChanged` and window
-    // `desktopsChanged` are WINDOW signals; workspace `desktopsChanged`
-    // is only count/order. External native output/membership changes
+    // adoption, pin ab7df7cc): `Window::outputChanged`, window
+    // `desktopsChanged`, and `Window::hiddenChanged` (src/window.h:590 at
+    // pinned v6.7.4) are WINDOW signals; workspace `desktopsChanged`
+    // is only count/order. External native output/membership/hidden changes
     // are invisible to the workspace-only watermark, so every tracked
-    // window subscribes both homing signals; each schedules a full
+    // window subscribes all three homing signals; each schedules a full
     // world observe (never geometry noise, no polling). Own-flight
     // echoes (synchronous emissions inside the wrapped setters above)
     // defer to the single post-apply observation instead; the actuated
@@ -4165,7 +4166,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         const detachesForWindow: Array<() => void> = [];
-        for (const signalName of ["outputChanged", "desktopsChanged"] as const) {
+        for (const signalName of ["outputChanged", "desktopsChanged", "hiddenChanged"] as const) {
             try {
                 const detach = connectSignal(readSignal(ref, signalName), onWindowHoming(ref));
                 if (detach !== null) {

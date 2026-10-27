@@ -168,6 +168,7 @@ interface FakeWindow {
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -242,6 +243,7 @@ async function makeSpareHarness(): Promise<Harness> {
             // anchor follows the view instead of pinning the old cell.
             desktops: sticky ? [] : [byId.get(ws) as FakeDesktop],
             minimized: false,
+            hidden: false,
             fullScreen: false,
             maximizeMode: 0,
             onAllDesktops: sticky,
@@ -592,6 +594,7 @@ describe("world aligned spare occupancy-only", () => {
                     output: { name: out },
                     desktops: [desk],
                     minimized: false,
+                    hidden: false,
                     fullScreen: false,
                     maximizeMode: 0,
                     onAllDesktops: false,

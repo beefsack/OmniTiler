@@ -86,6 +86,7 @@ function makeHarness(mode: ClearMode) {
             output: { name: OUT },
             desktops: qmlLike([{ id: st.ws }]),
             minimized: false,
+            hidden: false,
             fullscreen: st.fullScreen,
             maximized: st.maximizeMode !== 0,
             sticky: false,

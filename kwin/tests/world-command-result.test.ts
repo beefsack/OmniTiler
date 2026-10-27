@@ -41,6 +41,7 @@ interface FakeWindow {
     maximizeMode: number;
     onAllDesktops: boolean;
     minimized: boolean;
+    hidden: boolean;
 }
 
 function makeWindow(id: string, out: { name: string }, ws: FakeDesktop): FakeWindow {
@@ -54,6 +55,7 @@ function makeWindow(id: string, out: { name: string }, ws: FakeDesktop): FakeWin
         maximizeMode: 0,
         onAllDesktops: false,
         minimized: false,
+        hidden: false,
         keepAbove: false,
         keepBelow: false,
         minSize: null,

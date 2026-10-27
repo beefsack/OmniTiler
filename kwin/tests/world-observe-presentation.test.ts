@@ -24,6 +24,7 @@ interface FakeWin {
     output: { name: string };
     desktops: Array<{ id: string }>;
     minimized: boolean;
+    hidden?: boolean;
     fullScreen?: boolean;
     fullscreen?: boolean;
     maximizeMode?: number;
@@ -93,6 +94,7 @@ function win(id: string, overrides: Partial<FakeWin> = {}): FakeWin {
         output: { name: "out-1" },
         desktops: [{ id: "ws-1" }],
         minimized: false,
+        hidden: false,
         minSize: null,
         maxSize: null,
         ...overrides,
@@ -152,6 +154,76 @@ describe("world observation presentation ingress", () => {
         assert.deepEqual(obs.windowFacts.map((row) => row.win), ["win-member"]);
     });
 
+    it("admits a real dialog (non-normal with dialog=true) to the raw lane", () => {
+        const dialog = win("win-dialog", { normalWindow: false, dialog: true });
+        const member = win("win-member");
+        const { surface } = makeSurface({ wins: [dialog, member], active: member });
+        const obs = observe(surface, STYLE);
+        assert.ok(obs !== null);
+        assert.equal(obs.complete, true);
+        assert.deepEqual(obs.windowFacts.map((row) => row.win).sort(), ["win-dialog", "win-member"]);
+        const fact = obs.windowFacts.find((f) => f.win === "win-dialog");
+        assert.equal(fact?.normalWindow, false);
+        assert.equal(fact?.dialog, true);
+        assert.equal(fact?.hidden, false);
+    });
+
+    it("drops non-dialog non-normal transient surfaces without holding", () => {
+        const popup = win("win-popup", { normalWindow: false, transient: true });
+        const member = win("win-member");
+        const { surface } = makeSurface({ wins: [popup, member], active: member });
+        const obs = observe(surface, STYLE);
+        assert.ok(obs !== null);
+        assert.equal(obs.complete, true);
+        assert.deepEqual(obs.windowFacts.map((row) => row.win), ["win-member"]);
+    });
+
+    it("holds the fact set on unreadable hidden instead of defaulting false", () => {
+        for (const bad of [0, "yes", null] as const) {
+            const w = win("win-hold", { hidden: bad as unknown as boolean });
+            const { surface } = makeSurface({ wins: [w], active: w });
+            const obs = observe(surface, STYLE);
+            assert.ok(obs !== null, `hidden=${String(bad)}`);
+            assert.deepEqual(obs.windowFacts, [], `hidden=${String(bad)} holds to zero facts`);
+            assert.equal(obs.complete, false, `hidden=${String(bad)} marks incomplete`);
+        }
+    });
+
+    it("captures hidden windows as retained facts projecting hidden truthfully", () => {
+        const w = win("win-hidden", { hidden: true });
+        const { surface } = makeSurface({ wins: [w], active: w });
+        const obs = observe(surface, STYLE);
+        assert.ok(obs !== null);
+        const fact = obs.windowFacts.find((f) => f.win === "win-hidden");
+        assert.equal(fact?.hidden, true);
+    });
+
+    it("projects fresh hidden as minimized eligibility, absent from domains but retained", () => {
+        const w = win("win-hidden", { hidden: true });
+        const member = win("win-member");
+        const { surface } = makeSurface({ wins: [w, member], active: member });
+        const obs = observe(surface, STYLE);
+        assert.ok(obs !== null);
+        assert.deepEqual(obs.domains.flatMap((d) => d.windows.map((m) => m.win)), ["win-member"]);
+        assert.deepEqual(obs.minimized.map((m) => m.win), ["win-hidden"]);
+        const retained = obs.minimized.find((m) => m.win === "win-hidden");
+        assert.equal(retained?.minimized, true);
+        const fact = obs.windowFacts.find((f) => f.win === "win-hidden");
+        assert.equal(fact?.hidden, true);
+        assert.equal(fact?.minimized, false);
+    });
+
+    it("reads a hidden foreground with no visible frame and null pager live", () => {
+        const fg = win("win-hidden-fg", { hidden: true });
+        const { surface } = makeSurface({ wins: [fg], active: fg, stacking: [fg] });
+        const obs = observe(surface, STYLE);
+        assert.ok(obs !== null);
+        assert.equal(obs.presentation.foreground, "win-hidden-fg");
+        assert.equal(obs.presentation.frame, null);
+        const row = obs.presentation.pagerFrames.find((r) => r.win === "win-hidden-fg");
+        assert.ok(row !== undefined);
+        assert.equal(row.live, null);
+    });
     it("captures client hints and frame deltas truthfully for broker conversion", () => {
         const w = win("win-hints", {
             frameGeometry: { x: 10.6, y: 20.4, width: 204.4, height: 104.5 },
@@ -247,7 +319,7 @@ describe("world observation presentation ingress", () => {
         // A missing required native boolean holds the whole fact set
         // (never eligible defaults): the report stays non-null with
         // complete=false and zero facts so the core holds.
-        for (const prop of ["managed", "normalWindow", "minimized", "fullScreen", "maximizeMode", "onAllDesktops"] as const) {
+        for (const prop of ["managed", "normalWindow", "minimized", "hidden", "fullScreen", "maximizeMode", "onAllDesktops"] as const) {
             const w = win("win-hold");
             delete (w as unknown as Record<string, unknown>)[prop];
             const { surface } = makeSurface({ wins: [w], active: w });

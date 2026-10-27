@@ -50,6 +50,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -117,6 +118,7 @@
         "y": 20.4
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": {
         "height": 600,
@@ -185,6 +187,7 @@
         "y": 150
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": {
         "height": 100,
@@ -258,6 +261,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": {
         "height": 16777215,
@@ -331,6 +335,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": {
         "height": 0,
@@ -404,6 +409,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": {
         "height": 0,
@@ -477,6 +483,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -544,6 +551,7 @@
         "y": 0
       },
       "fullScreen": true,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -611,6 +619,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 3,
@@ -678,6 +687,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -698,13 +708,13 @@
     "error": null,
     "floatIntent": [],
     "hostOwned": true,
-    "name": "transient-carried-no-float",
+    "name": "transient-floats-as-member",
     "predicate": "both-axes-fixed",
     "projected": {
-      "fitExcluded": false,
+      "fitExcluded": true,
       "fixedAuto": false,
       "fixedSuppress": false,
-      "floating": false,
+      "floating": true,
       "fullscreen": false,
       "hints": {
         "maxH": null,
@@ -745,6 +755,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -787,6 +798,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -800,6 +812,389 @@
       "transientFor": null,
       "wantsInput": true,
       "win": "win-x"
+    },
+    "tileIntent": []
+  },
+  {
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "non-normal-transient-drops",
+    "predicate": "both-axes-fixed",
+    "projected": null,
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": false,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": false,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "hidden": false,
+      "managed": true,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": false,
+      "modal": true,
+      "normalWindow": false,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": true,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-x"
+    },
+    "tileIntent": []
+  },
+  {
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "dialog-admitted-as-float",
+    "predicate": "both-axes-fixed",
+    "projected": {
+      "fitExcluded": true,
+      "fixedAuto": false,
+      "fixedSuppress": false,
+      "floating": true,
+      "fullscreen": false,
+      "hints": {
+        "maxH": null,
+        "maxW": null,
+        "minH": null,
+        "minW": null
+      },
+      "maximized": false,
+      "minimized": false,
+      "nativeWs": "ws-1",
+      "observedWs": null,
+      "out": "out-1",
+      "rect": [
+        0,
+        0,
+        200,
+        200
+      ],
+      "sticky": false,
+      "win": "win-d"
+    },
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": false,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": true,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "hidden": false,
+      "managed": true,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": false,
+      "modal": false,
+      "normalWindow": false,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": false,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-d"
+    },
+    "tileIntent": []
+  },
+  {
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "modal-floats-as-member",
+    "predicate": "both-axes-fixed",
+    "projected": {
+      "fitExcluded": true,
+      "fixedAuto": false,
+      "fixedSuppress": false,
+      "floating": true,
+      "fullscreen": false,
+      "hints": {
+        "maxH": null,
+        "maxW": null,
+        "minH": null,
+        "minW": null
+      },
+      "maximized": false,
+      "minimized": false,
+      "nativeWs": "ws-1",
+      "observedWs": null,
+      "out": "out-1",
+      "rect": [
+        0,
+        0,
+        200,
+        200
+      ],
+      "sticky": false,
+      "win": "win-m"
+    },
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": false,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": false,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "hidden": false,
+      "managed": true,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": false,
+      "modal": true,
+      "normalWindow": true,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": false,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-m"
+    },
+    "tileIntent": []
+  },
+  {
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "hidden-retained-without-layout",
+    "predicate": "both-axes-fixed",
+    "projected": {
+      "fitExcluded": false,
+      "fixedAuto": false,
+      "fixedSuppress": false,
+      "floating": false,
+      "fullscreen": false,
+      "hints": {
+        "maxH": null,
+        "maxW": null,
+        "minH": null,
+        "minW": null
+      },
+      "maximized": false,
+      "minimized": true,
+      "nativeWs": "ws-1",
+      "observedWs": null,
+      "out": "out-1",
+      "rect": [
+        0,
+        0,
+        200,
+        200
+      ],
+      "sticky": false,
+      "win": "win-h"
+    },
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": false,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": false,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "hidden": true,
+      "managed": true,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": false,
+      "modal": false,
+      "normalWindow": true,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": false,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-h"
+    },
+    "tileIntent": []
+  },
+  {
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "hidden-transient-floats-retained",
+    "predicate": "both-axes-fixed",
+    "projected": {
+      "fitExcluded": true,
+      "fixedAuto": false,
+      "fixedSuppress": false,
+      "floating": true,
+      "fullscreen": false,
+      "hints": {
+        "maxH": null,
+        "maxW": null,
+        "minH": null,
+        "minW": null
+      },
+      "maximized": false,
+      "minimized": true,
+      "nativeWs": "ws-1",
+      "observedWs": null,
+      "out": "out-1",
+      "rect": [
+        0,
+        0,
+        200,
+        200
+      ],
+      "sticky": false,
+      "win": "win-ht"
+    },
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": false,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": false,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "hidden": true,
+      "managed": true,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": false,
+      "modal": false,
+      "normalWindow": true,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": true,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-ht"
+    },
+    "tileIntent": []
+  },
+  {
+    "error": null,
+    "floatIntent": [],
+    "hostOwned": true,
+    "name": "minimized-transient-floats-retained",
+    "predicate": "both-axes-fixed",
+    "projected": {
+      "fitExcluded": true,
+      "fixedAuto": false,
+      "fixedSuppress": false,
+      "floating": true,
+      "fullscreen": false,
+      "hints": {
+        "maxH": null,
+        "maxW": null,
+        "minH": null,
+        "minW": null
+      },
+      "maximized": false,
+      "minimized": true,
+      "nativeWs": "ws-1",
+      "observedWs": null,
+      "out": "out-1",
+      "rect": [
+        0,
+        0,
+        200,
+        200
+      ],
+      "sticky": false,
+      "win": "win-mt"
+    },
+    "raw": {
+      "clientGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "deleted": false,
+      "desktops": [
+        "ws-1"
+      ],
+      "dialog": false,
+      "frameGeometry": {
+        "height": 200,
+        "width": 200,
+        "x": 0,
+        "y": 0
+      },
+      "fullScreen": false,
+      "hidden": false,
+      "managed": true,
+      "maxSize": null,
+      "maximizeMode": 0,
+      "minSize": null,
+      "minimized": true,
+      "modal": false,
+      "normalWindow": true,
+      "onAllDesktops": false,
+      "out": "out-1",
+      "transient": true,
+      "transientFor": null,
+      "wantsInput": true,
+      "win": "win-mt"
     },
     "tileIntent": []
   },
@@ -856,6 +1251,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -923,6 +1319,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": {
         "height": 300,
@@ -999,6 +1396,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1066,6 +1464,7 @@
         "y": 0.0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1133,6 +1532,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1203,6 +1603,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1273,6 +1674,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1319,6 +1721,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1364,6 +1767,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1408,6 +1812,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1454,6 +1859,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1499,6 +1905,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 4,
@@ -1545,6 +1952,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1591,6 +1999,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1643,6 +2052,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1688,6 +2098,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1730,6 +2141,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": false,
       "maxSize": null,
       "maximizeMode": 0,
@@ -1775,6 +2187,7 @@
         "y": 0
       },
       "fullScreen": false,
+      "hidden": false,
       "managed": true,
       "maxSize": null,
       "maximizeMode": 0,

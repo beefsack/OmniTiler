@@ -22,6 +22,12 @@
 # All three call sites in kwin/src/world-observe.ts read defensively
 # (feature-detect, try/catch, null on unreadable; windowAt advisory only).
 #
+# Addition 2026-10-27: Window hidden + hiddenChanged audited against
+# sibling kwin sources at v6.6.4 and v6.7.4 (identical semantics):
+# src/window.h:585 (v6.6.4) / :590 (v6.7.4) Q_PROPERTY(bool hidden READ
+# isHidden NOTIFY hiddenChanged); void hiddenChanged() at :1519 (v6.6.4) /
+# :1524 (v6.7.4). Call sites read defensively and subscribe optionally.
+#
 # Usage: scripts/kwin-66-api-guard.sh [SRC_DIR]
 # Exit 0 when clean, 1 with violations on stdout.
 set -uo pipefail
@@ -55,7 +61,7 @@ ALLOW=(
     activeScreen activeWindow clientArea clientGeometry configChanged createDesktop
     currentDesktop currentDesktopChanged currentDesktopForScreen cursorPos desktops
     desktopsChanged frameGeometry frameGeometryChanged fullScreen
-    fullScreenChanged geometry id interactiveMoveResizeFinished
+    fullScreenChanged geometry hidden hiddenChanged id interactiveMoveResizeFinished
     interactiveMoveResizeStarted interactiveMoveResizeStepped internalId
     keepAbove keepBelow length managed maximizedChanged maximizeMode maxSize
     minimized minSize move name normalWindow onAllDesktops output outputChanged

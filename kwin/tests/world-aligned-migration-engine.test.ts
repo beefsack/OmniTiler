@@ -172,6 +172,7 @@ interface FakeWindow {
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -236,6 +237,7 @@ async function makeHarness(): Promise<Harness> {
         output: { name: out },
         desktops: [byId.get(ws) as FakeDesktop],
         minimized: false,
+        hidden: false,
         fullScreen: false,
         maximizeMode: 0,
         onAllDesktops: false,

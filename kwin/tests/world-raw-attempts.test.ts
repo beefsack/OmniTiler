@@ -38,6 +38,7 @@ interface FakeWindow {
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -54,21 +55,21 @@ function makeSurface() {
             normalWindow: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [d1],
-            minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
+            minimized: false, hidden: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
         },
         {
             internalId: "win-b", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 800, y: 0, width: 200, height: 200 },
             output: { name: "out-2" }, desktops: [d2],
-            minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
+            minimized: false, hidden: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
         },
         {
             internalId: "win-c", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
             frameGeometry: { x: 10, y: 10, width: 100, height: 100 },
             output: { name: "out-1" }, desktops: [d1],
-            minimized: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
+            minimized: false, hidden: false, fullScreen: false, maximizeMode: 0, onAllDesktops: false,
         },
     ];
     // A maximized tiled window proving the real-engine clear path: the
@@ -79,7 +80,7 @@ function makeSurface() {
         normalWindow: true,
         frameGeometry: { x: 100, y: 100, width: 50, height: 50 },
         output: { name: "out-1" }, desktops: [d1],
-        minimized: false, fullScreen: false, maximizeMode: 3, onAllDesktops: false,
+        minimized: false, hidden: false, fullScreen: false, maximizeMode: 3, onAllDesktops: false,
         setMaximize: (vertical, horizontal): void => {
             winD.maximizeMode = (vertical || horizontal) ? 3 : 0;
         },

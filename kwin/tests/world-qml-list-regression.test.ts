@@ -91,6 +91,7 @@ interface SyntheticWin {
     output: { name: string };
     desktops: object;
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -138,6 +139,7 @@ describe("world qml-list regression", () => {
                 output: { name: OUT },
                 desktops: qmlLike([{ id: WS_A }]),
                 minimized: false,
+                hidden: false,
                 fullScreen: false,
                 maximizeMode: 0,
                 onAllDesktops: false,
@@ -148,6 +150,7 @@ describe("world qml-list regression", () => {
                 output: { name: OUT },
                 desktops: qmlLike([{ id: WS_B }]),
                 minimized: false,
+                hidden: false,
                 fullScreen: false,
                 maximizeMode: 0,
                 onAllDesktops: false,
@@ -189,6 +192,7 @@ describe("world qml-list regression", () => {
                 output: { name: OUT },
                 desktops: qmlLike([{ id: ws }]),
                 minimized: false,
+                hidden: false,
                 fullScreen: false,
                 maximizeMode: 0,
                 onAllDesktops: false,

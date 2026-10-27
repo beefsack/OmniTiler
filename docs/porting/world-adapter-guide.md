@@ -232,6 +232,10 @@ missing facts. Shape:
 - Host-hidden windows (KDE inactive Activity, macOS Cmd+H) use existing
   `WindowFact.minimized=true`, no new state (tentative pending native Activities
   testing). Activities support remains later port work.
+  KDE also captures native `hidden` independently from native `minimized` and
+  projects either through this ineligible-member representation. KWin `hidden`
+  is not inactive-Activity, off-desktop or show-desktop evidence. Local observation
+  and live setter safety use the same eligibility alias, never native unminimize.
 - `minimized=true` is not "never move": frame/clear work and ordinary focus/send
   refuse, and occupancy retains the workspace, but whole-workspace migration,
   output displacement and in-flight membership transfers can relocate it. Do not
@@ -279,13 +283,27 @@ win. macOS uses this verdict and projects float membership into the existing
 entry points: both `Dialog` and `OwnedDialog` remain exclusions, not float
 members. No raw classification field or wire version is added.
 
+Approved N5 B is implemented offline through the separate neutral
+`classify_retained_membership(&SafetyFacts, transient)` entry point, returning
+`RetainedMembership { membership, eligible }` (technical names tentative).
+Only hidden/minimized cease to exclude membership; every other safety gate
+still yields unmanaged, even for a transient. Immediate eligibility retains the
+full safety gate; geometry overlays and other action gates remain separate.
+The legacy classifier and Windows/macOS production callers are unchanged.
+KDE Rust normalization admits normal windows and actual dialogs, maps
+dialog/transient/modal/known-parent facts to neutral transient float, and omits
+`LeaveUnmanaged` explicitly. It never infers Windows owned-dialog/no-activate
+facts from a parent or wants-input. Explicit tile intent suppresses automatic
+transient float, like fixed-size float (tentative precedence). Native `hidden`
+is required on the raw capture lane; the projected `WindowFact` wire is unchanged.
+
 Current `WorldReport::windows` is already the projected `WindowFact` roster;
 the v2 codec does not carry raw `SafetyFacts`, richer native role/app-rule facts,
 or a remote classification request. Windows calls the shared policy in-process.
 A remote broker must expose a fact-capture transport to its Rust policy owner
 and run these same core entry points there, not copy them into the observer.
-KDE's wrapper now carries raw candidate facts and calls the existing shared
-fixed predicate in Rust. Role/control normalization and the remaining policy
+KDE's wrapper carries raw candidate facts and calls shared fixed and retained
+membership predicates in Rust. Remaining control-fact questions and policy
 deletions are still [partial port work](../changes/kde-world-v2-port.md#stage-4-partial-outcome-and-deletion-boundary);
 a richer shared ingress would be a larger interface change to review, not a
 compatibility route or an API already shipped.

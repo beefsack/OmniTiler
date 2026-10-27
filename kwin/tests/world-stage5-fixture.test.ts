@@ -109,6 +109,7 @@ function makeEntryHarness(): {
         output: out,
         desktops: [desk],
         minimized: false,
+        hidden: false,
         fullscreen: false,
         maximized: false,
         sticky: false,

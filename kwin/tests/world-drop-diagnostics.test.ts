@@ -35,7 +35,7 @@ function makeWin(id: string, frame: { x: number; y: number; width: number; heigh
         frameGeometry: { ...frame },
         clientGeometry: { ...frame },
         output: { name: "out-1" }, desktops: [{ id: "ws1", name: "Workspace 1" }],
-        minimized: false, fullscreen: false, fullScreen: false, maximized: false, maximizeMode: 0,
+        minimized: false, hidden: false, fullscreen: false, fullScreen: false, maximized: false, maximizeMode: 0,
         sticky: false, onAllDesktops: false, minSize: null, maxSize: null,
         keepAbove: false, keepBelow: false,
         frame, outputChanged: { connect: () => undefined, disconnect: () => undefined },

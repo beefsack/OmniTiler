@@ -75,6 +75,7 @@ function makeHarness() {
                 output: { name: OUT },
                 desktops: qmlLike([{ id: w.ws }]),
                 minimized: w.minimized,
+                hidden: false,
                 fullscreen: false,
                 maximized: false,
                 sticky: false,

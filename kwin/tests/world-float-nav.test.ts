@@ -25,6 +25,7 @@ interface FakeWindow {
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -48,6 +49,7 @@ function stickyWin(id: string, out: string, ws: FakeDesktop, x: number): FakeWin
         output: { name: out },
         desktops: [ws],
         minimized: false,
+        hidden: false,
         fullScreen: false,
         maximizeMode: 0,
         onAllDesktops: true,

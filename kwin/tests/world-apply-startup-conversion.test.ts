@@ -42,6 +42,7 @@ interface FakeWin {
     desktops: FakeDesk[];
     frameGeometry: { x: number; y: number; width: number; height: number };
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -80,6 +81,7 @@ function makeSurface(): {
         desktops: [byId.get(ws) as FakeDesk],
         frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
         minimized: false,
+        hidden: false,
         fullScreen: false,
         maximizeMode: 0,
         onAllDesktops: false,

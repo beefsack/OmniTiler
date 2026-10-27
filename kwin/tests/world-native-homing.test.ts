@@ -164,6 +164,7 @@ interface FakeWindow {
     output: { name: string };
     desktops: FakeDesktop[];
     minimized: boolean;
+    hidden: boolean;
     fullScreen: boolean;
     maximizeMode: number;
     onAllDesktops: boolean;
@@ -171,7 +172,8 @@ interface FakeWindow {
     maxSize: { width: number; height: number } | null;
     readonly outputChanged: FakeSignal["signal"];
     readonly desktopsChanged: FakeSignal["signal"];
-    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal };
+    readonly hiddenChanged: FakeSignal["signal"];
+    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal };
 }
 
 interface CapturedCall {
@@ -205,7 +207,7 @@ interface Harness {
     activeRef: FakeWindow | null;
     readonly handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
     fire: (name: string, payload?: unknown) => void;
-    fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged") => void;
+    fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged") => void;
     runTimers: (maxDelay?: number) => void;
     flush: () => Promise<number>;
     flushAll: () => Promise<void>;
@@ -230,6 +232,7 @@ async function makeHarness(): Promise<Harness> {
     ): FakeWindow => {
         const outputChanged = makeSignal();
         const winDesktopsChanged = makeSignal();
+        const winHiddenChanged = makeSignal();
         return {
             internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
@@ -237,6 +240,7 @@ async function makeHarness(): Promise<Harness> {
             output: { name: out },
             desktops: [byId.get(ws) as FakeDesktop],
             minimized: false,
+            hidden: false,
             fullScreen: false,
             maximizeMode: 0,
             onAllDesktops: false,
@@ -244,7 +248,8 @@ async function makeHarness(): Promise<Harness> {
             maxSize: null,
             outputChanged: outputChanged.signal,
             desktopsChanged: winDesktopsChanged.signal,
-            __signals: { outputChanged, desktopsChanged: winDesktopsChanged },
+            hiddenChanged: winHiddenChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged },
         };
     };
     const wins: FakeWindow[] = [
@@ -279,7 +284,7 @@ async function makeHarness(): Promise<Harness> {
                 handler(payload);
             }
         },
-        fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged"): void => {
+        fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged"): void => {
             const sig = win.__signals?.[name];
             assert.ok(sig !== undefined, `window ${win.internalId} exposes ${name}`);
             for (const handler of [...sig.handlers]) {
@@ -678,6 +683,7 @@ describe("world native homing", () => {
             const ws1 = desks.find((d) => d.id === "ws-1") as FakeDesktop;
             const freshOutputChanged = makeSignal();
             const freshDesktopsChanged = makeSignal();
+            const freshHiddenChanged = makeSignal();
             const fresh = {
                 internalId: "win-new", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 normalWindow: true,
@@ -685,6 +691,7 @@ describe("world native homing", () => {
                 output: { name: LEFT },
                 desktops: [ws1],
                 minimized: false,
+                hidden: false,
                 fullScreen: false,
                 maximizeMode: 0,
                 onAllDesktops: false,
@@ -692,7 +699,8 @@ describe("world native homing", () => {
                 maxSize: null,
                 outputChanged: freshOutputChanged.signal,
                 desktopsChanged: freshDesktopsChanged.signal,
-                __signals: { outputChanged: freshOutputChanged, desktopsChanged: freshDesktopsChanged },
+                hiddenChanged: freshHiddenChanged.signal,
+                __signals: { outputChanged: freshOutputChanged, desktopsChanged: freshDesktopsChanged, hiddenChanged: freshHiddenChanged },
             } as unknown as FakeWindow;
             let freshDesks = fresh.desktops;
             Object.defineProperty(fresh, "desktops", {
@@ -740,6 +748,9 @@ describe("world native homing", () => {
             for (const handler of [...(fresh.__signals?.outputChanged.handlers ?? [])]) {
                 handler();
             }
+            for (const handler of [...(fresh.__signals?.hiddenChanged.handlers ?? [])]) {
+                handler();
+            }
             h.runTimers();
             assert.equal(h.calls.length, callsAfterRemove, "removed window emits no further dispatch (stale callbacks detached)");
 
@@ -753,6 +764,27 @@ describe("world native homing", () => {
             h.fire("desktopsChanged");
             h.runTimers();
             assert.equal(h.calls.length, callsAtStop, "no dispatch after stop");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("hiddenChanged autonomously dispatches a recapture with no workspace signal", { timeout: 240000 }, async () => {
+        const h = await makeHarness();
+        try {
+            await discover(h);
+            h.fire("desktopsChanged");
+            await h.settle();
+            const winA = h.wins.find((w) => w.internalId === "win-a") as FakeWindow;
+            const firesBefore = h.workspaceFires.length;
+            const callsBefore = h.calls.length;
+            winA.hidden = true;
+            h.fireWindow(winA, "hiddenChanged");
+            assert.equal(h.workspaceFires.length, firesBefore, "hidden change fires no workspace signal");
+            h.runTimers();
+            assert.ok(h.calls.length > callsBefore, "hiddenChanged autonomously dispatches");
+            await h.settle();
+            assert.deepEqual(transfersOf(lastReply(h)), [], "hidden change settles with no retained transfers");
         } finally {
             await h.stop();
         }
