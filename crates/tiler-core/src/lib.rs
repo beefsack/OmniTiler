@@ -106,6 +106,8 @@ mod world_gesture_tests;
 #[cfg(test)]
 mod world_global_swap_tests;
 #[cfg(test)]
+mod world_linked_focus_memory_tests;
+#[cfg(test)]
 mod world_logical_contract_tests;
 #[cfg(test)]
 mod world_migration_refusal_tests;

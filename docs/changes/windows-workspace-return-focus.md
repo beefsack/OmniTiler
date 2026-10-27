@@ -1466,3 +1466,64 @@ The proven blocker is foreground safety, not target classification or core targe
   proof and, separately, any never-issued-focus continuation authority. Arrange
   a bounded physical Alt-Tab capture before its conditional implementation.
   Keep this record active; no policy, safety-proof or protocol change is adopted.
+
+## Command-owned memory outcome (2026-10-28)
+
+- Delivered subset: direct linked focus, view-return fallback and global-workspace
+  swap fallback record their chosen window before emitting the native focus
+  effect. Existing synchronous Engine focus/move/lifecycle commits already own
+  the other tiled choices; redundant move and vacuous floating-lane recorder
+  calls were removed. No protocol or host-observation ingestion changed.
+- **Tentative (pending user review):** preserve `Session::remember_focus`'s
+  existing fail-closed contract. The helper returns its actual boolean result;
+  callers deliberately preserve the accepted effect on false, rather than
+  weakening a gate, inventing a rejection, or retrying. False is not success or
+  a promise of later repair. Tests pin false plus unchanged memory/focus for
+  pending focus, active drag, divergence, unknown binding and held scope.
+- Precisely parked: command effects accepted over held or not-yet-linked homes;
+  pending/drag/divergence or invalid binding/topology that refuses session focus;
+  exception and floating-workspace/non-leaf storage. Pending plans own their
+  staged focus; rebinding underneath them needs a core-contract decision.
+  Exception targets have no leaf in the existing `last_active` model. No new
+  storage, staging transaction or public diagnostic was added. Normal command
+  reachability of pending/drag/divergence residue was not established; helper
+  refusal tests exercise those backstops directly.
+
+| Path | Ownership and discriminating evidence |
+| --- | --- |
+| Direct focus | New recorder; disabling it leaves remembered A while the explicit effect names B; restored green |
+| Tiled directional focus | Existing `verify_focus` commit; disabling its `last_active` apply leaves observed B while the effect names A; restored green |
+| Floating/sticky directional focus and float moves | Non-leaf/exception subset parked; characterization pins emitted floating target without overwriting tiled memory |
+| No-focus cross-output focus | Chooses the destination's already-remembered leaf; characterization pins effect/memory agreement, not a new memory choice |
+| Local move and neighbor swap | Keep the mover active; admission requires mover equals observed focus, and convergence already records it. Characterizations stay green even with move commit/wrapper recording disabled; not claimed as red proofs |
+| Cross-output move | Existing `verify_move` commit; disabling it with wrapper recording absent leaves destination's stale C rather than mover A; restored green |
+| Send/move with follow | Existing lifecycle commit; disabling its `last_active` apply leaves destination memory empty rather than mover A; restored green |
+| Send without follow | Existing lifecycle successor commit; disabling its memory apply leaves source memory empty rather than survivor A; restored green. Direct/relative/numbered and directional sends reuse these transfer paths |
+| Workspace select/arrival/`retain_view` | Shared by direct, numbered, relative, previous and trailing selects. Direct fallback test avoids the report sweep: remembered A becomes ineligible, effect chooses B; recorder disabled leaves A, restored green. Redundant select chooses nothing new |
+| Global-workspace swap fallback | New recorder is load-bearing: domain relocation alone retains ineligible B1; explicit fallback effect names B2. Disabling recorder leaves B1, restored green |
+| Close/remove fallback | Convergence-owned, no close `WorldCommand` or command focus effect. With closed B absent and empty observed focus, existing MRU chooses A. Disabling convergence memory update leaves no resolvable remembered window; restored green |
+
+- Twenty focused regressions pass. The original purported view test only
+  exercised direct focus; a later full send/select sweep pre-recorded selection
+  memory. Neither is counted as fallback red evidence; the direct `retain_view`
+  discriminator replaces that oracle. Existing Engine ownership probes were
+  temporary mutations and are fully restored.
+- Independent core review found the missing close fallback discriminator; that
+  finding is resolved once with the convergence-owned red/green test. No other
+  correctness blocker was found. Core source/tests are independent of Windows
+  coalescing; no shared platform scheduling change is required for this subset.
+- Departure and observation ingestion of `report.focused_global` is unchanged.
+  An unexplained Steam foreground change can still overwrite the core's active
+  window before departure. The Steam spam bug is only partly addressed until
+  conservative A versus permissive B unknown-foreground policy is decided.
+  Staged arrival authority, R2 and SWITCHEND attribution also remain parked.
+- Offline verification: locked core/protocol/Windows tests pass (core library
+  968; Windows library 1160, one existing ignored; integration/doc tests pass),
+  strict locked all-target clippy for those crates, workspace format check and
+  diff check pass. Other buildable suites: settings exporter 14, live fixture
+  119 and macOS integration 150 pass. macOS library has 1336 passes and 19
+  foreign-host failures; an unchanged-HEAD baseline has the identical failure
+  list. The KDE service crate does not build on Windows (`rustix` and Unix OS
+  imports); its tests were not represented as passing. No live action was run.
+- Next core action: decide only the parked memory/model and foreground-policy
+  subsets above; the linked, safely bindable command-choice work is complete.

@@ -33,6 +33,46 @@ impl WorldEngine {
                 .map_or(command_seq, |mark| mark.max(command_seq)),
         );
     }
+
+    /// Best-effort command-time recording of one accepted explicit-focus
+    /// target: `focus` + MRU + `last_active` via the existing
+    /// [`crate::session::Session::remember_focus`] gates, before native
+    /// writes. Fail-closed skips (held home, unlinked/unknown or exception
+    /// target, pending/drag/divergence or binding residue) record nothing
+    /// and report false; that subset stays parked with no retry, refusal,
+    /// or repair promised. Effects and rejections are unchanged.
+    #[must_use]
+    pub(crate) fn record_command_focus(
+        &mut self,
+        window: &WindowId,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> bool {
+        let home = self.engine.domain_keys().into_iter().find(|key| {
+            !held_scopes.contains(key)
+                && self.engine.session(key).is_some_and(|session| {
+                    session
+                        .snapshot()
+                        .windows
+                        .iter()
+                        .any(|link| &link.window == window)
+                })
+        });
+        let Some(home) = home else {
+            return false;
+        };
+        if self
+            .engine
+            .session(&home)
+            .is_some_and(|session| session.is_exception(window))
+        {
+            return false;
+        }
+        if let Some(session) = self.engine.session_mut(&home) {
+            session.remember_focus(&home, window)
+        } else {
+            false
+        }
+    }
     /// Shared window-send path for [`WorldCommand::Send`],
     /// [`WorldCommand::SendRelative`], [`WorldCommand::SendNumbered`], and
     /// send operations. Consumes one command sequence on success.

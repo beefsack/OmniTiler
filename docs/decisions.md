@@ -31,6 +31,11 @@ User-approved 2026-10-27 index (implementation status below):
   state ([below](#latest-world-rendering-2026-10-27))
 
 Tentative index (user review pending; not approved product rules):
+- Command-owned linked-focus recording, tentative (pending user review): reuse
+  existing session binding gates; preserve accepted effects when recording
+  returns false. Failed binding/residue and exception/non-leaf storage stay
+  parked, with no promised repair; observation/departure ingestion is unchanged
+  ([record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28)).
 - Windows pager bounded ordered native diagnostics and drain-context correlation,
   tentative (pending user review); no rendering-policy change
   ([record](changes/windows-pager-workspace-flicker.md#decisions))

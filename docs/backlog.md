@@ -15,6 +15,13 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- P1 | Command-owned active-window memory | Linked, safely bindable command
+  choices implemented and independently reviewed; per-path ownership audit and
+  discriminating red/green complete. Existing Engine commits retained; core,
+  protocol and Windows offline gates pass. Parked: held/unlinked or rejected
+  session-memory gates, exception/non-leaf storage and unknown-foreground policy.
+  Observation/departure ingestion is unchanged; Steam spam only partly addressed.
+  [Record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28).
 - P2 | Windows pager flicker on workspace switch | User dogfood 2026-10-27:
   pager briefly disappears and reappears on workspace changes. Cause remains
   unproven: bounded in-product pager tracing (`18a7a71b`) excludes switch-time

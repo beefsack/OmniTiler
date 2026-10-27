@@ -91,6 +91,9 @@ impl WorldEngine {
                     };
                 }
                 self.note_command(command_seq);
+                // Best-effort memory: a fail-closed skip leaves stale memory
+                // with the accepted effect unchanged.
+                let _ = self.record_command_focus(window, held_scopes);
                 CommandApplied::Effect(OneShotEffect::explicit_focus(
                     command_seq,
                     window.clone(),
@@ -543,6 +546,8 @@ impl WorldEngine {
                         return match applied {
                             CommandApplied::NoEffect => match swap_focus {
                                 Some(window) => {
+                                    // Same best-effort contract as the direct lane.
+                                    let _ = self.record_command_focus(&window, held_scopes);
                                     CommandApplied::Effect(OneShotEffect::explicit_focus(
                                         command_seq,
                                         window,

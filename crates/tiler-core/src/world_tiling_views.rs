@@ -219,6 +219,8 @@ impl WorldEngine {
         let Some(window) = self.remembered_view_focus(&target_key, held_scopes, by_id) else {
             return CommandApplied::NoEffect;
         };
+        // Best-effort memory (same contract as the direct focus lane).
+        let _ = self.record_command_focus(&window, held_scopes);
         CommandApplied::Effect(OneShotEffect::explicit_focus(
             command_seq,
             window,
