@@ -1346,7 +1346,8 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   offline full run hit `focus_gaps_trace::native_focus_walk_retains_at_edge_per_tier1`
   (`first dispatch: Timeout`). An immediate integration rerun and the true
   no-scaffold full run passed. That test moved without oracle edits; the timeout's
-  cause and relationship to consolidated parallel execution remain unproven.
+  cause and relationship to consolidated parallel execution were unproven at
+  that checkpoint; the startup-order diagnosis below now explains the receipt.
 - Five original lifecycle polls remain in `runtime_phase1`: relaunch overlap,
   stopped-worker reap, slow-sink reap, panic-relaunch and blocked-input reap.
   Their prior waits are retained separately from this completed consolidation
@@ -1365,7 +1366,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 | Tentative decision | Alternatives and recommendation | Evidence |
 | --- | --- | --- |
 | Leave shared-crate test layouts unchanged | Consolidate them or retain them; retain unless profiling demonstrates a comparable bottleneck | Warm core 1.998s, protocol 0.607s; no demonstrated comparable startup delay |
-| Diagnose the offline focus-walk timeout separately without weakening its oracle | Increase the timeout or reproduce the causal dispatch stall; reproduce before changing assertions or deadlines | One full-run failure, passing integration retry and exact no-scaffold full run; cause unknown |
+| Fence startup observation before the focus-walk test's first command | Wait for applied observation plus an engine fence; do not increase timeouts or retry commands | The failure receipt orders refused-no-focus before startup observation; the test is not yet repaired |
 | Retain the five original lifecycle waits | Keep the current waits or revisit retained exact-generation joins after correcting the ownership and regression gaps; retain current waits | The bounded join implementation passed offline gates but failed independent review; see below |
 | Route user intent through the existing saturation-bypassing FIFO lane and retain queued drain claims | Bound observations and feedback, but do not busy-drop or capacity-drop authorized input; prefer the existing single queue over another transport | Deterministic saturated-lane and held-drain bursts reach core in order; no new timer, channel or core policy |
 
@@ -1411,6 +1412,28 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   focus-walk timeout did not reproduce in this gate and remains unresolved.
   No native FIFO acceptance, latency distribution or direct event-driven wake
   is claimed.
+
+## Offline focus-walk startup race diagnosis (2026-10-28)
+
+- The retained timeout receipt orders `input refused-no-focus` before startup
+  `observation published` and `observation applied`. Later frame dispatch and
+  application succeed. The first command was never planned, rather than a
+  planned focus effect being lost.
+- `launch_app` readiness proves that the worker queued `Launch`, not that its
+  subsequent startup snapshot reached the engine. `flush` fences only jobs
+  already queued. The test sends its single first chord immediately after that
+  fence, so a delayed worker snapshot leaves observed focus absent when the
+  engine handles it. This ordering is supported by both source and the original
+  failure log; consolidation's effect on its frequency is not quantified.
+- Bounded diagnosis added one focus-module run (4/4) and two consolidated
+  integration runs (150/150 each), all passing. These three passing attempts do
+  not erase the original failure or establish a repair. No test or product source
+  changed during diagnosis.
+- Proposed narrow test repair: use the existing condition wait for the matching
+  app generation's applied startup observation, then fence the engine before
+  sending the first chord once. Preserve existing timeouts, exact accepted-focus
+  count, edge-retention and recovery assertions. Repeatedly sending the command
+  until something dispatches would mask the race and is not the repair.
 
 ## Risks and open evidence
 
