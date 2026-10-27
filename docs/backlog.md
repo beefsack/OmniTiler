@@ -15,6 +15,26 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- P1 | Windows staged workspace switch prototype | Approved 2026-10-28
+  ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
+  arrival shows, prove visible, one-shot focus, prove foreground, then hide
+  departures, under an explicit-selection arrival-ready authority with all
+  existing safety checks. Switch speed is a hard requirement: measure end-to-end
+  and per-phase latency before and after; any regression fails. Narrow R2 only
+  if the visible-proof wait crosses revisions; stop and report if R2 proves hard
+  or has side effects. Failing-first, live fixture stress at 0ms.
+  [Record](changes/windows-workspace-return-focus.md).
+- P1 | Windows batched physical checks | After the staged switch prototype, one
+  user session: Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between fixture windows
+  (about 10 Alt-Tabs plus non-Alt-Tab controls); pager flicker high-frame-rate
+  capture with the in-product trace; wake-attribution same-tick confirmation
+  during spam; exact-desktop WS1 -> empty WS2 -> WS1 return; floating-window
+  focus across a workspace round trip. Then decide unknown-foreground A vs B.
+- P2 | Windows keyboard dispatch stress mode, then wider coalescing | Measure
+  real keyboard-burst jank with the staged switch before extending
+  render-latest-only coalescing beyond selections. Goal: coalesce fully and
+  rapidly to any latest world state; command-contract changes per family follow
+  the data ([decision](decisions.md#windows-decisions-2026-10-28)).
 - P1 | Command-owned active-window memory | Linked, safely bindable command
   choices implemented and independently reviewed; per-path ownership audit and
   discriminating red/green complete. Existing Engine commits retained; core,
@@ -51,15 +71,6 @@ decisions of 2026-09-24 are under
 - P2 | Windows-host scripted full row test flake | Pre-existing `scripted full
   row` panic reproduced once in 16 runs and also on parent `68ce0b75`.
   Diagnose and stabilize without weakening the scripted-row assertions.
-- P2 | Pager shows stale source layout after send-follow | User dogfood
-  2026-10-26: after sending a window away with follow, the source workspace's
-  pager cell kept the pre-send split until revisited. Findings 2026-10-27:
-  cause was the stale pager snapshot cache, fixed by `2d3e36f1`, not blocked
-  source retiling. Current-build fixture-only Windows send-follow/revisit passed:
-  survivor desired frames, independent native readbacks and exact pager source
-  frames matched before revisit and after reveal, with paired accepted-world
-  evidence. Hidden-window write fence unchanged. Awaits the user's decision on
-  whether any new pager policy is needed.
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies (now owned by the KDE v2 port item
   below); (3) KDE Settings core-catalog
@@ -110,9 +121,11 @@ decisions of 2026-09-24 are under
   sampling remains separate ([evidence](changes/archive/output-targeting-race-audit.md)).
 - P1 | Empty-workspace focus across outputs | User physical 2026-10-20:
   Win+digit to an empty workspace on one output focused a window on another,
-  so a following workspace send moved that window. Desired behavior is
-  undecided: stay focused on the empty output with no focused window, or move
-  to another output's window? User 2026-10-26: decide from Tier 1 evidence.
+  so a following workspace send moved that window. Decided 2026-10-28: stay
+  on the empty output with no focused window; a following send has no subject
+  ([decision](decisions.md#windows-decisions-2026-10-28)). Implementation
+  follows the unknown-foreground decision unless the staged switch shows the
+  departure hide causes the activation.
   Tier 1 source evidence gathered 2026-10-28: Hyprland clears client focus
   on empty L; i3/sway focus its workspace node. Their immediate send has no
   client subject and leaves B on R untouched. COSMIC clears focus only on
@@ -120,7 +133,7 @@ decisions of 2026-09-24 are under
   Pinned citations and runtime/timing limits are in the
   [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
   with [evidence record](changes/archive/empty-workspace-focus-evidence.md).
-  Policy decision awaits the user; no fix selected. Related to cursor-first
+  Related to cursor-first
   targeting above and the 2026-10-26 no-focus decisions
   ([decisions](decisions.md#workspaces)).
 - P1 | No-focus navigation remaining proof | Implementation complete

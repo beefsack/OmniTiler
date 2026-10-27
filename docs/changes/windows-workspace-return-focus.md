@@ -1497,7 +1497,7 @@ The proven blocker is foreground safety, not target classification or core targe
   effect. Existing synchronous Engine focus/move/lifecycle commits already own
   the other tiled choices; redundant move and vacuous floating-lane recorder
   calls were removed. No protocol or host-observation ingestion changed.
-- **Tentative (pending user review):** preserve `Session::remember_focus`'s
+- **User-accepted 2026-10-28:** preserve `Session::remember_focus`'s
   existing fail-closed contract. The helper returns its actual boolean result;
   callers deliberately preserve the accepted effect on false, rather than
   weakening a gate, inventing a rejection, or retrying. False is not success or
@@ -1553,13 +1553,13 @@ The proven blocker is foreground safety, not target classification or core targe
 
 ## Windows batch-local coalescing outcome (2026-10-28)
 
-- **Tentative (pending user review):** coalesce pure numbered/trailing selection
+- **User-accepted 2026-10-28:** coalesce pure numbered/trailing selection
   batches and previous/relative history batches within their existing drains.
   Dispatch every eligible command in order, acknowledge exact carried receipts,
   and run the native diff only for the surviving selection. Numbered sends
   flush the pending selection first and retain their full membership pass.
   No cross-queue ordering or cross-tick pending slot is invented.
-- **Tentative (pending user review):** superseded commands service an owed
+- **User-accepted 2026-10-28:** superseded commands service an owed
   observation-only fence before their single dispatch, using core-only capture,
   delivery and acknowledgment. Rejection catch-up is core-only too. No retry,
   wait, timer, effect remint, grant transfer or observation-ingestion change.

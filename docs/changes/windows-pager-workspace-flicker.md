@@ -168,10 +168,10 @@
 
 ## Decisions
 
-- Tentative (pending user review): retain at most 128 ordered native pager
+- User-accepted 2026-10-28: retain at most 128 ordered native pager
   events per drain with explicit overflow counts and opaque window-lifecycle
   tokens. Trace-disabled runs capture nothing. Existing pager-cell caps stay
   unchanged; unchanged presentations still report native activity.
-- Tentative (pending user review): tick/request/observation/revision identify
+- User-accepted 2026-10-28: tick/request/observation/revision identify
   drain context for correlation, not causal attribution of queued OS messages.
   Sequence records observed order; pre-registration lifecycle is unknown.

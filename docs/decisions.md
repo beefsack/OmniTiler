@@ -30,23 +30,19 @@ User-approved 2026-10-27 index (implementation status below):
 - Process every command; render the latest world rather than every intermediate
   state ([below](#latest-world-rendering-2026-10-27))
 
+User-approved 2026-10-28 index ([dated decisions](#windows-decisions-2026-10-28)):
+- Accepted reviews: command-owned linked-focus recording, batch-local selection
+  coalescing and catch-up, pager diagnostics bounds, five automation CLI forms,
+  intent-at-execution guidance, R4 transfer reuse, output-targeting audit route
+- Staged workspace switch prototype with explicit-selection arrival-ready
+  authority; narrow R2 fresh authority for never-issued current focus intents
+- Empty-workspace focus across outputs: stay on the empty output, no focused window
+- Unknown-foreground policy deferred; pager stale-source item closed
+- Coalescing extension deferred behind keyboard dispatch measurement
+
 Tentative index (user review pending; not approved product rules):
-- Command-owned linked-focus recording, tentative (pending user review): reuse
-  existing session binding gates; preserve accepted effects when recording
-  returns false. Failed binding/residue and exception/non-leaf storage stay
-  parked, with no promised repair; observation/departure ingestion is unchanged
-  ([record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28)).
-- Windows batch-local selection coalescing, tentative (pending user review):
-  numbered/trailing and previous/relative history batches incorporate every
-  eligible command, render only their survivor under fresh existing gates,
-  and flush before membership sends. Superseded catch-up services its fence
-  before one command dispatch, without rendering or retry. Fail-closed native
-  identity binding remains; other intake families remain per-command where
-  live subject/proof dependencies or separate queues prevent mechanical
-  coalescing ([scope and evidence](changes/windows-workspace-return-focus.md#windows-batch-local-coalescing-outcome-2026-10-28)).
-- Windows pager bounded ordered native diagnostics and drain-context correlation,
-  tentative (pending user review); no rendering-policy change
-  ([record](changes/windows-pager-workspace-flicker.md#decisions))
+- Floating/exception/non-leaf command-memory storage stays parked
+  ([below](#windows-decisions-2026-10-28))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))
 - macOS adapter defaults, focus oracle, observation recovery, scoped input
@@ -279,6 +275,81 @@ pending.
   `windowAt` decoding with count one; border selector test seam) and Stage 7
   (read-only per-output-desktop detection, navigation-only Virtual Desktops
   opener, shared labels distinguished by tooltips).
+
+## Windows decisions (2026-10-28)
+
+Accepted reviews of tentative decisions; the matching tentative clauses
+elsewhere are no longer pending:
+
+- **Command-owned linked-focus recording:** reuse existing session binding
+  gates; when recording returns false, preserve the accepted effect with no
+  retry or promised repair. Observation/departure ingestion is unchanged
+  ([record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28)).
+- **Batch-local selection coalescing:** numbered/trailing and previous/relative
+  history batches dispatch every eligible command in order and render only the
+  survivor under fresh existing gates; sends flush a pending selection first.
+  Superseded catch-up services its fence core-only before one dispatch, with no
+  rendering or retry. Fail-closed identity binding remains. Other intake
+  families stay per-command
+  ([scope and evidence](changes/windows-workspace-return-focus.md#windows-batch-local-coalescing-outcome-2026-10-28)).
+- **Pager diagnostics:** at most 128 ordered native pager events per drain with
+  explicit overflow counts and opaque lifecycle tokens; tick/request/revision
+  identify drain context, not causal attribution
+  ([record](changes/windows-pager-workspace-flicker.md#decisions)).
+- **Automation CLI forms (2026-10-11):** keep exact-owner `workspace --stay N`,
+  `--previous`, `--relative previous|next`, `--send-relative previous|next` and
+  `--stay-relative previous|next` as test controls, not a general end-user CLI
+  ([record](changes/archive/windows-workspace-send-follow-stay.md)).
+- **Intent at execution (2026-10-26):** accepted as review guidance only
+  ([below](#world-command-intent-and-birth-ownership-2026-10-26)). Explicit
+  targets are preserved; changing sampled-current sends such as Windows sticky
+  rehome needs a separate decision.
+- **R4 retained-transfer reuse (2026-10-18):** exhausted cross-output moves reuse
+  retained window-transfer bookkeeping. The record's migration-refill guard and
+  test bridge clauses are historical after the rearchitecture
+  ([record](changes/archive/world-split-edge-selection.md)).
+- **Output-targeting audit route:** closed with race regressions and no
+  production route change ([record](changes/archive/output-targeting-race-audit.md)).
+
+New decisions:
+
+- **Staged workspace switch, approved for a narrow prototype:** batch
+  nonactivating arrival shows -> prove arrivals visible -> one-shot focus ->
+  prove foreground -> hide departures. A new arrival-ready authority applies to
+  explicit workspace selection only and permits that focus while departures are
+  still visible; game, fullscreen, unreadable-foreground and exact-desktop
+  checks and the final full-view proof are unchanged, with no general view-gate
+  bypass. Switch speed is a hard requirement: measure end-to-end and per-phase
+  latency before and after; any regression fails the prototype.
+- **R2, approved narrowly:** a still-current explicit focus intent may receive
+  fresh revision-bound one-shot authority only with positive proof its prior
+  effect was never claimed, primed or dispatched; the old id retires atomically
+  with at most one dispatch per intent, and selection-origin/exact-desktop proof
+  is reminted and rechecked live. No retry, replay or grant copying. Use it only
+  if the staged switch's visible-proof wait is measured to cross revisions. If
+  proving it is hard, needs changes beyond that path, or shows side effects,
+  stop and report rather than going deeper.
+- **Empty-workspace focus across outputs:** selecting an empty workspace stays on
+  that output with no focused window; a following send has no subject. Windows'
+  own fallback activation of another output's window is a render side effect,
+  not intent. Implementation follows the unknown-foreground decision unless the
+  staged switch shows the departure hide causes the activation
+  ([evidence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs)).
+- **Unknown-foreground policy (A conservative vs B permissive):** deferred until
+  the staged switch prototype and a physical Alt-Tab `EVENT_SYSTEM_SWITCHEND`
+  capture provide data. Physical checks are batched into one session after the
+  prototype.
+- **Pager stale source layout after send-follow:** closed; fixed by `2d3e36f1`.
+  No new pager policy; reopen if staleness recurs.
+- **Coalescing extension:** do not extend render-latest-only coalescing to other
+  intake families yet. First build the keyboard dispatch stress mode and measure
+  burst jank with the staged switch. The goal is to coalesce fully and rapidly
+  to any latest world state; family-by-family command-contract changes follow
+  that data.
+- **Tentative (pending user review):** floating, sticky, exception and non-leaf
+  command-memory targets stay parked; the existing `last_active` model stores
+  tiled leaves only. Whether a focused floating window regains focus on
+  workspace return is under investigation.
 
 ## Active-drag preview continuity (2026-10-27)
 
