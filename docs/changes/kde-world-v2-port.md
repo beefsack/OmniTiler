@@ -1607,6 +1607,61 @@
   needs the Planner serving while the shortfall is visible, preserving the same
   broker/native/broker comparison before any deeper investigation.
 
+### Height-shortfall investigation and bounded diagnostics (2026-10-27)
+
+- Root cause remains unproven. The retained Ghostty capture has the exact
+  destination desire `(8,52,1012,1092)` at line 125, followed by geometry-write
+  counts `2`, `1`, then `0` at lines 126, 142 and 148. Its first follow-up
+  (line 134) still reports the pre-actuation frame. Firefox has the same
+  count sequence and desired rectangle (lines 131-156 of its retained capture).
+  These counts do not identify the written window or expose its readback.
+- The release capture already names the destination output; all those applies
+  report `member=0`. Do not assume an adapter `sendToOutput` preceded the frame
+  write in this journey. KWin can send the window itself while finishing an
+  interactive move (`v6.7.4`, `src/window.cpp:1087`). Neither the adapter's
+  interim placement nor a client configure/commit sequence was captured.
+- A same-sized neighbouring Ghostty fills its slot, and Firefox fills the same
+  cross-output drop, as physically reported. Ordinary terminal cell snapping
+  alone does not explain the path difference. Scale/grid interaction and a
+  transient mismatch retained as a clamp remain hypotheses, not fixes.
+- Pinned KWin `v6.7.4`, `src/xdgshellwindow.cpp:262-280`, schedules an asynchronous
+  configure when the requested rounded client size differs. Acknowledgement
+  and surface commit drive geometry later (`:135-171,200-245`); an immediate
+  scripting readback is not proof of configure completion. Public window info
+  does not expose configure serials, client geometry, size hints or scale.
+- Core `world_frames.rs::suppressed` retains only an identical desired/observed
+  pair. Focus alone does not re-arm it; changed observed geometry or a genuinely
+  changed desired slot does. `world_publish.rs` exposes suppression as
+  `frame_auth=hold`, `frame_hold=constraint-clamp`. A smaller observation cannot
+  become a learned minimum (`learnable_growth` rejects shrinkage).
+- The terminal diagnostic now records pending frame/member attempt evidence
+  after apply, including actual target, setter and immediate readback, and
+  records desired geometry, authority and transfer alongside the next two
+  existing pre-apply observations. Two follow-ups cover the previously missing
+  report after the later frame-writing apply; they are not a completion bound.
+  Reply revision/observation identify reply authority, not proof that the newer
+  native read caused that authority. Pending attempts are not necessarily new
+  dispatches. One slot expires after those captures or resets on replacement,
+  generation change or stop; no extra captures, native reads or timers.
+- Diagnostic regression coverage includes a deferred mismatching setter and
+  truthful held-authority reporting with the incident rectangles. It is a
+  single-output mock, not a reproduction of Ghostty or fractional scaling.
+  Independent review accepts this observational-only extension. Fresh offline
+  gates pass: Rust **2,510**, JS **753/753**, scoped builds/strict clippy,
+  typecheck/build, acceptance **6/6**, workspace fmt, whitespace and API guard.
+  Native source is unchanged; native builds/CTest were not rerun for this
+  diagnostic-only extension. No live run or height-fix acceptance is claimed.
+- Next: reload the JS with the dev Planner running, perform one physical drop,
+  retain the drop diagnostics, then bracket an exact-window native read with
+  two `ReadWorldPresentation` reads before changing layout. Repeat the reads
+  after a focus-only change, then after a genuine slot resize. Keep desired,
+  native frame and reported hold distinct; unsupported outcomes remain TBD in
+  the [discriminator](../spec/reference-outcomes.md). An adapter post-send
+  interim frame and exact client commit order remain uncaptured; add deeper
+  tracing only if the paired evidence requires it. No new core, protocol,
+  Windows or macOS production behavior is selected. Only JS needs reloading;
+  no native rebuild or Plasma logout is needed for this extension.
+
 ## Active-drag preview continuity plan (2026-10-27)
 
 - Preserve the latest completed core preview for the same active native gesture

@@ -507,9 +507,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // terminal), never terminal-only, so the NEXT package can expose the
     // current native identity with its proven core id while open.
     let gestureBoundAssoc: { instance: string; serial: string; coreId: string; gen: string } | null = null;
-    // One pending post-actuation follow-up observation (single slot,
-    // pruned on generation rotation and stop).
-    let dropFollowup: { serial: string; win: string } | null = null;
+    // Two pending post-actuation follow-up observations (single slot,
+    // overwritten by newer settlement, pruned on generation rotation and
+    // stop). Two captures cover the pre-apply and next-reply boundaries,
+    // NOT a completion/settling guarantee. No new captures or timing.
+    let dropFollowup: { serial: string; instance: string; win: string; remaining: number } | null = null;
     // Exact pending ack retries: initial send plus this many fast attempts
     // total, 2 s apart, then the exact pending ack persists and retries at
     // the existing 25 s host-deadline cadence (no hot loop, no new
@@ -2616,9 +2618,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // Terminal drop diagnostic (terminal-only): `drop-settled` JSON per
-    // proven settlement on the accepted path, `drop-observed` JSON on the
-    // next accepted capture (observed, not final). Native-window keyed.
+    // Terminal drop diagnostic: `drop-settled` per proven settlement,
+    // `drop-observed` on the next two accepted captures (diagnostic
+    // coverage of the two report boundaries, not a settling guarantee).
+    // Native-window keyed; core numeric ids never match native windows.
     const logDropDiagnostics = (parsed: WorldReply, flight: CaptureFlight, fresh: WorldObservation): void => {
         const findWin = (win: string): { rect: { x: number; y: number; w: number; h: number }; out: string; ws: string } | null => {
             for (const domain of fresh.domains) {
@@ -2632,9 +2635,18 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         };
         const pending = dropFollowup;
         if (pending !== null) {
-            dropFollowup = null;
+            pending.remaining -= 1;
+            if (pending.remaining <= 0) {
+                dropFollowup = null;
+            }
             const seen = findWin(pending.win);
-            log(`omnitiler:world:drop-observed ${JSON.stringify({ serial: pending.serial, win: pending.win, frame: seen === null ? null : seen.rect, at: seen === null ? null : { out: seen.out, ws: seen.ws } })}`);
+            // Reply authority for the tracked window beside the fresh
+            // pre-apply frame. rev/obs name the reply; the fresh frame is
+            // a newer read, not proof it was the staged frame behind a
+            // hold. Reported authority only, never a client-commit claim.
+            const row = parsed.windows.find((r) => r.win === pending.win) ?? null;
+            const transfer = parsed.transfers.find((t) => t.kind === "window" && t.win === pending.win) ?? null;
+            log(`omnitiler:world:drop-observed ${JSON.stringify({ serial: pending.serial, instance: pending.instance, win: pending.win, rev: parsed.rev, obs: parsed.obs, desired: row?.alloc ?? null, desiredFrame: row?.frame ?? null, frame_auth: row?.frame_auth ?? null, frame_hold: row?.frame_hold ?? null, member_auth: row?.member_auth ?? null, member_hold: row?.member_hold ?? null, transfer, frame: seen === null ? null : seen.rect, at: seen === null ? null : { out: seen.out, ws: seen.ws } })}`);
         }
         const g = flight.gesture;
         if (g === null || g.win === "") {
@@ -2685,7 +2697,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             observedAt: seen === null ? null : { out: seen.out, ws: seen.ws },
             work,
         })}`);
-        dropFollowup = { serial: g.serial, win: g.win };
+        dropFollowup = { serial: g.serial, instance: g.instance, win: g.win, remaining: 2 };
     };
 
     // Post-accept capture handling with the requester-only terminal result:
@@ -3043,6 +3055,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         sendToOutput: (ref, outRef) =>
                             withHomingSuppression(ref, () => applyHostBase.sendToOutput(ref, outRef)),
                     });
+                    // Terminal drop-attempt diagnostic (tracked window only):
+                    // pending-report rows for the NEXT report. The accepted
+                    // ack retires only exactly-equal delivered rows, so no
+                    // origin beyond pending is claimed. Silent when empty.
+                    try {
+                        const tracked = dropFollowup;
+                        if (tracked !== null) {
+                            const frames = state.framesForReport().filter((a) => a.win === tracked.win);
+                            const members = state.memberAttemptsForReport().filter((a) => a.win === tracked.win);
+                            if (frames.length > 0 || members.length > 0) {
+                                log(`omnitiler:world:drop-attempt ${JSON.stringify({ rev: parsed.rev, serial: tracked.serial, instance: tracked.instance, win: tracked.win, evidence: "pending-report", frames, members })}`);
+                            }
+                        }
+                    } catch (error) {
+                        void error;
+                    }
                     // Deferred own-echo observation: synchronous homing
                     // echoes of the setters above coalesced here into one
                     // post-apply invalidation (never mid-apply).
