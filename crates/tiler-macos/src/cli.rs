@@ -168,6 +168,27 @@ pub enum Command {
         nonce: String,
         chord: String,
     },
+    FixturePost {
+        announcement: String,
+        nonce: String,
+        signer: String,
+        caller: String,
+        wid: u32,
+        chord: String,
+    },
+    FixtureFocus {
+        announcement: String,
+        nonce: String,
+        signer: String,
+        caller: String,
+        wid: u32,
+    },
+    FixtureLeg {
+        seconds: u64,
+        chords: Vec<String>,
+        preset: crate::input_policy::InputPreset,
+        signer: String,
+    },
     TextEditGrabInspect {
         record: String,
         nonce: String,
@@ -308,6 +329,14 @@ pub enum Command {
         /// foreground launcher): the owner polls `<dir>/stop-requested`
         /// and publishes its terminal outcome to `<dir>/outcome.json`.
         run_dir: Option<String>,
+        /// Development-only fixture-owned Space SIDs (repeatable
+        /// `--fixture-owned-space SID`) plus the recorded starting current
+        /// (`--fixture-starting-space SID`): the exact native SIDs the leg
+        /// controller created. Absent disables the gate (normal product
+        /// unchanged); present arms the adapter actuator gates (exact
+        /// fixture scope, never unscoped, explicit harness run directory).
+        fixture_owned_spaces: Vec<u64>,
+        fixture_starting_space: Option<u64>,
         /// Raw active-border selections (all unset = defaults; the settings
         /// file fills the gaps in `main`, then startup config).
         border: crate::dev_selection::BorderCli,
@@ -446,6 +475,11 @@ pub fn help_text() -> String {
            \x20 \x20 --run-dir DIR opts into exact-run lifecycle (stop file\n\
            \x20 \x20 polled every cadence, terminal outcome published to\n\
            \x20 \x20 DIR/outcome.json);\n\
+           \x20 \x20 --fixture-owned-space SID (repeatable) plus\n\
+           \x20 \x20 --fixture-starting-space SID arm the development-only\n\
+           \x20 \x20 fixture-owned Space gate (exact fixture scope, never\n\
+           \x20 \x20 unscoped, explicit harness run directory; absent leaves\n\
+           \x20 \x20 the normal product unchanged);\n\
            \x20 \x20 Compatible writes no native settings; Authentic ensures\n\
            \x20 \x20 Switch to Desktop 1..9 holders once at startup (even with\n\
            \x20 \x20 --input off) with owned preimages, explicit\n\
@@ -546,6 +580,25 @@ pub fn help_text() -> String {
               \x20 \x20 (no synthetic input, no key API, no chord vocabulary)\n\
               \x20 \x20 with AX-absence verification; a save sheet stops with\n\
               \x20 \x20 no dismiss; diagnostic-only)\n\
+              \x20 fixture-post --announcement JSON --nonce HEX --signer REQUIREMENT --caller ID --wid WID --chord NAME\n\
+              \x20 \x20 (REFUSED outside the leg controller: a single-shot\n\
+              \x20 \x20 external lifecycle cannot certify the mandatory\n\
+              \x20 \x20 baselines; use fixture-leg below)\n\
+              \x20 fixture-focus --announcement JSON --nonce HEX --signer REQUIREMENT --caller ID --wid WID\n\
+              \x20 \x20 (REFUSED outside the leg controller like fixture-post;\n\
+              \x20 \x20 use fixture-leg below)\n\
+              \x20 fixture-leg --chord NAME [--chord NAME ...] --signer REQUIREMENT [--seconds N] [--preset compatible|authentic]\n\
+              \x20 \x20 (development-only fixture leg: the complete controller\n\
+              \x20 \x20 entry from baseline through owned shutdown. Captures\n\
+              \x20 \x20 the full baseline before ANY setup effect, launches\n\
+              \x20 \x20 the signed fixture bundle into a private run dir,\n\
+              \x20 \x20 spawns the fixture-scoped product (--scope exactly\n\
+              \x20 \x20 io.github.omnitiler.live-fixture, default Compatible\n\
+              \x20 \x20 preset), proves the return on a new owned Space before\n\
+              \x20 \x20 space-mutating chords, drives each chord to its owned\n\
+              \x20 \x20 window, then restores the starting Space and compares\n\
+              \x20 \x20 the teardown; default 90s, one --chord per owned\n\
+              \x20 \x20 window in order)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -1746,6 +1799,106 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 nonce: nonce.ok_or("textedit-close needs --nonce")?,
             }
         }
+        "fixture-post" => {
+            // Development-only signed-fixture tap: the serve announcement
+            // binds (socket, pid, nonce) and the presented nonce claim must
+            // equal it; the chord vocabulary is the fixed product-armed
+            // fixture set (directional focus/move, numbered selects and
+            // send-follows, bound relative/previous selects - see
+            // `resolve_fixture_chord`/`resolve_fixture_bound`).
+            let parsed = parse_fixture_target(args, "fixture-post")?;
+            let mut chord: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                if args[j] == "--chord" {
+                    j += 1;
+                    chord = Some(args.get(j).ok_or("--chord needs a value")?.clone());
+                }
+                j += 1;
+            }
+            let chord = chord.ok_or("fixture-post needs --chord")?;
+            if crate::fixture_post::resolve_fixture_chord(&chord).is_none()
+                && crate::fixture_post::resolve_fixture_bound(&chord).is_none()
+            {
+                return Err(format!("fixture-post: unknown --chord '{chord}'"));
+            }
+            Command::FixturePost {
+                announcement: parsed.0,
+                nonce: parsed.1,
+                signer: parsed.2,
+                caller: parsed.3,
+                wid: parsed.4,
+                chord,
+            }
+        }
+        "fixture-focus" => {
+            // Development-only signed-fixture focus: same
+            // announcement/nonce/caller/wid identity as `fixture-post` but
+            // no chord vocabulary and no posts on any path (one SLPS
+            // dispatch with agreement proof).
+            let parsed = parse_fixture_target(args, "fixture-focus")?;
+            Command::FixtureFocus {
+                announcement: parsed.0,
+                nonce: parsed.1,
+                signer: parsed.2,
+                caller: parsed.3,
+                wid: parsed.4,
+            }
+        }
+        "fixture-leg" => {
+            // Development-only fixture leg: repeated `--chord` values (one
+            // per owned window, in order), the expected designated
+            // requirement, an optional bounded lifetime, and the product
+            // preset (default Compatible: no holder writes; Authentic is an
+            // explicit opt-in). Shapes only;
+            // scope is fixed to the signed fixture bundle in the runner.
+            let mut seconds = 90u64;
+            let mut chords: Vec<String> = Vec::new();
+            let mut preset = crate::input_policy::InputPreset::Compatible;
+            let mut signer: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--chord" => {
+                        j += 1;
+                        chords.push(args.get(j).ok_or("--chord needs a value")?.clone());
+                    }
+                    "--preset" => {
+                        j += 1;
+                        preset = crate::input_policy::InputPreset::parse(
+                            args.get(j).ok_or("--preset needs a value")?,
+                        )?;
+                    }
+                    "--signer" => {
+                        j += 1;
+                        signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
+                    }
+                    other => return Err(format!("fixture-leg: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            if chords.is_empty() {
+                return Err("fixture-leg needs at least one --chord".to_owned());
+            }
+            for chord in &chords {
+                if crate::fixture_post::resolve_fixture_chord(chord).is_none()
+                    && crate::fixture_post::resolve_fixture_bound(chord).is_none()
+                {
+                    return Err(format!("fixture-leg: unknown --chord '{chord}'"));
+                }
+            }
+            Command::FixtureLeg {
+                seconds,
+                chords,
+                preset,
+                signer: signer.ok_or("fixture-leg needs --signer")?,
+            }
+        }
         "owned-space-join" => {
             // No --wid: the helper acts solely on its own window; a caller
             // WID would be foreign-window selection and is refused by shape.
@@ -2138,6 +2291,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut diag_trailing_click = false;
             let mut log = crate::tile::TileLogLevel::default();
             let mut run_dir: Option<String> = None;
+            let mut fixture_owned_spaces: Vec<u64> = Vec::new();
+            let mut fixture_starting_space: Option<u64> = None;
             let mut border = crate::dev_selection::BorderCli::default();
             let mut pager_highlight = crate::dev_selection::PagerHighlightCli::default();
             let mut drag = crate::drag_drop::DragCli::default();
@@ -2197,6 +2352,27 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--run-dir" => {
                         j += 1;
                         run_dir = Some(args.get(j).ok_or("--run-dir needs a value")?.clone());
+                    }
+                    "--fixture-owned-space" => {
+                        j += 1;
+                        fixture_owned_spaces.push(crate::fixture_gate::parse_gate_sid(
+                            args.get(j).ok_or("--fixture-owned-space needs a value")?,
+                            "--fixture-owned-space",
+                        )?);
+                    }
+                    "--fixture-starting-space" => {
+                        j += 1;
+                        if fixture_starting_space.is_some() {
+                            return Err(
+                                "tile: --fixture-starting-space repeats; one starting SID only"
+                                    .to_owned(),
+                            );
+                        }
+                        fixture_starting_space = Some(crate::fixture_gate::parse_gate_sid(
+                            args.get(j)
+                                .ok_or("--fixture-starting-space needs a value")?,
+                            "--fixture-starting-space",
+                        )?);
                     }
                     "--no-active-border" => {
                         border.enabled = Some(false);
@@ -2291,6 +2467,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 excluded,
                 log,
                 run_dir,
+                fixture_owned_spaces,
+                fixture_starting_space,
                 border,
                 pager_highlight,
                 drag,
@@ -2792,6 +2970,67 @@ fn parse_owned_wid(args: &[String], cmd: &str) -> Result<(u32, String, u32), Str
     Ok((
         pid.ok_or(format!("{cmd} needs --pid"))?,
         nonce.ok_or(format!("{cmd} needs --nonce"))?,
+        wid.ok_or(format!("{cmd} needs --wid"))?,
+    ))
+}
+
+/// Shared identity parser for the signed-fixture commands: the serve
+/// announcement (socket/pid/nonce source), the presented nonce claim, the
+/// expected designated requirement (from `fixture-verify` output), the
+/// selected fixture caller id, and the exact target window id. Presence
+/// only; shapes and the claim-vs-announcement equality gate live in the
+/// fixture-post boundary (exit 2 there, never a post).
+fn parse_fixture_target(
+    args: &[String],
+    cmd: &str,
+) -> Result<(String, String, String, String, u32), String> {
+    let mut announcement: Option<String> = None;
+    let mut nonce: Option<String> = None;
+    let mut signer: Option<String> = None;
+    let mut caller: Option<String> = None;
+    let mut wid: Option<u32> = None;
+    let mut j = 0;
+    while j < args.len() {
+        match args[j].as_str() {
+            "--announcement" => {
+                j += 1;
+                announcement = Some(args.get(j).ok_or("--announcement needs a value")?.clone());
+            }
+            "--nonce" => {
+                j += 1;
+                nonce = Some(args.get(j).ok_or("--nonce needs a value")?.clone());
+            }
+            "--signer" => {
+                j += 1;
+                signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
+            }
+            "--caller" => {
+                j += 1;
+                caller = Some(args.get(j).ok_or("--caller needs a value")?.clone());
+            }
+            "--wid" => {
+                j += 1;
+                wid = Some(parse_u32(
+                    args.get(j).ok_or("--wid needs a value")?,
+                    "--wid",
+                )?);
+            }
+            "--chord" => {
+                // Consumed by the posting command's own chord leg below;
+                // skipped here so the shared identity parser accepts the
+                // full `fixture-post` argv without claiming the value.
+                j += 1;
+                args.get(j).ok_or("--chord needs a value")?;
+            }
+            other => return Err(format!("{cmd}: unknown arg '{other}'")),
+        }
+        j += 1;
+    }
+    Ok((
+        announcement.ok_or(format!("{cmd} needs --announcement"))?,
+        nonce.ok_or(format!("{cmd} needs --nonce"))?,
+        signer.ok_or(format!("{cmd} needs --signer"))?,
+        caller.ok_or(format!("{cmd} needs --caller"))?,
         wid.ok_or(format!("{cmd} needs --wid"))?,
     ))
 }

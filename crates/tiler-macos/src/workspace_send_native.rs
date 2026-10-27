@@ -176,6 +176,10 @@ const ENGINE_FACTS_TIMEOUT_MS: u64 = 200;
 pub struct OsSendReaders {
     handle: RuntimeHandle,
     store: crate::desktop_shortcuts::LiveStore,
+    /// Development-only fixture-owned Space gate: when present, bridged
+    /// moves, destination fronts, and return selects actuate only gated
+    /// SIDs. `None` leaves the normal product unchanged.
+    fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
 }
 
 impl OsSendReaders {
@@ -187,7 +191,19 @@ impl OsSendReaders {
         Self {
             handle,
             store: crate::desktop_shortcuts::LiveStore::new(),
+            fixture_gate: None,
         }
+    }
+
+    /// Production readers with the development-only fixture-owned Space
+    /// gate (`None` leaves the normal product unchanged).
+    #[must_use]
+    pub fn with_fixture_gate(
+        mut self,
+        gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+    ) -> Self {
+        self.fixture_gate = gate;
+        self
     }
 }
 
@@ -327,9 +343,29 @@ impl SendNativeReaders for OsSendReaders {
             && crate::ffi::slps_available()
     }
     fn bridged_move_window(&mut self, sid: u64, wid: u32) -> Result<(), String> {
+        // Fixture gate on the ACTUAL resolved destination SID at native
+        // execution: only controller-owned SIDs actuate, before any OS
+        // touch. Releases are never gated (see `release_mouse`/`release_key`
+        // on the backend, which bypass this).
+        if let Some(gate) = self.fixture_gate.as_ref()
+            && !gate.allows(sid)
+        {
+            return Err(format!(
+                "fixture gate: bridged move of window to Space {sid} outside the owned set refused without actuation"
+            ));
+        }
         crate::ffi::sls_move_windows_bridged(sid, &[wid])
     }
     fn set_destination_front(&mut self, sid: u64, pid: u32, wid: u32) -> Result<(), String> {
+        // Fixture gate: the destination front pin actuates only for
+        // controller-owned destinations, before any OS touch.
+        if let Some(gate) = self.fixture_gate.as_ref()
+            && !gate.allows(sid)
+        {
+            return Err(format!(
+                "fixture gate: destination front on Space {sid} outside the owned set refused without actuation"
+            ));
+        }
         // yabai `window_manager_send_window_to_space` tail: the front pin
         // lands after the async move dispatch, before the view select.
         // Fresh gates, a fresh CG owner join, and the PID mapping all fence
@@ -366,6 +402,15 @@ impl SendNativeReaders for OsSendReaders {
         Ok(())
     }
     fn select_space(&mut self, sid: u64) -> Result<(), String> {
+        // Fixture gate: stay-return sources actuate only for the owned set
+        // or the recorded initial starting current, before any OS touch.
+        if let Some(gate) = self.fixture_gate.as_ref()
+            && !gate.allows_or_starting(sid)
+        {
+            return Err(format!(
+                "fixture gate: return select of Space {sid} outside the owned set refused without actuation"
+            ));
+        }
         // Released ordinary return select on the effect owner: the
         // pinned-yabai high-velocity session-tap Dock swipe with
         // event-driven exact-current readback (same route as every product
@@ -706,6 +751,13 @@ pub struct LiveManagedSendBackend<R: SendNativeReaders> {
     key_held: Option<(u32, u64)>,
     blind_root: Option<BlindRoot>,
     counts: PostCounts,
+    /// Development-only fixture-owned Space gate: when present, every
+    /// send destination actuates only owned SIDs, return selects only
+    /// the owned set or recorded starting current, and trailing
+    /// preparation refuses (the controller owns creation). Releases
+    /// always attempt (never blocked). `None` leaves the normal product
+    /// unchanged.
+    fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
     /// Leg clock start (set in `begin_leg`): every native event/readback
     /// line below reports elapsed milliseconds against this base, so the
     /// effective down->drag->chord->up timing compares directly with the
@@ -913,6 +965,7 @@ impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
             key_held: None,
             blind_root: None,
             counts: PostCounts::default(),
+            fixture_gate: None,
             leg_t0: None,
             leg_frame: None,
             leg_grab: None,
@@ -931,11 +984,48 @@ impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
         self.phase_op.as_deref().unwrap_or("none")
     }
 
+    /// Live backend with the development-only fixture-owned Space gate
+    /// (`None` leaves the normal product unchanged).
+    #[must_use]
+    pub fn with_fixture_gate(
+        mut self,
+        gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+    ) -> Self {
+        self.fixture_gate = gate;
+        self
+    }
+
     /// Test-only readers access: scripted fakes record arrival requests
     /// behind the backend, and tests assert the count without live touch.
     #[cfg(test)]
     pub(crate) fn test_readers(&mut self) -> &mut R {
         &mut self.readers
+    }
+
+    /// Fixture gate verdict for one send destination SID at the actual
+    /// native touch: owned SIDs actuate, anything else refuses proven
+    /// before any post. Pure over the gate (no OS touch here).
+    fn gate_destination(&self, goal: u64) -> Result<(), String> {
+        match self.fixture_gate.as_ref() {
+            Some(gate) if gate.allows(goal) => Ok(()),
+            Some(_) => Err(format!(
+                "fixture gate: send destination Space {goal} outside the owned set refused without actuation"
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// Fixture gate verdict for one stay-return source SID: the owned set
+    /// or the recorded starting current actuate, anything else refuses
+    /// proven before any post.
+    fn gate_return_source(&self, source: u64) -> Result<(), String> {
+        match self.fixture_gate.as_ref() {
+            Some(gate) if gate.allows_or_starting(source) => Ok(()),
+            Some(_) => Err(format!(
+                "fixture gate: return source Space {source} outside the owned set refused without actuation"
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Pinned revision for phase lines (anchor when a snapshot fenced one,
@@ -1092,8 +1182,10 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         // Selection only (no OS post): the per-edge proof already ran in
         // the adapter; the anchor re-fences the ordinal here before the
         // grab starts. The permit is consumed (dropped) — one proof never
-        // authorizes two legs.
+        // authorizes two legs. The fixture gate fences the destination
+        // first: an unowned goal refuses before any grab state.
         let _ = permit;
+        self.gate_destination(goal)?;
         self.check_anchor(goal)?;
         self.goal = Some(goal);
         // Start the leg clock and the settle-pair log baseline, then emit
@@ -1126,10 +1218,12 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         }
         // Ordinal anchor re-fenced on every grab down-edge: a reorder
         // between the row read and this post refuses instead of dragging
-        // under a stale chord.
+        // under a stale chord. The fixture gate re-fences the destination
+        // too (an unowned goal never posts, even mid-leg).
         let Some(goal) = self.goal else {
             return Err("send leg refused: no anchored goal; refusing".to_owned());
         };
+        self.gate_destination(goal)?;
         self.check_anchor(goal)?;
         self.readers
             .hid_mouse(step, permit.point())
@@ -1155,6 +1249,8 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         let Some(goal) = self.goal else {
             return Err("send leg refused: no anchored goal; refusing".to_owned());
         };
+        // Fixture gate before the chord post: an unowned goal never posts.
+        self.gate_destination(goal)?;
         self.check_anchor(goal)?;
         let chord = (permit.keycode(), permit.flags());
         self.readers
@@ -1283,6 +1379,8 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         // SID-accepting goto with exact-current readback. Single-flight,
         // gates, and cancellation are fenced by the stay caller; this only
         // actuates the native select and reports its verdict honestly.
+        // Fixture gate: only the owned set or recorded starting current.
+        self.gate_return_source(source_sid)?;
         self.readers.select_space(source_sid)
     }
     fn bridged_available(&mut self) -> bool {
@@ -1295,8 +1393,10 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         // Fast-route dispatch: exactly one direct native move under a fresh
         // anchor. The single-use permit is consumed (dropped) - one proof
         // never authorizes two dispatches. No mouse/key posts on this route.
+        // Fixture gate first: an unowned goal refuses before any OS touch.
         let wid = permit.wid();
         let _ = permit;
+        self.gate_destination(goal)?;
         // Fresh anchor immediately at dispatch: a moved revision or shifted
         // ordinal refuses before any OS touch (pre-dispatch failure).
         self.check_anchor(goal)?;
@@ -1331,8 +1431,12 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         // (never the MC press, never an AX raise). The anchor re-fences
         // ordinal/revision before the front touch; every failure here lands
         // after the dispatched move, so the caller holds PossiblyExecuted
-        // (never a proven refusal, never a replay).
+        // (never a proven refusal, never a replay). Fixture gate: only
+        // owned destinations actuate.
         self.emit_phase("select");
+        self.gate_destination(sid).map_err(|e| {
+            format!("bridged destination select refused: {e}; dispatch already executed; no replay")
+        })?;
         let Some((pid, wid)) = self.subject else {
             return Err(
                 "bridged destination front refused: no proven subject; refusing".to_owned(),
@@ -1362,6 +1466,19 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
     ) -> Result<TrailingPrepProof, crate::workspace_send::TrailingPrepFailure> {
         use crate::workspace_send::TrailingPrepFailure;
         use tiler_core::world_report::FrameSetter;
+        // Fixture gate: the controller owns trailing creation while gated;
+        // the product never prepares (no reuse-or-append proof, no append).
+        // Typed pre-dispatch refusal with no reads (nothing actuated).
+        if self.fixture_gate.is_some() {
+            return Err(TrailingPrepFailure {
+                reason: "fixture gate: product trailing preparation disabled (controller owns creation); refusing without actuation"
+                    .to_owned(),
+                setter: FrameSetter::Refused,
+                before: None,
+                after: None,
+                dispatched: false,
+            });
+        }
         // Bounded caffeinate companion around preparation only (same shape
         // as the retired main-thread preparation): covers the create plus
         // settle reads and self-terminates via `-t` even if the reaper
@@ -1412,6 +1529,7 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             budget: ActionBudget::new(TRAILING_PREP_BUDGET_SECS),
             before: None,
             after: None,
+            fixture_gate: self.fixture_gate.clone(),
         };
         let prep = crate::workspace_send::prepare_trailing_send_target(
             &mut adapter,
@@ -1464,6 +1582,10 @@ struct OwnerTrailingAdapter<'r, R: SendNativeReaders> {
     budget: ActionBudget,
     before: Option<SelectionSnapshot>,
     after: Option<SelectionSnapshot>,
+    /// Development-only fixture-owned Space gate: when present, creation
+    /// refuses (the controller owns creation). Threaded from the owning
+    /// backend's gate; `None` leaves the normal product unchanged.
+    fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
 }
 
 impl<'r, R: SendNativeReaders> OwnerTrailingAdapter<'r, R> {
@@ -1520,6 +1642,12 @@ impl<R: SendNativeReaders> crate::workspace_select::SelectionBackend
         before: &SelectionSnapshot,
     ) -> Result<(), crate::workspace_select::DispatchError> {
         use crate::workspace_select::DispatchError;
+        // Fixture gate: the controller owns creation while gated.
+        if self.fixture_gate.is_some() {
+            return Err(DispatchError::refused(
+                "fixture gate: product trailing create disabled (controller owns creation); refusing without actuation",
+            ));
+        }
         if self
             .snapshot()
             .map_err(|e| DispatchError::refused(format!("pre-create row unreadable ({e})")))?

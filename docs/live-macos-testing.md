@@ -220,8 +220,18 @@ experiment.
   legacy probe/helper records only; stay/trailing injections are TextEdit-only.
   They are not fixture input routes. Product focus/move chords and managed
   select/send/trailing need physical fixture checks or a separately verified
-  fixture-aware ownership contract in the diagnostic harness. Socket focus and
-  resize, or a clean tap lifetime without deliveries, do not prove those actions.
+   fixture-aware ownership contract in the diagnostic harness. Socket focus and
+   resize, or a clean tap lifetime without deliveries, do not prove those actions.
+- The development-only `fixture-leg` controller is the guarded automation
+  entrypoint; standalone `fixture-post`/`fixture-focus` refuse. It persists
+  all required baseline categories before setup, owns the signed fixture and
+  product launches, and checks restoration after stopping the primary product.
+  Space-mutating legs must first execute the owned away/return probe. Native
+  product destinations are restricted to controller-created Spaces; creation
+  is refused in the gated product and cleanup remains controller-owned.
+  An offline-accepted controller still needs its first native proof. A missing
+  baseline, probe failure, permission shortfall, residue or mismatch stops the
+  leg; never remove a pending receipt merely to retry.
 - Foreign (non-fixture) applications are only for application-specific
   investigations after first trying the fixture, with the approved scope
   naming them explicitly. Rationale: fixture windows are predictable,

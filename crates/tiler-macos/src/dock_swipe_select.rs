@@ -1025,6 +1025,10 @@ pub(crate) struct OwnerSelectBackend<T: SwipeTopology, P: SwipePoster> {
     poster: P,
     op: Option<String>,
     t_base: Instant,
+    /// Development-only fixture-owned Space gate: when present, selects
+    /// actuate only owned SIDs and creates refuse (the controller owns
+    /// creation). `None` leaves the normal product unchanged.
+    fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
 }
 
 /// Production owner backend over live seams.
@@ -1049,6 +1053,7 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
             poster: args.poster,
             op: args.op,
             t_base: args.t_base,
+            fixture_gate: args.fixture_gate,
         }
     }
 
@@ -1074,11 +1079,15 @@ pub(crate) struct OwnerBackendArgs<T: SwipeTopology, P: SwipePoster> {
     pub poster: P,
     pub op: Option<String>,
     pub t_base: Instant,
+    pub fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
 }
 
 impl OwnerSelectBackend<LiveSwipeTopology, LiveSwipePoster> {
-    /// Production backend: live seams over the pinned legs.
-    pub(crate) fn pinned(
+    /// Production backend: live seams over the pinned legs, with the
+    /// development-only fixture-owned Space gate (`None` leaves the normal
+    /// product unchanged).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pinned_with_gate(
         legs: PinnedLegs,
         latch: Arc<SpaceSelectLatch>,
         cancel: Arc<AtomicBool>,
@@ -1086,6 +1095,7 @@ impl OwnerSelectBackend<LiveSwipeTopology, LiveSwipePoster> {
         gate_reads: Box<dyn GateReads>,
         op: Option<String>,
         t_base: Instant,
+        fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
     ) -> Self {
         let topo = LiveSwipeTopology::pinned(
             legs.display_index,
@@ -1106,6 +1116,7 @@ impl OwnerSelectBackend<LiveSwipeTopology, LiveSwipePoster> {
             poster: LiveSwipePoster,
             op,
             t_base,
+            fixture_gate,
         })
     }
 }
@@ -1149,6 +1160,14 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
     }
 
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), DispatchError> {
+        // Fixture gate: the controller owns creation while gated; the
+        // product never appends. Typed pre-dispatch refusal (nothing
+        // attempted, exit watch never armed).
+        if self.fixture_gate.is_some() {
+            return Err(DispatchError::refused(
+                "fixture gate: product create disabled (controller owns creation); refusing without actuation",
+            ));
+        }
         // Owner-fresh gates and cancellation fence the create leg itself:
         // a lock, capture, or loginwindow that closed after submission
         // refuses here instead of opening Mission Control into it.
@@ -1205,6 +1224,17 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
     }
 
     fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), DispatchError> {
+        // Fixture gate on the ACTUAL reply-resolved SID at native
+        // execution (never a logical remap): only controller-owned SIDs
+        // actuate. Checked before the exit wait and any gesture post, so
+        // a denied SID produces zero delegate actuator calls.
+        if let Some(gate) = self.fixture_gate.as_ref()
+            && !gate.allows(sid)
+        {
+            return Err(DispatchError::refused(format!(
+                "fixture gate: select of Space {sid} outside the owned set refused without actuation"
+            )));
+        }
         // Post-create gate: the trailing append left Mission Control
         // open, and the gesture is a no-op while Dock still reports it
         // active (`space_manager_focus_space` refuses under

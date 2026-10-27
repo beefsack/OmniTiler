@@ -1685,6 +1685,7 @@ pub(crate) fn drain_live_claimed_with(
     let mut backend = NativeSelection {
         display: 0,
         budget: crate::mc_probe::ActionBudget::new(PRODUCT_DRAIN_BUDGET_SECS),
+        fixture_gate: None,
     };
     let outcome = drain_claimed_select_with(state, &mut backend, claim, gates, trailing_enabled);
     let reaped = awake.stop();
@@ -1702,6 +1703,7 @@ pub(crate) fn trailing_emptiness(sid: u64, display: usize) -> Result<bool, Strin
     let mut backend = NativeSelection {
         display,
         budget: crate::mc_probe::ActionBudget::new(TRAILING_CLEANUP_BUDGET_SECS),
+        fixture_gate: None,
     };
     backend.empty(sid)
 }
@@ -1928,6 +1930,7 @@ pub fn run(display: usize, actions: &[InputSemanticAction]) -> Result<String, (i
     let mut backend = NativeSelection {
         display,
         budget: crate::mc_probe::ActionBudget::new(120),
+        fixture_gate: None,
     };
     let mut effects = Vec::new();
     let mut failure: Option<String> = None;
@@ -2015,6 +2018,29 @@ pub fn run(display: usize, actions: &[InputSemanticAction]) -> Result<String, (i
 struct NativeSelection {
     display: usize,
     budget: crate::mc_probe::ActionBudget,
+    /// Development-only fixture-owned Space gate: when present, selects
+    /// actuate only owned SIDs and creates refuse (the controller owns
+    /// creation). `None` leaves the normal product unchanged.
+    fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+}
+
+impl NativeSelection {
+    /// Gated constructor for the development-only fixture-owned Space
+    /// gate. Retained for the MC-fallback select path wiring plus the
+    /// offline gate tests below; the ungated struct literals above serve
+    /// the normal product path.
+    #[allow(dead_code)]
+    fn with_fixture_gate(
+        display: usize,
+        budget: crate::mc_probe::ActionBudget,
+        gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+    ) -> Self {
+        Self {
+            display,
+            budget,
+            fixture_gate: gate,
+        }
+    }
 }
 
 /// Explicit exact-SID cleanup, including batches that appended more than one
@@ -2075,6 +2101,14 @@ impl SelectionBackend for NativeSelection {
         probe_trailing_emptiness(sid)
     }
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), DispatchError> {
+        // Fixture gate: the controller owns creation while gated; the
+        // product never appends. Typed pre-dispatch refusal (nothing
+        // attempted); the drain stages its genuine reads verbatim.
+        if self.fixture_gate.is_some() {
+            return Err(DispatchError::refused(
+                "fixture gate: product create disabled (controller owns creation); refusing without actuation",
+            ));
+        }
         if self
             .snapshot()
             .map_err(|e| DispatchError::refused(format!("pre-create row unreadable ({e})")))?
@@ -2091,6 +2125,17 @@ impl SelectionBackend for NativeSelection {
         Ok(())
     }
     fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), DispatchError> {
+        // Fixture gate on the ACTUAL reply-resolved SID at native
+        // execution (never a logical remap): only controller-owned SIDs
+        // actuate. Typed pre-dispatch refusal; the drain stages genuine
+        // reads, never a faked success.
+        if let Some(gate) = self.fixture_gate.as_ref()
+            && !gate.allows(sid)
+        {
+            return Err(DispatchError::refused(format!(
+                "fixture gate: select of Space {sid} outside the owned set refused without actuation"
+            )));
+        }
         // Fresh gates immediately pre-dispatch: a lock, Secure Input
         // capture, or lock-screen foreground that closed after the drain
         // sampled its gates refuses here instead of pressing into it.
@@ -2134,5 +2179,89 @@ impl SelectionBackend for NativeSelection {
             eprintln!("tiler-macos select close shortfall accepted ({e})");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fixture_gate_tests {
+    use super::*;
+    use tiler_core::world_report::FrameSetter;
+
+    fn test_snapshot() -> SelectionSnapshot {
+        SelectionSnapshot {
+            display: "test-display".to_owned(),
+            spaces: vec![11, 22],
+            current: 11,
+        }
+    }
+
+    fn gated_native(owned: &[u64], starting: Option<u64>) -> NativeSelection {
+        let gate =
+            crate::fixture_gate::FixtureSpaceGate::new(owned, starting).expect("gate builds");
+        NativeSelection::with_fixture_gate(0, crate::mc_probe::ActionBudget::new(30), Some(gate))
+    }
+
+    #[test]
+    fn native_gate_denied_sid_refuses_before_any_native_touch() {
+        // Denied SIDs refuse with a truthful pre-dispatch `Refused` carrying
+        // the gate reason; the failure precedes every session/topology/MC
+        // touch (no delegate actuator call is reachable).
+        let mut backend = gated_native(&[22], Some(11));
+        let before = test_snapshot();
+        let denied = backend
+            .select(&before, 11)
+            .expect_err("baseline SID refuses while gated");
+        assert_eq!(denied.setter, FrameSetter::Refused);
+        assert!(
+            denied.reason.contains("fixture gate"),
+            "truthful gate reason: {}",
+            denied.reason
+        );
+        // Creates refuse while gated with the same typed disposition.
+        let refused = backend.create(&before).expect_err("create refuses gated");
+        assert_eq!(refused.setter, FrameSetter::Refused);
+        assert!(
+            refused.reason.contains("fixture gate"),
+            "{}",
+            refused.reason
+        );
+    }
+
+    #[test]
+    fn native_gate_owned_sid_passes_the_gate_leg() {
+        // An owned SID passes the gate leg: on this offline host the next
+        // leg (session pre-dispatch) refuses instead, proving the gate
+        // itself admitted the SID rather than refusing it.
+        let mut backend = gated_native(&[22], Some(11));
+        let before = test_snapshot();
+        let err = backend
+            .select(&before, 22)
+            .expect_err("offline host refuses past the gate");
+        assert!(
+            !err.reason.contains("fixture gate"),
+            "owned SID must pass the gate leg: {}",
+            err.reason
+        );
+        assert_eq!(err.setter, FrameSetter::Refused);
+    }
+
+    #[test]
+    fn native_ungated_backend_has_no_gate_leg() {
+        // `None` preserves the normal product path (no gate reason on any
+        // refusal leg).
+        let mut backend = NativeSelection {
+            display: 0,
+            budget: crate::mc_probe::ActionBudget::new(30),
+            fixture_gate: None,
+        };
+        let before = test_snapshot();
+        let err = backend
+            .select(&before, 22)
+            .expect_err("offline host refuses");
+        assert!(
+            !err.reason.contains("fixture gate"),
+            "ungated path never names the gate: {}",
+            err.reason
+        );
     }
 }

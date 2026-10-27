@@ -55,6 +55,10 @@ pub struct SelectJob {
     pub published_displays: Vec<crate::topology::DisplayGeometry>,
     pub published_separate: Option<bool>,
     pub trailing_enabled: bool,
+    /// Development-only fixture-owned Space gate (`None` leaves the normal
+    /// product unchanged). Carried from the controller submit into the
+    /// owner backend, enforced on the reply-resolved SID at execution.
+    pub fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
     pub latch: Arc<SpaceSelectLatch>,
     pub wake: SpaceSelectWake,
     pub cancel: Arc<AtomicBool>,
@@ -234,7 +238,7 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
         published_separate: job.published_separate,
         settle_deadline: Duration::from_millis(SELECT_ARRIVAL_DEADLINE_MS),
     };
-    let mut backend = LiveOwnerSelectBackend::pinned(
+    let mut backend = LiveOwnerSelectBackend::pinned_with_gate(
         legs,
         Arc::clone(&job.latch),
         Arc::clone(&job.cancel),
@@ -242,6 +246,7 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
         Box::new(gate_reads),
         job.claim.operation_id.clone(),
         job.submitted_at,
+        job.fixture_gate.clone(),
     );
     let result = crate::workspace_select::drain_claimed_select_with(
         state,
@@ -455,6 +460,11 @@ pub struct SelectController {
     thread: Option<SelectThread>,
     inflight: Option<SelectInflight>,
     awake: Option<crate::mc_lifecycle::live::CaffeinateGuard>,
+    /// Development-only fixture-owned Space gate, stored at the adapter
+    /// controller constructor boundary (never core): carried into each
+    /// submitted job and enforced on the reply-resolved SID at execution.
+    /// `None` leaves the normal product unchanged.
+    fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
 }
 
 #[derive(Debug, Clone)]
@@ -494,6 +504,13 @@ impl SelectController {
         Self::default()
     }
 
+    /// Store the development-only fixture-owned Space gate (adapter
+    /// boundary, never core). The next submits carry it into their jobs;
+    /// `None` clears back to the normal product path.
+    pub fn set_fixture_gate(&mut self, gate: Option<crate::fixture_gate::FixtureSpaceGate>) {
+        self.fixture_gate = gate;
+    }
+
     /// Whether a select is inflight (submitted, completion unpolled).
     #[must_use]
     pub fn is_busy(&self) -> bool {
@@ -523,6 +540,7 @@ impl SelectController {
             published_displays: legs.published_displays.to_vec(),
             published_separate: legs.published_separate,
             trailing_enabled: legs.trailing_enabled,
+            fixture_gate: self.fixture_gate.clone(),
             latch: Arc::new(legs.wake.subscribe()),
             wake: legs.wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),

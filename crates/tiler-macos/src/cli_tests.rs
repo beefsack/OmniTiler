@@ -756,6 +756,285 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
 }
 
 #[test]
+fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
+    // Full announcement/nonce/caller/wid identity parses and is
+    // write-intent (post delivers synthetic input; focus dispatches SLPS).
+    let ann = "{\"socket\":\"/tmp/run/fixture.sock\",\"pid\":4242,\"nonce\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}";
+    let r = parse_args(&argv(&[
+        "fixture-post",
+        "--announcement",
+        ann,
+        "--nonce",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--signer",
+            "designated => identifier \"io.github.omnitiler.live-fixture\" and anchor apple generic and certificate leaf[subject.CN] = \"Fixture Test Signer\"",
+        "--caller",
+        "a",
+        "--wid",
+        "7",
+        "--chord",
+        "focus-h",
+    ]))
+    .unwrap();
+    assert!(
+        r.may_mutate,
+        "fixture-post posts input and must be write-intent"
+    );
+    assert!(matches!(r.command, Command::FixturePost { .. }));
+    let r = parse_args(&argv(&[
+        "fixture-focus",
+        "--announcement",
+        ann,
+        "--nonce",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--signer",
+            "designated => identifier \"io.github.omnitiler.live-fixture\" and anchor apple generic and certificate leaf[subject.CN] = \"Fixture Test Signer\"",
+        "--caller",
+        "a",
+        "--wid",
+        "7",
+    ]))
+    .unwrap();
+    assert!(
+        r.may_mutate,
+        "fixture-focus dispatches focus and must be write-intent"
+    );
+    assert!(matches!(r.command, Command::FixtureFocus { .. }));
+    // The leg controller entry parses: repeated chords, the expected
+    // signer, bounded seconds, and the product preset. Scope is fixed in
+    // the runner (exactly the signed fixture bundle), never a flag.
+    let r = parse_args(&argv(&[
+        "fixture-leg",
+        "--chord",
+        "focus-h",
+        "--chord",
+        "select-1",
+        "--signer",
+        "designated => test",
+        "--seconds",
+        "120",
+        "--preset",
+        "authentic",
+    ]))
+    .unwrap();
+    assert!(
+        r.may_mutate,
+        "fixture-leg drives input and must be write-intent"
+    );
+    match r.command {
+        Command::FixtureLeg {
+            seconds,
+            chords,
+            preset,
+            signer,
+        } => {
+            assert_eq!(seconds, 120);
+            assert_eq!(chords, vec!["focus-h".to_owned(), "select-1".to_owned()]);
+            assert_eq!(preset, crate::input_policy::InputPreset::Authentic);
+            assert_eq!(signer, "designated => test");
+        }
+        _ => panic!("fixture-leg must parse"),
+    }
+    // Defaults: 90 seconds, Compatible preset (no holder writes).
+    let r = parse_args(&argv(&[
+        "fixture-leg",
+        "--chord",
+        "focus-h",
+        "--signer",
+        "designated => test",
+    ]))
+    .unwrap();
+    match r.command {
+        Command::FixtureLeg {
+            seconds,
+            preset,
+            chords,
+            ..
+        } => {
+            assert_eq!(seconds, 90);
+            assert_eq!(preset, crate::input_policy::InputPreset::Compatible);
+            assert_eq!(chords.len(), 1);
+        }
+        _ => panic!("fixture-leg defaults must parse"),
+    }
+    // Missing chords, unknown chords, and a missing signer refuse at parse
+    // (exit 2), before any baseline or effect.
+    assert!(parse_args(&argv(&["fixture-leg", "--signer", "designated => test"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "fixture-leg",
+            "--chord",
+            "teleport",
+            "--signer",
+            "designated => test"
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "fixture-leg",
+            "--chord",
+            "focus-h",
+            "--bogus",
+            "1"
+        ]))
+        .is_err()
+    );
+    assert!(parse_args(&argv(&["fixture-leg", "--chord", "focus-h"])).is_err());
+    // The product-armed fixture vocabulary parses: directional focus/move,
+    // numbered selects/send-follows incl trailing 0, bound
+    // relative/previous selects.
+    for chord in [
+        "focus-h",
+        "focus-j",
+        "focus-k",
+        "focus-l",
+        "focus-left",
+        "focus-right",
+        "move-h",
+        "move-j",
+        "move-k",
+        "move-l",
+        "move-left",
+        "move-right",
+        "select-0",
+        "select-1",
+        "select-9",
+        "send-0",
+        "send-1",
+        "send-9",
+        "rel-prev",
+        "rel-next",
+        "prev-toggle",
+    ] {
+        let r = parse_args(&argv(&[
+            "fixture-post",
+            "--announcement",
+            ann,
+            "--nonce",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--signer",
+            "designated => identifier \"io.github.omnitiler.live-fixture\" and anchor apple generic and certificate leaf[subject.CN] = \"Fixture Test Signer\"",
+            "--caller",
+            "a",
+            "--wid",
+            "7",
+            "--chord",
+            chord,
+        ]))
+        .unwrap();
+        assert!(matches!(r.command, Command::FixturePost { .. }), "{chord}");
+        assert!(r.may_mutate, "{chord} is write-intent");
+    }
+    // Helper-only chords, TextEdit-only transports, stays, and arbitrary
+    // keys never parse on the fixture route.
+    for bad in [
+        "float-g",
+        "grow-h",
+        "shrink-h",
+        "orientation-o",
+        "escape",
+        "stay-1",
+        "stay-2",
+        "focus-up",
+        "focus-down",
+        "select-10",
+        "workspace-select-1",
+        "ctrl-h",
+        "a",
+        "space",
+        "",
+    ] {
+        assert!(
+            parse_args(&argv(&[
+                "fixture-post",
+                "--announcement",
+                ann,
+                "--nonce",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--signer",
+            "designated => identifier \"io.github.omnitiler.live-fixture\" and anchor apple generic and certificate leaf[subject.CN] = \"Fixture Test Signer\"",
+                "--caller",
+                "a",
+                "--wid",
+                "7",
+                "--chord",
+                bad,
+            ]))
+            .is_err(),
+            "{bad}"
+        );
+    }
+    // Missing identity refuses; unknown flags refuse.
+    assert!(
+        parse_args(&argv(&[
+            "fixture-post",
+            "--nonce",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--signer",
+            "designated => identifier \"io.github.omnitiler.live-fixture\" and anchor apple generic and certificate leaf[subject.CN] = \"Fixture Test Signer\"",
+            "--caller",
+            "a",
+            "--wid",
+            "7",
+            "--chord",
+            "focus-h",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "fixture-focus",
+            "--announcement",
+            ann,
+            "--nonce",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--signer",
+            "designated => identifier \"io.github.omnitiler.live-fixture\" and anchor apple generic and certificate leaf[subject.CN] = \"Fixture Test Signer\"",
+            "--caller",
+            "a",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "fixture-post",
+            "--announcement",
+            ann,
+            "--nonce",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--signer",
+            "designated => identifier \"io.github.omnitiler.live-fixture\" and anchor apple generic and certificate leaf[subject.CN] = \"Fixture Test Signer\"",
+            "--caller",
+            "a",
+            "--wid",
+            "7",
+            "--chord",
+            "focus-h",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+    // Missing signer refuses: the expected requirement is mandatory.
+    assert!(
+        parse_args(&argv(&[
+            "fixture-post",
+            "--announcement",
+            ann,
+            "--nonce",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--caller",
+            "a",
+            "--wid",
+            "7",
+            "--chord",
+            "focus-h",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
 fn textedit_grab_inspect_parses_record_identity_and_never_mutates() {
     // Same record/nonce identity as the posting route but read-only: no
     // chord vocabulary, no posts on any path.
@@ -2696,6 +2975,79 @@ fn drag_diag_full_parses_with_amethyst_variant() {
     assert!(parse_args(&argv(&["drag-diag-full", "--amethyst", "--desktop"])).is_err());
     assert!(parse_args(&argv(&["drag-diag-full", "--stream"])).is_err());
     assert!(parse_args(&argv(&["drag-diag-full", "--bogus"])).is_err());
+}
+
+#[test]
+fn tile_fixture_gate_flags_parse_repeatable_and_default_absent() {
+    // Absent flags: no gate (normal product unchanged).
+    let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            fixture_starting_space: None,
+            ..
+        }
+    ));
+    if let Command::Tile {
+        fixture_owned_spaces,
+        ..
+    } = r.command
+    {
+        assert!(fixture_owned_spaces.is_empty());
+    } else {
+        panic!("want tile");
+    }
+    // Repeatable owned SIDs plus one starting SID parse through (scope
+    // and harness gates live in tile validation, not here).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "io.github.omnitiler.live-fixture",
+        "--run-dir",
+        "/tmp/run-1",
+        "--fixture-owned-space",
+        "101",
+        "--fixture-owned-space",
+        "102",
+        "--fixture-starting-space",
+        "11",
+    ]))
+    .unwrap();
+    if let Command::Tile {
+        fixture_owned_spaces,
+        fixture_starting_space,
+        ..
+    } = r.command
+    {
+        assert_eq!(fixture_owned_spaces, vec![101, 102]);
+        assert_eq!(fixture_starting_space, Some(11));
+    } else {
+        panic!("want tile");
+    }
+    // Missing values, zero SIDs, and a repeated starting SID refuse.
+    assert!(parse_args(&argv(&["tile", "--user-start", "--fixture-owned-space"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--fixture-owned-space",
+            "0"
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--fixture-starting-space",
+            "11",
+            "--fixture-starting-space",
+            "12"
+        ]))
+        .is_err()
+    );
+    assert!(parse_args(&argv(&["tile", "--user-start", "--fixture-bogus", "1"])).is_err());
 }
 
 #[test]

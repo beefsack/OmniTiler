@@ -186,6 +186,18 @@ pub struct TileRequest {
     /// outcome JSON to `<dir>/outcome.json`. `None` keeps the plain
     /// bounded behavior with stdout as the only outcome channel.
     pub run_dir: Option<String>,
+    /// Development-only fixture-owned Space SIDs (repeatable
+    /// `--fixture-owned-space SID`): the exact native SIDs the leg
+    /// controller created for this run. Empty disables the gate (normal
+    /// product unchanged); non-empty arms the adapter actuator gates.
+    /// Opaque native set: membership only, no policy. Validated in
+    /// [`TileRequest::validate`] (exact fixture scope, never unscoped,
+    /// explicit harness run directory).
+    pub fixture_owned_spaces: Vec<u64>,
+    /// Development-only recorded initial starting current
+    /// (`--fixture-starting-space SID`): the stay-return source the
+    /// controller recorded. `None` disables with the set above.
+    pub fixture_starting_space: Option<u64>,
     /// Startup border configuration (master switch plus ring style).
     /// Startup-only: a running session never re-reads it.
     pub border: ActiveBorderOptions,
@@ -240,6 +252,18 @@ impl TileRequest {
         {
             return Err("tile: --run-dir must not be empty".to_owned());
         }
+        // Development-only fixture gate (adapter boundary, default
+        // disabled): only accepted with the exact fixture scope, never
+        // unscoped, and only with an explicit harness run directory. An
+        // absent/empty set leaves the normal product unchanged; an unsafe
+        // test configuration refuses here before any effect.
+        crate::fixture_gate::validate_fixture_gate(
+            &self.scopes,
+            self.unscoped,
+            &self.run_dir,
+            &self.fixture_owned_spaces,
+            self.fixture_starting_space,
+        )?;
         self.selection().validate()?;
         if let Some(index) = self.diag_stay {
             // Diagnostic-only stay injection: exactly one numbered stay
@@ -2276,6 +2300,22 @@ mod native {
         // polls below are nonblocking; the effect runs off the engine and
         // AppKit. Numbered send-follow 1..9 is armed.
         let mut send_controller = crate::workspace_send::LiveSendController::new();
+        // Development-only fixture-owned Space gate (adapter boundary,
+        // default disabled): validated in `TileRequest::validate` (exact
+        // fixture scope, never unscoped, explicit harness run directory).
+        // Stored in the adapter request plus both controllers (never
+        // core); the send factories below apply the same gate to their
+        // backends. Absent leaves the normal product unchanged.
+        let fixture_gate = crate::fixture_gate::validate_fixture_gate(
+            &request.scopes,
+            request.unscoped,
+            &request.run_dir,
+            &request.fixture_owned_spaces,
+            request.fixture_starting_space,
+        )
+        .map_err(|reason| (2, reason))?;
+        select_controller.set_fixture_gate(fixture_gate.clone());
+        send_controller.set_fixture_gate(fixture_gate.clone());
         // Bounded runs end at the soft deadline (the watchdog above is the
         // hard lifetime); unbounded product runs loop until owner exit or
         // exact-PID stop.
@@ -3059,6 +3099,7 @@ mod native {
                                         let handle_clone = handle.clone();
                                         let display = row.display.clone();
                                         let from = row.current;
+                                        let gate = fixture_gate.clone();
                                         send_controller.submit_trailing(
                                             &claim,
                                             crate::workspace_send::TrailingSubmit {
@@ -3072,8 +3113,8 @@ mod native {
                                             },
                                             move || {
                                                 crate::workspace_send_native::LiveManagedSendBackend::new(
-                                                    crate::workspace_send_native::OsSendReaders::live(handle_clone),
-                                                )
+                                                    crate::workspace_send_native::OsSendReaders::live(handle_clone).with_fixture_gate(gate.clone()),
+                                                ).with_fixture_gate(gate.clone())
                                             },
                                         )
                                     }
@@ -3081,6 +3122,7 @@ mod native {
                                 }
                             } else {
                                 let handle_clone = handle.clone();
+                                let gate = fixture_gate.clone();
                                 send_controller.submit(
                                     &claim,
                                     &row.display,
@@ -3089,8 +3131,10 @@ mod native {
                                         crate::workspace_send_native::LiveManagedSendBackend::new(
                                             crate::workspace_send_native::OsSendReaders::live(
                                                 handle_clone,
-                                            ),
+                                            )
+                                            .with_fixture_gate(gate.clone()),
                                         )
+                                        .with_fixture_gate(gate.clone())
                                     },
                                 )
                             }
@@ -3913,6 +3957,8 @@ mod tests {
             excluded: Vec::new(),
             log: TileLogLevel::Normal,
             run_dir: None,
+            fixture_owned_spaces: Vec::new(),
+            fixture_starting_space: None,
             border: ActiveBorderOptions::default(),
             pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
             drag: crate::drag_drop::DragOptions::default(),
@@ -3934,6 +3980,8 @@ mod tests {
             excluded: excluded.iter().map(|s| s.to_string()).collect(),
             log: TileLogLevel::Normal,
             run_dir: None,
+            fixture_owned_spaces: Vec::new(),
+            fixture_starting_space: None,
             border: ActiveBorderOptions::default(),
             pager_highlight: crate::pager_highlight::PagerHighlightStyle::default(),
             drag: crate::drag_drop::DragOptions::default(),
@@ -4274,6 +4322,43 @@ mod tests {
         assert!(!outcome.shutdown_clean);
         let body = serde_json::to_string(&outcome).unwrap();
         assert!(body.contains("\"shutdown_clean\":false"));
+    }
+
+    #[test]
+    fn fixture_gate_validates_exact_scope_only_with_harness_run_dir() {
+        use crate::fixture_gate::FIXTURE_TEST_SCOPE;
+        // Absent gate: every existing validation unchanged (normal product).
+        assert!(request(&["com.apple.TextEdit"]).validate().is_ok());
+        assert!(unscoped_request(30, &[]).validate().is_ok());
+        // Exact harness configuration validates.
+        let mut r = request(&[FIXTURE_TEST_SCOPE]);
+        r.run_dir = Some("/tmp/fixture-run".to_owned());
+        r.fixture_owned_spaces = vec![101, 102];
+        r.fixture_starting_space = Some(11);
+        assert!(r.validate().is_ok());
+        // Starting without owned still refuses (empty set never widens).
+        r.fixture_owned_spaces.clear();
+        assert!(r.validate().is_err());
+        r.fixture_owned_spaces = vec![101];
+        // Wrong scope refuses.
+        r.scopes = vec!["com.apple.TextEdit".to_owned()];
+        assert!(r.validate().is_err());
+        r.scopes = vec![FIXTURE_TEST_SCOPE.to_owned()];
+        assert!(r.validate().is_ok());
+        // Unscoped refuses.
+        r.unscoped = true;
+        assert!(r.validate().is_err());
+        r.unscoped = false;
+        // Missing run dir refuses.
+        r.run_dir = None;
+        assert!(r.validate().is_err());
+        r.run_dir = Some(String::new());
+        assert!(r.validate().is_err());
+        r.run_dir = Some("/tmp/fixture-run".to_owned());
+        assert!(r.validate().is_ok());
+        // Zero SIDs refuse.
+        r.fixture_owned_spaces = vec![0];
+        assert!(r.validate().is_err());
     }
 
     #[test]

@@ -2397,3 +2397,194 @@ fn live_bridged_foreign_focus_after_pin_holds_without_raise() {
     );
     assert_eq!(backend.counts().total(), 0, "no raise, no drag fallback");
 }
+
+// -- Development-only fixture-owned Space gate --------------------------------
+
+fn fixture_gate(owned: &[u64], starting: Option<u64>) -> crate::fixture_gate::FixtureSpaceGate {
+    crate::fixture_gate::FixtureSpaceGate::new(owned, starting).expect("gate builds")
+}
+
+#[test]
+fn fixture_gate_denied_drag_destination_refuses_with_zero_posts() {
+    // Goal 3 is outside the owned set [7]: the leg-setup refuses before
+    // any grab/chord post (zero delegate actuator calls) with a truthful
+    // pre-dispatch refusal; releases stay balanced (never blocked).
+    let target = pinned_target();
+    let lane = handoff();
+    let readers = FakeReaders::new();
+    let log = readers.log();
+    let mut backend =
+        LiveManagedSendBackend::new(readers).with_fixture_gate(Some(fixture_gate(&[7], Some(20))));
+    let crate::workspace_send_managed::SendEffect {
+        outcome,
+        leg,
+        setter,
+    } = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(setter, FrameSetter::Refused);
+    assert_eq!(backend.counts().key_down, 0, "no chord posted");
+    assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
+    let log = log.lock().expect("post log");
+    assert!(log.mouse_posts.is_empty(), "no mouse edge posted");
+    assert!(log.key_posts.is_empty(), "no key edge posted");
+    assert!(backend.counts().balanced(), "releases stay balanced");
+}
+
+#[test]
+fn fixture_gate_owned_drag_destination_delegates() {
+    // Goal 3 is owned: the drag applies exactly like the ungated path.
+    let target = pinned_target();
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new())
+        .with_fixture_gate(Some(fixture_gate(&[3], Some(20))));
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert_eq!(leg.map(|leg| leg.membership), Some(vec![TARGET_SID]));
+    assert_eq!(backend.counts().key_down, 1, "owned goal posts once");
+    assert!(backend.counts().balanced());
+}
+
+#[test]
+fn fixture_gate_stay_return_source_needs_owned_or_starting() {
+    // Forward applies, then the return select to source 20 refuses while
+    // neither owned nor recorded starting: hold with the chord as
+    // evidence, releases balanced, never replayed.
+    let target = pinned_target();
+    let lane = handoff();
+    lane.submit(target.clone()).expect("idle submits");
+    lane.take_for_owner().expect("owner takes");
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new())
+        .with_fixture_gate(Some(fixture_gate(&[3], None)));
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send_stay(&target, 20, Some("4242_7"), &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert_eq!(backend.counts().key_down, 1, "forward chord posted");
+    assert!(
+        backend.counts().balanced(),
+        "release-first on return refusal"
+    );
+    // The recorded starting current is a legal return source: the stay
+    // applies end to end under the gate.
+    let target = pinned_target();
+    let lane = handoff();
+    lane.submit(target.clone()).expect("idle submits");
+    lane.take_for_owner().expect("owner takes");
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new())
+        .with_fixture_gate(Some(fixture_gate(&[3], Some(20))));
+    let crate::workspace_send_managed::SendEffect { outcome, leg, .. } =
+        execute_managed_send_stay(&target, 20, Some("4242_7"), &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("stay applied carries exact return readback");
+    assert_eq!((leg.membership, leg.current), (vec![TARGET_SID], 20));
+    assert!(backend.counts().balanced());
+}
+
+#[test]
+fn fixture_gate_bridged_move_refuses_before_any_os_touch() {
+    // Fast route with an unowned goal: the dispatch refuses before the OS
+    // touch (no bridged call recorded), truthfully pre-dispatch.
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    let mut backend =
+        LiveManagedSendBackend::new(readers).with_fixture_gate(Some(fixture_gate(&[7], Some(20))));
+    let crate::workspace_send_managed::SendEffect {
+        outcome, setter, ..
+    } = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert_eq!(setter, FrameSetter::Refused);
+    let readers = backend.test_readers();
+    assert!(
+        readers.bridged_calls.is_empty(),
+        "no OS touch on the denied bridged path"
+    );
+    assert!(readers.front_calls.is_empty(), "no front pin either");
+    assert!(readers.select_calls.is_empty(), "no follow select either");
+    assert_eq!(backend.counts().total(), 0, "no drag fallback posts");
+}
+
+#[test]
+fn fixture_gate_trailing_preparation_refuses_without_actuation() {
+    // The controller owns trailing creation while gated: preparation
+    // refuses proven with no reads and no append, never a faked target.
+    use crate::workspace_send_effect::TrailingPrepPins;
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new())
+        .with_fixture_gate(Some(fixture_gate(&[3], Some(20))));
+    let pins = TrailingPrepPins {
+        display_index: 0,
+        pinned_cgid: 1,
+        pinned_uuid: "uuid-1".to_owned(),
+        trailing_enabled: true,
+        require_append: false,
+    };
+    let failure = backend
+        .prepare_trailing_target(&pins)
+        .expect_err("gated trailing preparation refuses");
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert!(!failure.dispatched, "nothing dispatched");
+    assert!(
+        failure.reason.contains("fixture gate"),
+        "truthful gate reason: {}",
+        failure.reason
+    );
+}
+
+#[test]
+fn fixture_gate_controller_submit_refuses_unowned_before_any_owner_effect() {
+    // Pinned submit with an unowned reply-bound target: refused before any
+    // owner spawn (lane stays idle, never busy).
+    let mut controller = LiveSendController::new();
+    controller.set_fixture_gate(Some(fixture_gate(&[7], Some(20))));
+    let err = controller
+        .submit(&admitted_claim(), "display-a", 20, || {
+            LiveManagedSendBackend::new(FakeReaders::new())
+        })
+        .expect_err("unowned send target refuses at submit");
+    assert!(err.contains("fixture gate"), "truthful gate reason: {err}");
+    assert!(!controller.is_busy(), "no owner effect admitted");
+    // Trailing submits refuse while gated (controller owns creation).
+    let trailing = ClaimedSelect {
+        action: InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true,
+        },
+        expected_sid: None,
+        ui_generation: 0,
+        topology_revision: Some(REVISION),
+        send_subject: Some(WINDOW.to_owned()),
+        send_generation: Some(GENERATION),
+        send_source: Some(source_domain()),
+        send_source_sid: Some(20),
+        send_source_focus: None,
+        send_source_focus_empty: false,
+        operation_id: Some("op-trail".to_owned()),
+        select_target_output: None,
+        select_target_workspace: None,
+        select_native_binding: None,
+        select_creation_operation: None,
+        select_creation_logical: None,
+        select_creation_output: None,
+        select_baseline_sid: None,
+        send_follow_view_operation: None,
+    };
+    let err = controller
+        .submit_trailing(
+            &trailing,
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 1,
+                pinned_uuid: "uuid-1",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            || LiveManagedSendBackend::new(FakeReaders::new()),
+        )
+        .expect_err("trailing refuses while gated");
+    assert!(err.contains("fixture gate"), "truthful gate reason: {err}");
+    assert!(!controller.is_busy(), "no owner effect admitted");
+}

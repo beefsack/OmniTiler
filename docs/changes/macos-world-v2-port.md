@@ -1189,6 +1189,86 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   stress work is dev-only against the shared spec and oracles, native side
   first, no shared-format changes here.
 
+## Fixture command harness checkpoint (2026-10-27)
+
+- Native latency measurement first needs a development-only signed-fixture
+  command transport through the real product tap. `fixture-leg` owns the
+  complete lifecycle; standalone `fixture-post`/`fixture-focus` now refuse.
+  Authenticated socket readback, signing-requirement checks, native caller
+  joins and balanced release remain separate from the parked stress scaffold.
+- Revised contract: verify signing identity at session bind, then retain
+  live process and server-window continuity. Complete socket/AX inventory
+  proof before the selected-window check and final session/target commit;
+  only native continuity checks run between down and up. Loss after down
+  always attempts the cleared-modifier release and reports release failure
+  explicitly. Signing deadlines kill and reap the owned child before return.
+- Offline review accepts this design for fixture-scoped correctness and
+  repeated calls without intentional pacing. Native calls still cost time;
+  no atomic input/host observation or zero wall-clock gap is claimed.
+  Delivery must be joined to product tap counters and native effects, not
+  inferred from a posting receipt. Same-run window continuity retains the
+  server's opaque handle as well as caller/run-tag/native identity checks.
+- Gates on the revised source: full macOS library tests 1,313/0 plus all
+  integration targets; focused harness review tests 30/0 and CLI fixture
+  parsing 1/0; strict all-target clippy and format checks. Earlier ordering
+  failures were corrected before live use. No baseline, direct-wake result
+  or ingress-queue acceptance is claimed yet.
+
+### Preliminary native harness leg and restoration gap (2026-10-27)
+
+- Signed-fixture exploratory input observed directional focus, move and
+  select-away effects through the product tap. No distributions or native
+  latency acceptance are claimed. The guard itself cost 62-81 ms before
+  down and 8-18 ms before up in these single-shot observations; posting
+  costs are separate and are not command-in-to-complete latency.
+- The leg omitted the required protected-window and per-shortcut-holder
+  preimages and did not prove an independent return path before selecting
+  away. It used pre-existing desktops rather than run-owned desktops.
+  Consequently, exact restoration and protected-state noninterference are
+  not established, and these observations do not close native acceptance.
+- Fixture windows and all run-owned processes were closed; native desktop
+  identities/count were unchanged, but the display remained on the secondary
+  desktop rather than its initial desktop. No automatic restoration from
+  older test evidence is inferred. Further native work requires current
+  restoration plus a newly proven return path and complete baselines.
+- The signing-requirement parser included trailing `Executable=` output;
+  extraction now accepts only the actual designated-requirement line in
+  either stream order. No path-bearing workaround is required.
+
+### Enforced lifecycle and native authority scope (2026-10-27)
+
+- The controller persists protected-window, holder, accent, process and
+  native topology/current baselines before setup. Unreadable categories
+  refuse; resolved-accent conversion failure is not recorded as absence.
+  The Compatible product launch avoids shortcut-holder/preimage writes.
+- Each Space-mutating leg exercises a newly created owned desktop away and
+  back before admitting commands. Distinct retained owned desktops supply
+  command destinations. A macOS diagnostic actuator gate checks the actual
+  reply-bound SID, refuses unowned destinations and creation before dispatch,
+  and leaves releases unconditional. This is native test authority, not
+  copied logical targeting or a shared/core contract change.
+- Product and fixture launches use LaunchServices with exact run identity.
+  Teardown stops the primary product first, independently restores current,
+  closes/shuts down owned fixtures, removes only registered pinned empty
+  desktops, reaps owned processes, then compares fresh baselines. Failures
+  collect residue and retain the receipt; no later capture error skips safe
+  cleanup. Pending launches cannot silently report a clean leg.
+- Latest implementation gates: locked macOS tests 1,372 library plus 148
+  integration, strict all-target clippy and workspace format check pass.
+  Independent offline review accepted the enforcement and ran focused guard,
+  lifecycle, probe, input, send and CLI suites. First native proof remains
+  pending; no new live leg, latency distribution, direct wake or ordered
+  ingress acceptance is claimed by this checkpoint.
+- First native proof attempt (post-only, same day): the controller refused
+  before any fixture launch because both bundle paths joined the process
+  working directory, which a LaunchServices launch does not set to the
+  repository. Zero fixture/product/window/Space/input effects resulted; the
+  persisted baseline receipt plus pending-launch residue were retained for
+  inspection. The resolvers are now executable-anchored (own
+  `.app/Contents/MacOS` root plus bundle sibling, explicit environment
+  override unchanged, fail-closed otherwise) with injected-layout regression
+  tests. Native proof itself remains pending with no posted chords.
+
 ## Risks and open evidence
 
 - KDE delivery may change exact native binding receipts; update/inspect it before

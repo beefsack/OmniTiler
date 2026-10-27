@@ -1438,6 +1438,7 @@ fn owner_backend_select_wires_before_gates_and_seams() {
         poster,
         op: Some("op-9".to_owned()),
         t_base: Instant::now(),
+        fixture_gate: None,
     });
     let before = before_row(&order, 48201);
     backend
@@ -1513,6 +1514,7 @@ fn owner_backend_create_refuses_cancelled_and_locked_without_touch() {
                 poster,
                 op: None,
                 t_base: Instant::now(),
+                fixture_gate: None,
             });
         let before = before_row(&[48201], 48201);
         assert!(
@@ -1614,6 +1616,7 @@ fn trailing_backend(
         poster,
         op: Some("op-exit".to_owned()),
         t_base: Instant::now(),
+        fixture_gate: None,
     });
     (backend, log, cancel)
 }
@@ -2082,6 +2085,7 @@ fn async_backend(
         poster,
         op: Some("op-async".to_owned()),
         t_base: Instant::now(),
+        fixture_gate: None,
     });
     (backend, cancel)
 }
@@ -2216,6 +2220,7 @@ fn drain_intermediate_notification_confirms_without_replay() {
         poster,
         op: Some("op-async".to_owned()),
         t_base: Instant::now(),
+        fixture_gate: None,
     });
     let mut state = SelectionState::default();
     let success = drain_claimed_select_with(
@@ -2374,5 +2379,154 @@ fn drain_newer_switch_supersedes_without_replay() {
         backend.test_poster().posted,
         vec![(1.0, 1), (-1.0, 1)],
         "each switch posts exactly once, in order"
+    );
+}
+
+/// Development-only fixture-owned Space gate over the owner backend: a
+/// denied SID (or a create while gated) produces ZERO delegate actuator
+/// calls (no topology read, no create append, no exit-arm, no gesture
+/// post, no release) and a truthful pre-dispatch `Refused`; an owned SID
+/// delegates exactly once.
+fn gated_backend(
+    topo: FakeTopo,
+    poster: FakePoster,
+    gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+) -> (OwnerSelectBackend<FakeTopo, FakePoster>, EventLog) {
+    let wake = SpaceSelectWake::new();
+    let latch = Arc::new(wake.subscribe());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let legs = crate::dock_swipe_select::PinnedLegs {
+        display_index: 0,
+        pinned_cgid: 7,
+        pinned_uuid: FIX_UUID.to_owned(),
+        published_displays: vec![],
+        published_separate: None,
+        settle_deadline: Duration::from_millis(3000),
+    };
+    let backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
+        legs,
+        latch,
+        cancel,
+        budget_secs: 30,
+        gate_reads: Box::new(FakeGates {
+            gates: vec![open_gates()].into(),
+        }),
+        creator: Box::new(FakeCreate {
+            results: VecDeque::new(),
+            log: std::rc::Rc::clone(&log),
+            calls: Vec::new(),
+        }),
+        exit_gate: Box::new(FakeExitGate::new(std::rc::Rc::clone(&log))),
+        topo,
+        poster,
+        op: Some("op-gate".to_owned()),
+        t_base: Instant::now(),
+        fixture_gate: gate,
+    });
+    // The shared order log records every "append"/"arm"/"await"/"disarm":
+    // empty scripted result queues panic on any delegate call, so an empty
+    // log plus no panic proves zero actuator calls.
+    (backend, log)
+}
+
+#[test]
+fn fixture_gate_denied_select_produces_zero_actuator_calls_and_truthful_refused() {
+    // Empty scripted queues: ANY topology read, create, exit-arm, or post
+    // panics. The gate must refuse before all of them.
+    let topo = FakeTopo {
+        counts: vec![].into(),
+        rows: vec![].into(),
+        revisions: vec![].into(),
+        notify_on_read: vec![],
+        reads: 0,
+    };
+    let poster = FakePoster {
+        reports: vec![].into(),
+        releases: vec![].into(),
+        posted: vec![],
+        released: vec![],
+    };
+    let gate =
+        crate::fixture_gate::FixtureSpaceGate::new(&[48202], Some(48201)).expect("gate builds");
+    let (mut backend, log) = gated_backend(topo, poster, Some(gate));
+    let before = before_row(&[48201, 48202], 48201);
+    let failure = backend
+        .select(&before, 48201)
+        .expect_err("baseline SID refuses while gated");
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert!(
+        failure.reason.contains("fixture gate"),
+        "truthful gate reason: {reason}",
+        reason = failure.reason
+    );
+    assert!(
+        backend.test_poster().posted.is_empty(),
+        "zero gesture posts on the denied path"
+    );
+    assert!(
+        backend.test_poster().released.is_empty(),
+        "zero releases on the denied path"
+    );
+    assert!(
+        log.borrow().is_empty(),
+        "zero create/exit effects on the denied path: {:?}",
+        log.borrow()
+    );
+    // Creates refuse while gated with the same zero-effect shape.
+    let failure = backend
+        .create(&before)
+        .expect_err("create refuses while gated");
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert!(
+        failure.reason.contains("fixture gate"),
+        "{reason}",
+        reason = failure.reason
+    );
+    assert!(
+        log.borrow().is_empty(),
+        "zero create/exit effects on the gated create path: {:?}",
+        log.borrow()
+    );
+}
+
+#[test]
+fn fixture_gate_owned_select_delegates_exactly_once() {
+    // Scripted success path (mirrors `owner_backend_select_wires...`):
+    // the owned SID settles with exactly one gesture post.
+    let order = vec![48201, 48202, 48203];
+    let topo = FakeTopo {
+        counts: vec![Ok(1), Ok(1)].into(),
+        rows: vec![
+            Ok(FakeTopo::row(FIX_DISPLAY, &order, 48201)),
+            Ok(FakeTopo::row(FIX_DISPLAY, &order, 48201)),
+            Ok(FakeTopo::row(FIX_DISPLAY, &order, 48203)),
+        ]
+        .into(),
+        revisions: vec![].into(),
+        notify_on_read: vec![],
+        reads: 0,
+    };
+    let poster = FakePoster {
+        reports: vec![PairsPosted {
+            began_posted: 2,
+            ended_posted: 2,
+            pending_sign: None,
+            error: None,
+        }]
+        .into(),
+        releases: vec![].into(),
+        posted: vec![],
+        released: vec![],
+    };
+    let gate =
+        crate::fixture_gate::FixtureSpaceGate::new(&[48203], Some(48201)).expect("gate builds");
+    let (mut backend, _) = gated_backend(topo, poster, Some(gate));
+    let before = before_row(&order, 48201);
+    backend.select(&before, 48203).expect("owned SID delegates");
+    assert_eq!(
+        backend.test_poster().posted,
+        vec![(1.0, 2)],
+        "legitimate owned SID delegates exactly once"
     );
 }

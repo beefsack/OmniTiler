@@ -857,6 +857,13 @@ pub const fn should_note_history(outcome: SendDrainOutcome, follow: bool) -> boo
 pub struct LiveSendController {
     thread: Option<crate::workspace_send_managed::ManagedSendThread>,
     inflight: Option<SendInflight>,
+    /// Development-only fixture-owned Space gate, stored at the adapter
+    /// controller constructor boundary (never core). Pinned submits are
+    /// refused here when their reply-bound target SID is unowned (before
+    /// any owner effect); trailing submits refuse while gated (the leg
+    /// controller owns creation). `None` leaves the normal product
+    /// unchanged.
+    fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
 }
 
 #[derive(Debug, Clone)]
@@ -907,6 +914,13 @@ impl LiveSendController {
         Self::default()
     }
 
+    /// Store the development-only fixture-owned Space gate (adapter
+    /// boundary, never core). Later submits enforce it before any owner
+    /// effect; `None` clears back to the normal product path.
+    pub fn set_fixture_gate(&mut self, gate: Option<crate::fixture_gate::FixtureSpaceGate>) {
+        self.fixture_gate = gate;
+    }
+
     /// Whether a target is inflight (submitted, completion unpolled).
     #[must_use]
     pub fn is_busy(&self) -> bool {
@@ -944,6 +958,17 @@ impl LiveSendController {
             );
         }
         let target = crate::workspace_send_effect::ManagedSendTarget::from_claim(claim)?;
+        // Fixture gate on the reply-bound target SID before any owner
+        // effect (no thread spawn, no post): unowned destinations refuse
+        // proven here; the drain stages `Refused` with no reads.
+        if let Some(gate) = self.fixture_gate.as_ref() {
+            let goal = target.target_sid();
+            if !gate.allows(goal) {
+                return Err(format!(
+                    "fixture gate: send target Space {goal} outside the owned set refused without actuation"
+                ));
+            }
+        }
         if self.thread.is_none() {
             self.thread = Some(crate::workspace_send_managed::ManagedSendThread::spawn(
                 factory,
@@ -997,6 +1022,14 @@ impl LiveSendController {
             legs.pinned_uuid,
             legs.trailing_enabled,
         )?;
+        // Fixture gate: the leg controller owns trailing creation while
+        // gated; the product never prepares. Refused before any submit.
+        if self.fixture_gate.is_some() {
+            return Err(
+                "fixture gate: trailing send refused (controller owns creation); refusing without actuation"
+                    .to_owned(),
+            );
+        }
         if self.thread.is_none() {
             self.thread = Some(crate::workspace_send_managed::ManagedSendThread::spawn(
                 factory,

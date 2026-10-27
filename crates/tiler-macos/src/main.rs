@@ -714,6 +714,40 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // cleared-modifier release.
             tiler_macos::textedit_post::run_textedit_post(&record, &nonce, &chord, request.modifier)
         }
+        Command::FixturePost { .. } => {
+            // Refused: a single-shot external lifecycle cannot certify the
+            // mandatory baselines, own the fixture instance, or restore the
+            // starting Space. The usable repeated driver path is
+            // `fixture-leg`, which runs the complete controller entry.
+            Err((
+                2,
+                "fixture-post refused outside the leg controller (no baseline, no owned instance, no restoration proof); use fixture-leg".to_owned(),
+            ))
+        }
+        Command::FixtureFocus { .. } => {
+            // Same refusal as the post path: focus without a controller
+            // lifecycle certifies nothing.
+            Err((
+                2,
+                "fixture-focus refused outside the leg controller (no baseline, no owned instance, no restoration proof); use fixture-leg".to_owned(),
+            ))
+        }
+        Command::FixtureLeg {
+            seconds,
+            chords,
+            preset,
+            signer,
+        } => {
+            // Development-only fixture leg: the complete real entry point
+            // from baseline through owned shutdown (see fixture_leg).
+            tiler_macos::fixture_leg::run_fixture_leg(tiler_macos::fixture_leg::FixtureLegOpts {
+                seconds,
+                chords,
+                preset,
+                modifier: request.modifier,
+                signer,
+            })
+        }
         Command::TextEditGrabInspect { record, nonce } => {
             // Read-only grab-point inspection for the run-owned disposable
             // TextEdit document: same record/nonce gates plus fresh frame
@@ -898,6 +932,8 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             diag_trailing_click,
             log,
             run_dir,
+            fixture_owned_spaces,
+            fixture_starting_space,
             border,
             pager_highlight,
             drag,
@@ -984,6 +1020,8 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 diag_trailing_click,
                 log,
                 run_dir: run_dir.clone(),
+                fixture_owned_spaces,
+                fixture_starting_space,
                 border,
                 pager_highlight,
                 drag,
