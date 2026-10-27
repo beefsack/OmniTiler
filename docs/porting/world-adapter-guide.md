@@ -29,7 +29,7 @@ live in `crates/tiler-core/src/`; the JSON codec lives in
   replacement OmniTiler pager. User-approved 2026-10-27: hidden native
   geometry is corroborated against retained raw frame proof, not the logical
   tile; require exact tile geometry on reveal. Preserve the hidden-write fence.
-  [Current status](../changes/platform-neutral-stress-acceptance.md).
+  [Windows acceptance](../changes/archive/platform-neutral-stress-acceptance.md).
 
 ## 1. One core model and policy
 

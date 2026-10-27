@@ -95,12 +95,21 @@ observed order fails loudly instead of being copied in.
 
 ## Native connector notes (Windows leg)
 
-The Windows connector is mechanically parked pending
-[exact pager/world proof binding](../docs/changes/platform-neutral-stress-acceptance.md#remaining-proof-binding-blocker).
-Hidden geometry follows the tentative retained-frame oracle: exact identity,
+The Windows connector emits
+[exact pager/world proof binding](../docs/changes/archive/platform-neutral-stress-acceptance.md#proof-binding-repair-and-final-acceptance).
+Hidden geometry follows the approved retained-frame oracle: exact identity,
 hidden visibility and raw retained frame proof, then exact logical tile geometry
-on reveal. Native runs have no accepted complete pass. The following describes
-the connector mapping, not native acceptance.
+on reveal. Both cases pass at 0/10/50ms after the directional CLI rebuilds
+origins from a fresh observation before its early foreground lookup. This
+adds no settlement waits and preserves downstream lifetime/scope/focus gates.
+
+Before case actions, the connector verifies authored `initial_facts` against
+settled world proof and fresh identity-bound native frames. If the two-window
+bootstrap is exactly pairwise-swapped, one existing exact-owner directional
+move establishes the authored layout and a strict setup checkpoint verifies
+it. Exact initial layout needs no setup command; other shapes refuse. Setup
+is recorded separately from the 102 commands and their publication timings;
+expected tiles are never copied from the observed layout.
 
 Each action maps 1:1 to the existing exact-owner CLI controls:
 `select-workspace`/`select-numbered` to `workspace --select INDEX`

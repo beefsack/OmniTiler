@@ -13,6 +13,33 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## Windows wake-attribution trace flood (closed 2026-10-27)
+
+- Filter empty unstaged message-only wake detail, count omissions in existing
+  wait summaries and correct the copied diagnostic's always-zero elapsed time.
+  Preserve meaningful event/deadline attribution and paired pager/world proof;
+  no scheduling or product behavior changes and no aggregation timer.
+- Fixture-only zero-delay stress passes before/after: wake detail 577 to 520
+  rows; filter-eligible empty rows 51 to zero; 55 after-run omissions account
+  exactly for all 575 waits. Both legs retain 139 paired pager payloads and
+  354 accepted world rows. Native/offline gates and cleanup pass. Physical
+  same-tick clustering did not reproduce; no idle-spin or game-cost claim.
+  [Record](changes/archive/windows-wake-attribution.md).
+
+## Windows stress runner and reveal-origin freshness (closed 2026-10-27)
+
+- Shared stress definitions and three simulated-host schedules pass; Windows
+  fixture-only home-away and trio-churn each pass all 102 commands at 0/10/50ms,
+  with exact native/world/pager joins and verified restoration. Paired proof,
+  authored bootstrap setup and departure cursor repairs retain strict gates.
+- Windows directional CLI now rebuilds eligible origins from a fresh
+  observation before its early foreground lookup after reveal. Regression
+  fails before the fix; all six live legs pass afterward with no waits or
+  weakened lifetime/scope/foreground gates. Native gates pass 2928 tests (one
+  ignored), strict clippy/fmt and script fault checks. Other-platform native
+  runners, keyboard ingress and intermittent-hide reproduction remain active.
+  [Record](changes/archive/platform-neutral-stress-acceptance.md).
+
 ## Windows physical workspace-switch focus defect (closed 2026-10-26)
 
 - User physical acceptance on current main including `3fb4be07`, ordinary apps:

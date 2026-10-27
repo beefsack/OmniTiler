@@ -27,6 +27,8 @@ User-approved 2026-10-27 index (implementation status below):
   ([Workspaces](#workspaces))
 - Platform-neutral stress contract, hidden-frame oracle and paired pager/world
   proof; CLI/keyboard runner dispatch ([below](#stress-acceptance-and-dispatch-2026-10-27))
+- Process every command; render the latest world rather than every intermediate
+  state ([below](#latest-world-rendering-2026-10-27))
 
 Tentative index (user review pending; not approved product rules):
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
@@ -65,21 +67,66 @@ Tentative index (user review pending; not approved product rules):
   ([below](#world-command-intent-and-birth-ownership-2026-10-26)); tentative,
   safety holds and fresh-native settlement requirements remain binding
 
+## Latest-world rendering (2026-10-27)
+
+- **User 2026-10-27:** "Core processes every command and the platform renders the
+  final state correctly. Critically, I don't want it rendering every single world
+  step in between because that causes slowness and jank. If a user spams 10
+  commands in the time it takes to render a single world state, it should
+  immediately just jump to the latest world state so it's responsive and correct."
+- This records the rendering intent, not an approved implementation design.
+  Windows currently applies intermediate worlds; existing latest-wins overlay
+  slots and retained view targets do not provide general world-actuation
+  coalescing. Effect fencing, arrival authority and focus-memory implications
+  remain open in the [investigation](changes/windows-workspace-return-focus.md#rapid-switching-and-latest-world-rendering-2026-10-27).
+- **User 2026-10-27:** "if an arrival is unfinished before a user navigates away
+  then it should change no world state like which window was active."
+  A superseded, unfinished arrival must not change remembered focus or other
+  world state through observations during it or the departure that ends it.
+  This is a binding behavioral constraint, not permission to ignore genuine
+  input or alter safety gates. Completion, independent-input and host-event
+  boundaries are proposed explicitly in the
+  [design](changes/windows-workspace-return-focus.md#arrival-memory-and-latest-world-design-2026-10-27);
+  shared-core/protocol changes still require approval before implementation.
+- **User-approved semantics 2026-10-27; tentative implementation record:**
+  workspace active-window memory is owned by core decisions when commands are
+  processed (including arrival fallback, directional focus, follow sends and
+  core lifecycle successor decisions), not by render completion. Defer and
+  reconcile replaces both attribution Options 1 and 2: while Windows renders
+  the latest desired world, foreground changes are deferred; once that world
+  is proven applied, compare actual versus desired foreground and report a
+  persistent difference as genuine. A click after the last focus request that
+  survives rendering is reported and remembered; an earlier click is overridden
+  by the latest focus request. Outside rendering, foreground changes report
+  immediately. Window lifetime, displays and settings always report promptly.
+- The [Layering principle](principles.md#layering) now defines latest-state
+  convergence, skipped intermediate states and reconciled render disturbances.
+  Live game/fullscreen/unknown-window protections, exact-desktop authority and
+  no-forced-refocus remain unchanged. An unfinished rendering superseded by
+  navigation changes no world state; independent core command decisions stand.
+  Core arrival transactions and the [earlier comparison](changes/windows-workspace-return-focus.md#command-owned-active-window-model-comparison-2026-10-27)
+  remain historical alternatives, not selected designs. The
+  [current design](changes/windows-workspace-return-focus.md#defer-and-reconcile-design-2026-10-27)
+  leaves no-proof failure handling and unissued-focus authority explicitly open;
+  no production implementation or protocol shape is adopted by this entry.
+
 ## Stress acceptance and dispatch (2026-10-27)
 
 - **User-approved:** platform-neutral schema, alias/focus oracles, simulated-host
   schedules, transport fencing, bounded observation barriers, pager traces,
   paired accepted-world evidence, admission fences, evidence separation,
   effect-aware recovery and hidden snapshot seeds
-  ([contract](changes/platform-neutral-stress-acceptance.md#approved-technical-decisions)).
+  ([contract](changes/archive/platform-neutral-stress-acceptance.md#approved-technical-decisions)).
 - **User-approved:** hidden identity/visibility and retained-frame proof; check
   exact native geometry against logical allocation on reveal. Product behavior
   and the hidden-window write fence remain unchanged.
-- **User-approved; not implemented:** whenever the Windows pager payload trace
+- **User-approved; exercised live:** whenever the Windows pager payload trace
   emits, emit exact accepted-world proof paired to the snapshot actually used,
   with corresponding report/reply provenance. Keep strict joins and product
-  behavior unchanged. Review snapshot lifetime/correlation design before implementation
-  ([blocker](changes/platform-neutral-stress-acceptance.md#remaining-proof-binding-blocker)).
+  behavior unchanged. Snapshot lifetime/correlation design reviewed; native
+  joins pass in all six native matrix legs after the Windows directional CLI
+  origin-refresh repair, with no waits or weakened gates
+  ([record](changes/archive/platform-neutral-stress-acceptance.md#proof-binding-repair-and-final-acceptance)).
 - **User-approved:** two stress runner modes share definitions and oracles:
   existing CLI for deterministic correctness; lower-priority keyboard mode uses
   injected real shortcuts through the hook path and the test window tool for
@@ -4624,6 +4671,17 @@ platform API behavior.
     scoped synthetic proof passed; shell-takeover purpose unidentified;
     physical input/display and other arrangements remain user-owned
     ([fullscreen](changes/archive/windows-fullscreen.md)).
+  - **User decision 2026-10-27:** Windows arrival focus from an explicit
+    workspace selection may pass the foreground-fullscreen veto only for
+    the exact verified desktop. Fresh foreground must equal the nonzero live
+    `GetShellWindow()` handle; verify its process identity/lifetime, user/session,
+    and system-shell executable, then recheck stability before actuation.
+    Class, basename and geometry alone are not authority. Unreadable or
+    mismatched proof, foreground supersession, and all existing target, hook,
+    elevation, modal and lifetime gates remain fail-closed. No blanket shell/
+    Explorer exemption, automatic or observation-driven refocus, retry, timer,
+    or geometry write. Other focus causes retain their existing foreground
+    safety rules. [Implementation and evidence](changes/windows-workspace-return-focus.md).
   - Float (Win+G matches Meta+G): intentional floats leave the Engine tree
     and siblings reflow; first float uses the centered 60% fallback,
     later floats reuse retained geometry. Unfloat carries the live frame with

@@ -15,24 +15,28 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- Windows exact-desktop workspace-arrival focus | User-approved 2026-10-27:
+  explicit workspace selection may restore focus over only the exact verified
+  desktop, with fresh shell-handle/process/lifetime/user/session/executable
+  proof and stability rechecks. Delivered offline with red/green regression,
+  negative safety coverage and accepted independent review; normal fixture
+  return passes with native/fixture focus agreement and clean recovery.
+  Remaining: physical exact-desktop-path acceptance on the user's simple
+  WS1 -> empty WS2 -> WS1 sequence; fixture scope leaves the unmanaged
+  application foreground and does not prove that path. No blanket shell
+  exception, observation refocus or retry. [Record](changes/windows-workspace-return-focus.md).
 - P2 | Windows-host scripted full row test flake | Pre-existing `scripted full
   row` panic reproduced once in 16 runs and also on parent `68ce0b75`.
   Diagnose and stabilize without weakening the scripted-row assertions.
-- P2 | Windows wake-attribution trace flood | User 2026-10-26: during heavy
-  physical spam testing the log fills with consecutive `wake-attribution`
-  lines from `wait_source:"pager"` message wakes with no hook kinds, no
-  foreground and `elapsed_ms:0`, several per 10ms on the same tick. Tidy the
-  diagnostics (e.g. aggregate or suppress no-op wakes) so logs stay readable
-  without losing the attribution that diagnosed the 2026-10-26 starvation bugs
-  ([record](changes/archive/windows-directional-focus-startup.md)).
 - P2 | Pager shows stale source layout after send-follow | User dogfood
   2026-10-26: after sending a window away with follow, the source workspace's
-  pager cell keeps the pre-send split until revisited. User 2026-10-27: next step
-  is investigation only; find the cause and feasible options, then return to the
-  user before choosing. Assess drawing the source cell from logical layout,
-  retiling hidden source windows on departure (conflicts with the hidden-window
-  write fence; not advised), or leaving as is. Unverified hypothesis: the fence
-  keeps native frames stale. Later; not started.
+  pager cell kept the pre-send split until revisited. Findings 2026-10-27:
+  cause was the stale pager snapshot cache, fixed by `2d3e36f1`, not blocked
+  source retiling. Current-build fixture-only Windows send-follow/revisit passed:
+  survivor desired frames, independent native readbacks and exact pager source
+  frames matched before revisit and after reveal, with paired accepted-world
+  evidence. Hidden-window write fence unchanged. Awaits the user's decision on
+  whether any new pager policy is needed.
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies (now owned by the KDE v2 port item
   below); (3) KDE Settings core-catalog
@@ -105,11 +109,13 @@ decisions of 2026-09-24 are under
   three simulated-host schedules pass offline. Windows delay-zero testing found
   and repaired stale hidden-frame facts; hide/reveal now passes that checkpoint.
   Hidden-oracle semantics now follow the existing no-hidden-write safety fence
-  (user-approved 2026-10-27). Strict native runs at 0/10/50ms expose a
-  pager/world trace-proof gap; earlier apparent passes were withdrawn. Trio
-  admission-anchor and observation-fence harness defects are repaired offline.
-  Runner remains parked pending exact proof binding; no full native pass
-  ([active record](changes/platform-neutral-stress-acceptance.md)).
+  (user-approved 2026-10-27). Snapshot-bound paired proof, authored bootstrap
+  setup and departure cursor repair pass live. Windows delivery is complete:
+  after repairing directional CLI origin freshness, both cases pass all 102
+  commands at 0/10/50ms with strict joins and clean recovery. Remaining native
+  runners are KDE/macOS using these same definitions/oracles; physical burst
+  ingress remains the separate keyboard item below
+  ([Windows outcome](changes/archive/platform-neutral-stress-acceptance.md)).
 - P2 | Keyboard stress runner | User 2026-10-27: share definitions and oracles
   with the existing deterministic-correctness CLI mode; use injected real
   shortcuts through the hook path for real-input bursts and the test window tool
@@ -123,8 +129,9 @@ decisions of 2026-09-24 are under
   10ms once left a view transfer pending for 60s with one fixture member still
   visible; a retry passed under the then-current harness, whose acceptance was
   later withdrawn for unrelated trace-proof mixing. Preserve native failure
-  evidence, reproduce with the corrected harness, and fix without weakening
-  lifetime/visibility fences ([record](changes/platform-neutral-stress-acceptance.md)).
+  evidence; corrected home-away at 10ms and a separate repeat pass all hide/show
+  checkpoints but do not reproduce or disprove the race. Fix without weakening
+  lifetime/visibility fences ([record](changes/archive/platform-neutral-stress-acceptance.md)).
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every
