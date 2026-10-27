@@ -10,8 +10,8 @@
 - Compare command-time active-window ownership with the earlier transactional
   arrival proposal; preserve both designs and expose attribution limits.
 - Current direction: command-owned memory, prompt intentional focus updates and
-  latest-only rendering; defer/reconcile is superseded. Attribution and earlier
-  focus remain unresolved; see the [current investigation](#prompt-intent-and-render-side-effects-2026-10-27).
+  latest-only rendering; defer/reconcile is superseded. Reduce ambiguity before
+  choosing its policy; see the [measurements and staged design](#ambiguity-reduction-measurements-and-staged-design-2026-10-27).
 
 ## Acceptance and approach
 
@@ -1273,7 +1273,196 @@ The proven blocker is foreground safety, not target classification or core targe
   before/after-prime safety, exact-desktop effect binding, one-shot double claims,
   command ordering/fairness and strict wire fixtures. No sleeps, settle clocks,
   polling, replay, fabricated completion or hidden raw safety facts.
-- **Next action:** decide the unknown-foreground policy and whether to pursue
-  phased earlier-focus authorization or a bounded passive-input experiment.
-  Recommendation: keep all safety gates, test narrow SWITCHEND first, and do
-  not start core/protocol implementation claiming the click gap is solved.
+- The subsequent user choice was ambiguity reduction first, not selection of
+  either unknown policy; the measurements and staged design below continue this
+  investigation. No implementation may claim the click gap is solved.
+
+## Ambiguity reduction measurements and staged design (2026-10-27)
+
+### Outcome and evidence boundary
+
+- User selected reducing ambiguity before deciding whether unattributed
+  foreground should update memory. Additional design input: post all arriving
+  shows quickly, then prioritize proving them shown over unrelated rendering.
+  Continue servicing safety, input and newer commands; do not block the owner
+  or add a settle delay. Shown proof is not proof of activation intent.
+- Production ordering, safety proofs and protocol are unchanged. Accepted live
+  measurements below cover current ordering only. No staged production path,
+  staged native timing trial or SWITCHEND implementation was delivered.
+- Key result: in the rapid occupied <-> empty sequence, the 52 return windows
+  contained only their accepted arrival target's foreground event. All 53
+  unexplained-by-focus switch events occurred on **empty departures**. Putting
+  arrival focus before departure hides cannot eliminate that empty case because
+  no arrival target exists. This fixture did not reproduce Steam activation
+  during an unfulfilled return, and does not establish app/click attribution.
+
+### Accepted current-order measurements
+
+- Source `030951a8f1f531e57f2b9218ecd77d61720b84c4`, clean tree at execution;
+  owner SHA-256 `AFA1DD84D38BEF37475F888480C6BEAF6BDF5145AE16861224E9C805B114061D`,
+  fixture SHA-256 `0C7DFC7AD5F28EC63F06A25C528E72D750893ADEB8D4B10C42D0005A39AE2563`.
+  Native Windows, ordinary integrity, fixture-only tiler scope. Source/diff,
+  launch identities, display preimage, settings bytes, taskbar/SPI, native/fixture
+  observations and raw owner/observer/runner responses are retained outside the
+  repository. Concurrent platform changes incorporated later are not this tested
+  source revision.
+- Recovery preflight proved exact-owner graceful exit and reveal of hidden
+  fixture members, then independent idempotent restore. Accepted legs verified
+  byte-identical settings, matching taskbar/SPI, fixture shutdown, owner exit and
+  no owned process/ledger/pending-control residue. Passive observer release was
+  verified by completed pump join plus process absence; its unhook counter is
+  attempts, not successful-release proof. One normal observer exit code was not
+  captured, but completion summary and process absence were.
+- Locked fixture/Windows tests, live-library check, stress definition/parser
+  check and fault mocks passed before live work. Current-order home-away and
+  trio-churn stress runs passed (102 commands each); authored 104-select
+  WS1 <-> empty WS2 spam passed. All used `-DelayMs 0`, no per-command native
+  convergence waits, only explicit checkpoint/final proof. Transport still
+  serializes publication: observed command rates were about 2.9/s for the mixed
+  home-away case and 4.2/s for pure spam, not physical-shortcut-rate evidence.
+- For timing, a separately pumped, bounded out-of-context observer retained the
+  **source** HWND/thread/event time, not a later foreground sample. Its native
+  imports and queue/lifecycle seams were checked, followed by a short native
+  smoke. The final wrapped mixed home-away and pure-spam runs passed. Received
+  versus drained was 385/385 and 338/338, respectively, with zero cap drops,
+  residual queue, pump errors or accounting loss. Identity joins use the proven
+  fixture roster/lifetime; cleanup/bootstrap events are excluded explicitly.
+
+| Current-order case | Eligible arrivals with matched foreground | First visibility API post -> target foreground callback, owner clock | First cohort SHOW -> target foreground event, source clock |
+| --- | --- | --- | --- |
+| Checkpointed mixed home-away, 102 commands | 23/23 | Mean 79.4 ms, median 80 ms, range 74-84 ms | Mean 52.3 ms, median 47 ms, range 31-79 ms |
+| Pure rapid WS1 <-> empty WS2, 104 selects | 52/52 home returns | Mean 80.8 ms, median 80 ms, range 74-90 ms | Mean 63.0 ms, median 63 ms, range 31-79 ms |
+
+- The first column of durations is an **upper bound including hook delivery**,
+  not the exact foreground-generation instant: visibility-post `call_mono_ms`
+  and matched edge `queued_mono_ms` share the owner clock. The edge joins uniquely
+  to the independent source event by event time, thread and lifetime-bound HWND.
+  Drain adds roughly another 3 ms. Source SHOW/foreground deltas use their own
+  event-time domain and have host tick granularity. No cross-process Instant/
+  QPC subtraction, setter-return-as-landing, or timing-derived cause is used.
+- Empty-away has no intended focus landing, not a failed arrival. The mixed
+  trace separately contains 23 empty departures and six early switches with
+  skipped focus; these do not enter the 23-arrival timing denominator. Pure
+  spam has 52 empty departures and no unmatched eligible home arrival. Already
+  visible directional focus is excluded from arrival timings.
+- Async visibility API calls themselves took 0-1 ms in the earlier baseline;
+  two-window post groups still had intervening per-member preparation/readback
+  work (one retained show group had posts 33 ms apart). API time is not proof
+  time. No attribution of the whole gap to one function or host behavior is
+  established. Prepare-and-post batching must not remove claim persistence,
+  per-window live gates or fresh pre-setter checks.
+
+### Foreground census, not a cause classifier
+
+| Observed switch window | Total foreground events | Exact accepted-focus-target compatible | No matching accepted focus flight |
+| --- | --- | --- | --- |
+| Mixed case, after first switch through last action | 108 | 23 arrivals + 46 directional changes | 39 |
+| Pure 104-select spam, after bootstrap and before cleanup | 105 | 52 arrival targets | 53: 52 foreign windows, one other fixture member, all on empty departures |
+
+- These partitions are **operational observations**, not causal verdicts.
+  Accepted-flight compatibility uses unique source/identity joins and the issued
+  target within the bounded effect window; it cannot rule out simultaneous
+  genuine activation of that same target. Native foreground events contain no
+  reason. The 39/53 unmatched events are an ambiguity census, not proven render
+  effects or intentional app changes. All source facts remain available.
+- Whole captures, including bootstrap/cleanup, contain 118 and 111 foreground
+  events; filtering only non-fixture identities would incorrectly report 27/54
+  as the unknown-cause totals. A managed identity is not an activation cause.
+  No unrelated foreground event was observed between first arrival show and
+  arrival-target foreground in the 23 + 52 matched return windows.
+- Earlier analysis paired every shown member with its own later activation and
+  yielded a spurious mixed-case median 109 ms / maximum 1813 ms. Those are
+  withdrawn as arrival measurements. Initial fixture readback field-path errors
+  and a missing terminal checkpoint in the authored case were corrected without
+  product changes; failing evidence is retained. An external observer import
+  lookup failed before installing hooks; explicit native bindings, export checks
+  and native smoke repaired that plumbing. The rejected staged trial draft was
+  never executed and supplies no evidence.
+
+### Staged switch proposal: decision required, no gate change implemented
+
+1. **Prepare/reveal:** retain the accepted select's desired view, member
+   lifetimes, operation/effect and source-intent identity. Prepare required
+   recovery records and eligibility checks; post all authorized entering-window
+   shows nonactivating as a bounded batch, without unrelated geometry/overlay
+   work between them. Recheck identity/safety at each native boundary. "Together"
+   means prompt posts, not an atomic cross-process Win32 guarantee.
+2. **Prove arrival-ready:** event-driven fresh readback proves every required
+   arriving member visible under the existing identity/lifetime/scope rules,
+   and the selected target visible, framed, uncloaked, non-iconic and homed to
+   that desired output/workspace. Departing members may still be visible. This
+   is a **new partial view-authority proof**, not `read_view == complete`.
+3. **Focus:** only that accepted explicit-selection effect may use arrival-ready
+   proof. Preserve all other target/foreground/modal/input/game checks and
+   exact-desktop binding/reproof; spend the focus effect only at its existing
+   one-shot dispatch boundary. Established newer intentional B cancels unissued
+   A immediately, even while readiness is pending. Unknown B is not classified
+   by phase or timing; existing competing-foreground vetoes remain live.
+4. **Hide departures/final proof:** after exact target foreground is proven,
+   revalidate latest desire, safety and foreground before departure writes.
+   Hide only current departures; retain full final view proof requiring inactive
+   members hidden. If the foreground changes again, that invalidates the claimed
+   no-foreground-hide premise; process the new evidence rather than hiding an
+   obsolete foreground or restoring A. Inventory/operation receipts never wait
+   for this phase to fabricate completion.
+
+| Existing boundary | Exact proposed change / preservation | Consequence and recommendation |
+| --- | --- | --- |
+| `world_diff.rs:3579-3599` requires `read_view == target`; `world_native.rs:1714-1820` requires all inactive members hidden | Add an explicit-selection-only arrival-ready authorization before departure hiding; do **not** weaken or rename final `read_view` proof. All arriving members and target still need fresh eligibility and exact homing/scope | Principal proof change requiring a decision. Recommend a narrowly scoped phased-proof prototype for ordinary eligible occupied arrivals, not a universal bypass |
+| `world_diff.rs:3102-3148` spends the view operation around one hide/reveal batch | Represent unissued reveal/focus/departure phases as native operation accounting bound to the latest intent. A spent/possibly executed native phase is never replayed; partial visibility is never a completed view receipt | Requires deliberate phased renderer accounting, not moving a setter above an unchanged check. Hide -> reveal -> full proof -> focus leaves the original fallback and is not this proposal |
+| `world_diff.rs:3506-3577,3729` freshness and one-shot authority | Keep current gates unless separately changed. Waiting for readiness may cross observations/revisions and stale the unissued focus effect | Former R2 is independently relevant: obtaining fresh authority for a provably never-issued current intent needs an explicit contract decision. Do not carry an old desktop grant or silently rearm the effect; without that decision, stale focus stays unfulfilled |
+| NA changed-foreground guard, `world_diff.rs:3600-3727` | Retain original foreground baseline/source intent across bounded phases and revalidate before prime/setter; no exemption for fallback or an arbitrary matching HWND | Source-bound phase accounting must not erase a genuine intervening activation. Carrying proof across native-owner lifetimes needs review, not implicit widening of the same-pass hidden-departure lane |
+| Native focus/game/desktop gates, `world_native.rs:796-974,2050-2257` | Keep readable fullscreen/unreadable foreground vetoes, scope/identity/modal/move-size/hook checks and post-prime exact-desktop reproof. Only the existing exact fresh selection/effect/target grant permits that desktop exception | Ordinary unchanged non-fullscreen departure can pass today. A departing fullscreen game may not: do not focus over it to satisfy staging. Hold or use existing authorized switch behavior, truthfully retaining possible fallback |
+
+- **Empty/no-eligible arrival:** there is no target to foreground. Hiding its
+  departing foreground still allows Windows to choose another window, as the
+  `SW_HIDE` contract states. No-target does not mean OS foreground zero. Explicit
+  desktop focus, a focus sink, or retaining a hidden foreground would be new
+  policy/authority, not part of this proposal. Do not invent one to claim that
+  Windows never chooses a fallback.
+- **Partial/refused/ignored/superseded:** do not declare arrival-ready/final view
+  or focus landing without proof; no timer, replay or corrective focus. Continue
+  safety/input and event-driven latest-state convergence, preserving issued
+  async obligations. A no-fallback preference cannot indefinitely block the
+  latest switch: falling back to current authorized hiding may still cause OS
+  activation and must be reported as such, not a successful staged handoff.
+- **Estimate:** approximately 80 ms to callback is a measured two-window
+  reveal/focus planning proxy, **not a demonstrated staged result or upper bound**.
+  The measured empty -> occupied returns already have no outgoing foreground
+  to hide, so reordering alone provides no demonstrated reduction in those
+  spans. For occupied -> occupied, batching may remove departure work from the
+  early critical path, but no numeric saving is established. Empty-departure
+  ambiguity remains: the 53 unmatched events cannot be assumed eliminated.
+
+### SWITCHEND, unknown policy and next evidence
+
+- The live guide reserves OS shortcut journeys for physical user input. No
+  synthetic Alt-Tab or fabricated SWITCHEND was used; passive capture ran with
+  SWITCHEND off. Thus destination/ordering/cost validation is **blocked on a
+  bounded physical Alt-Tab leg**, not passed from documentation or fake events.
+  No conditional production/protocol implementation was started without it.
+- Candidate validation: bind fixture windows and capture SWITCHSTART/END plus
+  foreground source HWND/thread/event time on one pumped event feed. Check the
+  documented destination, START-less END case, foreground-before/after END,
+  cancellation and intervening newer workspace commands. Observed order is not
+  a general host guarantee. No new synchronous input-path hook is needed, but
+  callback cost and fullscreen/game compatibility are not measured here.
+- A minimal future generic intentional-focus input still needs identity,
+  source ordering and stale-command fencing, not merely `intentional:true` on
+  the latest snapshot. A delayed END must not overwrite a newer core selection;
+  sampling the current core revision at callback delivery does not prove its
+  generation-time order. Strict protocol version/compatibility routing and
+  legacy-adapter defaults remain part of that contract decision.
+- **Policy recommendation, not adoption:** do not blindly accept unmatched
+  foreground into memory: every rapid roundtrip exposed empty-departure
+  ambiguity without authored focus intent. Conservatively retain core memory
+  while exposing actual facts and respecting live focus loss; intentional
+  evidence must still apply promptly. However these fixture-only, no-click
+  successes do not measure missed genuine clicks/app self-activation or the
+  reported Steam case. Honor the selected ambiguity-first direction: complete
+  phased-proof review and physical SWITCHEND evidence before choosing either
+  unknown policy as the product default.
+- **Next action:** decide whether to prototype the narrowly scoped arrival-ready
+  proof and, separately, any never-issued-focus continuation authority. Arrange
+  a bounded physical Alt-Tab capture before its conditional implementation.
+  Keep this record active; no policy, safety-proof or protocol change is adopted.

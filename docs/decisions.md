@@ -109,6 +109,17 @@ Tentative index (user review pending; not approved product rules):
   question of fresh authority for a never-issued current focus intent, not a
   reason to defer input. No production implementation or protocol shape is
   adopted by this entry.
+- **User 2026-10-27, ambiguity reduction first:** reduce the disturbance and
+  click-rejection window before selecting the unknown-foreground policy. Reveal
+  arriving windows together as quickly as possible, prioritizing their shown
+  proof over unrelated rendering; this does not block safety, input or newer
+  commands. Investigate reveal -> eligible focus -> departure hide with phased
+  view authority, empty arrivals and measured normal/rapid behavior. No safety
+  gate or phased proof change is selected. The
+  [measurement and staged design](changes/windows-workspace-return-focus.md#ambiguity-reduction-measurements-and-staged-design-2026-10-27)
+  separates accepted timing bounds from causal attribution and unmeasured
+  estimates. Physical Alt-Tab validation and any source-fenced generic protocol
+  change remain outstanding; no SWITCHEND implementation is claimed.
 
 ## Stress acceptance and dispatch (2026-10-27)
 
