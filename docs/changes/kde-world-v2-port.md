@@ -1751,6 +1751,48 @@
   selected. Full-height/full-width acceptance remains open. This update changes
   records only; builds and native tests are not rerun for it.
 
+### Protocol-confirmed client size selection (2026-10-27)
+
+- A fresh Ghostty reproduction establishes the missing size-negotiation
+  boundary. Only derived protocol facts are retained here, not trace payloads.
+
+  | Order | Protocol fact |
+  | --- | --- |
+  | Startup | The sole recommended bounds are `1920x1036`; maximum size is `0x0` (unlimited) |
+  | Output transition | Fractional preferred scale changes `120 -> 150` (100% -> 125%); preferred buffer scale changes `1 -> 2`; the surface enters the destination and leaves the source output |
+  | First full-size request | Configure `1012x1092`, surface serial `10492`, acknowledged; next client window geometry is `1012x1036`, with viewport destination `1012x1036` |
+  | Repeated full-size request | Configure `1012x1092`, surface serial `10494`, acknowledged; viewport destination remains `1012x1036`; no second window-geometry request is needed to retain the unchanged geometry |
+  | Later configure | Configure size is `1012x1036`, serial `10517`, acknowledged |
+
+- No new bounds event follows the output change. No finite maximum is
+  advertised. Successful bracketing broker reads retain revision/observation
+  `20`, allocation/frame `(8,52,1012,1092)` and `hold/constraint-clamp`; native
+  and pager geometry remain `(8,52,1012,1036)`.
+- The full requested size reaches the client twice. The smaller geometry is
+  selected on the client side, not substituted by OmniTiler or capped in the
+  outgoing KWin configure. This is not evidence of a decoration subtraction or
+  a scale-rounding loss. The remaining ownership distinction is Ghostty versus
+  its toolkit, and whether the stale compositor bounds drive that choice.
+- The sole bounds width `1920` is consistent with the earlier full-width cap,
+  but this reproduction requests width `1012` only: it does not independently
+  reproduce a `1920`-wide client cap. `set_max_size` does not explain either
+  dimension. A cached advisory-bound constraint remains strongly implicated,
+  not proven inside the client implementation.
+- Protocol semantics checked against `wayland-protocols 1.49`,
+  `stable/xdg-shell/xdg-shell.xml`: configure dimensions are hints in window
+  geometry coordinates; bounds are recommended geometry limits, and changed
+  bounds are sent before a new configure. Acknowledgement alone does not prove
+  the client adopted the suggested dimensions. No protocol-violation claim is
+  made. Fractional-scale values have denominator `120`.
+- Recommendation: report the client-side sizing with the stale-bounds evidence
+  to Ghostty/toolkit maintainers, and identify KWin's missing post-move bounds
+  refresh as the compositor-side interaction. OmniTiler's nonempty
+  `frameGeometry` request already produces the correct configure; no retry,
+  scale conversion, maximum override or zero-size refresh workaround is
+  selected. No production or contract change is needed from this evidence.
+  The numeric facts suffice for diagnosis; the original sensitive trace is no
+  longer required. Records only; builds/native tests are not rerun.
+
 ## Active-drag preview continuity plan (2026-10-27)
 
 - Preserve the latest completed core preview for the same active native gesture
