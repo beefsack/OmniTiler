@@ -57,6 +57,7 @@ pub mod input;
 pub mod llhook;
 pub mod overlay;
 pub mod pager;
+pub mod pager_trace;
 pub mod process;
 pub mod pump;
 pub mod settings_controls;

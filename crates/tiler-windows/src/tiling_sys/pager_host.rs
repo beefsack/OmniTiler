@@ -631,6 +631,10 @@ pub(super) fn sync_taskbar_pager(
     now: Instant,
     rediscovered: bool,
 ) -> bool {
+    // Enable the bounded native trace before the first pager operation of
+    // this pump (stale-hide `hide_all` below is already a native effect).
+    // Disabled tracing captures nothing and drains as a no-op.
+    crate::ffi::pager_trace::set_enabled(state.trace);
     // A calibration broadcast hides every strip at once (inside the window
     // procedure); revalidate from fresh facts before showing again, so no
     // stale pixels survive display/DPI changes.
@@ -727,6 +731,31 @@ pub(super) fn sync_taskbar_pager(
             log_json_at(log_path, line);
         }
         emit_pager_gate(state, &facts, log_path);
+        // Drain the ordered native batch even while suppressed: an OS hide
+        // or a calibration hide during a workspace switch must not wait for
+        // the next safe turn. Join is drain-context correlation only.
+        if state.trace {
+            let (observation, revision, request) = state
+                .world
+                .last_reply()
+                .map(|reply| {
+                    (
+                        reply.based_on_observation_seq,
+                        reply.state_revision,
+                        reply.request_id.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            crate::pager_sys::emit_pager_trace(
+                log_path,
+                true,
+                state.tick,
+                &request,
+                observation,
+                revision,
+                "suppressed",
+            );
+        }
         return false;
     }
     if note_pager_suppress(&mut state.pager_suppress_last, None) {
@@ -737,6 +766,30 @@ pub(super) fn sync_taskbar_pager(
     emit_pager_gate(state, &facts, log_path);
     if state.pager_overlays.is_none() {
         if state.pager_retry_at.is_some_and(|at| now < at) {
+            // Retry-wait holds no new production triple, but any queued
+            // native traffic still drains with the last-reply correlation.
+            if state.trace {
+                let (observation, revision, request) = state
+                    .world
+                    .last_reply()
+                    .map(|reply| {
+                        (
+                            reply.based_on_observation_seq,
+                            reply.state_revision,
+                            reply.request_id.clone(),
+                        )
+                    })
+                    .unwrap_or_default();
+                crate::pager_sys::emit_pager_trace(
+                    log_path,
+                    true,
+                    state.tick,
+                    &request,
+                    observation,
+                    revision,
+                    "retry-wait",
+                );
+            }
             return false;
         }
         match crate::pager_sys::PagerOverlays::new(Some(log_path.to_owned()), &state.pager_clicks) {
@@ -750,6 +803,31 @@ pub(super) fn sync_taskbar_pager(
                     log_path,
                     serde_json::json!({"event": "pager-window", "outcome": "owner-failed", "cause": error.to_string()}),
                 );
+                // Owner failure still drains queued native traffic with the
+                // last-reply correlation; no raw error beyond the existing
+                // owner-failed cause line.
+                if state.trace {
+                    let (observation, revision, request) = state
+                        .world
+                        .last_reply()
+                        .map(|reply| {
+                            (
+                                reply.based_on_observation_seq,
+                                reply.state_revision,
+                                reply.request_id.clone(),
+                            )
+                        })
+                        .unwrap_or_default();
+                    crate::pager_sys::emit_pager_trace(
+                        log_path,
+                        true,
+                        state.tick,
+                        &request,
+                        observation,
+                        revision,
+                        "owner-failed",
+                    );
+                }
                 return false;
             }
         }
@@ -896,6 +974,21 @@ pub(super) fn sync_taskbar_pager(
     if let Some(overlays) = state.pager_overlays.as_mut() {
         let taskbar_visible = state.pager_primary.as_ref().map(|bar| bar.visible);
         overlays.sync(&pagers, now, state.trace, accent, taskbar_visible);
+        // Bounded native batch joined to this exact production triple, so an
+        // unchanged presentation with live native traffic still reports.
+        // The context label names the drain site; joins are correlation
+        // for queued OS messages, never causal attribution.
+        if state.trace {
+            crate::pager_sys::emit_pager_trace(
+                log_path,
+                true,
+                state.tick,
+                &request,
+                observation,
+                revision,
+                "safe",
+            );
+        }
         pager_has_pending(state)
     } else {
         false

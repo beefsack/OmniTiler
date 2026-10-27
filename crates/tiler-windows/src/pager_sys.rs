@@ -38,7 +38,7 @@
 //! paths, or titles); creation failures retry forever on a fixed delay.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -376,6 +376,75 @@ pub fn native_pager_signature(facts: NativePagerFacts) -> String {
         facts.below,
         facts.order_unknown,
     )
+}
+
+/// Bounded trace-only `pager-wnd` line over the drained ordered native
+/// batch. `events` is the exact drain order (sequence tells observed
+/// order); `omitted` is the diagnostic-only overflow count. The tick plus
+/// the production triple (request/observation/revision) and the
+/// drain-context label ride the line for correlation only: queued OS
+/// messages carry no causal request attribution, and an unchanged
+/// presentation with live native traffic still emits. Fixed scalar shape
+/// plus one bounded event array; no HWNDs, PIDs, paths, titles, content,
+/// or error strings.
+#[must_use]
+pub fn pager_trace_value(
+    events: &[crate::ffi::pager_trace::PagerTraceEvent],
+    omitted: u64,
+    tick: u64,
+    request: &str,
+    observation: u64,
+    revision: u64,
+    context: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": "pager-wnd",
+        "tick": tick,
+        "request": request,
+        "observation": observation,
+        "revision": revision,
+        "context": context,
+        "omitted": omitted,
+        "events": events.iter().map(|event| event.to_json()).collect::<Vec<_>>(),
+    })
+}
+
+/// Drain the thread-local ordered batch and append one bounded `pager-wnd`
+/// line when the batch (or its overflow count) is non-empty. Returns true
+/// when a line was emitted. Trace-gated: disabled tracing captured
+/// nothing, so the drain is a no-op with no allocation and no native
+/// query. Callers drain on every pager exit (suppressed, retry-wait,
+/// owner-failed, safe) so OS-observed traffic never waits for the next
+/// safe turn.
+pub fn emit_pager_trace(
+    log_path: &Path,
+    trace: bool,
+    tick: u64,
+    request: &str,
+    observation: u64,
+    revision: u64,
+    context: &'static str,
+) -> bool {
+    if !trace {
+        return false;
+    }
+    let (events, omitted) = crate::ffi::pager_trace::drain();
+    if events.is_empty() && omitted == 0 {
+        return false;
+    }
+    PagerOverlays::write_line(
+        Some(log_path.to_owned()).as_ref(),
+        pager_trace_value(
+            &events,
+            omitted,
+            tick,
+            request,
+            observation,
+            revision,
+            context,
+        ),
+    );
+    true
 }
 
 /// Live owner pager: one overlay window per served output plus the shared
@@ -1407,5 +1476,189 @@ mod tests {
         assert_eq!(overlays.last_native, None);
         // The next show re-emits the same counts as a fresh baseline.
         assert!(overlays.emit_facts("shown", shown_facts()));
+    }
+
+    fn trace_rig() -> (std::path::PathBuf, std::path::PathBuf) {
+        static TRACE_LOG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = TRACE_LOG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-pager-trace-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("trace log dir");
+        let log = dir.join("run.log");
+        (dir, log)
+    }
+
+    #[test]
+    fn trace_value_joins_drain_context_with_bounded_words() {
+        // Real serialization seam: an ordered hide->show batch plus the
+        // drain context and the production triple ride one `pager-wnd`
+        // line. Sequence tells observed order; the context is correlation
+        // for queued OS messages, never causal attribution.
+        use crate::ffi::pager_trace::PagerTraceEvent;
+        let events = vec![
+            PagerTraceEvent {
+                seq: 1,
+                kind: "tiler-hide",
+                win: Some(1),
+                flags: None,
+                after: None,
+                show: None,
+                show_status: None,
+                x: None,
+                y: None,
+                w: None,
+                h: None,
+                size_type: None,
+                dpi: None,
+            },
+            PagerTraceEvent {
+                seq: 2,
+                kind: "show",
+                win: Some(1),
+                flags: None,
+                after: None,
+                show: Some(true),
+                show_status: Some(0),
+                x: None,
+                y: None,
+                w: None,
+                h: None,
+                size_type: None,
+                dpi: None,
+            },
+            PagerTraceEvent {
+                seq: 3,
+                kind: "pos-changed",
+                win: Some(2),
+                flags: Some(0x0040),
+                after: Some("topmost"),
+                show: None,
+                show_status: None,
+                x: Some(0),
+                y: Some(40),
+                w: Some(144),
+                h: Some(40),
+                size_type: None,
+                dpi: None,
+            },
+            PagerTraceEvent {
+                seq: 4,
+                kind: "os-create",
+                win: None,
+                flags: None,
+                after: None,
+                show: None,
+                show_status: None,
+                x: None,
+                y: None,
+                w: None,
+                h: None,
+                size_type: None,
+                dpi: None,
+            },
+        ];
+        let value = pager_trace_value(&events, 0, 41, "req-7", 12, 34, "safe");
+        assert_eq!(value["event"], serde_json::json!("pager-wnd"));
+        assert_eq!(value["tick"], serde_json::json!(41));
+        assert_eq!(value["request"], serde_json::json!("req-7"));
+        assert_eq!(value["observation"], serde_json::json!(12));
+        assert_eq!(value["revision"], serde_json::json!(34));
+        assert_eq!(value["context"], serde_json::json!("safe"));
+        assert_eq!(value["omitted"], serde_json::json!(0));
+        let rendered = value["events"].as_array().expect("events array");
+        assert_eq!(rendered.len(), 4);
+        assert_eq!(rendered[0]["kind"], serde_json::json!("tiler-hide"));
+        assert_eq!(rendered[0]["win"], serde_json::json!("pw1"));
+        assert_eq!(rendered[1]["kind"], serde_json::json!("show"));
+        assert_eq!(rendered[1]["show"], serde_json::json!(true));
+        assert_eq!(rendered[2]["after"], serde_json::json!("topmost"));
+        assert_eq!(rendered[3]["win"], serde_json::json!("unknown"));
+        // Bounded vocabulary: opaque tokens plus words, never raw handles.
+        let text = value.to_string();
+        assert!(!text.contains("0x"), "{text}");
+        assert!(!text.contains('\\'), "{text}");
+        assert!(!text.contains("HWND"), "{text}");
+        // Hide and show both survive: no coalescing up to the cap.
+        assert!(
+            text.contains("tiler-hide") && text.contains("\"show\""),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn trace_emit_writes_batch_and_quiet_stays_silent() {
+        // Real drain seam against the thread-local batch: the first drain
+        // writes the batch with its drain-context label, the second drain
+        // stays silent. Unchanged presentation with live traffic still
+        // reports via the batch itself.
+        use crate::ffi::pager_trace::{
+            assign_window, drain, push_pos_changed, push_tiler_hide, set_enabled,
+        };
+        use windows_sys::Win32::Foundation::HWND;
+        set_enabled(true);
+        let _ = drain();
+        let hwnd = 0x7100_isize as HWND;
+        let token = assign_window(hwnd).expect("token");
+        push_tiler_hide(hwnd);
+        push_pos_changed(hwnd, 0x0040, 0_isize as HWND, 0, 40, 144, 40);
+        let (_dir, log) = trace_rig();
+        assert!(emit_pager_trace(&log, true, 9, "req-9", 3, 5, "safe"));
+        let lines = native_log_lines(&log);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("\"event\":\"pager-wnd\""), "{}", lines[0]);
+        assert!(lines[0].contains("\"context\":\"safe\""), "{}", lines[0]);
+        assert!(lines[0].contains("\"request\":\"req-9\""), "{}", lines[0]);
+        assert!(lines[0].contains("tiler-hide"), "{}", lines[0]);
+        assert!(lines[0].contains(&format!("pw{token}")), "{}", lines[0]);
+        // Drained: the next pump is quiet even under trace.
+        assert!(!emit_pager_trace(&log, true, 10, "req-10", 3, 5, "safe"));
+        assert_eq!(native_log_lines(&log).len(), 1);
+        // Disabled tracing never writes: disable first so the pushes below
+        // capture nothing, then prove no row and no pending batch.
+        set_enabled(false);
+        push_tiler_hide(hwnd);
+        push_pos_changed(hwnd, 0x0040, 0_isize as HWND, 0, 40, 144, 40);
+        assert!(!emit_pager_trace(&log, false, 11, "req-11", 3, 5, "safe"));
+        assert_eq!(native_log_lines(&log).len(), 1);
+        set_enabled(true);
+        let (events, omitted) = drain();
+        assert!(
+            events.is_empty() && omitted == 0,
+            "disabled capture leaves nothing"
+        );
+    }
+
+    #[test]
+    fn trace_emit_reports_overflow_and_suppressed_context() {
+        // Overflow folds into an explicit omitted count; the suppressed
+        // drain context labels correlation for queued OS traffic.
+        use crate::ffi::pager_trace::{TRACE_CAP, assign_window, drain, push_show, set_enabled};
+        use windows_sys::Win32::Foundation::HWND;
+        set_enabled(true);
+        let _ = drain();
+        let hwnd = 0x7200_isize as HWND;
+        assign_window(hwnd);
+        for i in 0..(TRACE_CAP + 3) {
+            push_show(hwnd, i % 2 == 0, 0);
+        }
+        let (_dir, log) = trace_rig();
+        assert!(emit_pager_trace(&log, true, 7, "req-s", 1, 2, "suppressed"));
+        let lines = native_log_lines(&log);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("\"context\":\"suppressed\""),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].contains("\"omitted\":3"), "{}", lines[0]);
+        let value: serde_json::Value = serde_json::from_str(&lines[0]).expect("valid json line");
+        assert_eq!(value["events"].as_array().expect("array").len(), TRACE_CAP);
     }
 }

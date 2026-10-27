@@ -31,8 +31,8 @@ User-approved 2026-10-27 index (implementation status below):
   state ([below](#latest-world-rendering-2026-10-27))
 
 Tentative index (user review pending; not approved product rules):
-- Windows pager native-event-first diagnostic method, tentative (pending user
-  review); no rendering-policy change
+- Windows pager bounded ordered native diagnostics and drain-context correlation,
+  tentative (pending user review); no rendering-policy change
   ([record](changes/windows-pager-workspace-flicker.md#decisions))
 - KDE rapid directional FIFO ([below](#kde-rapid-directional-input))
 - macOS preview entry point ([below](#development-entry-point))

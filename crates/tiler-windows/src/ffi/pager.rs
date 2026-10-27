@@ -57,8 +57,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST, IDC_ARROW, IsWindow,
     IsWindowVisible, LoadCursorW, MA_NOACTIVATE, RegisterClassW, RegisterWindowMessageW, SW_HIDE,
     SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE,
+    SetWindowPos, ShowWindow, WINDOWPOS, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOVE, WM_PAINT, WM_SETTINGCHANGE,
+    WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WNDCLASSW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
@@ -318,6 +319,13 @@ impl PagerWindow {
             return None;
         }
         register_window(hwnd, raw);
+        // Opaque lifecycle token for the bounded native trace. Assigned only
+        // while tracing (the host enables before the first pager operation);
+        // the tiler-create event below carries the strip args plus DPI.
+        // No extra native query runs here.
+        if let Some(token) = super::pager_trace::assign_window(hwnd) {
+            super::pager_trace::push_tiler_create(token, strip.x, strip.y, strip.w, strip.h, dpi);
+        }
         Some(Self { hwnd, dpi, state })
     }
 
@@ -335,6 +343,9 @@ impl PagerWindow {
 
     /// Move, topmost-show, and repaint at the strip.
     pub fn move_show(&self, strip: Rect) {
+        // Trace before the native call so the batch keeps causal order;
+        // the push holds no borrow over `SetWindowPos`.
+        super::pager_trace::push_tiler_move(self.hwnd, strip.x, strip.y, strip.w, strip.h);
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -356,6 +367,10 @@ impl PagerWindow {
     /// every unchanged sync.
     pub fn ensure_shown(&self) -> bool {
         if unsafe { IsWindowVisible(self.hwnd) } == 0 {
+            // Only actual show effects trace: steady-state visible windows
+            // stay silent. Push before `ShowWindow` (causal order, no
+            // borrow held over the call); disabled tracing is a no-op.
+            super::pager_trace::push_tiler_ensure(self.hwnd);
             unsafe {
                 ShowWindow(self.hwnd, SW_SHOWNA);
             }
@@ -368,6 +383,7 @@ impl PagerWindow {
     /// Hide (suppression turns): the window persists for the next safe
     /// turn, so no destroy/create churn hides information.
     pub fn hide(&self) {
+        super::pager_trace::push_tiler_hide(self.hwnd);
         unsafe {
             ShowWindow(self.hwnd, SW_HIDE);
         }
@@ -375,6 +391,7 @@ impl PagerWindow {
 
     /// Reassert topmost without moving, sizing, or activating.
     pub fn reassert_topmost(&self) {
+        super::pager_trace::push_tiler_reassert(self.hwnd);
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -513,6 +530,12 @@ impl Drop for PagerWindow {
     /// takes default handling), destroy the window, then free the frame box
     /// and its font. Process exit destroys windows implicitly (no residue).
     fn drop(&mut self) {
+        // Trace the destroy effect with its token before unregistering: the
+        // later OS `WM_DESTROY` then reads `unknown` honestly. Pushes hold
+        // no borrow over `DestroyWindow`.
+        if let Some(token) = super::pager_trace::revoke_window(self.hwnd) {
+            super::pager_trace::push_tiler_destroy(token);
+        }
         unregister_window(self.hwnd);
         unsafe {
             DestroyWindow(self.hwnd);
@@ -767,6 +790,9 @@ unsafe extern "system" fn pager_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_CREATE {
+        // Pre-registration native create: no lifecycle token yet, so the
+        // trace records `unknown` explicitly. No borrow held.
+        super::pager_trace::push_os_create(hwnd);
         let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
@@ -804,16 +830,77 @@ unsafe extern "system" fn pager_wnd_proc(
         }
         super::accent::note_accent_changed();
         want_stale_hide();
+        // Calibration hide is an app-local native effect on this overlay:
+        // trace before the call (causal order, no borrow held).
+        super::pager_trace::push_calib_hide(hwnd);
         unsafe {
             ShowWindow(hwnd, SW_HIDE);
             InvalidateRect(hwnd, std::ptr::null(), 1);
         }
         return 0;
     }
+    // OS-observed position/show/size/move/erase traffic: copy the words,
+    // push one ordered event per message, then fall through to default
+    // handling (no behavior change). `WINDOWPOS` memory is OS-owned for the
+    // call only: copy the words, retain nothing. Disabled tracing skips all
+    // capture with no extra native query.
+    if msg == WM_WINDOWPOSCHANGING || msg == WM_WINDOWPOSCHANGED {
+        if lparam != 0 {
+            let pos = unsafe { &*(lparam as *const WINDOWPOS) };
+            if msg == WM_WINDOWPOSCHANGING {
+                super::pager_trace::push_pos_changing(
+                    hwnd,
+                    pos.flags,
+                    pos.hwndInsertAfter,
+                    pos.x,
+                    pos.y,
+                    pos.cx,
+                    pos.cy,
+                );
+            } else {
+                super::pager_trace::push_pos_changed(
+                    hwnd,
+                    pos.flags,
+                    pos.hwndInsertAfter,
+                    pos.x,
+                    pos.y,
+                    pos.cx,
+                    pos.cy,
+                );
+            }
+        } else if msg == WM_WINDOWPOSCHANGING {
+            super::pager_trace::push_pos_changing_unknown(hwnd);
+        } else {
+            super::pager_trace::push_pos_changed_unknown(hwnd);
+        }
+    }
+    if msg == WM_SHOWWINDOW {
+        super::pager_trace::push_show(hwnd, wparam != 0, lparam as u32);
+    }
+    if msg == WM_ERASEBKGND {
+        // Erase observes only: the HDC word never leaves, handling still
+        // falls through to `DefWindowProcW` unchanged.
+        super::pager_trace::push_erase(hwnd);
+    }
+    if msg == WM_SIZE {
+        let w = (lparam as u32 & 0xffff) as i32;
+        let h = ((lparam as u32 >> 16) & 0xffff) as i32;
+        super::pager_trace::push_size(hwnd, wparam as u32, w, h);
+    }
+    if msg == WM_MOVE {
+        let raw = lparam as u32;
+        let x = (raw & 0xffff) as u16 as i16 as i32;
+        let y = ((raw >> 16) & 0xffff) as u16 as i16 as i32;
+        super::pager_trace::push_move(hwnd, x, y);
+    }
     if msg == WM_MOUSEACTIVATE {
         return MA_NOACTIVATE as LRESULT;
     }
     if msg == WM_PAINT {
+        // Paint begin/end bracket the GDI path: begin pushes at entry,
+        // end pushes after `EndPaint`. No borrow held over either native
+        // call and no render behavior change.
+        super::pager_trace::push_paint_begin(hwnd);
         // Clone the painted snapshot under validation, then paint with no
         // borrow held: nothing aliases the live state during GDI calls.
         if let Some((frame, font, dpi)) =
@@ -821,6 +908,7 @@ unsafe extern "system" fn pager_wnd_proc(
         {
             paint_frame(hwnd, &frame, font, dpi);
         }
+        super::pager_trace::push_paint_end(hwnd);
         return 0;
     }
     if msg == WM_LBUTTONDOWN {
@@ -839,7 +927,9 @@ unsafe extern "system" fn pager_wnd_proc(
     }
     if msg == WM_DESTROY {
         // Owned by the window value (unregister-then-destroy there): never
-        // touch state here, so exactly one owner exists either way.
+        // touch state here, so exactly one owner exists either way. The
+        // token was revoked at destroy time, so this reads `unknown`.
+        super::pager_trace::push_os_destroy(hwnd);
         let _ = wparam;
         return 0;
     }
