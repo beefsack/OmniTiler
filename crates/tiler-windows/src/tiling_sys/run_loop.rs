@@ -1045,9 +1045,9 @@ pub(super) fn run_tile_loop(
             );
             if state.trace {
                 owner_seq = owner_seq.saturating_add(1);
-                if let Some(mut diag) = wait_diag {
+                if let Some(diag) = wait_diag.as_mut() {
                     diag.elapsed_ms = wait_elapsed_ms;
-                    ow_counts.note_wait(wait, diag);
+                    ow_counts.note_wait(wait, *diag);
                 }
             }
             let drain = drain_hook_edges(&mut state, me, &log_path);
@@ -1058,7 +1058,13 @@ pub(super) fn run_tile_loop(
             if state.trace
                 && let Some(diag) = wait_diag
             {
-                super::run_loop_wait::log_wake_attribution(&state, wait, diag, &drain, &log_path);
+                if super::run_loop_wait::suppress_wake_detail(wait, &diag, &drain) {
+                    ow_counts.note_suppressed_detail();
+                } else {
+                    super::run_loop_wait::log_wake_attribution(
+                        &state, wait, diag, &drain, &log_path,
+                    );
+                }
             }
             state.world.push_foreground_drain(
                 drain.foreground,

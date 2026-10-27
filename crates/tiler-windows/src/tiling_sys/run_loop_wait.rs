@@ -636,6 +636,51 @@ pub(super) fn drain_hook_edges(
     }
 }
 
+/// Whether to omit one trace-only wake-attribution detail row as filtered
+/// empty-message detail: unstaged message-only wait with no retained
+/// effective hook evidence. The raw own-overlay-only batch count is
+/// ignored. A filtered row means no retained wake detail, not proof of no
+/// owner work.
+#[must_use]
+pub(super) fn suppress_wake_detail(
+    wait: super::observe::WaitWake,
+    diag: &OwnerWaitDiag,
+    drain: &EdgeDrain,
+) -> bool {
+    if diag.staged || diag.already_due {
+        return false;
+    }
+    if !(wait.message && !wait.input && !wait.ack && !wait.notify && !wait.timeout && !wait.failed)
+    {
+        return false;
+    }
+    if drain.woke {
+        return false;
+    }
+    if drain.wakes != 0 || drain.starts != 0 || drain.ends != 0 || drain.taskbar != 0 {
+        return false;
+    }
+    if drain.kind_foreground != 0
+        || drain.kind_visibility != 0
+        || drain.kind_other != 0
+        || drain.kind_unknown != 0
+        || drain.kind_location != 0
+        || drain.kind_create != 0
+        || drain.kind_destroy != 0
+        || drain.kind_show != 0
+        || drain.kind_hide != 0
+    {
+        return false;
+    }
+    if !drain.foreground.is_empty()
+        || !drain.foreground_detail.is_empty()
+        || drain.foreground_omitted != 0
+    {
+        return false;
+    }
+    true
+}
+
 /// Trace-only per-pass wake attribution: what woke this pass, on this
 /// pass. The wait return cause set (input/ack/message/notify/timeout/
 /// failed flags plus the selected deadline source and its requested vs

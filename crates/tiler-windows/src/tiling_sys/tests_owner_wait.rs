@@ -11,8 +11,9 @@
 use super::dir_watch::DirWatch;
 use super::observe::pump_wait_with_intent;
 use super::run_loop_wait::{
-    OWNER_WAIT_SOURCE_ORDER, OwnerDeadlines, OwnerTimeout, OwnerWaitDiag, OwnerWaitSource,
-    loop_exit_cause, owner_deadline_source,
+    EdgeDrain, OWNER_WAIT_SOURCE_ORDER, OwnerDeadlines, OwnerTimeout, OwnerWaitDiag,
+    OwnerWaitSource, log_wake_attribution, loop_exit_cause, owner_deadline_source,
+    suppress_wake_detail,
 };
 use super::{OwnerWaitCounts, WaitWake, pump_waits_line};
 
@@ -531,6 +532,7 @@ fn pump_waits_line_carries_the_full_split_without_a_monitor_check() {
     assert_eq!(line["owner_zero_future_subms"], 0);
     assert_eq!(line["owner_zero_already_due"], 0);
     assert_eq!(line["owner_early_timeouts"], 0);
+    assert_eq!(line["owner_wake_detail_suppressed"], 0);
     let src_order: Vec<String> = line["owner_src_order"]
         .as_array()
         .expect("src order array")
@@ -941,5 +943,220 @@ fn publish_replace_overwrites_without_partial() {
         std::fs::read_to_string(dir.join("stop.request")).expect("read"),
         "creation-2"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+fn message_only_wake() -> WaitWake {
+    WaitWake {
+        input: false,
+        ack: false,
+        message: true,
+        notify: false,
+        timeout: false,
+        failed: false,
+    }
+}
+
+fn empty_drain() -> EdgeDrain {
+    EdgeDrain {
+        woke: false,
+        batch_total: 0,
+        wakes: 0,
+        starts: 0,
+        ends: 0,
+        foreground: Vec::new(),
+        kind_foreground: 0,
+        kind_visibility: 0,
+        kind_other: 0,
+        kind_unknown: 0,
+        kind_location: 0,
+        kind_create: 0,
+        kind_destroy: 0,
+        kind_show: 0,
+        kind_hide: 0,
+        taskbar: 0,
+        foreground_detail: Vec::new(),
+        foreground_omitted: 0,
+    }
+}
+
+#[test]
+fn suppresses_only_empty_unstaged_message_detail() {
+    let d = diag(OwnerWaitSource::Pager, 2000, 0, false);
+    assert!(suppress_wake_detail(
+        message_only_wake(),
+        &d,
+        &empty_drain()
+    ));
+    let blocked = diag(OwnerWaitSource::Pager, 2000, 5000, false);
+    assert!(suppress_wake_detail(
+        message_only_wake(),
+        &blocked,
+        &empty_drain()
+    ));
+    let mut overlay_only = empty_drain();
+    overlay_only.batch_total = 3;
+    assert!(suppress_wake_detail(
+        message_only_wake(),
+        &blocked,
+        &overlay_only
+    ));
+    let staged = diag(OwnerWaitSource::Staged, 0, 0, false);
+    assert!(!suppress_wake_detail(
+        message_only_wake(),
+        &staged,
+        &empty_drain()
+    ));
+    let due = diag(OwnerWaitSource::Pager, 0, 0, true);
+    assert!(!suppress_wake_detail(
+        message_only_wake(),
+        &due,
+        &empty_drain()
+    ));
+    for wait in [
+        WaitWake {
+            message: false,
+            ..message_only_wake()
+        },
+        WaitWake {
+            input: true,
+            ..message_only_wake()
+        },
+        WaitWake {
+            ack: true,
+            ..message_only_wake()
+        },
+        WaitWake {
+            notify: true,
+            ..message_only_wake()
+        },
+        WaitWake {
+            timeout: true,
+            ..message_only_wake()
+        },
+        WaitWake {
+            failed: true,
+            ..message_only_wake()
+        },
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: false,
+            failed: false,
+        },
+    ] {
+        assert!(!suppress_wake_detail(wait, &d, &empty_drain()));
+    }
+}
+
+#[test]
+fn any_effective_hook_evidence_retains_the_row() {
+    let d = diag(OwnerWaitSource::Pager, 2000, 7, false);
+    let mut woke = empty_drain();
+    woke.woke = true;
+    assert!(!suppress_wake_detail(message_only_wake(), &d, &woke));
+    for build in [
+        (1u64, 0u64, 0u64, 0u64),
+        (0, 1, 0, 0),
+        (0, 0, 1, 0),
+        (0, 0, 0, 1),
+    ] {
+        let mut drain = empty_drain();
+        drain.wakes = build.0;
+        drain.starts = build.1;
+        drain.ends = build.2;
+        drain.taskbar = build.3;
+        assert!(!suppress_wake_detail(message_only_wake(), &d, &drain));
+    }
+    for set in [
+        (1u64, 0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 1, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 1, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 1, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 1, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 1, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 1, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 1, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0, 1),
+    ] {
+        let mut drain = empty_drain();
+        drain.kind_foreground = set.0;
+        drain.kind_visibility = set.1;
+        drain.kind_other = set.2;
+        drain.kind_unknown = set.3;
+        drain.kind_location = set.4;
+        drain.kind_create = set.5;
+        drain.kind_destroy = set.6;
+        drain.kind_show = set.7;
+        drain.kind_hide = set.8;
+        assert!(!suppress_wake_detail(message_only_wake(), &d, &drain));
+    }
+    let mut drain = empty_drain();
+    drain.foreground = vec![11];
+    assert!(!suppress_wake_detail(message_only_wake(), &d, &drain));
+    let mut drain = empty_drain();
+    drain.foreground_detail = vec![super::observe::ForegroundEdgeMeta {
+        hwnd: 11,
+        event_ms: 1,
+        thread: 2,
+        queued_mono_ms: 3,
+        drain_mono_ms: 4,
+        delivery: super::observe::DeliverySnapshot::Unknown,
+    }];
+    assert!(!suppress_wake_detail(message_only_wake(), &d, &drain));
+    let mut drain = empty_drain();
+    drain.foreground_omitted = 1;
+    assert!(!suppress_wake_detail(message_only_wake(), &d, &drain));
+}
+
+#[test]
+fn suppressed_detail_counts_exactly_and_leaves_totals_unchanged() {
+    let mut ow = OwnerWaitCounts::default();
+    for _ in 0..3 {
+        ow.note_wait(
+            message_only_wake(),
+            diag(OwnerWaitSource::NoneIdle, u32::MAX, 12, false),
+        );
+    }
+    assert_eq!(ow.wake_detail_suppressed, 0);
+    ow.note_suppressed_detail();
+    ow.note_suppressed_detail();
+    assert_eq!(ow.wake_detail_suppressed, 2);
+    assert!(ow.wake_detail_suppressed <= ow.waits);
+    assert_eq!((ow.waits, ow.msg, ow.timeout, ow.failed), (3, 3, 0, 0));
+    let line = pump_waits_line(
+        &ow,
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        Some("end-of-run"),
+    );
+    assert_eq!(line["owner_wake_detail_suppressed"], 2);
+    assert_eq!(line["owner_waits"], 3);
+    assert_eq!(line["flushed"], "end-of-run");
+    let mut saturated = OwnerWaitCounts {
+        wake_detail_suppressed: u64::MAX,
+        ..OwnerWaitCounts::default()
+    };
+    saturated.note_suppressed_detail();
+    assert_eq!(saturated.wake_detail_suppressed, u64::MAX);
+}
+
+#[test]
+fn retained_detail_carries_the_stamped_elapsed() {
+    let dir = unique_temp_dir("stamped-detail");
+    let log_path = dir.join("wake.jsonl");
+    let state = super::rmax03_adapter_tests::test_state();
+    let diag = diag(OwnerWaitSource::Pager, 2000, 1234, false);
+    let mut drain = empty_drain();
+    drain.woke = true;
+    assert!(!suppress_wake_detail(message_only_wake(), &diag, &drain));
+    log_wake_attribution(&state, message_only_wake(), diag, &drain, &log_path);
+    let text = std::fs::read_to_string(&log_path).expect("detail line");
+    let value: serde_json::Value = serde_json::from_str(text.trim()).expect("json line");
+    assert_eq!(value["event"], "wake-attribution");
+    assert_eq!(value["elapsed_ms"], 1234);
+    assert_eq!(value["requested_ms"], 2000);
     std::fs::remove_dir_all(&dir).ok();
 }

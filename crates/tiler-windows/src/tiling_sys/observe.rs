@@ -697,6 +697,11 @@ pub(super) type RenderWaitSplit = (u64, u64, u64, u64, u64, u64);
 /// meeting the millisecond conversion), `zero_already_due` counts unstaged
 /// zero-requested timeouts already due at selection, and `early_timeouts`
 /// counts timeouts returning before the requested duration elapsed.
+/// `wake_detail_suppressed` counts trace-only wake-attribution detail rows
+/// omitted as filtered empty-message detail (message-only wait with no
+/// retained effective hook evidence); total wait accounting above is
+/// unchanged, and the count rides the existing naturally emitted/final
+/// `pump-waits` summary with no timer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct OwnerWaitCounts {
     pub(super) waits: u64,
@@ -712,6 +717,7 @@ pub(super) struct OwnerWaitCounts {
     pub(super) zero_future_subms: u64,
     pub(super) zero_already_due: u64,
     pub(super) early_timeouts: u64,
+    pub(super) wake_detail_suppressed: u64,
 }
 
 impl OwnerWaitCounts {
@@ -764,6 +770,13 @@ impl OwnerWaitCounts {
     pub(super) fn note_ack_only(&mut self) {
         self.ack_only = self.ack_only.saturating_add(1);
     }
+
+    /// One omitted wake-attribution detail row: filtered empty-message
+    /// detail only (a filtered row means no retained wake detail, not proof
+    /// of no owner work). Saturating; total wait accounting is unchanged.
+    pub(super) fn note_suppressed_detail(&mut self) {
+        self.wake_detail_suppressed = self.wake_detail_suppressed.saturating_add(1);
+    }
 }
 
 /// Pure trace-only pump-waits report line shared by the periodic throttle
@@ -798,6 +811,7 @@ pub(super) fn pump_waits_line(
         "owner_zero_future_subms": ow.zero_future_subms,
         "owner_zero_already_due": ow.zero_already_due,
         "owner_early_timeouts": ow.early_timeouts,
+        "owner_wake_detail_suppressed": ow.wake_detail_suppressed,
         "input_turns": input.0,
         "input_waits": input.1,
         "input_work": input.2,
