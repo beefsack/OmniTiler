@@ -2811,8 +2811,9 @@ fn log_has(handle: &RuntimeHandle, kind: &str, outcome: &str) -> bool {
 fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
     // No apps, no observations, no focused window anywhere: an armed
     // numbered select still enqueues for the main-thread drain (empty
-    // Spaces navigate), without contacting the core; a second press while
-    // claimed refuses busy instead of overlapping — never replayed.
+    // Spaces navigate) via the planner-owned core route; a second press
+    // while the first claim is queued enqueues behind it in FIFO order
+    // (never refuses busy, never replaces, never replays).
     use tiler_macos::runtime::InputSemanticAction as Action;
     let bindings = select_product_bindings();
     assert_eq!(bindings.len(), 53, "34 basic + 19 armed selects");
@@ -2830,11 +2831,12 @@ fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
     let diagnostics = fixture.handle.diagnostics();
     assert_eq!(
         diagnostics.input_forwarded, 0,
-        "selects never reach the core"
+        "selects ride the planner-owned lane, not the forwarded core route"
     );
     assert_eq!(diagnostics.input_select_refused, 0);
     assert!(log_has(&fixture.handle, "input", "select-enqueued"));
-    // Concurrent press while the claim is held: refused busy, first claim kept.
+    // Concurrent press while the first claim is queued: enqueues behind
+    // it FIFO, first claim kept at the front.
     send_select_chord(
         &fixture,
         &bindings,
@@ -2842,14 +2844,18 @@ fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
     );
     wait_diagnostics(
         &fixture.handle,
-        |d| d.input_select_refused == 1,
-        "concurrent select refused busy",
+        |d| d.input_select_enqueued == 2,
+        "concurrent select queues FIFO",
     );
     assert!(fixture.handle.flush(FLUSH));
     let diagnostics = fixture.handle.diagnostics();
-    assert_eq!(diagnostics.input_select_enqueued, 1, "no second enqueue");
+    assert_eq!(diagnostics.input_select_enqueued, 2, "both presses enqueue");
+    assert_eq!(
+        diagnostics.input_select_refused, 0,
+        "no busy admission loss"
+    );
     assert_eq!(diagnostics.input_forwarded, 0);
-    assert!(log_has(&fixture.handle, "input", "refused-select-busy"));
+    assert!(log_has(&fixture.handle, "input", "select-enqueued"));
     shutdown_clean(&fixture);
 }
 

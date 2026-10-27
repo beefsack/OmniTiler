@@ -161,11 +161,11 @@ pub(crate) fn input_main_bound(
             orientation_held = true;
         }
         // Bump before enqueue (see `invalidate_clock` in runtime): the
-        // engine may dequeue the instant the job lands.
+        // engine may dequeue the instant the job lands. User intent rides
+        // the control lane (never silently dropped on saturation); a
+        // closed inbox only happens at teardown, when the loop exits.
         crate::runtime::invalidate_clock(&shared);
-        if !inbox.try_send_data(EngineJob::InputAction { action }) {
-            lock_shared(&shared).diagnostics.data_dropped_full += 1;
-        }
+        let _ = inbox.send_control(EngineJob::InputAction { action });
     }
     InputExit::Done
 }

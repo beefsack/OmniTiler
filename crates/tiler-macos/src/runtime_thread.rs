@@ -73,8 +73,10 @@ pub(crate) enum EngineJob {
     /// revision). Admitted under the exact same gates as [`EngineJob::InputAction`];
     /// the binding rides into the pending [`ClaimedSelect`] so the
     /// main-thread drain refuses it against the fresh row instead of
-    /// interpreting the ordinal against a different generation. Data lane
-    /// (drops counted when full, never blocks AppKit).
+    /// interpreting the ordinal against a different generation. Control
+    /// lane (never silently dropped: every authorized command reaches the
+    /// core FIFO in order; only the drain serializes actuation, never
+    /// blocks AppKit).
     IndicatorSelect {
         action: InputSemanticAction,
         expected_sid: u64,
@@ -249,14 +251,19 @@ pub(crate) enum CoherencePending {
 
 impl EngineJob {
     /// Data jobs share the bounded lane; control jobs (lifecycle, barriers,
-    /// fault injection) bypass saturation but keep FIFO order with data.
+    /// fault injection, user intent, read-only queries, gestures) bypass
+    /// saturation but keep FIFO order with data. User intent
+    /// ([`Self::InputAction`], [`Self::IndicatorSelect`]) rides the control
+    /// lane so a saturated observation queue can never discard an
+    /// authorized command before the core: every admitted command reaches
+    /// the core FIFO in order, and only the drain serializes actuation.
+    /// Observations and drain-evidence feedback stay bounded (drops
+    /// counted, never blocking producers).
     fn is_data(&self) -> bool {
         matches!(
             self,
             Self::Observation { .. }
                 | Self::ScopedObservation { .. }
-                | Self::InputAction { .. }
-                | Self::IndicatorSelect { .. }
                 | Self::ViewAttempt { .. }
                 | Self::MemberAttempt { .. }
                 | Self::NativeCreation { .. }
@@ -275,9 +282,10 @@ struct InboxState {
 
 /// Wake-driven bounded inbox: one `Mutex` plus one `Condvar`, no polling.
 /// One strict FIFO queue keeps submission order (a barrier proves every
-/// earlier job was processed); only data admission is bounded
-/// (`try_send_data` drops counted when full) while control admission and
-/// stop admission bypass saturation.
+/// earlier job was processed); only observation/feedback data admission is
+/// bounded (`try_send_data` drops counted when full) while user intent,
+/// lifecycle, queries, gestures, barriers, and stop admission bypass
+/// saturation (`send_control` fails only when closed).
 pub(crate) struct Inbox {
     state: Mutex<InboxState>,
     wake: Condvar,
@@ -743,11 +751,16 @@ use crate::runtime_native::handle_scoped_observation;
 /// binding or explicit creation desire, observation-time baseline) so the
 /// drain actuates exactly the core-resolved target and reports its proven
 /// native outcome back under the same id. `None` (duplicate path) stores
-/// the claim unbound: the drain refuses without actuation. Every store -
-/// bound or unbound - sets the shared claim wake
-/// (`select_claim_pending`): even a refusal needs its drain-site
-/// settlement, so the main pump reconciles on the event instead of the
-/// next 250 ms tick. Refusal paths that store nothing set nothing.
+/// the claim unbound: the drain refuses without actuation. Every store —
+/// bound or unbound — appends to the shared claim queue in admission
+/// order and sets the shared claim wake (`select_claim_pending`): even a
+/// refusal needs its drain-site settlement, so the main pump reconciles on
+/// the event instead of the next 250 ms tick. Refusal paths that store
+/// nothing set nothing. The queue is the drain order: the main thread
+/// pops the front only when no drain is in progress and releases it after
+/// the drain settles (see [`claim_select_for_drain`](crate::runtime::RuntimeHandle::claim_select_for_drain)),
+/// so a burst of admitted commands drains oldest-first with no loss, no
+/// duplication, and no reordering.
 fn store_select_claim(
     shared: &Arc<Mutex<Shared>>,
     claim: crate::runtime_types::ClaimedSelect,
@@ -755,7 +768,7 @@ fn store_select_claim(
 ) {
     let mut stored = claim;
     stored.operation_id = operation_id.map(str::to_owned);
-    // One pending slot for both lanes (the send lane shares the select
+    // One pending queue for both lanes (the send lane shares the select
     // slot): send-shaped claims enqueue under their own token so the ring
     // distinguishes the lanes. Numbered sends enqueue as sends regardless
     // of follow intent (stays transfer too); everything else enqueues as
@@ -769,11 +782,15 @@ fn store_select_claim(
         "select-enqueued"
     };
     let mut guard = lock_shared(shared);
-    guard.select_pending = Some(stored);
+    guard.select_pending.push_back(stored);
+    // Depth rides the count (numbers only, never content): a burst that
+    // queues behind an in-progress drain is observable as queued depth
+    // instead of silent, while immediate (depth-1) stores read delivered.
+    let depth = guard.select_pending.len() as u64;
     guard.select_claim_pending = true;
     guard.diagnostics.input_select_enqueued += 1;
     drop(guard);
-    emit(shared, 0, 0, 0, "input", token, 0);
+    emit(shared, 0, 0, 0, "input", token, depth);
 }
 
 /// Bind the reply-derived select plan into a claim for one operation id:
@@ -941,24 +958,24 @@ pub(crate) fn bind_send_plan(
 /// Pure engine admission verdict for one armed select claim (pure
 /// unit-testable core of the product handoff): unarmed actions refuse
 /// (trailing stay-0, unsupported sends,
-/// outputs), then a missing native context, an in-progress drain, or an
-/// already-pending claim refuses narrowly - concurrent presses
-/// serialize/refuse instead of overlapping, and a sent press is never
-/// replayed. Returns the claim to store on success. Numbered taps bind at
+/// outputs), then a missing native context refuses narrowly. There is
+/// deliberately no busy or already-pending refusal: every admitted command
+/// dispatches to the core in engine-FIFO order and queues its drain claim
+/// behind any in-progress drain, so a busy lane delays actuation instead
+/// of dropping intent (stale pins still refuse at the drain per T3).
+/// Concurrent presses queue behind the in-progress drain instead of
+/// overlapping, and a sent press is never replayed. Returns the claim to
+/// store on success. Numbered taps bind at
 /// dispatch (admission-time SID plus live revision); indicator clicks ride
 /// their immutable render-time binding through to the drain; relative and
 /// previous taps ride binding-free.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn admit_select_claim(
     native_present: bool,
-    busy: bool,
-    has_pending: bool,
     claim: crate::runtime_types::ClaimedSelect,
 ) -> Result<crate::runtime_types::ClaimedSelect, &'static str> {
     admit_select_claim_with(
         native_present,
-        busy,
-        has_pending,
         claim,
         crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
     )
@@ -969,8 +986,6 @@ pub(crate) fn admit_select_claim(
 /// an explicit local). Trailing `index 0` admits only when enabled.
 pub(crate) fn admit_select_claim_with(
     native_present: bool,
-    busy: bool,
-    has_pending: bool,
     claim: crate::runtime_types::ClaimedSelect,
     trailing_enabled: bool,
 ) -> Result<crate::runtime_types::ClaimedSelect, &'static str> {
@@ -984,9 +999,6 @@ pub(crate) fn admit_select_claim_with(
     if !native_present {
         return Err("refused-select-no-topology");
     }
-    if busy || has_pending {
-        return Err("refused-select-busy");
-    }
     Ok(claim)
 }
 
@@ -994,9 +1006,10 @@ pub(crate) fn admit_select_claim_with(
 /// unit-testable core of the product send handoff). Unsupported send
 /// shapes (relative sends, trailing stay-0) refuse; trailing send-0
 /// follow admits through the capability gate; armed
-/// send-follow 0..9 plus stay 1..9 refuses without native context, while busy, or while
-/// a claim pends - concurrent presses serialize/refuse instead of
-/// overlapping, and a sent press is never replayed. Returns the claim to
+/// send-follow 0..9 plus stay 1..9 refuses without native context only —
+/// there is deliberately no busy or already-pending refusal (see
+/// [`admit_select_claim`]: admitted commands queue behind the drain).
+/// Returns the claim to
 /// bind (target SID, revision, subject) on success. The shape check is
 /// [`is_armed_send`] (single source with the catalogue `implemented`
 /// flags). Test-only shim over [`admit_send_claim_with`]: capability-explicit
@@ -1004,14 +1017,10 @@ pub(crate) fn admit_select_claim_with(
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn admit_send_claim(
     native_present: bool,
-    busy: bool,
-    has_pending: bool,
     claim: crate::runtime_types::ClaimedSelect,
 ) -> Result<crate::runtime_types::ClaimedSelect, &'static str> {
     admit_send_claim_with(
         native_present,
-        busy,
-        has_pending,
         claim,
         crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
     )
@@ -1023,8 +1032,6 @@ pub(crate) fn admit_send_claim(
 /// scope, no approved form).
 pub(crate) fn admit_send_claim_with(
     native_present: bool,
-    busy: bool,
-    has_pending: bool,
     claim: crate::runtime_types::ClaimedSelect,
     trailing_enabled: bool,
 ) -> Result<crate::runtime_types::ClaimedSelect, &'static str> {
@@ -1034,9 +1041,6 @@ pub(crate) fn admit_send_claim_with(
     }
     if !native_present {
         return Err("refused-send-no-topology");
-    }
-    if busy || has_pending {
-        return Err("refused-send-busy");
     }
     Ok(claim)
 }
@@ -1945,13 +1949,7 @@ fn handle_select_action_with(
 ) {
     let verdict = {
         let guard = lock_shared(shared);
-        admit_select_claim_with(
-            guard.native_context.is_some(),
-            guard.select_busy,
-            guard.select_pending.is_some(),
-            claim,
-            trailing_enabled,
-        )
+        admit_select_claim_with(guard.native_context.is_some(), claim, trailing_enabled)
     };
     let claim = match verdict {
         Ok(claim) => claim,
@@ -2188,13 +2186,7 @@ fn handle_send_action_with(
     }
     let verdict = {
         let guard = lock_shared(shared);
-        admit_send_claim_with(
-            guard.native_context.is_some(),
-            guard.select_busy,
-            guard.select_pending.is_some(),
-            claim,
-            trailing_enabled,
-        )
+        admit_send_claim_with(guard.native_context.is_some(), claim, trailing_enabled)
     };
     let mut claim = match verdict {
         Ok(claim) => claim,
@@ -2472,7 +2464,7 @@ mod tests {
     }
 
     #[test]
-    fn select_admission_gates_unarmed_topology_and_busy() {
+    fn select_admission_gates_unarmed_and_topology() {
         // Sends and outputs refuse on the select lane even with a bound
         // click payload - a forged binding never widens the lane. The
         // armed previous-toggle admits binding-free, and the armed
@@ -2484,14 +2476,12 @@ mod tests {
                 follow: true,
             };
             let claim = ClaimedSelect::indicator(action, 3, 7, 9);
-            let err = admit_select_claim(true, false, false, claim).expect_err("unarmed refuses");
+            let err = admit_select_claim(true, claim).expect_err("unarmed refuses");
             assert_eq!(err, "refused-select-unarmed");
         }
         assert_eq!(
             admit_select_claim(
                 true,
-                false,
-                false,
                 ClaimedSelect::indicator(
                     InputSemanticAction::WorkspaceSelect { index: 0 },
                     3,
@@ -2506,37 +2496,22 @@ mod tests {
         assert_eq!(
             admit_select_claim(
                 true,
-                false,
-                false,
                 ClaimedSelect::tap(InputSemanticAction::WorkspacePrevious),
             )
             .map(|c| c.action),
             Ok(InputSemanticAction::WorkspacePrevious),
         );
         // No published native context refuses before any claim is stored.
-        let err =
-            admit_select_claim(false, false, false, tap_claim()).expect_err("no-topology refuses");
+        let err = admit_select_claim(false, tap_claim()).expect_err("no-topology refuses");
         assert_eq!(err, "refused-select-no-topology");
-        // A drain in progress or an already-pending claim refuses
-        // (concurrent presses serialize/refuse instead of overlapping).
-        for (busy, pending) in [(true, false), (false, true), (true, true)] {
-            let err =
-                admit_select_claim(true, busy, pending, tap_claim()).expect_err("busy refuses");
-            assert_eq!(err, "refused-select-busy");
-            let err = admit_select_claim(true, busy, pending, bound_claim())
-                .expect_err("bound busy refuses");
-            assert_eq!(err, "refused-select-busy");
-        }
+        // No busy or already-pending refusal: admission carries no busy
+        // gate. Queued FIFO serialization behind an in-progress drain is
+        // covered by the engine-lane tests below; the drain (not
+        // admission) orders actuation.
         // Open lane admits both lanes verbatim - the indicator binding
         // rides through untouched for the drain to fence.
-        assert_eq!(
-            admit_select_claim(true, false, false, tap_claim()),
-            Ok(tap_claim())
-        );
-        assert_eq!(
-            admit_select_claim(true, false, false, bound_claim()),
-            Ok(bound_claim())
-        );
+        assert_eq!(admit_select_claim(true, tap_claim()), Ok(tap_claim()));
+        assert_eq!(admit_select_claim(true, bound_claim()), Ok(bound_claim()));
     }
 
     #[test]
@@ -2546,26 +2521,28 @@ mod tests {
         // Production (gate `true`): trailing admits with topology and lane
         // open.
         assert_eq!(
-            admit_select_claim(true, false, false, trailing.clone()),
+            admit_select_claim(true, trailing.clone()),
             Ok(trailing.clone())
         );
         // Capability-disabled pin through the same production function
-        // refuses; busy/topology still fence when armed.
+        // refuses; topology still fences when armed. There is no busy
+        // gate: every armed command admits and queues FIFO.
         assert_eq!(
-            admit_select_claim_with(true, false, false, trailing.clone(), false),
+            admit_select_claim_with(true, trailing.clone(), false),
             Err("refused-select-unarmed")
         );
         assert_eq!(
-            admit_select_claim_with(true, false, false, trailing.clone(), true),
+            admit_select_claim_with(true, trailing.clone(), true),
             Ok(trailing.clone())
         );
         assert_eq!(
-            admit_select_claim_with(false, false, false, trailing.clone(), true),
+            admit_select_claim_with(false, trailing.clone(), true),
             Err("refused-select-no-topology")
         );
         assert_eq!(
-            admit_select_claim_with(true, true, false, trailing.clone(), true),
-            Err("refused-select-busy")
+            admit_select_claim_with(true, trailing.clone(), true),
+            Ok(trailing.clone()),
+            "no busy refusal: armed admits regardless of drain state"
         );
     }
 
@@ -2677,7 +2654,7 @@ mod trailing_join_tests {
             topology_revision: ctx.revision,
             native_context: Some(Arc::clone(&ctx)),
             native_cell: crate::runtime_shared::NativeContextCell::new(),
-            select_pending: None,
+            select_pending: VecDeque::new(),
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,
@@ -2792,7 +2769,7 @@ mod trailing_join_tests {
             true,
         );
         let guard = lock_shared(&shared);
-        let claim = guard.select_pending.clone().expect("claim stored");
+        let claim = guard.select_pending.front().cloned().expect("claim stored");
         assert!(
             claim
                 .operation_id
@@ -2846,7 +2823,8 @@ mod trailing_join_tests {
         );
         let first_op = lock_shared(&shared)
             .select_pending
-            .clone()
+            .front()
+            .cloned()
             .expect("claim stored")
             .operation_id
             .clone();
@@ -2862,9 +2840,10 @@ mod trailing_join_tests {
             !handle.take_select_claim_pending(),
             "wake consumed at most once per publication: no spurious extra body"
         );
-        // Single-flight: a concurrent press while the slot holds refuses
-        // instead of replacing, so the first claim (and its already-consumed
-        // wake) stands undisturbed and the refusal arms nothing.
+        // FIFO: a concurrent press while the first claim is queued
+        // enqueues behind it (never refuses, never replaces), so the
+        // first claim (and its already-consumed wake) stands undisturbed
+        // at the front with its own operation identity.
         handle_select_action_with(
             &mut session,
             &mut retained,
@@ -2877,32 +2856,47 @@ mod trailing_join_tests {
         );
         assert_eq!(
             lock_shared(&shared).diagnostics.input_select_refused,
-            1,
-            "concurrent press refuses while pending"
-        );
-        assert!(
-            !handle.take_select_claim_pending(),
-            "refused press arms no wake"
+            0,
+            "concurrent press queues: no busy admission loss"
         );
         assert_eq!(
-            lock_shared(&shared)
-                .select_pending
-                .clone()
-                .expect("first claim kept")
-                .operation_id,
-            first_op,
-            "single-flight keeps the first claim: no silent replacement"
+            lock_shared(&shared).diagnostics.input_select_enqueued,
+            2,
+            "both presses enqueue in admission order"
         );
-        // Draining spends nothing extra and re-arms cleanly: the claim take
-        // leaves no residual wake, and a later publication wakes again (no
-        // stuck latch, no lost wake).
+        {
+            let guard = lock_shared(&shared);
+            assert_eq!(guard.select_pending.len(), 2, "queue holds both claims");
+            assert_eq!(
+                guard
+                    .select_pending
+                    .front()
+                    .expect("first claim kept")
+                    .operation_id,
+                first_op,
+                "FIFO keeps the first claim at the front: no silent replacement"
+            );
+            let second_op = guard
+                .select_pending
+                .back()
+                .expect("second claim queued")
+                .operation_id
+                .clone();
+            assert!(
+                second_op.as_deref().is_some_and(|op| op.starts_with("op-")),
+                "queued press carries its own operation identity"
+            );
+            assert_ne!(second_op, first_op, "each command mints a unique op id");
+        }
+        // Draining dequeues oldest-first: the first claim drains, the
+        // second stays queued with the wake re-armed, then drains next.
         let claimed = handle
             .claim_select_for_drain()
             .expect("pending claim drains");
         assert_eq!(claimed.operation_id, first_op);
         assert!(
-            !handle.take_select_claim_pending(),
-            "claim take leaves no residual wake"
+            handle.take_select_claim_pending(),
+            "queued remainder keeps the wake armed past the claim"
         );
         handle.release_select_after_drain();
         handle_select_action_with(
@@ -2916,13 +2910,382 @@ mod trailing_join_tests {
             true,
         );
         assert!(
-            lock_shared(&shared).select_pending.is_some(),
+            !lock_shared(&shared).select_pending.is_empty(),
             "lane free after drain admits again"
         );
         assert!(
             handle.take_select_claim_pending(),
             "later publication re-arms the wake"
         );
+    }
+
+    #[test]
+    fn mixed_burst_true_ingress_queues_fifo_behind_saturated_data_lane() {
+        // Ordered-ingress regression: a saturated bounded data lane must
+        // never discard authorized user intent. Selects/sends ride the
+        // control lane (same strict FIFO queue, bypassing data
+        // saturation); observations stay bounded and drop counted. Only
+        // the drain serializes actuation. Deterministic: no threads, no
+        // sleeps — the real public submit paths enqueue, then jobs drain
+        // in FIFO recv order through the real `process_job`.
+        struct StubAx;
+        impl crate::runtime_backend::AxBackendFactory for StubAx {
+            fn create(
+                &self,
+                _pid: u32,
+            ) -> Result<Box<dyn crate::runtime_backend::AxBackend>, String> {
+                Err("test stub creates nothing".to_owned())
+            }
+        }
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        // Saturate the bounded data lane with stale observations (unknown
+        // app: they will-drop at the emission gate and stale-reject on
+        // processing, so they prove saturation without disturbing the
+        // burst).
+        for seq in 0..16 {
+            assert!(inbox.try_send_data(EngineJob::Observation {
+                pid: 9999,
+                generation: 1,
+                seq,
+                windows: Vec::new(),
+                focused_wid: None,
+            }));
+        }
+        assert!(
+            !inbox.try_send_data(EngineJob::Observation {
+                pid: 9999,
+                generation: 1,
+                seq: 999,
+                windows: Vec::new(),
+                focused_wid: None,
+            }),
+            "data lane stays bounded: observations drop counted when full"
+        );
+        let handle = crate::runtime::RuntimeHandle {
+            shared: Arc::clone(&shared),
+            inbox: Arc::clone(&inbox),
+            focus_queue: Arc::clone(&focus_queue),
+            ax_factory: Arc::new(StubAx),
+        };
+        // Mixed burst through the REAL public ingress (the exact functions
+        // production calls): taps, a focus step, a directional move step,
+        // and a send.
+        use crate::runtime_types::SubmitOutcome;
+        assert_eq!(
+            handle.submit_input_action(InputSemanticAction::WorkspaceSelect { index: 2 }),
+            SubmitOutcome::Accepted
+        );
+        assert_eq!(
+            handle.submit_input_action(InputSemanticAction::FocusStep {
+                direction: crate::runtime_types::InputDirection::Left,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert_eq!(
+            handle.submit_input_action(InputSemanticAction::MoveStep {
+                direction: crate::runtime_types::InputDirection::Right,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert_eq!(
+            handle.submit_input_action(InputSemanticAction::WorkspaceSelect { index: 1 }),
+            SubmitOutcome::Accepted
+        );
+        assert_eq!(
+            handle.submit_input_action(InputSemanticAction::WorkspaceSend {
+                // Window 4242_7 lives on workspace 1: send-to-2 is the
+                // meaningful move (send-to-1 would be a truthful core
+                // unchanged, not an ingress loss). Covers the real move
+                // plus follow-view legs behind selects in one FIFO drain.
+                index: 2,
+                follow: true,
+            }),
+            SubmitOutcome::Accepted
+        );
+        // Drain the saturated observations plus the FIRST select through
+        // the real engine job processor, then pop/hold its claim so the
+        // first drain is already in progress (select_busy) while the rest
+        // of the burst still arrives. The remainder must still reach the
+        // core in FIFO order while busy - the drain serializes actuation
+        // only, never admission.
+        let stop = AtomicBool::new(false);
+        let mut kinds: Vec<&str> = Vec::new();
+        for _ in 0..17 {
+            let job = inbox.recv(&stop).expect("queued job dequeues");
+            kinds.push(match &job {
+                EngineJob::Observation { .. } => "obs",
+                EngineJob::InputAction { .. } => "input",
+                _ => "other",
+            });
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs",
+                "obs", "obs", "obs", "obs", "input",
+            ],
+            "first select arrives FIFO behind the saturated lane"
+        );
+        assert_eq!(
+            lock_shared(&shared).select_pending.len(),
+            1,
+            "first select claim queued before its drain starts"
+        );
+        // Pop/hold the first claim: the drain is now in progress.
+        let held = handle.claim_select_for_drain().expect("first drains");
+        let held_op = held.operation_id.clone().expect("operation rides");
+        assert!(
+            lock_shared(&shared).select_busy,
+            "popped claim marks the drain in progress"
+        );
+        assert!(
+            handle.claim_select_for_drain().is_none(),
+            "concurrent pop serializes while the first drain is held"
+        );
+        // Process the remaining mixed inputs WHILE the first drain is
+        // held: the real engine path must still deliver every command to
+        // the core (selects queue behind the busy lane, steps forward).
+        for _ in 0..4 {
+            let job = inbox.recv(&stop).expect("queued job dequeues");
+            kinds.push(match &job {
+                EngineJob::Observation { .. } => "obs",
+                EngineJob::InputAction { .. } => "input",
+                _ => "other",
+            });
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs",
+                "obs", "obs", "obs", "obs", "input", "input", "input", "input", "input",
+            ],
+            "engine processes the burst FIFO behind the saturated lane"
+        );
+        // No admission loss while busy: every authorized command reached
+        // the core even though the first drain never released.
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_select_refused,
+            0,
+            "no busy admission loss"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_select_enqueued,
+            3,
+            "both taps and the send enqueue in admission order while busy"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_forwarded,
+            2,
+            "focus and move steps dispatch to core (non-select lane) in FIFO order while busy"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.data_dropped_full,
+            0,
+            "direct-inbox saturation proves boundedness via try_send_data=false above; submit-path drop accounting stays untouched"
+        );
+        // Sequence/order/no loss/no duplication across the held claim plus
+        // the busy-arrived queue: oldest-first, each with a unique
+        // increasing operation identity, actions in submission order.
+        let queued: Vec<ClaimedSelect> = lock_shared(&shared)
+            .select_pending
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(queued.len(), 2, "remainder queues behind the held drain");
+        assert_eq!(
+            held.action,
+            InputSemanticAction::WorkspaceSelect { index: 2 }
+        );
+        let mut ops: Vec<String> = vec![held_op.clone()];
+        ops.extend(
+            queued
+                .iter()
+                .map(|claim| claim.operation_id.clone().expect("operation rides")),
+        );
+        let mut seqs: Vec<u64> = ops
+            .iter()
+            .map(|op| {
+                op.strip_prefix("op-")
+                    .expect("op-<seq> identity")
+                    .parse()
+                    .expect("numeric seq")
+            })
+            .collect();
+        let sorted = {
+            let mut s = seqs.clone();
+            s.sort_unstable();
+            s
+        };
+        assert_eq!(seqs, sorted, "operation identities increase in queue order");
+        seqs.dedup();
+        assert_eq!(seqs.len(), 3, "no loss, no duplication");
+        assert_eq!(
+            queued
+                .iter()
+                .map(|claim| claim.action.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                InputSemanticAction::WorkspaceSelect { index: 1 },
+                InputSemanticAction::WorkspaceSend {
+                    index: 2,
+                    follow: true,
+                },
+            ],
+            "mixed-source FIFO preserves submission order behind the held drain"
+        );
+        // Still busy: no second pop until the held drain releases.
+        assert!(
+            handle.claim_select_for_drain().is_none(),
+            "busy lane holds the remainder until release"
+        );
+        assert_eq!(
+            held.operation_id.as_deref(),
+            Some(ops[0].as_str()),
+            "held first claim preserved while the burst arrived"
+        );
+        // Release unlocks the oldest pending order with no replay.
+        handle.release_select_after_drain();
+        assert!(
+            !lock_shared(&shared).select_busy,
+            "release clears the in-progress drain"
+        );
+        let second = handle.claim_select_for_drain().expect("second drains");
+        assert_eq!(second.operation_id.as_deref(), Some(ops[1].as_str()));
+        handle.release_select_after_drain();
+        let third = handle.claim_select_for_drain().expect("third drains");
+        assert_eq!(third.operation_id.as_deref(), Some(ops[2].as_str()));
+        handle.release_select_after_drain();
+        assert!(handle.claim_select_for_drain().is_none(), "nothing replays");
+        assert!(
+            lock_shared(&shared).select_pending.is_empty(),
+            "queue fully drained"
+        );
+    }
+
+    #[test]
+    fn saturated_lane_indicator_submit_rides_control_lane() {
+        // Saturated data lane must not discard an authorized indicator
+        // click: the segment click rides the control lane through the real
+        // public submit path, then the real engine job processor enqueues
+        // its claim.
+        struct StubAx;
+        impl crate::runtime_backend::AxBackendFactory for StubAx {
+            fn create(
+                &self,
+                _pid: u32,
+            ) -> Result<Box<dyn crate::runtime_backend::AxBackend>, String> {
+                Err("test stub creates nothing".to_owned())
+            }
+        }
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        for seq in 0..16 {
+            assert!(inbox.try_send_data(EngineJob::Observation {
+                pid: 9999,
+                generation: 1,
+                seq,
+                windows: Vec::new(),
+                focused_wid: None,
+            }));
+        }
+        assert!(
+            !inbox.try_send_data(EngineJob::Observation {
+                pid: 9999,
+                generation: 1,
+                seq: 999,
+                windows: Vec::new(),
+                focused_wid: None,
+            }),
+            "data lane stays bounded"
+        );
+        let handle = crate::runtime::RuntimeHandle {
+            shared: Arc::clone(&shared),
+            inbox: Arc::clone(&inbox),
+            focus_queue: Arc::clone(&focus_queue),
+            ax_factory: Arc::new(StubAx),
+        };
+        use crate::runtime_types::SubmitOutcome;
+        assert_eq!(
+            handle.submit_indicator_select(
+                InputSemanticAction::WorkspaceSelect { index: 2 },
+                277,
+                1,
+                9,
+            ),
+            SubmitOutcome::Accepted,
+            "indicator click bypasses data saturation"
+        );
+        let stop = AtomicBool::new(false);
+        for _ in 0..17 {
+            let job = inbox.recv(&stop).expect("queued job dequeues");
+            process_job(
+                job,
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+        }
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_select_refused,
+            0,
+            "indicator admitted while saturated"
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_select_enqueued,
+            1,
+            "indicator claim queued"
+        );
+        let queued: Vec<ClaimedSelect> = lock_shared(&shared)
+            .select_pending
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(queued.len(), 1, "one indicator claim stored");
+        assert_eq!(
+            queued[0].action,
+            InputSemanticAction::WorkspaceSelect { index: 2 }
+        );
+        assert_eq!(queued[0].expected_sid, Some(277));
     }
 
     #[test]
@@ -2941,7 +3304,7 @@ mod trailing_join_tests {
         );
         let guard = lock_shared(&shared);
         assert!(
-            guard.select_pending.is_some(),
+            !guard.select_pending.is_empty(),
             "armed production stores the trailing claim"
         );
     }
@@ -2994,7 +3357,8 @@ mod trailing_join_tests {
         );
         let away = lock_shared(&shared)
             .select_pending
-            .clone()
+            .front()
+            .cloned()
             .expect("away select stores its operation");
         let away_op = away.operation_id.clone().expect("operation rides");
         let away_pending = lock_shared(&shared)
@@ -3070,7 +3434,7 @@ mod trailing_join_tests {
         // The main-thread drain claims the pending select, freeing the lane
         // for the next arm exactly like production. Foreground evidence is
         // unchanged since the away dispatch (same tick shape).
-        lock_shared(&shared).select_pending = None;
+        lock_shared(&shared).select_pending.clear();
         lock_shared(&shared).select_busy = false;
         // Back: numbered 1 returns to the remembered home. The newer
         // switch supersedes the away intent (counted — no completion ever
@@ -3183,7 +3547,8 @@ mod trailing_join_tests {
         );
         let first = lock_shared(&shared)
             .select_pending
-            .clone()
+            .front()
+            .cloned()
             .expect("numbered claim stored");
         let first_op = first.operation_id.clone().expect("operation rides");
         assert!(
@@ -3259,7 +3624,7 @@ mod trailing_join_tests {
         // Previous flips back through proven core history (not local
         // state): the plan binds the original Space with the moved
         // observation-time baseline.
-        lock_shared(&shared).select_pending = None;
+        lock_shared(&shared).select_pending.clear();
         lock_shared(&shared).select_busy = false;
         handle_select_action_with(
             &mut session,
@@ -3273,7 +3638,8 @@ mod trailing_join_tests {
         );
         let prev = lock_shared(&shared)
             .select_pending
-            .clone()
+            .front()
+            .cloned()
             .expect("previous claim stored with proven history");
         let prev_op = prev.operation_id.clone().expect("operation rides");
         assert_eq!(
@@ -3334,7 +3700,7 @@ mod trailing_join_tests {
             session.engine_mut().retained_transfers().is_empty(),
             "native echo settles the previous transfer"
         );
-        lock_shared(&shared).select_pending = None;
+        lock_shared(&shared).select_pending.clear();
         lock_shared(&shared).select_busy = false;
         handle_select_action_with(
             &mut session,
@@ -3348,7 +3714,8 @@ mod trailing_join_tests {
         );
         let again = lock_shared(&shared)
             .select_pending
-            .clone()
+            .front()
+            .cloned()
             .expect("second previous claim stored");
         assert_eq!(
             again.select_native_binding.as_deref(),
@@ -3417,7 +3784,8 @@ mod trailing_join_tests {
             .take();
         let stale = lock_shared(&shared)
             .select_pending
-            .clone()
+            .front()
+            .cloned()
             .expect("stale command still binds its operation identity");
         assert!(
             stale
@@ -4156,7 +4524,11 @@ mod trailing_join_tests {
             true,
         );
         let guard = lock_shared(&shared);
-        let claim = guard.select_pending.clone().expect("send claim stored");
+        let claim = guard
+            .select_pending
+            .front()
+            .cloned()
+            .expect("send claim stored");
         // Original admitted pins survive verbatim (never re-sampled): the
         // owner binds its prepared target to exactly these.
         assert_eq!(claim.send_subject.as_deref(), Some("4242_7"));
@@ -4202,7 +4574,7 @@ mod trailing_join_tests {
             }),
         );
         assert!(
-            lock_shared(&shared).select_pending.is_some(),
+            !lock_shared(&shared).select_pending.is_empty(),
             "armed production stores the trailing send claim"
         );
     }
@@ -4356,7 +4728,8 @@ mod trailing_join_tests {
             );
             let claim = lock_shared(&shared)
                 .select_pending
-                .clone()
+                .front()
+                .cloned()
                 .expect("trailing select claim stored");
             let op = claim.operation_id.clone().expect("operation rides");
             // Stage1b authorization the trailing dispatch minted: the viewed
@@ -4594,7 +4967,8 @@ mod trailing_join_tests {
             );
             let claim = lock_shared(&shared)
                 .select_pending
-                .clone()
+                .front()
+                .cloned()
                 .expect("trailing send claim stored");
             let op = claim.operation_id.clone().expect("operation rides");
             // Stage1b authorization the send dispatch minted for its trailing
@@ -4915,7 +5289,7 @@ mod drag_gesture_handoff_tests {
             topology_revision: ctx.revision,
             native_context: Some(Arc::clone(&ctx)),
             native_cell: crate::runtime_shared::NativeContextCell::new(),
-            select_pending: None,
+            select_pending: VecDeque::new(),
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,

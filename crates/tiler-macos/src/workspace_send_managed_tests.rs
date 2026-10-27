@@ -3553,7 +3553,7 @@ fn bridged_stay_reuses_fast_follow_then_released_return_with_source_focus() {
 // genuine reads around the dispatch, and the staged raw attempt rows settle
 // through the next production dispatch. No live touch.
 mod send_join_tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
@@ -3681,7 +3681,7 @@ mod send_join_tests {
             topology_revision: ctx.revision,
             native_context: Some(Arc::clone(&ctx)),
             native_cell: crate::runtime_shared::NativeContextCell::new(),
-            select_pending: None,
+            select_pending: VecDeque::new(),
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,

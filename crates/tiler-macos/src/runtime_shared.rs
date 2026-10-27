@@ -293,16 +293,22 @@ pub(crate) struct Shared {
     /// [`RuntimeHandle::invalidate_topology`]), so a topology update
     /// mid-plan fences the very next leg — not just the next command.
     pub(crate) native_cell: NativeContextCell,
-    /// One pending product select claim (armed select-only actions): set by
-    /// the engine without blocking, claimed and drained by the main-thread
-    /// tile controller. `select_busy` marks a drain in progress so
-    /// concurrent presses serialize/refuse instead of overlapping; both are
-    /// short critical sections only (never held across the blocking effect).
-    /// Indicator clicks ride as full [`ClaimedSelect`] bindings (expected
-    /// SID plus UI generation plus topology revision); tap chords ride
-    /// binding-free. The drain refuses a bound claim whose ordinal no
-    /// longer names its SID or whose revision drifted.
-    pub(crate) select_pending: Option<ClaimedSelect>,
+    /// Ordered product select/send claim queue: one entry per admitted
+    /// world command, in admission order. The engine pushes exactly one
+    /// claim per dispatched command (tap selects, indicator selects, and
+    /// sends share this lane); the main-thread tile controller pops the
+    /// front when no drain is in progress and releases it after the drain
+    /// settles (success, gate refusal, drift, or no effect — every path
+    /// releases exactly once). `select_busy` marks a drain in progress so
+    /// concurrent pops serialize instead of overlapping; queued entries
+    /// wait instead of refusing, so no admitted command is ever dropped
+    /// for a busy lane. Indicator clicks ride as full [`ClaimedSelect`]
+    /// bindings (expected SID plus UI generation plus topology revision);
+    /// tap chords ride binding-free. The drain refuses a queued claim whose
+    /// pins no longer name the live topology instead of actuating it
+    /// (stale-topology supersession of actuation only, per T3 — the intent
+    /// already executed core-side at-most-once before the claim queued).
+    pub(crate) select_pending: VecDeque<ClaimedSelect>,
     pub(crate) select_busy: bool,
     /// Main-thread wake hint for the pending claim above: set once when the
     /// engine publishes an actionable claim, consumed once by the main pump

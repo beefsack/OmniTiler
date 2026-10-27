@@ -282,7 +282,7 @@ impl Runtime {
                 select_wake: None,
                 topology_revision: 0,
                 native_context: None,
-                select_pending: None,
+                select_pending: VecDeque::new(),
                 select_busy: false,
                 select_claim_pending: false,
                 selection_focus_pending: None,
@@ -339,7 +339,7 @@ impl Runtime {
             select_wake: None,
             topology_revision: 0,
             native_context: None,
-            select_pending: None,
+            select_pending: VecDeque::new(),
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,
@@ -1137,20 +1137,21 @@ impl RuntimeHandle {
 
     /// Submit one tap/keyboard select through the engine lane (no
     /// render-time binding: the drain maps the ordinal fresh). The engine
-    /// applies the unarmed/busy/no-topology gates and the main-thread
-    /// drain applies the fresh fences and verified arrival. Nonblocking
-    /// (data lane); a full queue drops counted, never blocks input.
+    /// applies the unarmed/no-topology gates and the main-thread
+    /// drain applies the fresh fences and verified arrival. Control lane
+    /// (never silently dropped: every authorized command reaches the core
+    /// FIFO in order); a closed inbox refuses as `AdmissionClosed`, never
+    /// blocks input.
     pub fn submit_input_action(&self, action: InputSemanticAction) -> SubmitOutcome {
         if !engine_alive(&self.shared) {
             return SubmitOutcome::AdmissionClosed;
         }
         // Bump before enqueue (see `invalidate_clock`).
         invalidate_clock(&self.shared);
-        if self.inbox.try_send_data(EngineJob::InputAction { action }) {
+        if self.inbox.send_control(EngineJob::InputAction { action }) {
             SubmitOutcome::Accepted
         } else {
-            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
-            SubmitOutcome::EngineQueueFull
+            SubmitOutcome::AdmissionClosed
         }
     }
 
@@ -1162,9 +1163,10 @@ impl RuntimeHandle {
     /// `topology_revision`) rides through engine admission into the
     /// pending claim, and the main-thread drain refuses it against the
     /// fresh row instead of interpreting the ordinal against a different
-    /// generation. Same unarmed/busy/no-topology gates as a tap select.
-    /// Nonblocking (data lane); a full queue drops counted, never blocks
-    /// AppKit.
+    /// generation. Same unarmed/no-topology gates as a tap select.
+    /// Control lane (never silently dropped: every authorized command
+    /// reaches the core FIFO in order); a closed inbox refuses as
+    /// `AdmissionClosed`, never blocks AppKit.
     pub fn submit_indicator_select(
         &self,
         action: InputSemanticAction,
@@ -1177,7 +1179,7 @@ impl RuntimeHandle {
         }
         // Bump before enqueue (see `invalidate_clock`).
         invalidate_clock(&self.shared);
-        if self.inbox.try_send_data(EngineJob::IndicatorSelect {
+        if self.inbox.send_control(EngineJob::IndicatorSelect {
             action,
             expected_sid,
             ui_generation,
@@ -1185,8 +1187,7 @@ impl RuntimeHandle {
         }) {
             SubmitOutcome::Accepted
         } else {
-            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
-            SubmitOutcome::EngineQueueFull
+            SubmitOutcome::AdmissionClosed
         }
     }
 
@@ -1201,13 +1202,12 @@ impl RuntimeHandle {
         }
         // Bump before enqueue (see `invalidate_clock`).
         invalidate_clock(&self.shared);
-        if self.inbox.try_send_data(EngineJob::InputAction {
+        if self.inbox.send_control(EngineJob::InputAction {
             action: InputSemanticAction::ToggleFloat,
         }) {
             SubmitOutcome::Accepted
         } else {
-            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
-            SubmitOutcome::EngineQueueFull
+            SubmitOutcome::AdmissionClosed
         }
     }
 

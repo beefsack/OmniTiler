@@ -13,31 +13,37 @@
 //! path - the core owns every verdict from the staged row plus the
 //! observation.
 
+use std::collections::VecDeque;
+
 use crate::runtime::{RuntimeHandle, invalidate_clock, lock_shared};
 use crate::runtime_thread::EngineJob;
 use crate::runtime_types::ClaimedSelect;
 use tiler_core::world_report::FrameSetter;
 
 impl RuntimeHandle {
-    /// Claim one pending product select for the main-thread drain: takes the
-    /// pending claim (action plus, for indicator clicks, the immutable
-    /// render-time SID/generation/revision binding) and marks the slot busy
-    /// so concurrent engine enqueues serialize/refuse instead of overlapping
-    /// (`None` when nothing is pending or a drain is already in progress).
-    /// Short critical section only - never held across the blocking effect.
-    /// Taking the claim also consumes the publish wake (`select_claim_pending`):
-    /// the wake that ran this body early is spent, and a claim stored after
-    /// this take re-arms through `store` for the next pump - nothing is lost
-    /// either way.
+    /// Claim the oldest pending product select for the main-thread drain:
+    /// pops the queue front (action plus, for indicator clicks, the
+    /// immutable render-time SID/generation/revision binding) and marks
+    /// the slot busy so concurrent claims serialize instead of overlapping
+    /// (`None` when the queue is empty or a drain is already in progress).
+    /// Queued entries wait instead of refusing: every admitted command
+    /// drains oldest-first with no loss, no duplication, and no
+    /// reordering. Short critical section only - never held across the
+    /// blocking effect.
+    /// Taking a claim consumes the publish wake (`select_claim_pending`)
+    /// only when the queue empties: the wake that ran this body early is
+    /// spent for an empty queue, while a still-queued entry keeps the next
+    /// pump early via the release re-arm — nothing is lost either way.
     /// Pair every `Some` with [`RuntimeHandle::release_select_after_drain`].
     pub fn claim_select_for_drain(&self) -> Option<ClaimedSelect> {
         let mut guard = lock_shared(&self.shared);
-        if guard.select_busy || guard.select_pending.is_none() {
+        if guard.select_busy {
             return None;
         }
+        let claim = guard.select_pending.pop_front()?;
         guard.select_busy = true;
-        guard.select_claim_pending = false;
-        guard.select_pending.take()
+        guard.select_claim_pending = !guard.select_pending.is_empty();
+        Some(claim)
     }
 
     /// Consume the published-claim wake hint once: true when the engine
@@ -53,12 +59,19 @@ impl RuntimeHandle {
 
     /// Release the select claim after the main-thread drain settles
     /// (success, gate refusal, drift, or no effect - every path releases
-    /// exactly once; a sent press is never replayed). Pair with
+    /// exactly once; a sent press is never replayed). When entries are
+    /// still queued, the publish wake re-arms so the next drain runs
+    /// through the existing pump instead of waiting out the cadence:
+    /// FIFO dequeue on causal completion. Pair with
     /// [`RuntimeHandle::report_select_attempt`]: the drain reports its
     /// proven native outcome under the claim's operation identity so the
     /// core settles the planner-owned view target (never replayed).
     pub fn release_select_after_drain(&self) {
-        lock_shared(&self.shared).select_busy = false;
+        let mut guard = lock_shared(&self.shared);
+        guard.select_busy = false;
+        if !guard.select_pending.is_empty() {
+            guard.select_claim_pending = true;
+        }
     }
 
     /// Proven outcome of one main-thread select drain, staged as a raw
@@ -222,53 +235,55 @@ impl RuntimeHandle {
         crate::world_dispatch::drop_selection_focus_for_operation(&self.shared, operation_id)
     }
 
-    /// Drop a pending (unclaimed) product select without dispatching: the
+    /// Drop all queued (unclaimed) product selects without dispatching: the
     /// lock/secure/stale-topology paths refuse narrowly instead of running
-    /// a switch under an unsafe context. Returns whether one was dropped.
-    /// Never touches a drain in progress. A dropped bound claim stages a
-    /// raw refusal row (best-effort) so the core holds its planner-owned
-    /// target instead of retaining it blindly: the row carries no reads
+    /// switches under an unsafe context. Returns whether any were dropped.
+    /// Never touches a drain in progress. Every dropped bound claim stages
+    /// a raw refusal row (best-effort) so the core holds its planner-owned
+    /// target instead of retaining it blindly: each row carries no reads
     /// (the drain never touched the desktop), so the core latches hold
     /// without re-actuation rather than settling a verdict.
     pub fn discard_select_pending(&self) -> bool {
-        let dropped: Option<ClaimedSelect> = {
+        let dropped: VecDeque<ClaimedSelect> = {
             let mut guard = lock_shared(&self.shared);
             if guard.select_busy {
                 return false;
             }
             guard.select_claim_pending = false;
-            guard.select_pending.take()
+            std::mem::take(&mut guard.select_pending)
         };
-        let Some(claim) = dropped else {
+        if dropped.is_empty() {
             return false;
-        };
-        if let Some(operation_id) = claim.operation_id.as_deref()
-            && !operation_id.is_empty()
-        {
-            use tiler_core::world_report::FrameSetter;
-            let job = if matches!(
-                claim.action,
-                crate::runtime_types::InputSemanticAction::WorkspaceSend { .. }
-            ) {
-                EngineJob::MemberAttempt {
-                    operation_id: operation_id.to_owned(),
-                    setter: FrameSetter::Refused,
-                    pre_sid: None,
-                    post_sid: None,
+        }
+        for claim in &dropped {
+            if let Some(operation_id) = claim.operation_id.as_deref()
+                && !operation_id.is_empty()
+            {
+                use tiler_core::world_report::FrameSetter;
+                let job = if matches!(
+                    claim.action,
+                    crate::runtime_types::InputSemanticAction::WorkspaceSend { .. }
+                ) {
+                    EngineJob::MemberAttempt {
+                        operation_id: operation_id.to_owned(),
+                        setter: FrameSetter::Refused,
+                        pre_sid: None,
+                        post_sid: None,
+                    }
+                } else {
+                    EngineJob::ViewAttempt {
+                        operation_id: operation_id.to_owned(),
+                        setter: FrameSetter::Refused,
+                        pre_sid: None,
+                        post_sid: None,
+                        baseline_sid: None,
+                    }
+                };
+                // Bump before enqueue (see `invalidate_clock` in runtime).
+                invalidate_clock(&self.shared);
+                if !self.inbox.try_send_data(job) {
+                    lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
                 }
-            } else {
-                EngineJob::ViewAttempt {
-                    operation_id: operation_id.to_owned(),
-                    setter: FrameSetter::Refused,
-                    pre_sid: None,
-                    post_sid: None,
-                    baseline_sid: None,
-                }
-            };
-            // Bump before enqueue (see `invalidate_clock` in runtime).
-            invalidate_clock(&self.shared);
-            if !self.inbox.try_send_data(job) {
-                lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
             }
         }
         true
@@ -310,7 +325,7 @@ mod tests {
             topology_revision: 0,
             native_context: None,
             native_cell: crate::runtime_shared::NativeContextCell::new(),
-            select_pending: None,
+            select_pending: VecDeque::new(),
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,
@@ -351,7 +366,7 @@ mod tests {
         let mut guard = lock_shared(&handle.shared);
         let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 });
         claim.operation_id = Some(operation_id.to_owned());
-        guard.select_pending = Some(claim);
+        guard.select_pending.push_back(claim);
         guard.select_claim_pending = true;
     }
 
@@ -393,9 +408,9 @@ mod tests {
     }
 
     #[test]
-    fn latest_publication_wins_and_stale_discard_clears() {
-        // Single-flight latest-wins: an overwriting publication replaces the
-        // slot and keeps one coalesced wake; the drain takes the latest.
+    fn queued_publications_drain_oldest_first_and_discard_clears() {
+        // FIFO: burst publications queue in order behind one coalesced
+        // wake; the drain takes the oldest first, then the next.
         let handle = test_handle();
         publish(&handle, "op-1");
         publish(&handle, "op-2");
@@ -404,15 +419,28 @@ mod tests {
             "bursts coalesce into one wake"
         );
         assert!(!handle.take_select_claim_pending());
-        let claimed = handle
+        let first = handle
             .claim_select_for_drain()
-            .expect("latest claim drains");
-        assert_eq!(claimed.operation_id.as_deref(), Some("op-2"));
+            .expect("oldest claim drains first");
+        assert_eq!(first.operation_id.as_deref(), Some("op-1"));
+        // A queued remainder keeps the wake armed past the claim; release
+        // re-arms for the next pump and the second claim drains next.
+        assert!(
+            handle.take_select_claim_pending(),
+            "queued remainder keeps the wake armed"
+        );
         handle.release_select_after_drain();
-        // Stale clear: dropping the pending claim clears the wake, so the
-        // pump never runs an early body for a claim that will never drain.
+        let second = handle
+            .claim_select_for_drain()
+            .expect("second claim drains next");
+        assert_eq!(second.operation_id.as_deref(), Some("op-2"));
+        handle.release_select_after_drain();
+        // Discard drops every queued claim at once (multi-drop) and clears
+        // the wake, so the pump never runs an early body for claims that
+        // will never drain. A drain in progress is never touched.
         publish(&handle, "op-3");
-        assert!(handle.discard_select_pending(), "pending claim dropped");
+        publish(&handle, "op-4");
+        assert!(handle.discard_select_pending(), "queued claims dropped");
         assert!(
             !handle.take_select_claim_pending(),
             "drop clears the wake: no lost-wake gap, no spurious early body"
@@ -422,16 +450,29 @@ mod tests {
     }
 
     #[test]
-    fn busy_drain_refuses_second_claim_without_wake_churn() {
-        // While a drain holds the slot, a second claim is refused (never
-        // queued behind it) and the spent wake is not re-armed by the
-        // refusal.
+    fn queued_claim_waits_behind_busy_drain_and_releases_in_order() {
+        // While a drain holds the front claim, a queued claim waits (never
+        // lost, never overlapping): the concurrent claim returns None, the
+        // queued remainder keeps the wake armed, and release dequeues it
+        // next in order.
         let handle = test_handle();
         publish(&handle, "op-1");
         assert!(handle.take_select_claim_pending());
-        assert!(handle.claim_select_for_drain().is_some());
-        assert!(handle.claim_select_for_drain().is_none());
-        assert!(!handle.take_select_claim_pending());
+        let first = handle.claim_select_for_drain().expect("front drains");
+        assert_eq!(first.operation_id.as_deref(), Some("op-1"));
+        assert!(handle.claim_select_for_drain().is_none(), "busy serializes");
+        publish(&handle, "op-2");
+        assert!(handle.claim_select_for_drain().is_none(), "still busy");
+        assert!(
+            handle.take_select_claim_pending(),
+            "queued remainder keeps the wake armed behind the drain"
+        );
         handle.release_select_after_drain();
+        let second = handle
+            .claim_select_for_drain()
+            .expect("queued claim drains after release");
+        assert_eq!(second.operation_id.as_deref(), Some("op-2"));
+        handle.release_select_after_drain();
+        assert!(handle.claim_select_for_drain().is_none());
     }
 }

@@ -634,23 +634,14 @@ fn trailing_send_command_and_admission_armed_in_production() {
         })
     );
     assert!(crate::workspace_input::is_armed_send(&trailing));
-    assert!(admit_send_claim(true, false, false, ClaimedSelect::tap(trailing.clone())).is_ok());
+    assert!(admit_send_claim(true, ClaimedSelect::tap(trailing.clone())).is_ok());
     // Capability-disabled pin through the same production mapping: no
     // send route, engine refuses.
     assert_eq!(
         send_command_with_capability(&trailing, "4242_7", output.clone(), false),
         None
     );
-    assert!(
-        admit_send_claim_with(
-            true,
-            false,
-            false,
-            ClaimedSelect::tap(trailing.clone()),
-            false
-        )
-        .is_err()
-    );
+    assert!(admit_send_claim_with(true, ClaimedSelect::tap(trailing.clone()), false).is_err());
     // Explicit local capability through the same production mapping:
     // trailing follow maps to the core trailing path with the pinned
     // subject; stay-0 never maps.
@@ -675,17 +666,11 @@ fn trailing_send_command_and_admission_armed_in_production() {
     );
     // Explicit local capability admits the trailing shape at the engine gate
     // (stay-0 still refuses: out of scope).
-    let admitted = admit_send_claim_with(
-        true,
-        false,
-        false,
-        ClaimedSelect::tap(trailing.clone()),
-        true,
-    );
+    let admitted = admit_send_claim_with(true, ClaimedSelect::tap(trailing.clone()), true);
     assert!(admitted.is_ok(), "capability-armed trailing admits");
-    assert!(admit_send_claim_with(true, false, false, ClaimedSelect::tap(stay0), true).is_err());
+    assert!(admit_send_claim_with(true, ClaimedSelect::tap(stay0), true).is_err());
     assert!(
-        admit_send_claim(true, false, false, ClaimedSelect::tap(trailing)).is_ok(),
+        admit_send_claim(true, ClaimedSelect::tap(trailing)).is_ok(),
         "production wrapper admits when armed"
     );
 }
@@ -922,19 +907,17 @@ fn authentic_unreadable_holder_fails_per_id_without_blocking_siblings() {
 fn admission_serializes_and_refuses_without_topology() {
     use crate::runtime_thread::admit_send_claim;
     let good = ClaimedSelect::tap(send(2));
-    assert!(admit_send_claim(true, false, false, good).is_ok());
+    assert!(admit_send_claim(true, good).is_ok());
     let good_stay = ClaimedSelect::tap(InputSemanticAction::WorkspaceSend {
         index: 2,
         follow: false,
     });
-    assert!(admit_send_claim(true, false, false, good_stay).is_ok());
+    assert!(admit_send_claim(true, good_stay).is_ok());
     // Trailing send-0 follow is armed in production (admits with no
     // admission SID: the drain ensures the Space natively).
     assert!(
         admit_send_claim(
             true,
-            false,
-            false,
             ClaimedSelect::tap(InputSemanticAction::WorkspaceSend {
                 index: 0,
                 follow: true,
@@ -957,24 +940,17 @@ fn admission_serializes_and_refuses_without_topology() {
         InputSemanticAction::ToggleFloat,
     ] {
         assert_eq!(
-            admit_send_claim(true, false, false, ClaimedSelect::tap(action)),
+            admit_send_claim(true, ClaimedSelect::tap(action)),
             Err("refused-send-unarmed")
         );
     }
     assert_eq!(
-        admit_send_claim(false, false, false, ClaimedSelect::tap(send(2))),
+        admit_send_claim(false, ClaimedSelect::tap(send(2))),
         Err("refused-send-no-topology")
     );
-    // Busy drain or a pending claim (select OR send — one shared slot)
-    // refuses instead of overlapping.
-    assert_eq!(
-        admit_send_claim(true, true, false, ClaimedSelect::tap(send(2))),
-        Err("refused-send-busy")
-    );
-    assert_eq!(
-        admit_send_claim(true, false, true, ClaimedSelect::tap(send(2))),
-        Err("refused-send-busy")
-    );
+    // No busy gate on the shared lane: the drain serializes actuation, so
+    // admission never refuses for an in-progress drain or a queued claim.
+    // FIFO queueing behind the drain is covered by the engine-lane tests.
 }
 
 #[test]
@@ -1137,7 +1113,7 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
     );
     assert_eq!(workspace_unsupported_outcome(&binding.action), None);
     let claim = ClaimedSelect::tap(binding.action.clone());
-    assert!(admit_send_claim(true, false, false, claim).is_ok());
+    assert!(admit_send_claim(true, claim).is_ok());
     let output = OutputId("macos-display-1".to_owned());
     let command = send_command(&binding.action, "4242_7", output.clone()).expect("world route");
     assert_eq!(
@@ -1175,7 +1151,7 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
         "stay-2 dispatches (armed, bindable unbound)"
     );
     assert!(
-        admit_send_claim(true, false, false, ClaimedSelect::tap(stay.clone())).is_ok(),
+        admit_send_claim(true, ClaimedSelect::tap(stay.clone())).is_ok(),
         "stay-2 admitted"
     );
     // Trailing send-0 follow dispatches in product (armed through the
@@ -1187,7 +1163,7 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
     };
     assert_eq!(workspace_unsupported_outcome(&trailing), None);
     assert!(
-        admit_send_claim(true, false, false, ClaimedSelect::tap(trailing.clone())).is_ok(),
+        admit_send_claim(true, ClaimedSelect::tap(trailing.clone())).is_ok(),
         "send-0 admitted"
     );
     assert_eq!(
@@ -1221,7 +1197,7 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
             "{action:?}"
         );
         assert_eq!(
-            admit_send_claim(true, false, false, ClaimedSelect::tap(action.clone())),
+            admit_send_claim(true, ClaimedSelect::tap(action.clone())),
             Err("refused-send-unarmed"),
             "{action:?}"
         );
@@ -1267,7 +1243,7 @@ fn stay_shape_stays_unbound_but_armed_in_product() {
             "stay {index} maps"
         );
         assert!(
-            admit_send_claim(true, false, false, ClaimedSelect::tap(action.clone())).is_ok(),
+            admit_send_claim(true, ClaimedSelect::tap(action.clone())).is_ok(),
             "stay {index} admitted"
         );
         // Catalogue: bindable, unbound, armed - with the digit slot kept
@@ -1303,7 +1279,7 @@ fn stay_shape_stays_unbound_but_armed_in_product() {
             "stay-0 has no world route"
         );
         assert_eq!(
-            admit_send_claim(true, false, false, ClaimedSelect::tap(action.clone())),
+            admit_send_claim(true, ClaimedSelect::tap(action.clone())),
             Err("refused-send-unarmed"),
             "stay-0 refused at admission"
         );

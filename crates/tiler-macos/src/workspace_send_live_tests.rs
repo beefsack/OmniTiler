@@ -1659,7 +1659,7 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
     assert_eq!(workspace_unsupported_outcome(&binding.action), None);
     let claim = ClaimedSelect::tap(binding.action.clone());
     assert!(
-        crate::runtime_thread::admit_send_claim(true, false, false, claim).is_ok(),
+        crate::runtime_thread::admit_send_claim(true, claim).is_ok(),
         "engine admits the armed hotkey claim"
     );
     // Engine-admitted claim (pins as `handle_send_action` does) submits to
@@ -1702,13 +1702,8 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
     ] {
         assert_eq!(workspace_unsupported_outcome(&action), None, "{action:?}");
         assert!(
-            crate::runtime_thread::admit_send_claim(
-                true,
-                false,
-                false,
-                ClaimedSelect::tap(action.clone())
-            )
-            .is_ok(),
+            crate::runtime_thread::admit_send_claim(true, ClaimedSelect::tap(action.clone()))
+                .is_ok(),
             "{action:?} admitted"
         );
     }
@@ -1733,12 +1728,7 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
             "{action:?}"
         );
         assert_eq!(
-            crate::runtime_thread::admit_send_claim(
-                true,
-                false,
-                false,
-                ClaimedSelect::tap(action.clone())
-            ),
+            crate::runtime_thread::admit_send_claim(true, ClaimedSelect::tap(action.clone())),
             Err("refused-send-unarmed"),
             "{action:?}"
         );

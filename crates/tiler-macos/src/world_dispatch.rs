@@ -2121,15 +2121,6 @@ fn dispatch_focus_effects(
     }
 }
 
-/// Settle pending select claims against retained view transfers: a held
-/// target (possibly-executed) drops the pending claim so the drain never
-/// re-actuates it — holds preserve native state. Live targets stay for
-/// the main-thread drain with its own fresh fences. A pending claim that
-/// carries an operation identity but no plan (stored from a
-/// sequencer-stale refusal, so no stale binding was bound) rebinds its
-/// plan here from the currently applied reply — never from a previous
-/// one — while the lane is idle. A claim already taken for drain
-/// (`select_busy`) is never touched.
 fn settle_select_transfers(
     session: &mut WorldSession,
     shared: &Arc<Mutex<Shared>>,
@@ -2138,95 +2129,108 @@ fn settle_select_transfers(
     generation: u64,
     seq: u64,
 ) {
-    let pending_op: Option<String> = lock_shared(shared)
+    let pending_ops: Vec<Option<String>> = lock_shared(shared)
         .select_pending
-        .as_ref()
-        .and_then(|claim| claim.operation_id.clone());
-    let Some(operation_id) = pending_op else {
-        return;
-    };
-    let held = reply
-        .transfers
         .iter()
-        .find(|target| target.operation_id == operation_id)
-        .is_some_and(|target| target.held);
-    if held {
-        {
-            let mut guard = lock_shared(shared);
-            guard.select_pending = None;
-            // The dropped claim will never be polled: clear its publish
-            // wake so no spurious early body fires for it. A later store
-            // re-arms through the same flag.
-            guard.select_claim_pending = false;
-        }
-        emit(shared, pid, generation, seq, "input", "select-held", 0);
+        .map(|claim| claim.operation_id.clone())
+        .collect();
+    if pending_ops.iter().all(Option::is_none) {
         return;
     }
-    // Rebind a plan-less claim (stale-refusal store) from this applied
-    // reply: resolve the retained View transfer by operation identity,
-    // then the live native binding (or explicit creation desire) plus the
-    // observation-time baseline from the current native context. Never
-    // invents a binding; missing targets leave the claim unbound so the
-    // drain refuses without actuation.
-    let needs_plan = lock_shared(shared)
-        .select_pending
-        .as_ref()
-        .is_some_and(|claim| {
+    let mut held_ops: Vec<String> = Vec::new();
+    let mut rebind_ops: Vec<String> = Vec::new();
+    for operation_id in pending_ops.into_iter().flatten() {
+        let held = reply
+            .transfers
+            .iter()
+            .find(|target| target.operation_id == operation_id)
+            .is_some_and(|target| target.held);
+        if held {
+            held_ops.push(operation_id);
+            continue;
+        }
+        let needs_plan = lock_shared(shared).select_pending.iter().any(|claim| {
             claim.operation_id.as_deref() == Some(operation_id.as_str())
                 && claim.select_target_output.is_none()
         });
-    if !needs_plan {
-        return;
+        if needs_plan {
+            rebind_ops.push(operation_id);
+        }
     }
-    let busy = lock_shared(shared).select_busy;
-    if busy {
-        return;
+    if !held_ops.is_empty() {
+        {
+            let mut guard = lock_shared(shared);
+            guard.select_pending.retain(|claim| {
+                !claim
+                    .operation_id
+                    .as_deref()
+                    .is_some_and(|op| held_ops.iter().any(|held| held == op))
+            });
+            if guard.select_pending.is_empty() {
+                // The dropped claims will never be polled: clear their
+                // publish wake so no spurious early body fires for them.
+                // A later store re-arms through the same flag.
+                guard.select_claim_pending = false;
+            }
+        }
+        for _ in &held_ops {
+            emit(shared, pid, generation, seq, "input", "select-held", 0);
+        }
+        rebind_ops.retain(|op| !held_ops.contains(op));
     }
-    let transfer = session
-        .engine_mut()
-        .retained_transfers()
-        .into_iter()
-        .find(|target| {
-            target.operation_id == operation_id
-                && matches!(target.kind, tiler_core::world_report::TransferKind::View)
-        });
-    let Some(transfer) = transfer else {
-        return;
-    };
-    let target_output = transfer.target_output.0.clone();
-    let target_workspace = transfer.target_workspace.clone();
-    let native_binding = reply
-        .workspaces
-        .iter()
-        .find(|row| row.output.0 == target_output && row.id == target_workspace)
-        .and_then(|row| row.native_binding.clone());
-    let creation = reply.native_creations.iter().find(|desire| {
-        desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
-    });
-    let baseline_sid = lock_shared(shared).native_context.clone().and_then(|ctx| {
-        ctx.domains
+    for operation_id in rebind_ops {
+        // Rebind a plan-less claim (stale-refusal store) from this applied
+        // reply: resolve the retained View transfer by operation identity,
+        // then the live native binding (or explicit creation desire) plus
+        // the observation-time baseline from the current native context.
+        // Never invents a binding; missing targets leave the claim unbound
+        // so the drain refuses without actuation. Claims already taken for
+        // drain are popped from the queue, so the drain in progress is
+        // never touched: only queued entries rebind.
+        let transfer = session
+            .engine_mut()
+            .retained_transfers()
+            .into_iter()
+            .find(|target| {
+                target.operation_id == operation_id
+                    && matches!(target.kind, tiler_core::world_report::TransferKind::View)
+            });
+        let Some(transfer) = transfer else {
+            continue;
+        };
+        let target_output = transfer.target_output.0.clone();
+        let target_workspace = transfer.target_workspace.clone();
+        let native_binding = reply
+            .workspaces
             .iter()
-            .find(|domain| domain.output.0 == target_output && domain.current)
-            .map(|domain| domain.space)
-    });
-    let mut guard = lock_shared(shared);
-    let Some(claim) = guard.select_pending.as_mut() else {
-        return;
-    };
-    if claim.operation_id.as_deref() != Some(operation_id.as_str())
-        || claim.select_target_output.is_some()
-    {
-        return;
+            .find(|row| row.output.0 == target_output && row.id == target_workspace)
+            .and_then(|row| row.native_binding.clone());
+        let creation = reply.native_creations.iter().find(|desire| {
+            desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
+        });
+        let baseline_sid = lock_shared(shared).native_context.clone().and_then(|ctx| {
+            ctx.domains
+                .iter()
+                .find(|domain| domain.output.0 == target_output && domain.current)
+                .map(|domain| domain.space)
+        });
+        let mut guard = lock_shared(shared);
+        let Some(claim) = guard.select_pending.iter_mut().find(|claim| {
+            claim.operation_id.as_deref() == Some(operation_id.as_str())
+                && claim.select_target_output.is_none()
+        }) else {
+            continue;
+        };
+        claim.select_target_output = Some(target_output.clone());
+        claim.select_target_workspace = Some(target_workspace.clone());
+        claim.select_native_binding = native_binding;
+        if let Some(desire) = creation {
+            claim.select_creation_operation = Some(desire.operation_id.clone());
+            claim.select_creation_logical = Some(desire.logical_workspace.clone());
+            claim.select_creation_output = Some(desire.target_output.0.clone());
+        }
+        claim.select_baseline_sid = baseline_sid;
     }
-    claim.select_target_output = Some(target_output.clone());
-    claim.select_target_workspace = Some(target_workspace.clone());
-    claim.select_native_binding = native_binding;
-    if let Some(desire) = creation {
-        claim.select_creation_operation = Some(desire.operation_id.clone());
-        claim.select_creation_logical = Some(desire.logical_workspace.clone());
-        claim.select_creation_output = Some(desire.target_output.0.clone());
-    }
-    claim.select_baseline_sid = baseline_sid;
 }
 
 #[cfg(test)]
@@ -2338,7 +2342,7 @@ mod tests {
             topology_revision: 9,
             native_context: None,
             native_cell: crate::runtime_shared::NativeContextCell::new(),
-            select_pending: None,
+            select_pending: std::collections::VecDeque::new(),
             select_busy: false,
             select_claim_pending: false,
             selection_focus_pending: None,
@@ -3634,6 +3638,63 @@ mod tests {
         assert!(
             lock_shared(&shared).diagnostics.frames_emitted > emitted_after_controlled,
             "recovery authorizes writes again"
+        );
+    }
+
+    #[test]
+    fn settle_select_transfers_drops_held_before_actuation_and_keeps_live_queued() {
+        // T3 stale-topology supersession of ACTUATION only: a held
+        // (possibly-executed) transfer drops its matching queued claims so
+        // the drain never re-actuates them — holds preserve native state —
+        // while live queued claims stay queued in order. The intent already
+        // executed core-side at-most-once; the drop is drain-side only,
+        // counted, with no native touch and no pre-core refusal.
+        let shared = focus_shared();
+        let mut session = focus_session();
+        let mut held_claim = crate::runtime_types::ClaimedSelect::tap(
+            crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 2 },
+        );
+        held_claim.operation_id = Some("op-1".to_owned());
+        let mut live_claim = crate::runtime_types::ClaimedSelect::tap(
+            crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 1 },
+        );
+        live_claim.operation_id = Some("op-2".to_owned());
+        live_claim.select_target_output = Some(output().0.clone());
+        {
+            let mut guard = lock_shared(&shared);
+            guard.select_pending.push_back(held_claim);
+            guard.select_pending.push_back(live_claim);
+            guard.select_claim_pending = true;
+        }
+        let mut reply = empty_reply();
+        reply
+            .transfers
+            .push(tiler_core::world_report::TransferTarget {
+                operation_id: "op-1".to_owned(),
+                kind: tiler_core::world_report::TransferKind::View,
+                target_output: output(),
+                target_workspace: "ws".to_owned(),
+                follow: false,
+                held: true,
+            });
+        settle_select_transfers(&mut session, &shared, &reply, 0, 0, 0);
+        let guard = lock_shared(&shared);
+        let ops: Vec<Option<String>> = guard
+            .select_pending
+            .iter()
+            .map(|claim| claim.operation_id.clone())
+            .collect();
+        assert_eq!(
+            ops,
+            vec![Some("op-2".to_owned())],
+            "held claim drops before actuation, live claim stays queued"
+        );
+        assert!(
+            guard
+                .log
+                .iter()
+                .any(|entry| entry.kind == "input" && entry.outcome == "select-held"),
+            "held drop counted on the ring"
         );
     }
 }

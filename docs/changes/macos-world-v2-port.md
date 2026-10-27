@@ -1269,6 +1269,26 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   override unchanged, fail-closed otherwise) with injected-layout regression
   tests. Native proof itself remains pending with no posted chords.
 
+### Retained-receipt inspection (2026-10-28)
+
+- Fresh read-only inspection found no matching live fixture/product process.
+  A subsequent main-thread capture used the existing full baseline reader and
+  teardown comparator, not a new fixture leg. Protected-window counts were
+  57 before and 55 now, with 18 mismatches: seven absent, six changed and five
+  added. All nine shortcut holders, resolved accent, protected-process comparison
+  and native topology/current matched. The receipt and residue remain intact.
+- This is comparison against an older receipt, not evidence that the read-only
+  inspection caused changes or that the prior pre-launch refusal did. Exact
+  restoration is unproven. No input, window or Space mutation was performed;
+  further native work is blocked. No before/after latency distribution exists,
+  and the 50 ms pump remains unchanged.
+- Options: reconcile the retained preimages with current user state, or explicitly
+  retire the inspected receipt and accept a fresh baseline. Recommend user
+  reconciliation before retiring it; never automatically restore unrelated
+  windows or remove the receipt merely to retry. Direct-wake work remains paired
+  with its blocked before/after measurement rather than claiming an offline
+  implementation as native acceptance.
+
 ## Test iteration speed (2026-10-27)
 
 - Goal: reduce executable-assessment overhead and eliminate time-window test
@@ -1346,6 +1366,51 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 | --- | --- | --- |
 | Leave shared-crate test layouts unchanged | Consolidate them or retain them; retain unless profiling demonstrates a comparable bottleneck | Warm core 1.998s, protocol 0.607s; no demonstrated comparable startup delay |
 | Diagnose the offline focus-walk timeout separately without weakening its oracle | Increase the timeout or reproduce the causal dispatch stall; reproduce before changing assertions or deadlines | One full-run failure, passing integration retry and exact no-scaffold full run; cause unknown |
+| Retain the five original lifecycle waits | Keep the current waits or revisit retained exact-generation joins after correcting the ownership and regression gaps; retain current waits | The bounded join implementation passed offline gates but failed independent review; see below |
+| Route user intent through the existing saturation-bypassing FIFO lane and retain queued drain claims | Bound observations and feedback, but do not busy-drop or capacity-drop authorized input; prefer the existing single queue over another transport | Deterministic saturated-lane and held-drain bursts reach core in order; no new timer, channel or core policy |
+
+### Exact-generation join follow-up (2026-10-28)
+
+- The retained in-progress join implementation is parked, not shipped. Its
+  handle-owning joiner ignored thread-creation failure: that path drops the sole
+  join handle and leaves an unfinished registry entry permanently blocking
+  recovery. Its teardown gate ran before backend destruction, so it did not
+  discriminate backend Drop already delivered from whole-thread exit still
+  blocked. A passing test of both events absent is not that proof.
+- Focused lifecycle tests (40), library tests (1,384), full integration tests
+  (151), locked build, strict all-target clippy, format and whitespace passed on
+  the draft. These gates do not resolve the review findings. The draft is
+  preserved outside the source tree; all nine affected files were restored to
+  their published contents. The five original waits remain unchanged.
+
+## Ordered adapter ingress (2026-10-28)
+
+- Tap commands, indicator clicks and float-toggle requests use the existing
+  saturation-bypassing inbox admission, preserving one FIFO with observations.
+  Observations and actuator feedback remain capacity-bounded. Closed admission,
+  unsupported input and unavailable native context still refuse truthfully;
+  busy select/send effects no longer discard otherwise admitted commands before
+  core execution. A core unchanged/refusal is not an ingress loss.
+- Select/send claims append to a FIFO instead of replacing a single pending
+  slot. One in-progress drain remains serialized; release re-arms the existing
+  pump for the next queued claim. Held operations are removed individually,
+  and unbound queued plans can bind only from a current accepted reply. T3
+  native-current/topology checks and pre-authorization fences remain unchanged;
+  receiving every command does not authorize stale native effects.
+- Regressions saturate the observation lane, process a mixed select, directional
+  focus, directional move and send burst while its first drain is held, and
+  verify core delivery, unique increasing operation identities and oldest-first
+  release without replay. Indicator admission under saturation, multi-claim
+  discard and held-operation isolation are also covered. Independent review
+  accepted the adapter implementation and the strengthened held-drain coverage.
+- Final publication-source verification, after incorporating unrelated upstream
+  changes, passes from an exact index copy without the parked scaffold: 1,375
+  library plus 150 integration tests, locked build, strict all-target clippy,
+  workspace format and whitespace checks. The working-tree library count is
+  1,387 because the scaffold has twelve tests; it remains excluded. The known
+  focus-walk timeout did not reproduce in this gate and remains unresolved.
+  No native FIFO acceptance, latency distribution or direct event-driven wake
+  is claimed.
 
 ## Risks and open evidence
 
