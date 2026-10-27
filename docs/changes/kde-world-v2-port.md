@@ -44,7 +44,7 @@
 | 2. Broker and strict v2 cutover | Complete offline: strict broker, creation consumption, raw attempts, migration/lifecycle oracles, B1 wake and B2 source release/native settlement | Rust 216/216; JS 720/720; scoped build/clippy, typecheck/build/fmt and core acceptance green; native acceptance separate |
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
 | 4. Shared policy only | Partial offline: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear accepted offline. Role, local-fixed and gesture policy remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
-| 5. Pure presentation and coordinates | Renderer causal freshness accepted offline; every invalidation publishes its witness and refreshes all surfaces. No KDE pager renderer. Physical acceptance remains TBD | Recorded actual-facts/capture/broker/JS/native-endpoint route passes; service 315, core/protocol 1,449, Windows Linux 725, JS 736, host effect build, native and Nix CTest 37, acceptance 6/6 and source guards pass. KWin signals/painting remain source-reviewed until physical checks |
+| 5. Pure presentation and coordinates | Renderer causal freshness and active-drag preview continuity accepted offline; structural invalidations hide stale surfaces, mover motion preserves structurally valid same-gesture preview. Borders/underlays stay exact-current. No KDE pager renderer. Physical acceptance remains TBD | Service 317, core/protocol 1,460, Windows Linux 725, JS 750, host effect build/CTest 36, Nix CTest 37, acceptance 6/6 and source guards pass. KWin signals/painting remain subject to physical checks |
 | 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; active-border color with default system accent; KDE uses the native Plasma pager, so core pager-focused-window color does not apply | Declaration/source checks and adapter tests; border override; native styling remains host-owned |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
@@ -432,9 +432,10 @@
   GNOME and ChromeOS would need equally truthful host evidence. No new signal.
 - Preserve the rearchitecture's parked empty-workspace cross-output focus,
   edge-nearest versus MRU focus, float physical-output versus membership-home
-  direction, explicit versus directional send, and cross-output drag preview
-  versus release placement. Options remain current behavior or later separately
-  approved policy; recommendation: no port-side change.
+  direction, and explicit versus directional send. Options remain current
+  behavior or later separately approved policy; recommendation: no port-side
+  change. Cross-output gesture preview/release placement is superseded by the
+  [2026-10-27 repair](#mixed-scale-cross-output-drop-outcome-2026-10-27).
 
 ## Verification and live acceptance
 
@@ -1504,6 +1505,187 @@
 - Only Stage 5 causal freshness is implementation scope here. Fullscreen, N5,
   float/output command changes and Stages 6-8 remain separate work.
 
+## Mixed-scale cross-output drop outcome (2026-10-27)
+
+- Goal: cross-output release must honor the targeted split half and destination
+  work area. The [minimal discriminator](../spec/reference-outcomes.md) holds
+  the release point unchanged, separating placement mismatch from retained-preview
+  lag. Two outputs with mixed 125%/100% scaling were verified read-only.
+- Wrong side was pre-existing: `world_gesture.rs::gesture_updated` previewed
+  through the pointer-aware pair route, while `gesture_move_release` committed
+  through `execute_output_send` without the pointer or hover prior. The old
+  position-blind send route is identical at the pre-continuity revision. This
+  explains preview-left versus admission-right; it is not evidence of incorrect
+  output selection. Directional R4 tree wrapping and broader output-targeting
+  intents are separate from this narrow release repair.
+- Physical log samples join `presentation-painted rev=109 preview=rect` at
+  line 1074 to release at 1077/1079 and geometry writes at 1092/1099
+  (`rev=110 geom=2`, `rev=111 geom=1`). The log does not contain rectangle
+  payloads, so the reported height shortfall is not diagnosed. Destination
+  bounds are independently selected and inset in the pair preview; do not
+  infer source-panel leakage or a scale conversion defect from the shortfall.
+- Border disappearance follows the retained strict rule, not a newly identified
+  renderer bug: `presentation_stage5.cpp:292-297` requires exact-current
+  coverage for border/underlay but structural coverage for preview. Motion
+  advances the exact witness, so strict shapes hide until matching coverage.
+  Log lines 132 and 961 show an eligible, live mover with `vis=0`; continuity
+  publications continue during motion. Relaxation is not implemented.
+- Resolved bound: retain strict borders/underlays unchanged. A later border
+  comparison is separate. No latency change is justified by this evidence.
+- Core repair reuses a shared gesture pair-event builder for preview and drop,
+  carrying live release coordinates, retained hover state and source identity.
+  Successful placement retains the existing member/follow transfer. Empty or
+  pair-unplaceable destinations keep send admission. Same-output behavior is
+  unchanged. No Windows/macOS production, protocol or wire changes.
+- The initial pair-release draft bypassed retained send fences. Failing
+  same-window-flight and migration-destination tests forced correction before
+  acceptance; both checks now run before any pair mutation. Independent review
+  accepts the corrected release and settlement route.
+- A nonzero-gap regression also exposed a pre-existing gesture pair-event error:
+  preview convergence stored the source session under the destination outer gap,
+  then release could refuse. The gesture-local event now carries source
+  `outer_gap` and destination `directional_target_outer_gap`, using the existing
+  neutral contract. The similar operation-pair builder remains unchanged and
+  warrants separate investigation; no general pair-route refactor is included.
+- Eight permanent regressions in `world_gesture_tests/cross_output.rs` cover
+  absolute left/right halves in both directions, non-full asymmetric work
+  areas, preview/release and arrival geometry, distinct outer gaps and subsequent
+  local placement, empty-target admission, in-flight and migration fences.
+  Original failing evidence was left-preview versus right-release rectangles;
+  strengthened work-area/gap tests pass after correction. Exploratory probes
+  were removed, not retained as redundant scaffolding.
+- Height remains deferred, not declared fixed: full-rectangle agreement passes
+  offline, but the physical approximately 5% shortfall is not independently
+  explained. Existing preview log lines now include submitted bounds and native
+  producer identity (not proof of physical painting). Terminal-only
+  `drop-settled` records desired allocation/frame, pre-actuation observed frame
+  and destination work area; one `drop-observed` captures the next accepted
+  observation, not a final-arrival claim. Native window identity is frozen on
+  the existing capture flight; numeric settled ids never select window rows.
+  One diagnostic follow-up slot clears on observation, rotation or stop; no
+  per-motion log lines, timers or transport fields are added.
+- Fresh gates: locked scoped all-target builds/tests/strict clippy pass, service
+  **317**, core/protocol **1,468** (+8), Windows Linux subset **725**, total
+  **2,510**; JS typecheck/build and **752/752** (+2); host-matched effect/KCM
+  build and **36/36** CTests; Nix native check **37/37**; acceptance **6/6**;
+  workspace fmt, whitespace and KWin API guard pass. Known macOS-on-Linux
+  OS-version/dead-code failures remain outside these scoped claims.
+- Accepted offline; physical retest confirms correct left-side placement, while
+  height remains short. Planner and fixture-scoped JS are
+  built for delivery; the native trio is staged and byte-identical to the prior
+  package. Reload Planner and JS for this change; no additional Plasma logout
+  is required when the prior native package is already loaded. No runtime
+  controller or fixture was started for this delivery.
+- Height readback from the physical retest is insufficient to locate the final
+  loss. Preview at log lines 218-251 and initial desired allocation/frame at
+  line 267 are `(8,52,1012,1092)`. Destination work area `(0,44,2048,1108)`
+  gives exactly 8 pixels above/below that frame; the initial plan does not show
+  source-work-area leakage or unexplained height loss. The right preview at
+  line 198 is an earlier target within the same gesture, not a pre-repair result.
+- The only `drop-observed` at line 275 repeats the pre-actuation frame and
+  precedes `applied rev=23 geom=1` at line 276. Neither that write's window nor
+  later desired/observed rectangles are logged. Do not attribute the physical
+  shortfall to host constraints, scale rounding or struts from this sample.
+- Next discriminating step uses existing read-only APIs, no new tracing code:
+  fixture-only occupied split and physical drop, then broker
+  `ReadWorldPresentation`, KWin `getWindowInfo` for the exact fixture UUID, and
+  another broker read. The broker snapshot includes per-window allocation,
+  desired frame and authority/holds (`world_broker.rs::project_reply`), unlike
+  the renderer-only payload. Retain raw generation/revision/observation and
+  UUID/class joins; stable broker points permit comparison, not a native
+  completion claim. Work areas/hints are not supplied by that read.
+- This follow-up changes records only; no height fix, new tests, rebuild or
+  deployment is warranted yet. Continue right-half/reverse-direction and
+  release/Esc checks when fixture evidence is available, then restore exactly.
+- A subsequent exact-window native read reports W3 as
+  `com.mitchellh.ghostty`, frame `(8,52,1012,1036)`: the drop's initial desired
+  `(8,52,1012,1092)` has the same position and width but 56 pixels more height.
+  Both bracketing broker reads failed because the Planner name was unavailable.
+  Therefore the later desired frame, client rectangle, size hints and resize
+  increments remain unknown. A terminal's possible cell sizing is a hypothesis,
+  not a demonstrated cause; no host-clamp or strut fix is selected. Next readback
+  needs the Planner serving while the shortfall is visible, preserving the same
+  broker/native/broker comparison before any deeper investigation.
+
+## Active-drag preview continuity plan (2026-10-27)
+
+- Preserve the latest completed core preview for the same active native gesture
+  across pointer/mover-motion supersession. Keep a separate exact causal witness
+  for structural dependencies (layout, drop target, focus and fullscreen
+  suspension); a structural change forbids previews computed before that change.
+- Keep immediate terminal hide, generation/order fencing and native
+  `{instance,serial}` isolation. Actuation, borders and underlays retain exact
+  current coverage. Preview policy and hover history remain core-owned.
+- Bounded work: end-to-end preview-only freshness and motion-supersession
+  regression; visible-to-visible geometry updates; safe duplicate frame-signal
+  removal; per-motion diagnostic reduction; independent race/contract review;
+  complete offline gates and deployment for physical retest.
+- Acceptance covers continuous motion without a quiet gap, structural stale
+  rejection, release/cancel hide, gesture A/B isolation and geometry replacement.
+  No coalescing-window changes, timing workarounds, other-platform production
+  changes or unrelated policy changes belong to this package.
+- Physical retest remains separate: slow and rapid drags, consecutive gestures,
+  cross-output movement, structural changes where practical, release and Esc.
+- The first draft was **rejected**. Its motion-only route stopped advancing the
+  exact native witness, then clears border/underlay dirt on any accepted paint;
+  a pre-motion capture can therefore redisplay stale non-preview shapes. The
+  initial native test asserted that incorrect restoration. The accepted
+  correction below restores exact all-motion coverage for those surfaces and
+  adds separate preview structural coverage.
+- Decided target discriminator: when the cursor moves from X to Y, keep X until
+  Y completes. Independent target removal/change, layout, focus and fullscreen
+  still invalidate immediately; release uses the current target. Improve latency
+  rather than hide a valid same-gesture preview. See the
+  [durable decision](../decisions.md#active-drag-preview-continuity-2026-10-27).
+
+### Active-drag preview continuity: accepted offline (2026-10-27)
+
+- Physical retest reports improved preview continuity. This does not establish
+  every structural/terminal case or complete native acceptance.
+- Native all-motion invalidation remains monotonic and published on every
+  advance. The local `structuralFloor` (tentative technical name) records that
+  counter at the last structural event. Existing same-instance capture coverage
+  proves whether the current structural epoch was observed; this is causal
+  event ordering, not a counter tolerance. No wire or shared-core/protocol change.
+- Borders and underlays require exact-current coverage. Preview alone may use
+  older motion coverage reaching the current structural floor, with the same
+  live native producer and normal generation/order fences. Superseded captures
+  notify the read-only subscriber but never actuate; clean and dirty lagging
+  preview reads reach the authoritative native coverage gates.
+- Structural frame, target add/remove/hide/minimize, fullscreen, desktop/view,
+  output geometry, reconfiguration and focus events advance the floor and
+  immediately refresh stale surfaces. Terminal boundaries clear the preview.
+  Native hooks report facts only; preview policy and hover history stay in core.
+- Tracked/member frame routing now advances once per frame with the union of
+  strict-shape dependencies. Visible-to-visible updates consume the new preview
+  rectangle verbatim. Motion logs coalesce by gesture identity/phase and effect
+  chord/style regime, never by elapsed time. The 120 ms capture window is unchanged.
+- The permanent production-entry/subscriber regression supersedes three captures
+  with advancing native motion witnesses, covers clean and dirty read callbacks,
+  sends completed preview rectangles without a quiet gap and applies no stale
+  actuation. Native regression starts with all three shapes genuinely visible,
+  keeps stale borders/underlays hidden after newer-order pre-motion paint,
+  retains preview, and restores strict shapes only on exact post-motion cover.
+  Target/layout/focus/fullscreen changes, terminal hide, gesture A/B isolation
+  and rectangle values have targeted coverage. Recorded-route regressions remain
+  intact. Independent race/contract review accepts the corrected route.
+- Final declared-environment gates: locked scoped all-target build/tests and
+  strict clippy pass: service **317**, core/protocol **1,460**, Windows Linux
+  subset **725** (total **2,502**); JS typecheck/build and **750/750** tests
+  (baseline **737**); host-matched full native build and **36/36** CTests;
+  Nix native check **37/37**; exact acceptance **6/6**; workspace formatting,
+  whitespace and KWin API guard pass. The strengthened native test and header
+  comment were followed by fresh host/Nix checks. Known macOS-on-Linux failures
+  remain outside these scoped claims. No dependencies or other-platform source changed.
+- Delivery: host-matched native plugins, Planner, fixture executable and a
+  fixture-scoped JS bundle are built and staged. The existing project-owned
+  native delivery setup is current; a user-performed Plasma logout/login is
+  required before retesting the new native binary. No controller, fixture or
+  effect was started, and no live evaluated-readiness or physical paint claim
+  is made. Next: fresh fixture-only baseline/readiness, then slow/rapid A/B and
+  cross-output drags, independent structural changes, release and Esc, followed
+  by exact teardown/restoration. The wider port record remains active.
+
 ## Stage 5 bounded plan (2026-10-26)
 
 - Replace native border/underlay geometry and eligibility derivation with the
@@ -1788,7 +1970,8 @@
 - `PresentationStage5` publishes immediately after every tracked-frame,
   member-frame, activation and gesture-boundary counter advance. Each route
   refreshes border, anchor, underlay and preview together, so invalidated items
-  hide until a covering capture repaints them. No polling, settle waits, timing
+  hide until a covering capture repaints them. Active-drag mover motion now has
+  the preview-only continuity exception documented above. No polling, settle waits, timing
   or geometry inference was added. Explicit stream replacement alone resets
   paint order; endpoint loss preserves evidence. Pending cancellation semantics
   and all shared-core/protocol behavior are unchanged.
@@ -1796,7 +1979,8 @@
   facts `{instance,invalidation}`; raw KDE-only
   `nativeInvalidWitness:{instance,counter}|null`, stripped before core decoding;
   presentation `coveredInstance`/`coveredInvalid`, requiring exact live-source
-  coverage; preview `producerInstance`/`producerSerial`, requiring the live
+  coverage for borders/underlays and current structural coverage for active-drag
+  previews; preview `producerInstance`/`producerSerial`, requiring the live
   native gesture `{instance,serial}`. Unknown/unproven coverage cannot draw;
   a foreign preview producer cannot draw even with current coverage.
 - Tentative mechanism choices: asynchronous same-connection Introspect delivery

@@ -94,12 +94,14 @@ Tentative index (user review pending; not approved product rules):
 - **Stage 5 sequencing, approved:** gesture transport first, then renderer
   freshness. Tie every drop preview to its producing native gesture identity.
   The effect mints a monotonic native-invalidation counter; the broker records
-  each capture's covered value. Draw only presentation/preview covering the
-  renderer's latest value, with preview matching the live native gesture.
+  each capture's covered value. Borders/underlays cover the renderer's latest
+  value; active-drag preview has the preview-only continuity exception below
+  and always matches the live native gesture.
   First reproduce all three full-interleaving regressions. Any shared-core
   need requires a separate decision.
   **Implemented offline 2026-10-27:** every invalidation advance publishes its
-  source counter and refreshes every surface; stale paint stays hidden until
+  source counter and refreshes stale surfaces; active-drag preview now uses
+  the continuity exception below, while other stale paint stays hidden until
   covering capture. The recorded actual-facts/broker/JS/native-endpoint route
   passes after failing-first proof. Signal delivery and painting still require
   physical checks. Field names remain tentative technical vocabulary, not a
@@ -166,7 +168,8 @@ pending.
 - **Stage 5 fix details:** tests prove delivery with an asynchronous D-Bus
   `Introspect` acknowledgement, never a settle wait. Every native invalidation
   publishes its counter and hides or refreshes every surface, including anchor
-  remapping. Facts `{instance, invalidation}`, presentation
+  remapping, subject to the active-drag preview continuity exception below.
+  Facts `{instance, invalidation}`, presentation
   `coveredInstance`/`coveredInvalid` and preview
   `producerInstance`/`producerSerial` are accepted KDE wire names, not
   shared-core protocol.
@@ -177,6 +180,40 @@ pending.
   outcome stays TBD in its discriminator row.
 - **Raw KWin lifecycle mapping:** `deleted` maps to close; `managed=false`
   (override-redirect surfaces) maps to absent.
+
+## Active-drag preview continuity (2026-10-27)
+
+- Keep the latest completed core preview for the same active native gesture
+  visible across pointer/mover motion. When the cursor changes target from X to
+  Y, X remains visible until Y's preview completes. Actuation uses the target
+  current at release, never the displayed preview's lagging target.
+- Independently changed or removed targets, layout/structure, focus and
+  fullscreen/suspension changes invalidate pre-change previews immediately.
+  Separate exact causal structural coverage proves this boundary. Terminal
+  release/cancel/end hides immediately; generation/order fencing and native
+  `{instance,serial}` isolation remain mandatory.
+- This relaxation is preview-only during active drags. Borders, underlays and
+  actuation retain exact-current freshness; preview policy remains in core.
+- Prefer retaining a valid same-gesture preview over hiding and reshowing it.
+  Address visual lag by improving performance and reducing latency, not by
+  aggressive hiding.
+
+## Cross-output gesture release placement (2026-10-27)
+
+- Cross-output gesture release must honor the pointer-targeted slot and
+  orientation using the same core placement resolver as preview. Resolve live
+  release coordinates and retained hover state, never replay a lagging displayed
+  preview. Geometry uses the destination's own work area and outer gap.
+- Preserve member/follow arrival settlement, same-window in-flight and
+  migration-destination fences. Empty destinations and points the pair resolver
+  cannot place keep existing send admission; no broader output-targeting or
+  directional R4 policy change is selected.
+- Borders and underlays remain exact-current in this repair. Their motion hides
+  are understood consequences of strict coverage, not permission to relax it.
+- Placement and gesture-local gap bookkeeping are accepted offline; the reported
+  physical height shortfall remains undiagnosed. Bounded terminal rectangle
+  diagnostics support a fixture-only retest before any further height fix.
+  [Evidence and limits](changes/kde-world-v2-port.md#mixed-scale-cross-output-drop-outcome-2026-10-27).
 
 ## World command intent and birth ownership (2026-10-26)
 
