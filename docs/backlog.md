@@ -15,6 +15,13 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- P2 | Windows pager flicker on workspace switch | User dogfood 2026-10-27:
+  pager briefly disappears and reappears on workspace changes. Cause remains
+  unproven: sampled fixture pager persisted, but pixel evidence failed; a
+  corrected harness then failed before the main leg. No production fix.
+  Next: validate the evidence harness offline before another fixture leg;
+  latest-world coalescing and focus redesign excluded.
+  [Record](changes/windows-pager-workspace-flicker.md).
 - Windows exact-desktop workspace-arrival focus | User-approved 2026-10-27:
   explicit workspace selection may restore focus over only the exact verified
   desktop, with fresh shell-handle/process/lifetime/user/session/executable
