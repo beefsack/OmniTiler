@@ -67,7 +67,55 @@ The user is unsure of the desired behavior; gather Tier 1 outcomes before decidi
 
 | Variant | Minimal action sequence | Discriminator | Unsupported outcome / evidence |
 | --- | --- | --- | --- |
-| Switch to empty, then send | Keep B visible on R; focus A on L with cursor on L; press Win+digit to select an empty workspace on L; record focused output/window; immediately issue a workspace send | Does focus stay on empty L with no focused window (send has no subject), or move to B on R (send moves B)? | User physical 2026-10-20: focus moved to another output's window and the following send moved it. Desired outcome undecided; COSMIC, Hyprland, i3 and sway outcomes TBD. No fix or focus policy selected |
+| Switch to empty, then send | Keep B visible on R; focus A on L with cursor on L; press Win+digit to select an empty workspace on L; record focused output/window; immediately issue a workspace send | Does focus stay on empty L with no focused window (send has no subject), or move to B on R (send moves B)? | User physical 2026-10-20: focus moved to another output's window and the following send moved it. Source-only Tier 1: COSMIC immediate outcome TBD: active output stays L, but keyboard focus clears on a later refresh; pre-refresh send is not established (`EW-C`). Hyprland keeps focus monitor L, clears focused window; send has no subject (`EW-H`). i3 focuses L's empty workspace node, not a client; send errors "Nothing to move: workspace empty" (`EW-I`). sway focuses L's empty workspace node, not a client; send fails "Can't move an empty workspace" (`EW-S`). These three verified send paths leave B on R untouched. Desired outcome undecided; no fix or focus policy selected |
+
+Source-only audit (2026-10-28), not runtime proof. Use each WM's native numbered
+switch and workspace-send verbs, not the literal Windows bindings. The target
+is an empty per-output index in COSMIC, or a fresh number created on L in
+Hyprland/i3/sway; an existing global number on R is a different fixture
+([R-OUT-08](reference-outcomes/multi-output.md#r-out-08-numbered-switch-versus-send-with-opposite-cursor)).
+Ordinary windows, no sticky/fullscreen client or exclusive shell layer/grab;
+cursor remains on L with no intervening motion/click. Internal workspace-node
+focus in i3/sway is not client keyboard focus. COSMIC's numbered switch does not
+synchronously repair focus: the refresh is throttled at 150ms, so a send before
+repair may still see stale A as its keyboard target. After repair, keyboard focus
+and focused output are absent and sends return without a subject. The exact
+immediate pre-refresh send result remains TBD, not inferred from steady state.
+Runtime proof remains for user testing; these paths do not explain the Windows
+observation.
+
+Local-source citation keys (file:line at the existing matrix pins):
+
+- `EW-C`, COSMIC `3d55cba06c9cf6f27609cdefb520f7857dba20af`:
+  `src/input/actions.rs:186-200` (numbered switch on active output),
+  `src/shell/seats.rs:312-332` (active versus focused output),
+  `src/lib.rs:340-366` (throttled refresh),
+  `src/shell/focus/mod.rs:551-620,639-790` (old A invalid on the new
+  workspace; empty fallback yields no target), `:456-475` (clear keyboard
+  focus and focused output), `src/input/actions.rs:292-300,348-360`
+  (numbered/relative send returns without a focused output).
+- `EW-H`, Hyprland `19fb395d45314960e6f79f17994a84094f1cd4f6`:
+  `src/config/shared/actions/ConfigActions.cpp:150-200,1016-1080`
+  (fresh target on L, same-monitor switch), `src/output/Monitor.cpp:1352-1420`
+  (empty workspace focus path), `src/workspace/HLWorkspace.cpp:122-144`
+  (empty remembered/candidate lookup),
+  `src/desktop/state/FocusState.cpp:76-97,130-153` (null candidate clears
+  focused window and client keyboard target),
+  `src/config/shared/actions/ConfigActions.cpp:56-58,380-385`
+  (send defaults to focused window and returns if absent).
+- `EW-I`, i3 `903bcd518df32b0e055b17f5da3f988a0187fd3d`:
+  `src/workspace.c:131-147,438-519` (fresh workspace on focused output,
+  focus destination descendant), `src/con.c:1693-1699` (empty workspace
+  descends to itself), `src/x.c:1397-1401,1431-1455` (no managed client
+  keyboard target), `src/commands.c:59-74,231-256` (focused subject,
+  prune empty workspace and reject send).
+- `EW-S`, sway `1652c54b73f67df17b7b4ab0b0f7048204aa8104`:
+  `sway/commands/workspace.c:201-205`, `sway/tree/workspace.c:153-183`
+  (fresh workspace on focused output), `sway/tree/workspace.c:731-742`,
+  `sway/input/seat.c:1361-1376` (focus empty destination workspace node),
+  `sway/input/seat.c:1080-1271` (clear prior client keyboard focus),
+  `sway/commands.c:286-291` (default command subject),
+  `sway/commands/move.c:427-434` (reject empty-workspace subject).
 
 <a id="rapid-unlanded-workspace-arrival"></a>
 ### Rapid switching before arrival focus lands

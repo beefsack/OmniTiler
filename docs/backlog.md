@@ -113,10 +113,16 @@ decisions of 2026-09-24 are under
   so a following workspace send moved that window. Desired behavior is
   undecided: stay focused on the empty output with no focused window, or move
   to another output's window? User 2026-10-26: decide from Tier 1 evidence.
-  Capture COSMIC/Hyprland/i3/sway outcomes in the
+  Tier 1 source evidence gathered 2026-10-28: Hyprland clears client focus
+  on empty L; i3/sway focus its workspace node. Their immediate send has no
+  client subject and leaves B on R untouched. COSMIC clears focus only on
+  refresh; its exact immediate pre-refresh send result remains TBD.
+  Pinned citations and runtime/timing limits are in the
   [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
-  then decide with the user. Related to cursor-first targeting above and the
-  2026-10-26 no-focus decisions ([decisions](decisions.md#workspaces)).
+  with [evidence record](changes/archive/empty-workspace-focus-evidence.md).
+  Policy decision awaits the user; no fix selected. Related to cursor-first
+  targeting above and the 2026-10-26 no-focus decisions
+  ([decisions](decisions.md#workspaces)).
 - P1 | No-focus navigation remaining proof | Implementation complete
   ([record](changes/archive/directional-focus-without-window.md)). User-owned
   physical no-focus shortcut/output-crossing proof and COSMIC runtime outcome
