@@ -1585,6 +1585,9 @@ fn emit_world_frames(
         guard.diagnostics.frames_overlay_skipped += overlay_skipped;
         guard.diagnostics.terminated_invalidated += dead;
         guard.last_desired = desired;
+        // Wake test-only condition waits: the desired plan, emission
+        // counts, and reply outcome all commit under this same lock.
+        guard.notify_test_waiters();
     }
     let token = reply_token(op, outcome);
     emit(shared, pid, generation, seq, "core-reply", token, emitted);
@@ -2355,6 +2358,8 @@ mod tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            test_wake: None,
+            test_seq: 0,
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),

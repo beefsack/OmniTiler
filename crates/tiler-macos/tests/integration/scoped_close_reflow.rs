@@ -91,9 +91,10 @@ impl AxBackend for FakeBackend {
         _stop: &AtomicBool,
     ) -> Option<Result<tiler_macos::runtime::ScopedBackendSnapshot, String>> {
         // No autonomous polling: every observation is test-driven, so
-        // arrivals are exactly the live leg's script. The sleep keeps
-        // worker stop latency small without spinning.
-        std::thread::sleep(Duration::from_millis(20));
+        // arrivals are exactly the live leg's script. Returning `None`
+        // immediately never spins: the worker parks in the frame-slot wait
+        // (bounded observe slice) when no frames are queued, which also
+        // bounds stop latency without any fixed delay.
         None
     }
 
@@ -278,27 +279,96 @@ fn scoped_obs(
     }
 }
 
-fn desired_names(handle: &RuntimeHandle) -> BTreeSet<String> {
-    handle
-        .last_desired_geometry()
-        .iter()
-        .map(|frame| frame.window.clone())
-        .collect()
+fn settle_watermark(handle: &RuntimeHandle) -> Vec<u64> {
+    // Every counter a quiescent settle round must leave untouched.
+    // `engine_jobs_processed` is deliberately excluded: the fence's own
+    // barrier jobs move it. Logger drops and failure evidence ride their
+    // own assertions.
+    let diagnostics = handle.diagnostics();
+    vec![
+        diagnostics.frames_emitted,
+        diagnostics.frames_coalesced,
+        diagnostics.frames_redundant_skipped,
+        diagnostics.frames_overlay_skipped,
+        diagnostics.observations_published,
+        diagnostics.observation_failures,
+        diagnostics.core_replies.values().sum(),
+        diagnostics.completions.values().sum(),
+        diagnostics.stale_dropped,
+        diagnostics.terminated_invalidated,
+        diagnostics.data_dropped_full,
+        diagnostics.result_dropped_full,
+        diagnostics.input_forwarded,
+        diagnostics.input_ignored,
+        diagnostics.input_refused_no_focus,
+        diagnostics.input_refused_unsupported,
+        diagnostics.input_select_enqueued,
+        diagnostics.input_select_refused,
+        diagnostics.focus_dispatched,
+        diagnostics.focus_dropped_full,
+    ]
+}
+
+/// Settlement fence over every fixture app: engine barrier plus one
+/// per-app worker drain-mark round each, then repeat full rounds ONLY
+/// while the causal watermark above moved (a later app's engine tail must
+/// never silently leave an earlier app's work outstanding when the
+/// negative oracle concerns all apps). Every fence and every flush MUST
+/// succeed: a `false` fence, a failed flush, or a deadline expiry is a
+/// genuine failure, never an ignored timeout. Repeats park on worker
+/// drain-mark events and engine barriers — never sleeps, never polls.
+fn settle_known(handle: &RuntimeHandle, deadline: std::time::Instant) {
+    let mut watermark = settle_watermark(handle);
+    loop {
+        for pid in [APP_A, APP_B, APP_C] {
+            if let Some(generation) = handle.app_generation(pid) {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "settle deadline elapsed before fencing app {pid}"
+                );
+                assert!(
+                    handle.wait_app_settled_for_test(pid, generation, remaining),
+                    "app {pid} generation {generation} never settled"
+                );
+            }
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "settle deadline elapsed before engine flush"
+        );
+        assert!(handle.flush(remaining), "engine flush never completed");
+        let next = settle_watermark(handle);
+        if next == watermark {
+            return;
+        }
+        watermark = next;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "system never quiesced: {watermark:?}"
+        );
+    }
 }
 
 fn wait_desired(handle: &RuntimeHandle, want: &BTreeSet<String>, what: &str) {
-    let deadline = std::time::Instant::now() + WAIT;
-    loop {
-        if desired_names(handle) == *want {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{what}: desired never converged to {want:?}: got {:?}",
-            handle.last_desired_geometry()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // Parks on the shared condition until the engine's desired-plan commit
+    // notifies — the commit and the reply that caused it share one
+    // critical section, so no fence-then-check race. The bound is genuine.
+    handle
+        .wait_desired_for_test(WAIT, |frames| {
+            frames
+                .iter()
+                .map(|frame| frame.window.clone())
+                .collect::<BTreeSet<_>>()
+                == *want
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{what}: desired never converged to {want:?}: got {:?}",
+                handle.last_desired_geometry()
+            )
+        });
 }
 
 fn drain_applied(fixture: &Fixture) {
@@ -344,22 +414,20 @@ fn scope_holds_since(handle: &RuntimeHandle, seq: u64) -> Vec<String> {
 }
 
 fn wait_scope_hold(handle: &RuntimeHandle, outcome: &str) {
-    let deadline = std::time::Instant::now() + WAIT;
-    loop {
-        if handle
-            .log_snapshot()
-            .iter()
-            .any(|entry| entry.kind == "scope" && entry.outcome == outcome)
-        {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "ring never named the scope hold {outcome}: {:?}",
-            handle.log_snapshot()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // Parks on the shared condition until the ring's scope entry lands:
+    // ring entries commit under the same lock that notifies, so the
+    // awaited entry is visible without any fence. The bound is genuine.
+    handle
+        .wait_log_for_test(WAIT, |log| {
+            log.iter()
+                .any(|entry| entry.kind == "scope" && entry.outcome == outcome)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "ring never named the scope hold {outcome}: {:?}",
+                handle.log_snapshot()
+            )
+        });
 }
 
 fn shutdown_clean(fixture: &Fixture) {
@@ -442,12 +510,9 @@ fn run_native_close_case(pids: &[u32], closer_idx: usize, admit_order: &[usize],
     assert!(fixture.handle.flush(FLUSH));
     wait_desired(&fixture.handle, &want, "readback");
     // Let applies land, then drain so post-close applies are attributable.
-    // Flush fences engine jobs, not worker applies, so settle briefly.
-    let deadline = std::time::Instant::now() + Duration::from_millis(500);
-    while std::time::Instant::now() < deadline {
-        drain_applied(&fixture);
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // The settlement fence proves every worker pass drained through the
+    // causal marks, so the single drain below is exact — no fixed window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     drain_applied(&fixture);
     let pre_close: BTreeMap<String, (i32, i32, i32, i32)> = fixture
         .handle

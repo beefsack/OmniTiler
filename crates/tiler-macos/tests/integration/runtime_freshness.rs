@@ -16,6 +16,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::runtime::{
     AxCompletion, AxObservation, FrameCommand, ObservedWindow, Runtime, RuntimeConfig,
     RuntimeHandle, ShutdownOutcome, SubmitOutcome,
@@ -430,25 +431,97 @@ fn obs(
 fn flush(handle: &RuntimeHandle) {
     assert!(handle.flush(FLUSH_TIMEOUT), "engine flush timed out");
 }
-/// Poll diagnostics until `wanted` holds or the timeout expires. Polling
-/// for an inevitable event is deterministic in outcome: the event must
-/// arrive (threads were rendezvoused beforehand); only the wait varies.
+/// Quiescence watermark for the asserting settlement fence below.
+/// Currently exercised by the regression legs; the phase-1 successor
+/// reuses it for its negative oracles.
+#[allow(dead_code)]
+fn settle_watermark(handle: &RuntimeHandle) -> Vec<u64> {
+    // Every counter a quiescent settle round must leave untouched.
+    // `engine_jobs_processed` is deliberately excluded: the fence's own
+    // barrier jobs move it. Logger drops and failure evidence ride their
+    // own assertions.
+    let diagnostics = handle.diagnostics();
+    vec![
+        diagnostics.frames_emitted,
+        diagnostics.frames_coalesced,
+        diagnostics.frames_redundant_skipped,
+        diagnostics.frames_overlay_skipped,
+        diagnostics.observations_published,
+        diagnostics.observation_failures,
+        diagnostics.core_replies.values().sum(),
+        diagnostics.completions.values().sum(),
+        diagnostics.stale_dropped,
+        diagnostics.terminated_invalidated,
+        diagnostics.data_dropped_full,
+        diagnostics.result_dropped_full,
+        diagnostics.input_forwarded,
+        diagnostics.input_ignored,
+        diagnostics.input_refused_no_focus,
+        diagnostics.input_refused_unsupported,
+        diagnostics.input_select_enqueued,
+        diagnostics.input_select_refused,
+        diagnostics.focus_dispatched,
+        diagnostics.focus_dropped_full,
+    ]
+}
+
+/// Causal settlement fence: one engine barrier plus one per-app worker
+/// drain-mark round each, then repeat full rounds ONLY while the causal
+/// watermark above moved (new work actually appeared mid-fence). Every
+/// fence and every flush MUST succeed: a `false` fence, a failed flush,
+/// or a deadline expiry is a genuine failure, never an ignored timeout.
+/// Repeats park on worker drain-mark events and engine barriers; the loop
+/// body never sleeps and never polls.
+/// Reused by the phase-1 successor for its negative oracles.
+#[allow(dead_code)]
+fn settle_known(handle: &RuntimeHandle, deadline: std::time::Instant) {
+    let mut watermark = settle_watermark(handle);
+    loop {
+        if let Some(generation) = handle.app_generation(APP_A) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "settle deadline elapsed before fencing app {APP_A}"
+            );
+            assert!(
+                handle.wait_app_settled_for_test(APP_A, generation, remaining),
+                "app {APP_A} generation {generation} never settled"
+            );
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "settle deadline elapsed before engine flush"
+        );
+        assert!(handle.flush(remaining), "engine flush never completed");
+        let next = settle_watermark(handle);
+        if next == watermark {
+            return;
+        }
+        watermark = next;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "system never quiesced: {watermark:?}"
+        );
+    }
+}
+
 fn wait_diagnostics(
     handle: &RuntimeHandle,
     wanted: impl Fn(&tiler_macos::runtime::RuntimeDiagnostics) -> bool,
     what: &str,
 ) -> tiler_macos::runtime::RuntimeDiagnostics {
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        let diagnostics = handle.diagnostics();
-        if wanted(&diagnostics) {
-            return diagnostics;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("diagnostics never showed {what}: {diagnostics:?}");
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Parks on the shared condition until the awaited mutation notifies
+    // (reply/completion counts, publications, skips) — never a poll. The
+    // bound is a genuine failure bound.
+    handle
+        .wait_diagnostics_for_test(WAIT_TIMEOUT, wanted)
+        .unwrap_or_else(|| {
+            panic!(
+                "diagnostics never showed {what}: {:?}",
+                handle.diagnostics()
+            )
+        })
 }
 
 fn wait_applied(fixture: &Fixture) -> AppliedRecord {
@@ -535,21 +608,25 @@ fn shutdown_clean(fixture: &Fixture) {
     );
 }
 fn wait_desired_names(fixture: &Fixture, names: &[&str]) -> Vec<String> {
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        let desired = fixture.handle.last_desired_geometry();
-        let mut got: Vec<String> = desired.iter().map(|f| f.window.clone()).collect();
-        got.sort();
-        let mut want: Vec<String> = names.iter().map(|s| s.to_string()).collect();
-        want.sort();
-        if got == want {
-            return got;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("desired geometry never converged to {want:?}: got {got:?}");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // Parks on the shared condition until the engine's desired-plan commit
+    // notifies — the plan commit and the reply that caused it share one
+    // critical section, so no fence-then-check race. The bound is genuine.
+    let mut want: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    fixture
+        .handle
+        .wait_desired_for_test(WAIT_TIMEOUT, |frames| {
+            let mut got: Vec<String> = frames.iter().map(|f| f.window.clone()).collect();
+            got.sort();
+            got == want
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "desired geometry never converged to {want:?}: got {:?}",
+                fixture.handle.last_desired_geometry()
+            )
+        });
+    want
 }
 // -- Tests ---------------------------------------------------------------------
 
@@ -566,25 +643,27 @@ fn redundant_frame_writes_skipped_once_observed() {
     // Startup actuates (desired tiling differs from observed): converge on
     // the first plan so the backend record matches the core plan.
     wait_desired_names(&fixture, &["1001_11", "1001_12"]);
+    // Actuation rendezvous over the applied channel (event-driven
+    // delivery, deadline-bounded): collect until every planned window has
+    // landed with exactly its planned rect. The plan above is already
+    // converged and nothing new is submitted before the drain, so the
+    // channel alone proves actuation — no fence-then-check loop.
+    let planned = fixture.handle.last_desired_geometry();
+    assert_eq!(planned.len(), 2);
     let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
     let mut seen: BTreeMap<String, (i32, i32, i32, i32)> = BTreeMap::new();
-    loop {
-        let desired = fixture.handle.last_desired_geometry();
-        while let Ok(record) = fixture.applied_rx.try_recv() {
-            seen.insert(record.window.clone(), record.rect);
+    for frame in &planned {
+        let want_rect = (frame.x, frame.y, frame.w, frame.h);
+        while seen.get(&frame.window) != Some(&want_rect) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!remaining.is_zero(), "first plan never actuated: {seen:?}");
+            match fixture.applied_rx.recv_timeout(remaining) {
+                Ok(record) => {
+                    seen.insert(record.window.clone(), record.rect);
+                }
+                Err(_) => panic!("first plan never actuated: {seen:?}"),
+            }
         }
-        if !desired.is_empty()
-            && desired
-                .iter()
-                .all(|f| seen.get(&f.window) == Some(&(f.x, f.y, f.w, f.h)))
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "first plan never actuated: {seen:?}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
     }
     drain_applied(&fixture);
     // Report the planned geometry back as observed truth: the next identical
@@ -653,20 +732,19 @@ fn empty_observation_removes_all_and_cancels_batches() {
     obs_tx
         .send(Ok(backend_snapshot(Vec::new(), None)))
         .expect("backend send");
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        if fixture.handle.last_desired_geometry().is_empty()
-            && fixture.handle.diagnostics().observations_published >= 2
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "removal never converged: {:?}",
-            fixture.handle.last_desired_geometry()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // The empty plan is the proof: it exists only after the worker's empty
+    // observation published (the counter bumps before enqueue) and the
+    // engine consumed it, so emptiness causally implies both publication
+    // and dispatch — one condition wait on the plan, never a fence loop.
+    fixture
+        .handle
+        .wait_desired_for_test(WAIT_TIMEOUT, |frames| frames.is_empty())
+        .expect("removal never converged to empty");
+    assert!(
+        fixture.handle.diagnostics().observations_published >= 2,
+        "the empty truth must publish: {:?}",
+        fixture.handle.diagnostics()
+    );
     flush(&fixture.handle);
     assert!(
         fixture.applied_rx.try_recv().is_err(),
@@ -1396,5 +1474,94 @@ fn stale_queued_observation_never_blocks_newest() {
             "1001_13".to_owned()
         ]
     );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn diagnostic_condition_wait_wakes_without_app_worker() {
+    // No apps launched: no workers, no observation traffic. A waiter
+    // parked on the shared condition must still wake the moment the input
+    // thread's own ignored-increment notifies — proving the wake is
+    // carried by the actual state mutation, with no worker idle passes and
+    // no missed wake in either arm-then-mutate order (the waiter rechecks
+    // under the same lock, so a pre-park mutation returns immediately and
+    // a post-park mutation notifies).
+    let fixture = start(test_config());
+    assert!(
+        fixture.handle.app_generation(APP_A).is_none(),
+        "no app worker exists in this leg"
+    );
+    let handle = fixture.handle.clone();
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let waiter = std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let _ = ready_tx.send(());
+        let result = handle
+            .wait_diagnostics_for_test(WAIT_TIMEOUT, |diagnostics| diagnostics.input_ignored >= 1);
+        (result.is_some(), start.elapsed())
+    });
+    ready_rx
+        .recv_timeout(WAIT_TIMEOUT)
+        .expect("waiter must reach its wait");
+    // Modifierless key: matches no chord, so the input thread ignores it
+    // (counted) without ever touching the engine queue.
+    fixture
+        .input_tx
+        .send(RawKeyEvent {
+            kind: TapKeyKind::KeyDown,
+            flags: 0,
+            key_code: 0x09,
+        })
+        .expect("send key");
+    let (woke, elapsed) = waiter.join().expect("waiter joins");
+    assert!(
+        woke,
+        "condition wait must wake on the input-ignored mutation"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "wake must be prompt on mutation, not a poll cadence: {elapsed:?}"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn blocked_apply_fence_reports_unsettled() {
+    // A worker parked inside a gated apply must NOT fence as settled: the
+    // fence reports `false` while blocked (a blocked fence is observable,
+    // never silently ignored), then settles once released. Guards the
+    // asserting `settle_known` against ever treating a blocked fence as
+    // success.
+    let fixture = start(test_config());
+    configure_snapshot(&fixture, APP_A, vec![win(11, 0, 0, 960, 1080)]);
+    let gate = Arc::new(Gate {
+        released: Mutex::new(false),
+        cond: Condvar::new(),
+    });
+    fixture
+        .ax
+        .gates
+        .lock()
+        .expect("mutex")
+        .insert(APP_A, Arc::clone(&gate));
+    fixture.handle.launch_app(APP_A).expect("launch");
+    flush(&fixture.handle);
+    let generation = fixture.handle.app_generation(APP_A).expect("live");
+    assert!(
+        !fixture
+            .handle
+            .wait_app_settled_for_test(APP_A, generation, Duration::from_millis(300)),
+        "a worker blocked inside apply must not fence settled"
+    );
+    *gate.released.lock().expect("mutex") = true;
+    gate.cond.notify_all();
+    assert!(
+        fixture
+            .handle
+            .wait_app_settled_for_test(APP_A, generation, WAIT_TIMEOUT),
+        "the released worker must settle"
+    );
+    let applied = wait_applied(&fixture);
+    assert_eq!(applied.window, "1001_11");
     shutdown_clean(&fixture);
 }

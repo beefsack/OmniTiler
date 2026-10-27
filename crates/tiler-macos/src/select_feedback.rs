@@ -330,6 +330,8 @@ mod tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: VecDeque::new(),
             last_desired: Vec::new(),
+            test_wake: None,
+            test_seq: 0,
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),

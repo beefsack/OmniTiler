@@ -1269,6 +1269,69 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   override unchanged, fail-closed otherwise) with injected-layout regression
   tests. Native proof itself remains pending with no posted chords.
 
+## Test iteration speed (2026-10-27)
+
+- Goal: reduce executable-assessment overhead and eliminate time-window test
+  oracles without changing product behavior. Consolidate all ten offline
+  integration targets into one module-based target; preserve all 148 tests and
+  their assertions. No target requires process isolation. Native desktop tests
+  remain outside the default suite.
+- Native security-assessment activity is evidenced around stalled executable
+  startup; its full latency composition is not established. Security settings
+  remain unchanged. A fresh build-output directory produced a complete baseline,
+  so earlier censored startup probes are not a full-suite timing baseline.
+- Before consolidation, full locked macOS tests pass: 1,377 library plus 148
+  integration, zero failures. After separate compilation, first-launch command
+  wall time is 24.809s and immediate warm wall time is 17.855s. Compilation is
+  measured separately (53.206s). These include the preserved development stress
+  scaffold, not a published-scaffold acceptance claim.
+- Consolidation preserves all 148 original test names and their assertions
+  (974 original assertion lines; per-test counts do not decrease). One relative
+  fixture include changes to preserve the same input at its new module depth.
+  Two new integration regressions and seven new library regressions cover
+  condition waiting and causal worker settlement. The default suite now launches
+  four test executables instead of thirteen: library, two zero-test binary
+  harnesses and one integration target. No integration target needs isolation.
+- Classification's repeated 300ms absence windows and other non-lifecycle
+  sleep polling are replaced. Classification uses a fake
+  condition variable for positive arrival and a per-app worker/engine causal
+  fence for absence; shared diagnostic/log/desired-state waits use an armed
+  condition variable and snapshot/sequence recheck. Ordinary unarmed worker
+  passes take no new synchronization lock. Per-file settlement helpers fence
+  every app their callers launch and assert successful fences before negative
+  checks. Native desktop tests remain outside this target.
+- Final same-condition full-command timings, after separate compilation:
+
+  | Measurement | Before | After | Reduction |
+  | --- | ---: | ---: | ---: |
+  | First launch after relink | 24.809s | 11.514s | 53.6% |
+  | Immediate warm command | 17.855s | 9.082s | 49.1% |
+  | Separate compilation | 53.206s | 44.695s | 16.0% |
+
+  Warm per-executable wall times: library 5.859s, product binary harness 0.130s,
+  probe binary harness 0.133s, combined integration 2.504s. These exclude Cargo's
+  command overhead and include the preserved development scaffold in both full
+  before/after comparisons. With-scaffold results: 1,384 library +150 integration,
+  zero failures. Independent staged-source verification without the scaffold:
+  1,372 library +150 integration, zero failures; the scaffold accounts for twelve
+  tests. This separate no-scaffold command includes compilation and is not an
+  additional comparable latency measurement.
+- Final locked build, strict all-target clippy, workspace format and whitespace
+  checks pass. No-scaffold full tests and strict clippy also pass from an isolated
+  copy of the staged sources. No shared core/protocol or stress-oracle changes.
+- Five original lifecycle polls remain in `runtime_phase1`: relaunch overlap,
+  stopped-worker reap, slow-sink reap, panic-relaunch and blocked-input reap.
+  Their prior waits are retained separately from this completed consolidation
+  and non-lifecycle wait unit. Follow-up exact-generation exit synchronization
+  must preserve overlap protection, timeout ownership and panic/unclean evidence.
+  A backend destruction event or unrelated engine barrier cannot prove thread
+  termination; a detached join that removes ownership records is not accepted.
+- Other crates measured read-only: core has 29 default test targets (library
+  plus 28 integration), 35.268s first command including compilation and 1.998s
+  warm; protocol has two targets, 7.915s including compilation and 0.607s warm.
+  All tests pass (1,381 core, 63 protocol). These measurements do not demonstrate
+  a comparable startup bottleneck, so no shared-crate consolidation is proposed.
+
 ## Risks and open evidence
 
 - KDE delivery may change exact native binding receipts; update/inspect it before

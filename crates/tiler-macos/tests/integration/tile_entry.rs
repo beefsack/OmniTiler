@@ -183,35 +183,115 @@ fn send_key_up(fixture: &Fixture, flags: u64, key_code: u32) {
         .expect("send key up");
 }
 
-fn wait_startup_observation(handle: &RuntimeHandle) {
-    // The worker publishes exactly one startup observation per launch;
-    // observing the publish (queued, FIFO) before submitting sequence 2
-    // pins the intended startup-then-focus order. Same bound/cadence as
-    // `wait_forwarded`, no production timeout touched.
-    let deadline = std::time::Instant::now() + WAIT;
+/// Quiescence watermark for the asserting settlement fence below.
+/// Currently unexercised here (positive waits park on the condition
+/// directly); kept for the phase-1 successor's negative oracles.
+#[allow(dead_code)]
+fn settle_watermark(handle: &RuntimeHandle) -> Vec<u64> {
+    // Every counter a quiescent settle round must leave untouched.
+    // `engine_jobs_processed` is deliberately excluded: the fence's own
+    // barrier jobs move it. `apps_live` recomputes on read; logger drops
+    // and failure evidence ride their own assertions.
+    let diagnostics = handle.diagnostics();
+    vec![
+        diagnostics.frames_emitted,
+        diagnostics.frames_coalesced,
+        diagnostics.frames_redundant_skipped,
+        diagnostics.frames_overlay_skipped,
+        diagnostics.observations_published,
+        diagnostics.observation_failures,
+        diagnostics.core_replies.values().sum(),
+        diagnostics.completions.values().sum(),
+        diagnostics.stale_dropped,
+        diagnostics.terminated_invalidated,
+        diagnostics.data_dropped_full,
+        diagnostics.result_dropped_full,
+        diagnostics.input_forwarded,
+        diagnostics.input_ignored,
+        diagnostics.input_refused_no_focus,
+        diagnostics.input_refused_unsupported,
+        diagnostics.input_select_enqueued,
+        diagnostics.input_select_refused,
+        diagnostics.focus_dispatched,
+        diagnostics.focus_dropped_full,
+    ]
+}
+
+/// Reused by the phase-1 successor for its negative oracles.
+#[allow(dead_code)]
+fn settle_known(handle: &RuntimeHandle, deadline: std::time::Instant) {
+    // Causal settlement fence: one engine barrier plus one per-app worker
+    // drain-mark round each, then repeat full rounds ONLY while the causal
+    // watermark above moved (new work actually appeared mid-fence). Every
+    // fence and every flush MUST succeed: a `false` fence, a failed flush,
+    // or a deadline expiry is a genuine failure, never an ignored timeout.
+    // Repeats park on worker drain-mark events and engine barriers; the
+    // loop body never sleeps and never polls.
+    let mut watermark = settle_watermark(handle);
     loop {
-        if handle.diagnostics().observations_published >= 1 {
+        if let Some(generation) = handle.app_generation(APP) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "settle deadline elapsed before fencing app {APP}"
+            );
+            assert!(
+                handle.wait_app_settled_for_test(APP, generation, remaining),
+                "app {APP} generation {generation} never settled"
+            );
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "settle deadline elapsed before engine flush"
+        );
+        assert!(handle.flush(remaining), "engine flush never completed");
+        let next = settle_watermark(handle);
+        if next == watermark {
             return;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("worker startup observation never published");
-        }
-        std::thread::sleep(Duration::from_millis(5));
+        watermark = next;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "system never quiesced: {watermark:?}"
+        );
     }
 }
 
+fn wait_startup_observation(handle: &RuntimeHandle) {
+    // The worker publishes exactly one startup observation per launch;
+    // observing the publish (queued, FIFO) before submitting sequence 2
+    // pins the intended startup-then-focus order. Parks on the shared
+    // condition until the worker's own publish notifies — never a poll.
+    handle
+        .wait_diagnostics_for_test(WAIT, |diagnostics| diagnostics.observations_published >= 1)
+        .expect("worker startup observation never published");
+}
+
 fn wait_forwarded(handle: &RuntimeHandle, baseline: u64) -> u64 {
-    let deadline = std::time::Instant::now() + WAIT;
-    loop {
-        let forwarded = handle.diagnostics().input_forwarded;
-        if forwarded > baseline {
-            return forwarded;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("input never forwarded (baseline {baseline})");
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Parks on the shared condition until the engine's input-forward
+    // notifies; the input thread carries the chord without sleeps.
+    let diagnostics = handle
+        .wait_diagnostics_for_test(WAIT, |diagnostics| diagnostics.input_forwarded > baseline)
+        .unwrap_or_else(|| panic!("input never forwarded (baseline {baseline})"));
+    diagnostics.input_forwarded
+}
+
+/// Wait until the engine has consumed ignored inputs up to `minimum`
+/// (each ignored chord increments the counter when the input thread's
+/// delivery reaches the engine). The input thread's own ignored-increment
+/// notifies the shared condition, so the returned snapshot is the exact
+/// post-consumption state — the caller asserts its negative oracle
+/// (forwarded counts, reply counts) on that snapshot, never on a fixed
+/// window.
+fn wait_ignored(
+    handle: &RuntimeHandle,
+    minimum: u64,
+    what: &str,
+) -> tiler_macos::runtime::RuntimeDiagnostics {
+    handle
+        .wait_diagnostics_for_test(WAIT, |diagnostics| diagnostics.input_ignored >= minimum)
+        .unwrap_or_else(|| panic!("ignored inputs never consumed ({what})"))
 }
 
 fn reply_count(handle: &RuntimeHandle, prefix: &str) -> u64 {
@@ -297,8 +377,9 @@ fn catalogue_ignores_extras_keyups_and_unrelated() {
     // Bare H with no modifier never forwards.
     send_key(&fixture, 0, 0x04);
     assert!(fixture.handle.flush(FLUSH));
-    std::thread::sleep(Duration::from_millis(100));
-    let diagnostics = fixture.handle.diagnostics();
+    // All five ignored chords must reach the engine (ignored count is the
+    // worker-proof arrival signal); the forwarded count must not move.
+    let diagnostics = wait_ignored(&fixture.handle, ignored_baseline + 5, "five inexact chords");
     assert_eq!(diagnostics.input_forwarded, forwarded_baseline);
     assert!(
         diagnostics.input_ignored >= ignored_baseline + 5,
@@ -646,8 +727,8 @@ fn catalogue_resize_arms_are_exact() {
     send_key(&fixture, ALT | SHIFT, 0x04);
     send_key(&fixture, 0, 0x04);
     assert!(fixture.handle.flush(FLUSH));
-    std::thread::sleep(Duration::from_millis(100));
-    let diagnostics = fixture.handle.diagnostics();
+    // All six ignored chords must reach the engine; forwarded must not move.
+    let diagnostics = wait_ignored(&fixture.handle, ignored_baseline + 6, "six inexact chords");
     assert_eq!(diagnostics.input_forwarded, forwarded);
     assert!(
         diagnostics.input_ignored >= ignored_baseline + 6,
@@ -733,7 +814,9 @@ fn catalogue_orientation_toggles_once_per_press_with_frame_change() {
     let toggles = reply_count(&fixture.handle, "toggle-orientation-");
     send_key(&fixture, CTRL, KEY_O);
     assert!(fixture.handle.flush(FLUSH));
-    std::thread::sleep(Duration::from_millis(150));
+    // The held repeat must reach the engine as an ignore (ignored count is
+    // the arrival signal); nothing may forward or dispatch from it.
+    wait_ignored(&fixture.handle, ignored_baseline + 1, "held repeat");
     assert_eq!(fixture.handle.diagnostics().input_forwarded, baseline + 1);
     assert!(
         fixture.handle.diagnostics().input_ignored > ignored_baseline,

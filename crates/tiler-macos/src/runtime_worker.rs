@@ -21,7 +21,7 @@ use crate::runtime_lifecycle::WorkerExit;
 use crate::runtime_log::sanitize_backend_reason;
 use crate::runtime_native::{FocusFence, fence_focus_command};
 use crate::runtime_observe::{BackendSnapshot, PendingObservation, merge_readback, stage_latest};
-use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, Inbox};
+use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, FrameWait, Inbox, WorkerDrainMark};
 use crate::runtime_types::{FocusEvidence, ScopedBackendSnapshot, TopologyMode, parse_window_id};
 
 /// Bound for one worker multiplex slice: frame waits and backend
@@ -54,7 +54,11 @@ fn send_observation(
     // may dequeue the instant the job lands.
     crate::runtime::invalidate_clock(shared);
     if inbox.try_send_data(job) {
-        lock_shared(shared).diagnostics.observations_published += 1;
+        {
+            let mut guard = lock_shared(shared);
+            guard.diagnostics.observations_published += 1;
+            guard.notify_test_waiters();
+        }
         emit(
             shared,
             pid,
@@ -93,7 +97,11 @@ fn send_observation_scoped(
     // may dequeue the instant the job lands.
     crate::runtime::invalidate_clock(shared);
     if inbox.try_send_data(job) {
-        lock_shared(shared).diagnostics.observations_published += 1;
+        {
+            let mut guard = lock_shared(shared);
+            guard.diagnostics.observations_published += 1;
+            guard.notify_test_waiters();
+        }
         emit(
             shared,
             pid,
@@ -259,6 +267,12 @@ pub(crate) fn app_worker_main(
             (false, true) => "frames-stopped",
             (false, false) => "unreachable",
         };
+        frames.note_drain(WorkerDrainMark::terminal(
+            generation,
+            frames.current_rev(),
+            0,
+            false,
+        ));
         return teardown_worker(&mut backend, &shared, pid, generation, 0, reason);
     }
     let native_mode = matches!(
@@ -270,6 +284,17 @@ pub(crate) fn app_worker_main(
     let mut pending = PendingObservation::new();
     let mut last_scoped: Option<ScopedBackendSnapshot> = None;
     let mut pending_scoped: Option<ScopedBackendSnapshot> = None;
+    // Worker-to-engine inbox send attempts so far (observations plus frame
+    // and focus completions, including queue-full drops, which can never
+    // arrive late). The settlement mark pairs this count with the drain
+    // watermark so a test fence can prove every attempt predating a mark is
+    // either engine-processed or dropped.
+    let mut sends_attempted: u64 = 0;
+    // Slot revision drained through: taking a batch drains everything at or
+    // below its revision (older untaken batches are superseded, never
+    // actuated later); quiet passes drain through the observed current
+    // revision. Teardown freezes the slot, draining it by definition.
+    let mut drained: u64 = 0;
     let mut focus_hint: Option<u32> = None;
     // Seen frontmost for the change-triggered refresh below: initialized to
     // the currently published value so worker start alone never re-reads.
@@ -307,6 +332,7 @@ pub(crate) fn app_worker_main(
                 let mut snapshot = snapshot;
                 stamp_owner_focus(&mut snapshot, lock_shared(&shared).focus_evidence.clone());
                 seq += 1;
+                sends_attempted += 1;
                 if send_observation_scoped(&inbox, &shared, pid, generation, seq, &snapshot) {
                     focus_hint = snapshot.focused_wid;
                     last_scoped = Some(snapshot);
@@ -324,6 +350,7 @@ pub(crate) fn app_worker_main(
                     focused_wid: None,
                 };
                 seq += 1;
+                sends_attempted += 1;
                 if send_observation(&inbox, &shared, pid, generation, seq, &snapshot) {
                     last = Some(snapshot);
                 } else {
@@ -423,6 +450,7 @@ pub(crate) fn app_worker_main(
                 // read and never the diagnostic system-wide leg.
                 stamp_owner_focus(&mut snapshot, lock_shared(&shared).focus_evidence.clone());
                 seq += 1;
+                sends_attempted += 1;
                 if send_observation_scoped(&inbox, &shared, pid, generation, seq, &snapshot) {
                     focus_hint = snapshot.focused_wid;
                     last_scoped = Some(snapshot);
@@ -432,6 +460,7 @@ pub(crate) fn app_worker_main(
             }
         } else if let Some(snapshot) = pending.take() {
             seq += 1;
+            sends_attempted += 1;
             if send_observation(&inbox, &shared, pid, generation, seq, &snapshot) {
                 focus_hint = snapshot.focused_wid;
                 last = Some(snapshot);
@@ -533,6 +562,15 @@ pub(crate) fn app_worker_main(
                         }
                     };
                     if !proceed {
+                        // Deferred-focus skip: the batch below stays queued
+                        // for the next pass, so the drain watermark does not
+                        // move; the mark still proves the send count.
+                        frames.note_drain(WorkerDrainMark::pass(
+                            generation,
+                            drained,
+                            sends_attempted,
+                            !pending.is_empty() || pending_scoped.is_some(),
+                        ));
                         continue;
                     }
                     emit(
@@ -551,6 +589,7 @@ pub(crate) fn app_worker_main(
                         cmd_id: cmd.request_id,
                         completion,
                     };
+                    sends_attempted += 1;
                     if !inbox.try_send_data(job) {
                         lock_shared(&shared).diagnostics.result_dropped_full += 1;
                         emit(
@@ -569,9 +608,27 @@ pub(crate) fn app_worker_main(
         if stop.load(Ordering::SeqCst) || frames.is_stopped() {
             break;
         }
-        let Some((taken_rev, cmds)) = frames.wait_versioned_timeout(&stop, OBSERVE_SLICE) else {
-            continue;
+        let (taken_rev, cmds) = match frames.wait_batch_or_quiet(&stop, OBSERVE_SLICE) {
+            FrameWait::Stopped => break,
+            FrameWait::Quiet(observed_rev) => {
+                // The slot held nothing at the observed revision, so
+                // everything through it is drained. The revision comes from
+                // the same guard as the wait: no queued-but-untaken batch
+                // can hide between the wake and this read.
+                drained = observed_rev;
+                frames.note_drain(WorkerDrainMark::pass(
+                    generation,
+                    drained,
+                    sends_attempted,
+                    !pending.is_empty() || pending_scoped.is_some(),
+                ));
+                continue;
+            }
+            FrameWait::Batch(taken_rev, cmds) => (taken_rev, cmds),
         };
+        // Taking a batch drains everything at or below its revision: older
+        // untaken batches are superseded by definition, never actuated later.
+        drained = taken_rev;
         // An empty taken batch is still a cancellation: a whole empty
         // desired set (window removal) supersedes pending frame state, and
         // the readback below confirms the removal. It must flow through,
@@ -673,7 +730,11 @@ pub(crate) fn app_worker_main(
                     .is_some()
             };
             if redundant {
-                lock_shared(&shared).diagnostics.frames_redundant_skipped += 1;
+                {
+                    let mut guard = lock_shared(&shared);
+                    guard.diagnostics.frames_redundant_skipped += 1;
+                    guard.notify_test_waiters();
+                }
                 emit(
                     &shared,
                     pid,
@@ -706,6 +767,7 @@ pub(crate) fn app_worker_main(
                 cmd_id: cmd.cmd_id,
                 completion,
             };
+            sends_attempted += 1;
             if !inbox.try_send_data(job) {
                 lock_shared(&shared).diagnostics.result_dropped_full += 1;
                 emit(
@@ -752,7 +814,28 @@ pub(crate) fn app_worker_main(
         if stop.load(Ordering::SeqCst) {
             break;
         }
+        // End-of-pass mark: the taken batch is terminally accounted (every
+        // command actuated or fenced above), its completion attempts were
+        // made ahead of this mark, and the readback staged (or failed)
+        // honestly.
+        frames.note_drain(WorkerDrainMark::pass(
+            generation,
+            drained,
+            sends_attempted,
+            !pending.is_empty() || pending_scoped.is_some(),
+        ));
     }
+    // Final mark: teardown stops the slot, invalidating anything still
+    // queued, so the frozen current revision is drained by definition and
+    // nothing further will be sent. Retained observations die with the
+    // worker: they were never enqueued, so `dropped_unsent` final-accounts
+    // them instead of claiming an empty retry queue.
+    frames.note_drain(WorkerDrainMark::terminal(
+        generation,
+        frames.current_rev(),
+        sends_attempted,
+        !pending.is_empty() || pending_scoped.is_some(),
+    ));
     let reason = match (stop.load(Ordering::SeqCst), frames.is_stopped()) {
         (true, true) => "stop-and-frames",
         (true, false) => "stop",
@@ -957,5 +1040,497 @@ mod tests {
             gate_deferred_focus(4242, 7, "4242_7", Some((4242, Some(8)))),
             PriorFocusGate::Moved,
         );
+    }
+}
+
+/// Settlement-fence regressions: `wait_app_settled_for_test` must not return
+/// before blocked actuation completes, and must settle (not hang) on the
+/// terminal no-frame paths: redundant-skip, latest-wins supersession, and
+/// stop. Offline only: gated fakes, no live desktop.
+#[cfg(test)]
+mod settled_fence_tests {
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    use crate::runtime::{
+        AxCompletion, AxObservation, FrameCommand, ObservedWindow, Runtime, RuntimeConfig,
+        ShutdownOutcome, SubmitOutcome, WindowSizeHints,
+    };
+    use crate::runtime_backend::{AxBackend, AxBackendFactory, NativeInputStub};
+
+    const PID: u32 = 4242;
+    const SETTLED: Duration = Duration::from_secs(5);
+
+    struct GateState {
+        applied: Vec<(String, (i32, i32, i32, i32))>,
+        entered: u64,
+        open: bool,
+        windows: Vec<ObservedWindow>,
+        shutdown_open: bool,
+        shutdown_entered: u64,
+    }
+
+    struct GateFactory {
+        state: Arc<(Mutex<GateState>, Condvar)>,
+    }
+
+    impl AxBackendFactory for GateFactory {
+        fn create(&self, _pid: u32) -> Result<Box<dyn AxBackend>, String> {
+            Ok(Box::new(GateBackend {
+                state: Arc::clone(&self.state),
+            }))
+        }
+    }
+
+    struct GateBackend {
+        state: Arc<(Mutex<GateState>, Condvar)>,
+    }
+
+    impl AxBackend for GateBackend {
+        fn apply_frame(&mut self, cmd: &FrameCommand) -> AxCompletion {
+            let (lock, wake) = &*self.state;
+            let mut guard = lock.lock().expect("mutex");
+            // Entry signal first: a test waits for this to prove the worker
+            // took a batch and parked inside actuation (event, not sleep).
+            guard.entered += 1;
+            wake.notify_all();
+            // Bounded gate: proceeds when the test opens, or after the bound
+            // (never strands teardown on a forgotten open).
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !guard.open {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                guard = wake.wait_timeout(guard, deadline - now).expect("mutex").0;
+            }
+            guard
+                .applied
+                .push((cmd.window.clone(), (cmd.x, cmd.y, cmd.w, cmd.h)));
+            AxCompletion::Applied { elapsed_ms: 0 }
+        }
+
+        fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
+            Ok(self.state.0.lock().expect("mutex").windows.clone())
+        }
+
+        fn shutdown(&mut self) -> Result<(), String> {
+            let (lock, wake) = &*self.state;
+            let mut guard = lock.lock().expect("mutex");
+            // Teardown-entry signal: proves the worker reached teardown
+            // (its terminal mark is already recorded) before the test
+            // fences. Bounded like the apply gate.
+            guard.shutdown_entered += 1;
+            wake.notify_all();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !guard.shutdown_open {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                guard = wake.wait_timeout(guard, deadline - now).expect("mutex").0;
+            }
+            Ok(())
+        }
+    }
+
+    fn plain(wid: u32, x: i32, y: i32, w: i32, h: i32) -> ObservedWindow {
+        ObservedWindow {
+            wid,
+            x,
+            y,
+            w,
+            h,
+            floating: false,
+            fullscreen: false,
+            hints: WindowSizeHints {
+                min_w: None,
+                min_h: None,
+                max_w: None,
+                max_h: None,
+            },
+        }
+    }
+
+    fn start_gate(
+        windows: Vec<ObservedWindow>,
+        open: bool,
+    ) -> (
+        crate::runtime::RuntimeHandle,
+        Arc<(Mutex<GateState>, Condvar)>,
+    ) {
+        let state = Arc::new((
+            Mutex::new(GateState {
+                applied: Vec::new(),
+                entered: 0,
+                open,
+                windows,
+                shutdown_open: true,
+                shutdown_entered: 0,
+            }),
+            Condvar::new(),
+        ));
+        let handle = Runtime::start(
+            RuntimeConfig::default(),
+            Arc::new(GateFactory {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(NativeInputStub),
+        )
+        .expect("runtime starts offline");
+        // The worker publishes its startup snapshot as sequence 1, so the
+        // test owns the sequence space from 2 on.
+        (handle, state)
+    }
+
+    fn open(state: &Arc<(Mutex<GateState>, Condvar)>) {
+        let (lock, wake) = &**state;
+        lock.lock().expect("mutex").open = true;
+        wake.notify_all();
+    }
+
+    fn hold_shutdown(state: &Arc<(Mutex<GateState>, Condvar)>) {
+        let (lock, _) = &**state;
+        lock.lock().expect("mutex").shutdown_open = false;
+    }
+
+    fn release_shutdown(state: &Arc<(Mutex<GateState>, Condvar)>) {
+        let (lock, wake) = &**state;
+        lock.lock().expect("mutex").shutdown_open = true;
+        wake.notify_all();
+    }
+
+    fn applied_for(
+        state: &Arc<(Mutex<GateState>, Condvar)>,
+        window: &str,
+    ) -> Vec<(i32, i32, i32, i32)> {
+        state
+            .0
+            .lock()
+            .expect("mutex")
+            .applied
+            .iter()
+            .filter(|(w, _)| w == window)
+            .map(|(_, rect)| *rect)
+            .collect()
+    }
+
+    /// Bounded event wait for the worker to enter actuation `want` times.
+    fn wait_entered(state: &Arc<(Mutex<GateState>, Condvar)>, want: u64) -> bool {
+        let (lock, wake) = &**state;
+        let deadline = std::time::Instant::now() + SETTLED;
+        let mut guard = lock.lock().expect("mutex");
+        while guard.entered < want {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            guard = wake.wait_timeout(guard, deadline - now).expect("mutex").0;
+        }
+        true
+    }
+
+    /// Bounded event wait for the worker to enter backend teardown.
+    fn wait_shutdown_entered(state: &Arc<(Mutex<GateState>, Condvar)>) -> bool {
+        let (lock, wake) = &**state;
+        let deadline = std::time::Instant::now() + SETTLED;
+        let mut guard = lock.lock().expect("mutex");
+        while guard.shutdown_entered < 1 {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            guard = wake.wait_timeout(guard, deadline - now).expect("mutex").0;
+        }
+        true
+    }
+
+    #[test]
+    fn fence_does_not_return_before_blocked_actuation() {
+        // The startup snapshot is empty, so the test's batch is the only
+        // one carrying commands: exactly one actuation follows.
+        let (handle, state) = start_gate(Vec::new(), false);
+        let generation = handle.launch_app(PID).expect("launch");
+        assert_eq!(
+            handle.submit_observation(AxObservation {
+                pid: PID,
+                generation,
+                seq: 2,
+                windows: vec![plain(7, 0, 0, 960, 1080)],
+                focused_wid: None,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert!(handle.flush(Duration::from_secs(5)));
+        // Prove the worker took the batch and parked inside the closed
+        // gate before asserting the fence times out.
+        assert!(wait_entered(&state, 1), "worker never entered actuation");
+        // No mark can drain through the dispatched revision while the
+        // worker is parked: the fence must time out, not return early.
+        assert!(
+            !handle.wait_app_settled_for_test(PID, generation, Duration::from_millis(300)),
+            "fence returned before blocked actuation completed"
+        );
+        assert!(
+            applied_for(&state, "4242_7").is_empty(),
+            "closed gate must withhold actuation"
+        );
+        open(&state);
+        assert!(
+            handle.wait_app_settled_for_test(PID, generation, SETTLED),
+            "fence did not settle after the gate opened"
+        );
+        assert_eq!(applied_for(&state, "4242_7").len(), 1);
+        let report = handle.shutdown(Duration::from_secs(5));
+        assert_eq!(report.outcome, ShutdownOutcome::Clean);
+    }
+
+    #[test]
+    fn fence_settles_redundant_no_frame_path() {
+        // Backend truth already matches the plan: the worker must skip every
+        // command (no AxResult, no applied frame) and still settle.
+        let windows = vec![plain(7, 0, 0, 1920, 1080)];
+        let (handle, state) = start_gate(windows.clone(), true);
+        let generation = handle.launch_app(PID).expect("launch");
+        assert_eq!(
+            handle.submit_observation(AxObservation {
+                pid: PID,
+                generation,
+                seq: 2,
+                windows,
+                focused_wid: None,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert!(handle.flush(Duration::from_secs(5)));
+        assert!(
+            handle.wait_app_settled_for_test(PID, generation, SETTLED),
+            "fence did not settle the redundant path"
+        );
+        assert!(
+            applied_for(&state, "4242_7").is_empty(),
+            "redundant desired geometry must take no write"
+        );
+        assert!(
+            handle.diagnostics().frames_redundant_skipped >= 1,
+            "expected a worker redundant skip: {:?}",
+            handle.diagnostics()
+        );
+        let report = handle.shutdown(Duration::from_secs(5));
+        assert_eq!(report.outcome, ShutdownOutcome::Clean);
+    }
+
+    #[test]
+    fn fence_settles_latest_wins_supersession() {
+        // The worker parks inside the first command of a two-command batch
+        // while a newer plan lands: the started command finishes, the rest
+        // of the taken batch fences as superseded, and the latest plan
+        // actuates. Entry order is deterministic: exactly two writes total,
+        // the last one for the first window matching the latest plan.
+        let (handle, state) = start_gate(Vec::new(), false);
+        let generation = handle.launch_app(PID).expect("launch");
+        assert_eq!(
+            handle.submit_observation(AxObservation {
+                pid: PID,
+                generation,
+                seq: 2,
+                windows: vec![plain(7, 0, 0, 960, 1080), plain(8, 960, 0, 960, 1080)],
+                focused_wid: None,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert!(handle.flush(Duration::from_secs(5)));
+        // Parked inside the taken batch: the next plan supersedes the rest.
+        assert!(wait_entered(&state, 1), "worker never entered actuation");
+        assert_eq!(
+            handle.submit_observation(AxObservation {
+                pid: PID,
+                generation,
+                seq: 3,
+                windows: vec![plain(7, 0, 0, 960, 1080)],
+                focused_wid: None,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert!(handle.flush(Duration::from_secs(5)));
+        open(&state);
+        assert!(
+            handle.wait_app_settled_for_test(PID, generation, SETTLED),
+            "fence did not settle supersession"
+        );
+        // One started write from the superseded batch plus the latest plan:
+        // two writes total, and the first window ends on the latest geometry.
+        let total = applied_for(&state, "4242_7").len() + applied_for(&state, "4242_8").len();
+        assert_eq!(total, 2, "started write plus latest plan, nothing more");
+        let latest = handle
+            .last_desired_geometry()
+            .iter()
+            .find(|f| f.window == "4242_7")
+            .map(|f| (f.x, f.y, f.w, f.h))
+            .expect("latest plan names 4242_7");
+        assert_eq!(applied_for(&state, "4242_7").last(), Some(&latest));
+        assert!(
+            handle.diagnostics().frames_coalesced >= 1,
+            "expected a supersede fence: {:?}",
+            handle.diagnostics()
+        );
+        let report = handle.shutdown(Duration::from_secs(5));
+        assert_eq!(report.outcome, ShutdownOutcome::Clean);
+    }
+
+    #[test]
+    fn fence_settles_stop_with_queued_work() {
+        let (handle, state) = start_gate(vec![plain(7, 0, 0, 960, 1080)], false);
+        let generation = handle.launch_app(PID).expect("launch");
+        assert_eq!(
+            handle.submit_observation(AxObservation {
+                pid: PID,
+                generation,
+                seq: 2,
+                windows: vec![plain(7, 0, 0, 960, 1080)],
+                focused_wid: None,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert!(handle.flush(Duration::from_secs(5)));
+        handle.terminate_app(PID);
+        // The worker is still gated; opening lets it observe the stop,
+        // fence the queued batch, and tear down with a final mark.
+        open(&state);
+        assert!(
+            handle.wait_app_settled_for_test(PID, generation, SETTLED),
+            "fence did not settle the stopped worker"
+        );
+        let report = handle.shutdown(Duration::from_secs(5));
+        assert_eq!(report.outcome, ShutdownOutcome::Clean);
+    }
+
+    #[test]
+    fn fence_settles_parked_teardown_terminal_mark() {
+        // The worker parks inside backend teardown AFTER recording its
+        // terminal mark: a fence baseline read now sits past the final
+        // mark, so only the baseline-independent terminal rule (plus one
+        // barrier) can settle. Without it the fence waits for a second mark
+        // that never comes and times out despite nothing outstanding.
+        let (handle, state) = start_gate(Vec::new(), false);
+        hold_shutdown(&state);
+        let generation = handle.launch_app(PID).expect("launch");
+        assert_eq!(
+            handle.submit_observation(AxObservation {
+                pid: PID,
+                generation,
+                seq: 2,
+                windows: vec![plain(7, 0, 0, 960, 1080)],
+                focused_wid: None,
+            }),
+            SubmitOutcome::Accepted
+        );
+        assert!(handle.flush(Duration::from_secs(5)));
+        assert!(wait_entered(&state, 1), "worker never entered actuation");
+        handle.terminate_app(PID);
+        open(&state);
+        // Parked in teardown with the terminal mark already recorded.
+        assert!(
+            wait_shutdown_entered(&state),
+            "worker never entered teardown"
+        );
+        assert!(
+            handle.wait_app_settled_for_test(PID, generation, SETTLED),
+            "fence did not settle the parked teardown"
+        );
+        release_shutdown(&state);
+        let report = handle.shutdown(Duration::from_secs(5));
+        assert_eq!(report.outcome, ShutdownOutcome::Clean);
+    }
+
+    /// Factory whose backend creation blocks until released: the launch
+    /// times out waiting for readiness, the record is removed, and the
+    /// worker survives briefly as an exact-generation zombie.
+    struct HangingFactory {
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl AxBackendFactory for HangingFactory {
+        fn create(&self, _pid: u32) -> Result<Box<dyn AxBackend>, String> {
+            let (lock, wake) = &*self.release;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut guard = lock.lock().expect("mutex");
+            while !*guard {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                guard = wake.wait_timeout(guard, deadline - now).expect("mutex").0;
+            }
+            // Creation succeeds once released: the worker sends its stale
+            // launch, reports ready, then observes the removal stop and
+            // tears down through the early-stop path.
+            Ok(Box::new(GateBackend {
+                state: Arc::new((
+                    Mutex::new(GateState {
+                        applied: Vec::new(),
+                        entered: 0,
+                        open: true,
+                        windows: Vec::new(),
+                        shutdown_open: true,
+                        shutdown_entered: 0,
+                    }),
+                    Condvar::new(),
+                )),
+            }))
+        }
+    }
+
+    #[test]
+    fn fence_refuses_live_zombie_worker() {
+        // Backend creation blocks: the launch times out waiting for
+        // readiness, the record is removed, and the worker survives as an
+        // exact-generation zombie that could still actuate after this
+        // return. The fence must refuse, not claim settled.
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let config = RuntimeConfig {
+            worker_ready_timeout: Duration::from_millis(100),
+            ..RuntimeConfig::default()
+        };
+        let handle = Runtime::start(
+            config,
+            Arc::new(HangingFactory {
+                release: Arc::clone(&release),
+            }),
+            Arc::new(NativeInputStub),
+        )
+        .expect("runtime starts offline");
+        // The single launch mints generation 1 before the worker spawns.
+        match handle.launch_app(PID) {
+            Err(crate::runtime_types::StartupError::WorkerNotReady) => {}
+            other => panic!("expected WorkerNotReady, got {other:?}"),
+        }
+        assert!(
+            !handle.wait_app_settled_for_test(PID, 1, Duration::from_secs(2)),
+            "fence claimed settled with a live exact-generation zombie"
+        );
+        // Release creation: the worker reports ready, observes the removal
+        // stop, and tears down through the early-stop path. Shutdown joins
+        // it, proving a hang-free exit.
+        {
+            let (lock, wake) = &*release;
+            *lock.lock().expect("mutex") = true;
+            wake.notify_all();
+        }
+        let report = handle.shutdown(Duration::from_secs(5));
+        assert_eq!(report.outcome, ShutdownOutcome::Clean);
+    }
+
+    #[test]
+    fn fence_settles_unknown_pid_trivially() {
+        // No record and no exact-generation zombie: nothing outstanding can
+        // arrive late, so one barrier proves it.
+        let (handle, _) = start_gate(Vec::new(), true);
+        assert!(
+            handle.wait_app_settled_for_test(9999, 1, SETTLED),
+            "fence did not settle an unknown pid"
+        );
+        let report = handle.shutdown(Duration::from_secs(5));
+        assert_eq!(report.outcome, ShutdownOutcome::Clean);
     }
 }

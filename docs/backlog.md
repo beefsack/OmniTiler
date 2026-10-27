@@ -1290,6 +1290,10 @@ decisions of 2026-09-24 are under
   **User review 2026-10-27 ordered follow-ups (details in
   [decisions](decisions.md#macos-dogfood-review-decisions-2026-10-27) and the
   [port record](changes/macos-world-v2-port.md#dogfood-review-directions-2026-10-27)):**
+  Test iteration: single integration target and non-lifecycle event waits
+  reduce full command wall time to 11.514s first-launch / 9.082s warm;
+  five lifecycle exit/reap polls remain for causal join synchronization
+  ([evidence](changes/macos-world-v2-port.md#test-iteration-speed-2026-10-27)).
   (a) direct-wake latency unit with measured native before/after numbers;
   (b) ordered ingress queue carrying every command to core;
   (c) macOS native stress runner against the shared spec (shared oracles stay

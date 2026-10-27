@@ -77,6 +77,11 @@ struct FakeAxInner {
     /// (one-shot): proves completion sanitization preserves the cause.
     fail_status_once: Mutex<BTreeSet<u32>>,
     shutdown_fail: Mutex<BTreeSet<u32>>,
+    /// Backend-exit edge, one entry per owning-worker teardown (Drop runs
+    /// on the worker thread itself, including panic unwind): the loop
+    /// already exited, so no further backend dispatch is possible after
+    /// the entry for a pid lands. Unbounded: sends never block teardown.
+    exit_tx: mpsc::Sender<u32>,
 }
 
 struct FakeAxFactory {
@@ -115,6 +120,14 @@ struct FakeAxBackend {
     pid: u32,
     inner: Arc<FakeAxInner>,
     obs_rx: Option<mpsc::Receiver<Result<BackendSnapshot, String>>>,
+}
+
+impl Drop for FakeAxBackend {
+    fn drop(&mut self) {
+        // Whole-thread exit edge: runs on the owning worker as its last
+        // user-code action (normal teardown and panic unwind alike).
+        let _ = self.inner.exit_tx.send(self.pid);
+    }
 }
 
 impl AxBackend for FakeAxBackend {
@@ -249,6 +262,9 @@ struct FakeInputFactory {
     panic_on_next: AtomicBool,
     fail_create: AtomicBool,
     create_gate: Mutex<Option<Arc<Gate>>>,
+    /// Input-thread exit edge (Drop runs on the owner thread, including
+    /// panic unwind). `None` where the test never waits for the exit.
+    exit_tx: Option<mpsc::Sender<()>>,
 }
 
 impl InputSourceFactory for FakeInputFactory {
@@ -274,6 +290,7 @@ impl InputSourceFactory for FakeInputFactory {
         Ok(Box::new(FakeInputSource {
             rx,
             panic: self.panic_on_next.load(Ordering::SeqCst),
+            exit: self.exit_tx.clone(),
         }))
     }
 
@@ -285,6 +302,16 @@ impl InputSourceFactory for FakeInputFactory {
 struct FakeInputSource {
     rx: mpsc::Receiver<RawKeyEvent>,
     panic: bool,
+    exit: Option<mpsc::Sender<()>>,
+}
+
+impl Drop for FakeInputSource {
+    fn drop(&mut self) {
+        // Input-owner exit edge (normal return and panic unwind alike).
+        if let Some(exit) = self.exit.as_ref() {
+            let _ = exit.send(());
+        }
+    }
 }
 
 impl InputSource for FakeInputSource {
@@ -314,6 +341,8 @@ struct Fixture {
     applied_rx: mpsc::Receiver<AppliedRecord>,
     entered_rx: mpsc::Receiver<EnteredRecord>,
     input_tx: mpsc::Sender<RawKeyEvent>,
+    /// Backend-exit edges, one per owning-worker teardown.
+    exit_rx: mpsc::Receiver<u32>,
 }
 
 fn test_config() -> RuntimeConfig {
@@ -327,6 +356,7 @@ fn start(config: RuntimeConfig) -> Fixture {
     let (applied_tx, applied_rx) = mpsc::channel::<AppliedRecord>();
     let (entered_tx, entered_rx) = mpsc::channel::<EnteredRecord>();
     let (input_tx, input_rx) = mpsc::channel::<RawKeyEvent>();
+    let (exit_tx, exit_rx) = mpsc::channel::<u32>();
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
@@ -341,12 +371,14 @@ fn start(config: RuntimeConfig) -> Fixture {
         timeout_once: Mutex::new(BTreeSet::new()),
         fail_status_once: Mutex::new(BTreeSet::new()),
         shutdown_fail: Mutex::new(BTreeSet::new()),
+        exit_tx,
     });
     let input = Arc::new(FakeInputFactory {
         rx: Mutex::new(Some(input_rx)),
         panic_on_next: AtomicBool::new(false),
         fail_create: AtomicBool::new(false),
         create_gate: Mutex::new(None),
+        exit_tx: None,
     });
     let handle = Runtime::start(
         config,
@@ -362,6 +394,7 @@ fn start(config: RuntimeConfig) -> Fixture {
         applied_rx,
         entered_rx,
         input_tx,
+        exit_rx,
     }
 }
 
@@ -497,24 +530,108 @@ fn drain_entered(fixture: &Fixture) {
     while fixture.entered_rx.try_recv().is_ok() {}
 }
 
-/// Poll diagnostics until `wanted` holds or the timeout expires. Polling
-/// for an inevitable event is deterministic in outcome: the event must
-/// arrive (threads were rendezvoused beforehand); only the wait varies.
+/// Poll diagnostics until `wanted` holds or the bound expires. Parks on
+/// the shared condition until the awaited mutation notifies - every
+/// awaited counter pairs with a ring/count/forward notification in its
+/// causal chain (reply/completion counts, publications, skips, forwards,
+/// ignored input, desired commits) - never a poll. The bound is a genuine
+/// failure bound, never an ignored timeout.
 fn wait_diagnostics(
     handle: &RuntimeHandle,
     wanted: impl Fn(&tiler_macos::runtime::RuntimeDiagnostics) -> bool,
     what: &str,
 ) -> tiler_macos::runtime::RuntimeDiagnostics {
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    handle
+        .wait_diagnostics_for_test(WAIT_TIMEOUT, wanted)
+        .unwrap_or_else(|| {
+            panic!(
+                "diagnostics never showed {what}: {:?}",
+                handle.diagnostics()
+            )
+        })
+}
+
+/// Park on the shared condition until the lifecycle ring shows `wanted`
+/// (every ring append notifies) or the bound expires. Engine-consume
+/// evidence only: worker-side counters and queued submits never satisfy
+/// this.
+fn wait_log_entries(
+    handle: &RuntimeHandle,
+    wanted: impl Fn(&[tiler_macos::runtime::LifecycleLogEntry]) -> bool,
+    what: &str,
+) -> Vec<tiler_macos::runtime::LifecycleLogEntry> {
+    handle
+        .wait_log_for_test(WAIT_TIMEOUT, wanted)
+        .unwrap_or_else(|| panic!("log never showed {what}: {:?}", handle.log_snapshot()))
+}
+
+/// Quiescence watermark for the asserting settlement fence below.
+fn settle_watermark(handle: &RuntimeHandle) -> Vec<u64> {
+    // Every counter a quiescent settle round must leave untouched.
+    // `engine_jobs_processed` is deliberately excluded: the fence's own
+    // barrier jobs move it. Logger drops and failure evidence ride their
+    // own assertions.
+    let diagnostics = handle.diagnostics();
+    vec![
+        diagnostics.frames_emitted,
+        diagnostics.frames_coalesced,
+        diagnostics.frames_redundant_skipped,
+        diagnostics.frames_overlay_skipped,
+        diagnostics.observations_published,
+        diagnostics.observation_failures,
+        diagnostics.core_replies.values().sum(),
+        diagnostics.completions.values().sum(),
+        diagnostics.stale_dropped,
+        diagnostics.terminated_invalidated,
+        diagnostics.data_dropped_full,
+        diagnostics.result_dropped_full,
+        diagnostics.input_forwarded,
+        diagnostics.input_ignored,
+        diagnostics.input_refused_no_focus,
+        diagnostics.input_refused_unsupported,
+        diagnostics.input_select_enqueued,
+        diagnostics.input_select_refused,
+        diagnostics.focus_dispatched,
+        diagnostics.focus_dropped_full,
+    ]
+}
+
+/// Causal settlement fence: one engine barrier plus one per-app worker
+/// drain-mark round each, then repeat full rounds ONLY while the causal
+/// watermark above moved (new work actually appeared mid-fence). Every
+/// fence and every flush MUST succeed: a `false` fence, a failed flush,
+/// or a deadline expiry is a genuine failure, never an ignored timeout.
+/// Repeats park on worker drain-mark events and engine barriers; the loop
+/// body never sleeps and never polls.
+fn settle_known(handle: &RuntimeHandle, deadline: std::time::Instant) {
+    let mut watermark = settle_watermark(handle);
     loop {
-        let diagnostics = handle.diagnostics();
-        if wanted(&diagnostics) {
-            return diagnostics;
+        if let Some(generation) = handle.app_generation(APP_A) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "settle deadline elapsed before fencing app {APP_A}"
+            );
+            assert!(
+                handle.wait_app_settled_for_test(APP_A, generation, remaining),
+                "app {APP_A} generation {generation} never settled"
+            );
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("diagnostics never showed {what}: {diagnostics:?}");
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "settle deadline elapsed before engine flush"
+        );
+        assert!(handle.flush(remaining), "engine flush never completed");
+        let next = settle_watermark(handle);
+        if next == watermark {
+            return;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        watermark = next;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "system never quiesced: {watermark:?}"
+        );
     }
 }
 
@@ -784,10 +901,22 @@ fn hung_app_cannot_stall_engine_input_or_other_app() {
         if converged {
             break;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("released app never converged: desired={desired:?} seen={seen:?}");
+        // No sleep or spin: block for the next backend dispatch (a channel
+        // wait is causal). An empty bound means the worker stalled, which
+        // is the failure the panic reports.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "released app never converged: desired={desired:?} seen={seen:?}"
+        );
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) => {
+                if record.pid == APP_A {
+                    seen.insert(record.window, record.rect);
+                }
+            }
+            Err(_) => panic!("released app never converged: desired={desired:?} seen={seen:?}"),
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
     shutdown_clean(&fixture);
 }
@@ -966,7 +1095,8 @@ fn stop_during_blocked_work_is_bounded_then_reaps() {
 fn idle_never_terminates_and_wakes_on_new_data() {
     let fixture = start(test_config());
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    std::thread::sleep(Duration::from_millis(200));
+    // Liveness without any timing oracle: admission open plus a barrier
+    // round-trip proves the idle runtime stays alive and wakes.
     assert!(fixture.handle.is_running(), "idle runtime must stay alive");
     assert!(
         fixture.handle.flush(FLUSH_TIMEOUT),
@@ -1012,6 +1142,7 @@ fn input_panic_is_never_a_clean_stop() {
     let (applied_tx, _applied_rx) = mpsc::channel::<AppliedRecord>();
     let (entered_tx, _entered_rx) = mpsc::channel::<EnteredRecord>();
     let (_input_tx, input_rx) = mpsc::channel::<RawKeyEvent>();
+    let (input_exit_tx, input_exit_rx) = mpsc::channel::<()>();
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
@@ -1026,17 +1157,22 @@ fn input_panic_is_never_a_clean_stop() {
         timeout_once: Mutex::new(BTreeSet::new()),
         fail_status_once: Mutex::new(BTreeSet::new()),
         shutdown_fail: Mutex::new(BTreeSet::new()),
+        exit_tx: mpsc::channel::<u32>().0,
     });
     let input = Arc::new(FakeInputFactory {
         rx: Mutex::new(Some(input_rx)),
         panic_on_next: AtomicBool::new(true),
         fail_create: AtomicBool::new(false),
         create_gate: Mutex::new(None),
+        exit_tx: Some(input_exit_tx),
     });
     let handle = Runtime::start(test_config(), Arc::new(FakeAxFactory { inner: ax }), input)
         .expect("runtime starts");
-    // The input thread panics on its first poll, long before shutdown.
-    std::thread::sleep(Duration::from_millis(200));
+    // The input thread panics on its first poll: its owner-exit edge
+    // (Drop on unwind) proves the death without any timing oracle.
+    input_exit_rx
+        .recv_timeout(WAIT_TIMEOUT)
+        .expect("panicked input thread must exit");
     let report = handle.shutdown(Duration::from_secs(5));
     assert_eq!(report.outcome, ShutdownOutcome::Panic, "{report:?}");
 }
@@ -1083,12 +1219,14 @@ fn honest_startup_failures_leave_runtime_usable() {
         timeout_once: Mutex::new(BTreeSet::new()),
         fail_status_once: Mutex::new(BTreeSet::new()),
         shutdown_fail: Mutex::new(BTreeSet::new()),
+        exit_tx: mpsc::channel::<u32>().0,
     });
     let input = Arc::new(FakeInputFactory {
         rx: Mutex::new(Some(input_rx)),
         panic_on_next: AtomicBool::new(false),
         fail_create: AtomicBool::new(false),
         create_gate: Mutex::new(None),
+        exit_tx: None,
     });
     let handle = Runtime::start(
         test_config(),
@@ -1141,12 +1279,14 @@ fn input_startup_failure_cleans_up_the_engine() {
         timeout_once: Mutex::new(BTreeSet::new()),
         fail_status_once: Mutex::new(BTreeSet::new()),
         shutdown_fail: Mutex::new(BTreeSet::new()),
+        exit_tx: mpsc::channel::<u32>().0,
     });
     let input = Arc::new(FakeInputFactory {
         rx: Mutex::new(Some(input_rx)),
         panic_on_next: AtomicBool::new(false),
         fail_create: AtomicBool::new(true),
         create_gate: Mutex::new(None),
+        exit_tx: None,
     });
     let failure = match Runtime::start(test_config(), Arc::new(FakeAxFactory { inner: ax }), input)
     {
@@ -1199,14 +1339,15 @@ fn focus_saturation_drops_counted_and_survives() {
     // with a counted outcome instead of blocking actuation. Serialized
     // (no mid-flight overlap): the freshness fence refuses a superseded
     // in-flight command instead of dispatching it, so racing the pair
-    // would make the drop count load-dependent. Waiting for the first
-    // dispatch before sending the second keeps the oracle exact without
-    // weakening it.
+    // would make the drop count load-dependent. The flush inside the
+    // send above already fenced the first dispatch (the input job
+    // dispatches synchronously before the barrier completes): assert it
+    // directly so the second step races nothing, without weakening the
+    // oracle.
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
-    wait_diagnostics(
-        &fixture.handle,
-        |d| d.focus_dispatched >= 1,
-        "first focus dispatched",
+    assert!(
+        fixture.handle.diagnostics().focus_dispatched >= 1,
+        "first focus must dispatch before the second step"
     );
     send_input_and_flush(&fixture, &[focus_key()], 2, 0);
 
@@ -1421,10 +1562,20 @@ fn input_matching_forwards_only_exact_keydown() {
         if converged {
             break;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("move re-plan never actuated: moved={moved:?} seen={seen:?}");
+        // No sleep or spin: block for the next backend dispatch (a channel
+        // wait is causal). An empty bound means actuation stalled, which is
+        // the failure the panic reports.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "move re-plan never actuated: moved={moved:?} seen={seen:?}"
+        );
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) => {
+                seen.insert(record.window.clone(), record.rect);
+            }
+            Err(_) => panic!("move re-plan never actuated: moved={moved:?} seen={seen:?}"),
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
     shutdown_clean(&fixture);
 }
@@ -1546,10 +1697,22 @@ fn terminate_keeps_survivors_operational() {
         if converged {
             break;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("first plan never actuated: desired={desired_before:?} seen={seen:?}");
+        // No sleep or spin: block for the next backend dispatch (a channel
+        // wait is causal). An empty bound means actuation stalled, which is
+        // the failure the panic reports.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "first plan never actuated: desired={desired_before:?} seen={seen:?}"
+        );
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) => {
+                seen.insert(record.window, record.rect);
+            }
+            Err(_) => {
+                panic!("first plan never actuated: desired={desired_before:?} seen={seen:?}")
+            }
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Terminating A removes exactly A's windows from the core plan.
@@ -1585,12 +1748,24 @@ fn terminate_keeps_survivors_operational() {
         if converged {
             break;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!(
+        // No sleep or spin: block for the next backend dispatch (a channel
+        // wait is causal). An empty bound means the survivor stalled, which
+        // is the failure the panic reports.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "survivor never actuated the post-terminate plan: desired={desired:?} seen={seen:?}"
+        );
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) => {
+                if record.pid == APP_B {
+                    seen.insert(record.window, record.rect);
+                }
+            }
+            Err(_) => panic!(
                 "survivor never actuated the post-terminate plan: desired={desired:?} seen={seen:?}"
-            );
+            ),
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
     shutdown_clean(&fixture);
 }
@@ -1643,30 +1818,21 @@ fn structured_log_reconstructs_lifecycle() {
     flush(&fixture.handle);
     let _ = wait_applied(&fixture);
     // The applied completion is processed asynchronously; rendezvous with
-    // the engine-logged `ax-result/applied` before terminating so the log
+    // the engine-logged `ax-result/applied` (every ring append notifies,
+    // so this parks instead of polling) before terminating so the log
     // shows the full lifecycle. Neither backend dispatch truth
     // (`wait_applied`) nor the `completions["applied"]` counter proves it:
     // the counter increments even for late results the engine then logs
     // as `terminated-invalidated`, so only the ring entry itself orders
     // the completion ahead of terminate.
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        if fixture
-            .handle
-            .log_snapshot()
-            .iter()
-            .any(|e| e.kind == "ax-result" && e.outcome == "applied")
-        {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "engine never logged ax-result/applied: {:?}",
-                fixture.handle.log_snapshot()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_log_entries(
+        &fixture.handle,
+        |log| {
+            log.iter()
+                .any(|e| e.kind == "ax-result" && e.outcome == "applied")
+        },
+        "ax-result/applied",
+    );
     let TerminateOutcome::Terminated { .. } = fixture.handle.terminate_app(APP_A) else {
         panic!("terminate");
     };
@@ -1838,17 +2004,27 @@ fn async_launch_reports_readiness_without_blocking() {
         .handle
         .launch_app_async(APP_A)
         .expect("async admits");
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        match fixture.handle.worker_ready(APP_A) {
-            WorkerReadiness::Ready => break,
-            WorkerReadiness::Pending => {
-                assert!(std::time::Instant::now() < deadline, "backend never ready");
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            other => panic!("unexpected readiness: {other:?}"),
-        }
-    }
+    // The worker queues its engine Launch before marking ready, and the
+    // engine logs registration synchronously - so the ring entry proves
+    // readiness without polling the record. (No sleep: every ring append
+    // notifies the parked waiter.)
+    wait_log_entries(
+        &fixture.handle,
+        |log| {
+            log.iter().any(|e| {
+                e.pid == APP_A
+                    && e.generation == generation
+                    && e.kind == "launch"
+                    && e.outcome == "registered"
+            })
+        },
+        "launch registration",
+    );
+    assert_eq!(
+        fixture.handle.worker_ready(APP_A),
+        WorkerReadiness::Ready,
+        "registered launch must read ready"
+    );
     // The worker reported its own Launch before marking ready, so the
     // engine already knows this generation: observations actuate.
     fixture.handle.submit_observation(obs(
@@ -1916,18 +2092,19 @@ fn focus_plans_never_advance_observed_truth() {
     // unobserved) focus must not become the next step's subject. Serialized
     // (no mid-flight overlap): the freshness fence refuses a superseded
     // in-flight command instead of dispatching it, so racing the pair
-    // would make the request count load-dependent.
+    // would make the request count load-dependent. The flush inside each
+    // send already fenced that step's dispatch (the input job dispatches
+    // synchronously before the barrier completes): assert directly so the
+    // steps serialize with no mid-flight overlap.
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
-    wait_diagnostics(
-        &fixture.handle,
-        |d| d.focus_dispatched >= 1,
-        "first focus dispatched",
+    assert!(
+        fixture.handle.diagnostics().focus_dispatched >= 1,
+        "first focus must dispatch before the second step"
     );
     send_input_and_flush(&fixture, &[focus_key()], 2, 0);
-    wait_diagnostics(
-        &fixture.handle,
-        |d| d.focus_dispatched >= 2,
-        "second focus dispatched",
+    assert!(
+        fixture.handle.diagnostics().focus_dispatched >= 2,
+        "second focus must dispatch before the drain"
     );
     let requests = fixture.handle.drain_focus_requests();
     assert_eq!(requests.len(), 2, "{requests:?}");
@@ -2036,21 +2213,26 @@ fn concurrent_terminate_and_shutdown_with_queued_focus_cannot_deadlock() {
 /// Wait until the engine's desired geometry covers exactly `names`, then
 /// return it. Deadline-bounded; the rendezvous is exact, not timing luck.
 fn wait_desired_names(fixture: &Fixture, names: &[&str]) -> Vec<String> {
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        let desired = fixture.handle.last_desired_geometry();
-        let mut got: Vec<String> = desired.iter().map(|f| f.window.clone()).collect();
-        got.sort();
-        let mut want: Vec<String> = names.iter().map(|s| s.to_string()).collect();
-        want.sort();
-        if got == want {
-            return got;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("desired geometry never converged to {want:?}: got {got:?}");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // Parks on the shared condition until the engine's desired-plan commit
+    // notifies - the plan commit and the reply that caused it share one
+    // critical section, so no fence-then-check race. The bound is a
+    // genuine failure bound, never an ignored timeout.
+    let mut want: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    fixture
+        .handle
+        .wait_desired_for_test(WAIT_TIMEOUT, |frames| {
+            let mut got: Vec<String> = frames.iter().map(|f| f.window.clone()).collect();
+            got.sort();
+            got == want
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "desired geometry never converged to {want:?}: got {:?}",
+                fixture.handle.last_desired_geometry()
+            )
+        });
+    want
 }
 
 #[test]
@@ -2161,7 +2343,11 @@ fn startup_change_and_readback_converge_without_replay() {
         "readbacks must skip unchanged state: {diagnostics:?}"
     );
     drain_applied(&fixture);
-    std::thread::sleep(Duration::from_millis(150));
+    // Causal quiescence instead of an absence window: the per-app worker
+    // fence plus engine barriers repeat only while the watermark moves
+    // (new work actually appearing). A replaying readback would keep
+    // publishing and never let the fence rest.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT_TIMEOUT);
     flush(&fixture.handle);
     assert_eq!(
         fixture.handle.diagnostics().observations_published,
@@ -2182,25 +2368,25 @@ fn startup_change_and_readback_converge_without_replay() {
 /// one window, unfocused) can never satisfy readiness for the focused
 /// change (seq 2).
 fn wait_observation_applied(fixture: &Fixture, pid: u32, generation: u64, seq: u64) {
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        if fixture.handle.log_snapshot().iter().any(|e| {
-            e.pid == pid
-                && e.generation == generation
-                && e.ref_id == seq
-                && e.kind == "observation"
-                && e.outcome == "applied"
-        }) {
-            return;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "engine never applied observation pid={pid} gen={generation} seq={seq}: {:?}",
-                fixture.handle.log_snapshot()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Parks on the shared condition until the engine-consumed observation
+    // lands in the ring (every append notifies) - never a poll, so no
+    // wake is missed and no cadence is assumed. Discriminates by `seq`
+    // (startup seq 1 can never satisfy readiness for the focused change
+    // seq 2) and by the ring entry itself (worker send counters, queued
+    // submits, frame counts, and bare flushes never satisfy this).
+    wait_log_entries(
+        &fixture.handle,
+        |log| {
+            log.iter().any(|e| {
+                e.pid == pid
+                    && e.generation == generation
+                    && e.ref_id == seq
+                    && e.kind == "observation"
+                    && e.outcome == "applied"
+            })
+        },
+        &format!("engine-applied observation pid={pid} gen={generation} seq={seq}"),
+    );
 }
 
 #[test]
@@ -2262,11 +2448,23 @@ fn hung_observation_pump_cannot_stall_others() {
 
 struct CollectSink {
     events: Mutex<Vec<LogEvent>>,
+    wake: Condvar,
+}
+
+impl CollectSink {
+    fn new() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            wake: Condvar::new(),
+        }
+    }
 }
 
 impl LogSink for CollectSink {
     fn write(&self, event: &LogEvent) {
         self.events.lock().expect("mutex").push(event.clone());
+        // Wake any parked `wait_sink`: the write itself is the causal edge.
+        self.wake.notify_all();
     }
 }
 
@@ -2279,20 +2477,24 @@ fn collected_kinds(sink: &CollectSink) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Rendezvous with the async sink: poll until an event matches or the
-/// deadline expires. Diagnostics-only waits race the logger thread, so sink
-/// assertions must wait on the sink itself, never on counters alone.
+/// Rendezvous with the async sink: park on the sink's own condition
+/// (each `write` notifies) until an event matches or the bound expires.
+/// Diagnostics-only waits race the logger thread, so sink assertions must
+/// wait on the sink itself, never on counters alone. The bound is genuine.
 fn wait_sink(sink: &CollectSink, wanted: impl Fn(&LogEvent) -> bool, what: &str) {
     let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    let mut events = sink.events.lock().expect("mutex");
     loop {
-        if sink.events.lock().expect("mutex").iter().any(&wanted) {
+        if events.iter().any(&wanted) {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "sink never showed {what}"
-        );
-        std::thread::sleep(Duration::from_millis(5));
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!remaining.is_zero(), "sink never showed {what}");
+        events = sink
+            .wake
+            .wait_timeout(events, remaining)
+            .unwrap_or_else(|poison| poison.into_inner())
+            .0;
     }
 }
 
@@ -2334,12 +2536,14 @@ fn start_with_collect(
         timeout_once: Mutex::new(BTreeSet::new()),
         fail_status_once: Mutex::new(BTreeSet::new()),
         shutdown_fail: Mutex::new(BTreeSet::new()),
+        exit_tx: mpsc::channel::<u32>().0,
     });
     let input = Arc::new(FakeInputFactory {
         rx: Mutex::new(Some(input_rx)),
         panic_on_next: AtomicBool::new(false),
         fail_create: AtomicBool::new(false),
         create_gate: Mutex::new(None),
+        exit_tx: None,
     });
     let handle = Runtime::start_with_sink(
         config,
@@ -2355,9 +2559,7 @@ fn start_with_collect(
 
 #[test]
 fn structured_sink_reconstructs_start_to_stop() {
-    let sink = Arc::new(CollectSink {
-        events: Mutex::new(Vec::new()),
-    });
+    let sink = Arc::new(CollectSink::new());
     let (handle, _ax, applied_rx, _entered_rx, _input_tx) =
         start_with_collect(test_config(), Arc::clone(&sink));
     let generation = handle.launch_app(APP_A).expect("launch");
@@ -2390,18 +2592,34 @@ fn structured_sink_reconstructs_start_to_stop() {
     );
     let report = handle.shutdown(Duration::from_secs(5));
     assert_eq!(report.outcome, ShutdownOutcome::Clean, "{report:?}");
-    // The logger drains under shutdown; poll for the terminal entries with
-    // a deadline instead of assuming write timing.
+    // The logger drains under shutdown; park on the sink's own condition
+    // for the stop-signalled entry instead of assuming write timing. The
+    // bound is a genuine failure bound. (Only entries queued while the
+    // logger lives can be awaited: terminal report entries may drop when
+    // the queue is full, but everything the assertions below need precedes
+    // stop-signalled in FIFO order.)
     let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    let kinds = loop {
-        let kinds = collected_kinds(&sink);
-        if contains_ordered(&kinds, &[("shutdown", "clean"), ("shutdown", "reported")])
-            || std::time::Instant::now() >= deadline
+    let mut events = sink.events.lock().expect("mutex");
+    loop {
+        if events
+            .iter()
+            .any(|e| e.kind == "shutdown" && e.outcome == "stop-signalled")
         {
-            break kinds;
+            break;
         }
-        std::thread::sleep(Duration::from_millis(5));
-    };
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "sink never showed shutdown stop-signalled"
+        );
+        events = sink
+            .wake
+            .wait_timeout(events, remaining)
+            .unwrap_or_else(|poison| poison.into_inner())
+            .0;
+    }
+    drop(events);
+    let kinds = collected_kinds(&sink);
     for wanted in [
         ("runtime", "started"),
         ("lifecycle", "launched"),
@@ -2452,9 +2670,7 @@ fn structured_sink_reconstructs_start_to_stop() {
 
 #[test]
 fn failed_completion_reason_is_sanitized_not_leaked() {
-    let sink = Arc::new(CollectSink {
-        events: Mutex::new(Vec::new()),
-    });
+    let sink = Arc::new(CollectSink::new());
     let (handle, ax, applied_rx, _entered_rx, _input_tx) =
         start_with_collect(test_config(), Arc::clone(&sink));
     let generation = handle.launch_app(APP_A).expect("launch");
@@ -2536,12 +2752,14 @@ fn slow_sink_never_stalls_engine_or_input() {
         timeout_once: Mutex::new(BTreeSet::new()),
         fail_status_once: Mutex::new(BTreeSet::new()),
         shutdown_fail: Mutex::new(BTreeSet::new()),
+        exit_tx: mpsc::channel::<u32>().0,
     });
     let input = Arc::new(FakeInputFactory {
         rx: Mutex::new(Some(input_rx)),
         panic_on_next: AtomicBool::new(false),
         fail_create: AtomicBool::new(false),
         create_gate: Mutex::new(None),
+        exit_tx: None,
     });
     let handle = Runtime::start_with_sink(
         config,
@@ -2704,6 +2922,7 @@ fn blocked_input_startup_retains_handle_for_reap() {
         timeout_once: Mutex::new(BTreeSet::new()),
         fail_status_once: Mutex::new(BTreeSet::new()),
         shutdown_fail: Mutex::new(BTreeSet::new()),
+        exit_tx: mpsc::channel::<u32>().0,
     });
     let create_gate = Arc::new(Gate {
         released: Mutex::new(false),
@@ -2714,6 +2933,7 @@ fn blocked_input_startup_retains_handle_for_reap() {
         panic_on_next: AtomicBool::new(false),
         fail_create: AtomicBool::new(false),
         create_gate: Mutex::new(Some(Arc::clone(&create_gate))),
+        exit_tx: None,
     });
     let config = RuntimeConfig {
         startup_ready_timeout: Duration::from_millis(150),
@@ -2764,9 +2984,7 @@ fn blocked_input_startup_retains_handle_for_reap() {
 
 #[test]
 fn failed_ax_status_reaches_sink_as_allowlisted_token() {
-    let sink = Arc::new(CollectSink {
-        events: Mutex::new(Vec::new()),
-    });
+    let sink = Arc::new(CollectSink::new());
     let (handle, ax, _applied_rx, _entered_rx, _input_tx) =
         start_with_collect(test_config(), Arc::clone(&sink));
     let generation = handle.launch_app(APP_A).expect("launch");
@@ -2875,8 +3093,13 @@ fn dropped_handle_exits_workers_without_join() {
     assert_eq!(entered.cmd_id, 1, "first command is inflight");
     // Dropping the handle signals every app stop plus the frame slot (no
     // join): the worker must observe it without any shutdown call.
+    // The exit edge is captured before the drop (a terminal mark alone
+    // would not prove teardown or whole-thread exit).
     let Fixture {
-        handle, applied_rx, ..
+        handle,
+        applied_rx,
+        exit_rx,
+        ..
     } = fixture;
     drop(handle);
     release_gate(&gate);
@@ -2886,10 +3109,15 @@ fn dropped_handle_exits_workers_without_join() {
         .recv_timeout(WAIT_TIMEOUT)
         .expect("inflight call finishes");
     assert_eq!(first.cmd_id, 1);
-    // ...but the taken second command never starts. Before the Drop fix no
-    // stop ever arrived: the second record would appear within milliseconds
-    // and the worker would park forever retaining `Shared`.
-    std::thread::sleep(Duration::from_millis(250));
+    // ...but the taken second command never starts. The owning worker's
+    // exit edge proves its loop already exited (no further command can
+    // start after it), so the empty drain below is exact rather than a
+    // timing oracle. Before the Drop fix no stop ever arrived: the second
+    // record would appear and the worker would park forever retaining
+    // `Shared`.
+    exit_rx
+        .recv_timeout(WAIT_TIMEOUT)
+        .expect("stopped worker must exit");
     assert!(
         applied_rx.try_recv().is_err(),
         "a stopped worker starts no further commands"

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
@@ -52,8 +52,10 @@ struct FakeInner {
     partial_once: Mutex<BTreeSet<u32>>,
     /// Every bound effect hook's frontmost leg, in bind order. The worker
     /// rebinds every multiplex iteration, so a frontmost update must show up
-    /// here without any topology drift.
+    /// here without any topology drift. Pushed under `hooks`; `hooks_wake`
+    /// notifies the same-guard waiter (no polling).
     hooks: Mutex<Vec<HookFrontmost>>,
+    hooks_wake: Condvar,
 }
 
 struct Gate {
@@ -139,11 +141,10 @@ impl AxBackend for FakeBackend {
 
     fn bind_effect_hook(&mut self, hook: &tiler_macos::runtime_backend::EffectHook) {
         self.bound = hook.cell.load().map(|ctx| ctx.revision);
-        self.inner
-            .hooks
-            .lock()
-            .expect("mutex")
-            .push(hook.frontmost.clone());
+        let mut hooks = self.inner.hooks.lock().expect("mutex");
+        hooks.push(hook.frontmost.clone());
+        drop(hooks);
+        self.inner.hooks_wake.notify_one();
     }
 
     fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
@@ -257,6 +258,7 @@ fn start(config: RuntimeConfig) -> Fixture {
         gates: Mutex::new(BTreeMap::new()),
         partial_once: Mutex::new(BTreeSet::new()),
         hooks: Mutex::new(Vec::new()),
+        hooks_wake: Condvar::new(),
     });
     let handle = Runtime::start(
         config,
@@ -521,22 +523,94 @@ fn wait_applied_to(
     }
 }
 
+fn settle_watermark(handle: &RuntimeHandle) -> Vec<u64> {
+    // Every counter a quiescent settle round must leave untouched.
+    // `engine_jobs_processed` is deliberately excluded: the fence's own
+    // barrier jobs move it. Logger drops and failure evidence ride their
+    // own assertions.
+    let diagnostics = handle.diagnostics();
+    vec![
+        diagnostics.frames_emitted,
+        diagnostics.frames_coalesced,
+        diagnostics.frames_redundant_skipped,
+        diagnostics.frames_overlay_skipped,
+        diagnostics.observations_published,
+        diagnostics.observation_failures,
+        diagnostics.core_replies.values().sum(),
+        diagnostics.completions.values().sum(),
+        diagnostics.stale_dropped,
+        diagnostics.terminated_invalidated,
+        diagnostics.data_dropped_full,
+        diagnostics.result_dropped_full,
+        diagnostics.input_forwarded,
+        diagnostics.input_ignored,
+        diagnostics.input_refused_no_focus,
+        diagnostics.input_refused_unsupported,
+        diagnostics.input_select_enqueued,
+        diagnostics.input_select_refused,
+        diagnostics.focus_dispatched,
+        diagnostics.focus_dropped_full,
+    ]
+}
+
+/// Settlement fence over every fixture app (A/B/C): one engine barrier
+/// plus one per-app worker drain-mark round each, then repeat full rounds
+/// ONLY while the causal watermark above moved (a later app's engine tail
+/// must never silently leave an earlier app's work outstanding). Every
+/// fence and every flush MUST succeed: a `false` fence, a failed flush,
+/// or a deadline expiry is a genuine failure, never an ignored timeout.
+/// Repeats park on worker drain-mark events and engine barriers; the loop
+/// body never sleeps and never polls.
+fn settle_known(handle: &RuntimeHandle, deadline: std::time::Instant) {
+    let mut watermark = settle_watermark(handle);
+    loop {
+        for pid in [APP_A, APP_B, APP_C] {
+            if let Some(generation) = handle.app_generation(pid) {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "settle deadline elapsed before fencing app {pid}"
+                );
+                assert!(
+                    handle.wait_app_settled_for_test(pid, generation, remaining),
+                    "app {pid} generation {generation} never settled"
+                );
+            }
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "settle deadline elapsed before engine flush"
+        );
+        assert!(handle.flush(remaining), "engine flush never completed");
+        let next = settle_watermark(handle);
+        if next == watermark {
+            return;
+        }
+        watermark = next;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "system never quiesced: {watermark:?}"
+        );
+    }
+}
+
 fn wait_diagnostics(
     handle: &RuntimeHandle,
     wanted: impl Fn(&tiler_macos::runtime::RuntimeDiagnostics) -> bool,
     what: &str,
 ) -> tiler_macos::runtime::RuntimeDiagnostics {
-    let deadline = std::time::Instant::now() + WAIT;
-    loop {
-        let diagnostics = handle.diagnostics();
-        if wanted(&diagnostics) {
-            return diagnostics;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("diagnostics never showed {what}: {diagnostics:?}");
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Parks on the shared condition until the awaited mutation notifies
+    // (reply/completion counts, publications, input forwards) — never a
+    // poll. The bound is a genuine failure bound.
+    handle
+        .wait_diagnostics_for_test(WAIT, wanted)
+        .unwrap_or_else(|| {
+            panic!(
+                "diagnostics never showed {what}: {:?}",
+                handle.diagnostics()
+            )
+        })
 }
 
 fn wait_focus(fixture: &Fixture) -> FocusCommand {
@@ -937,8 +1011,11 @@ fn partial_readback_converges_without_retry_storm() {
     );
     assert_eq!(diagnostics.completions.get("partial-applied"), Some(&1));
     // Quiesce: no storm follows (the count stays exactly 1 while the
-    // readback converges the plan instead of refighting it).
-    std::thread::sleep(Duration::from_millis(200));
+    // readback converges the plan instead of refighting it). The
+    // settlement fence proves the worker drained every pass through the
+    // causal marks, so a repeat would already be counted — no fixed
+    // window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     assert_eq!(
         fixture
             .handle
@@ -1004,8 +1081,10 @@ fn observer_reread_publishes_fresh_truth_without_storm() {
     );
     assert!(fixture.handle.flush(FLUSH));
     // Settles: the publication count holds (fresh truth consumed once),
-    // and the plan still covers exactly the homed member.
-    std::thread::sleep(Duration::from_millis(200));
+    // and the plan still covers exactly the homed member. The settlement
+    // fence proves every worker pass drained, so a storm would already be
+    // counted — no fixed window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     assert_eq!(
         fixture.handle.diagnostics().observations_published,
         2,
@@ -1326,12 +1405,14 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
         "switched-to Space tiles d1: {:?}",
         c.3
     );
-    std::thread::sleep(Duration::from_millis(300));
+    // Settlement fence proves every worker pass drained through the causal
+    // marks (superseded pre-switch batches accounted, never actuated late),
+    // so the single drain below is exact — no fixed window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     let mut hidden_writes = Vec::new();
     while let Ok(record) = fixture.applied_rx.try_recv() {
         // Generation-gated: only frames planned under the switched
-        // revision count — flush fences engine jobs, not worker applies,
-        // so superseded pre-switch records can land late under load.
+        // revision count.
         if record.2.starts_with("1001_") && record.2 != "1001_3" && record.4 == revision2 {
             hidden_writes.push(record);
         }
@@ -1622,7 +1703,9 @@ fn offcurrent_close_prunes_and_return_converges() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    std::thread::sleep(Duration::from_millis(300));
+    // Settlement fence proves every worker pass drained, so the single
+    // drain below is exact — no fixed window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     while let Ok(record) = fixture.applied_rx.try_recv() {
         // Generation-gated like the switch test: only frames planned
         // under the switched revision count as hidden writes.
@@ -1795,10 +1878,12 @@ fn space_type_gap_retains_hidden_layout_without_release() {
         "switched-to Space tiles d1: {:?}",
         c.3
     );
-    std::thread::sleep(Duration::from_millis(300));
+    // Settlement fence proves every worker pass drained, so the single
+    // drain below is exact — no fixed window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     while let Ok(record) = fixture.applied_rx.try_recv() {
         // Generation-gated: only frames planned under the gap revision
-        // count; superseded pre-gap records can land late under load.
+        // count.
         if (record.2 == "1001_1" || record.2 == "1001_2") && record.4 == revision2 {
             panic!("unreadable-typed hidden pair takes no writes: {record:?}");
         }
@@ -1950,10 +2035,12 @@ fn skipped_display_parks_layout_then_resumes_exact() {
             .any(|e| e.kind == "topology" && e.outcome == "displays-skipped"),
         "skipped display must be counted"
     );
-    std::thread::sleep(Duration::from_millis(300));
+    // Settlement fence proves every worker pass drained, so the single
+    // drain below is exact — no fixed window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     while let Ok(record) = fixture.applied_rx.try_recv() {
         // Generation-gated: only frames planned under the gap revision
-        // count; superseded pre-gap records can land late under load.
+        // count.
         if record.2.starts_with("1001_") && record.4 == revision2 {
             panic!("parked display takes no writes: {record:?}");
         }
@@ -2094,10 +2181,12 @@ fn skip_then_actual_removal_releases() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    std::thread::sleep(Duration::from_millis(300));
+    // Settlement fence proves every worker pass drained, so the single
+    // drain below is exact — no fixed window.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     while let Ok(record) = fixture.applied_rx.try_recv() {
         // Generation-gated: only frames planned under the gap revision
-        // count; superseded pre-gap records can land late under load.
+        // count.
         if record.2 == "1001_1" && record.4 == revision2 {
             panic!("parked display takes no writes: {record:?}");
         }
@@ -2509,17 +2598,24 @@ fn float_toggle_uses_existing_core_command() {
 
 fn wait_hooks_contain(fixture: &Fixture, wanted: &HookFrontmost, what: &str) {
     let deadline = std::time::Instant::now() + WAIT;
+    let mut hooks = fixture.inner.hooks.lock().expect("mutex");
     loop {
-        {
-            let hooks = fixture.inner.hooks.lock().expect("mutex");
-            if hooks.iter().any(|seen| seen == wanted) {
-                return;
-            }
+        if hooks.iter().any(|seen| seen == wanted) {
+            return;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("effect hook never carried {what}");
-        }
-        std::thread::sleep(Duration::from_millis(5));
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "effect hook never carried {what}: {hooks:?}"
+        );
+        // Same-guard Condvar wait: the worker notifies on every bind, so
+        // the wait ends on the causal event, never on a poll interval.
+        hooks = fixture
+            .inner
+            .hooks_wake
+            .wait_timeout(hooks, remaining)
+            .expect("mutex")
+            .0;
     }
 }
 
@@ -2639,10 +2735,11 @@ fn frontmost_change_clears_and_repromotes_without_backend_change() {
     assert_eq!((cmd.pid, cmd.wid), (APP_A, 2));
 
     // Steady frontmost never reasserts: no further republish while nothing
-    // changes.
+    // changes. The settlement fence proves the worker drained every pass,
+    // so the count below is the worker-proven total — no fixed window.
     assert!(fixture.handle.flush(FLUSH));
     let settled = fixture.handle.diagnostics().observations_published;
-    std::thread::sleep(Duration::from_millis(300));
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     assert_eq!(
         fixture.handle.diagnostics().observations_published,
         settled,

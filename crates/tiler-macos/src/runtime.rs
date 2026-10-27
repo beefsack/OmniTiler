@@ -33,7 +33,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
@@ -185,6 +185,24 @@ fn partial_handle(
     }
 }
 
+/// True when a retained zombie worker for the exact `(pid, generation)` has
+/// not provably exited. Its stop is set and its slot is stopped, so it can
+/// start nothing new, but a call already inside the backend may still finish
+/// physically after the record is gone: the settlement fence refuses while
+/// this is true instead of overclaiming. Call with the lock held; brief.
+fn exact_zombie_live(guard: &Shared, pid: u32, generation: u64) -> bool {
+    guard.zombies.iter().any(|zombie| {
+        matches!(
+            zombie,
+            LiveHandle::Worker {
+                pid: zombie_pid,
+                generation: zombie_generation,
+                ..
+            } if *zombie_pid == pid && *zombie_generation == generation
+        ) && !zombie.is_finished()
+    })
+}
+
 /// Take every live owner handle (engine, input, app workers, logger) plus
 /// preexisting zombies for a proven-exit-only join. Call with the lock held;
 /// join the result WITHOUT it.
@@ -285,6 +303,8 @@ impl Runtime {
                 diagnostics: RuntimeDiagnostics::default(),
                 log: VecDeque::new(),
                 last_desired: Vec::new(),
+                test_wake: None,
+                test_seq: 0,
                 last_geometry_key: None,
                 last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
                 last_pager_bindings: Vec::new(),
@@ -340,6 +360,8 @@ impl Runtime {
             diagnostics: RuntimeDiagnostics::default(),
             log: VecDeque::new(),
             last_desired: Vec::new(),
+            test_wake: None,
+            test_seq: 0,
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
@@ -1261,6 +1283,153 @@ impl RuntimeHandle {
         rx.recv_timeout(timeout).is_ok()
     }
 
+    /// Deterministic test-only settlement fence for one app worker: returns
+    /// true once every frame batch dispatched for `(pid, generation)` is
+    /// terminally accounted by its owning worker (actuated or fenced,
+    /// including superseded, stale, redundant, and stop-fenced) AND every
+    /// worker-to-engine send attempt predating that accounting is either
+    /// engine-processed or dropped (a dropped attempt can never arrive
+    /// late). False on the deadline, or when the lifetime is gone but its
+    /// exact-generation worker is still alive (conservative refuse: a live
+    /// zombie may still be mid-apply). Never sleeps or spins: engine FIFO
+    /// barriers plus worker drain-mark events carry the wait.
+    ///
+    /// Scope is worker-side only: frame-slot batches plus the worker's own
+    /// observation and completion sends. Main-thread focus-outbox delivery
+    /// (`drain_focus_requests`) is a separate lane this fence does not cover.
+    ///
+    /// Protocol: flush (the engine dispatches everything submitted so far,
+    /// fixing the slot watermark), then wait for a worker mark drained
+    /// through it (the batch is accounted, its attempts were made ahead of
+    /// the mark), then flush (the engine processes those tails), then wait
+    /// for a second mark from a later pass (when its attempt count matches
+    /// the first and nothing is retained, the post-flush pass proved
+    /// quiescent). A
+    /// terminal (pre-exit) mark short-circuits the second wait: one barrier
+    /// after it settles the lifetime, including when the worker parked in
+    /// teardown before the baseline was read. Repeats while new work
+    /// appears. A missing app or replaced generation settles trivially only
+    /// when no exact-generation zombie is still alive. Never used by
+    /// production paths.
+    pub fn wait_app_settled_for_test(&self, pid: u32, generation: u64, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            if !self.flush(deadline.saturating_duration_since(Instant::now())) {
+                return false;
+            }
+            // Brief snapshot only; never held across the waits below.
+            enum Snapshot {
+                /// The lifetime is gone and no exact-generation worker is
+                /// still alive: nothing outstanding can arrive late.
+                Gone,
+                /// The lifetime is gone but its exact-generation worker may
+                /// still be mid-apply: refuse instead of overclaiming.
+                Refused,
+                Live(Arc<FrameSlot>),
+            }
+            let snapshot = {
+                let guard = lock_shared(&self.shared);
+                match guard.apps.get(&pid) {
+                    None => {
+                        if exact_zombie_live(&guard, pid, generation) {
+                            Snapshot::Refused
+                        } else {
+                            Snapshot::Gone
+                        }
+                    }
+                    Some(record) if record.generation != generation => {
+                        if exact_zombie_live(&guard, pid, generation) {
+                            Snapshot::Refused
+                        } else {
+                            Snapshot::Gone
+                        }
+                    }
+                    Some(record)
+                        if record.terminated
+                            && record.worker.as_ref().is_some_and(|h| h.is_finished()) =>
+                    {
+                        Snapshot::Gone
+                    }
+                    Some(record) => Snapshot::Live(Arc::clone(&record.frames)),
+                }
+            };
+            match snapshot {
+                Snapshot::Refused => return false,
+                Snapshot::Gone => {
+                    // The flush above drained the tails; one more proves it.
+                    if !self.flush(deadline.saturating_duration_since(Instant::now())) {
+                        return false;
+                    }
+                    return true;
+                }
+                Snapshot::Live(frames) => {
+                    if self.wait_slot_settled(&frames, generation, deadline) {
+                        return true;
+                    }
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    // New worker input or a newer batch appeared, or the
+                    // worker died mid-fence without a terminal mark:
+                    // re-fence while the deadline holds.
+                }
+            }
+        }
+    }
+
+    /// One slot-settlement round for a live worker record: flush, drain-mark
+    /// waits, flush, quiescence proof. Returns true when settled, false when
+    /// the round observed new work (caller re-fences) or the deadline passed.
+    fn wait_slot_settled(
+        &self,
+        frames: &Arc<FrameSlot>,
+        generation: u64,
+        deadline: Instant,
+    ) -> bool {
+        frames.arm_drain_mark();
+        let target = frames.current_rev();
+        // A terminal mark recorded before the baseline still settles: the
+        // worker parked in teardown before this round started, so no second
+        // mark will ever come. A slot has at most one teardown, so a
+        // terminal mark is never stale.
+        if frames.terminal_mark(generation, target).is_some() {
+            return self.flush(deadline.saturating_duration_since(Instant::now()));
+        }
+        let baseline = frames.mark_seq();
+        let Some((seq, first)) = frames.wait_drain(baseline, generation, target, deadline) else {
+            return false;
+        };
+        // A terminal mark ends the lifetime: its attempts predate it, so one
+        // barrier settles without waiting for a second mark that will never
+        // come. Dropped unsent observations need no barrier: they were never
+        // enqueued.
+        if first.terminal {
+            return self.flush(deadline.saturating_duration_since(Instant::now()));
+        }
+        if !self.flush(deadline.saturating_duration_since(Instant::now())) {
+            return false;
+        }
+        match frames.wait_drain(seq, generation, target, deadline) {
+            Some((_, second)) if second.terminal => {
+                self.flush(deadline.saturating_duration_since(Instant::now()))
+            }
+            Some((_, second))
+                if second.sends_attempted == first.sends_attempted
+                    && !second.pending
+                    && frames.current_rev() == target =>
+            {
+                true
+            }
+            // New worker input, a newer batch, or worker death without a
+            // terminal mark: the caller re-fences while the deadline holds.
+            Some(_) => false,
+            None => false,
+        }
+    }
+
     /// Current engine-managed facts for one subject window (control lane,
     /// never silently dropped; waits at most `timeout` for the owner
     /// reply). `None` means the engine is gone, the inbox is closed, the
@@ -1476,6 +1645,143 @@ impl RuntimeHandle {
         lock_shared(&self.shared).last_desired.clone()
     }
 
+    /// Test-only condition wait over structured diagnostics: parks on the
+    /// shared-state [`Condvar`] (armed lazily under the same lock) and
+    /// wakes only on actual relevant mutations (ring emits, reply /
+    /// completion counts, and the explicitly notified counter sites) -
+    /// never on timers, idle passes, or worker polling. The predicate
+    /// evaluates on an owned snapshot with the lock released (it may call
+    /// handle snapshot readers, never a blocking wait); a sequence
+    /// recheck under the lock before parking closes the lost-wake race.
+    /// Returns the satisfying snapshot, or `None` if the bound elapsed
+    /// first (the bound is a genuine failure bound, never an ignored
+    /// timeout). Never used by production paths.
+    pub fn wait_diagnostics_for_test(
+        &self,
+        timeout: Duration,
+        wanted: impl Fn(&RuntimeDiagnostics) -> bool,
+    ) -> Option<RuntimeDiagnostics> {
+        let deadline = Instant::now() + timeout;
+        let wake = {
+            let mut guard = lock_shared(&self.shared);
+            if guard.test_wake.is_none() {
+                guard.test_wake = Some(Arc::new(Condvar::new()));
+            }
+            guard.test_wake.clone().expect("armed")
+        };
+        loop {
+            let (snapshot, seq) = {
+                let mut guard = lock_shared(&self.shared);
+                guard.diagnostics.apps_live = guard.apps.values().filter(|r| !r.terminated).count();
+                (guard.diagnostics.clone(), guard.test_seq)
+            };
+            if wanted(&snapshot) {
+                return Some(snapshot);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let guard = lock_shared(&self.shared);
+            if guard.test_seq != seq {
+                continue;
+            }
+            // Poison-tolerant like `lock_shared`: a supervised-owner panic
+            // must stay observable, never wedge the waiter.
+            let _ = wake
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(|poison| poison.into_inner());
+        }
+    }
+
+    /// Test-only condition wait over the lifecycle ring: same arming and
+    /// wake discipline as [`RuntimeHandle::wait_diagnostics_for_test`].
+    /// The predicate sees the ring snapshot as a slice. Returns the
+    /// satisfying snapshot, or `None` on bound elapse. Never used by
+    /// production paths.
+    pub fn wait_log_for_test(
+        &self,
+        timeout: Duration,
+        wanted: impl Fn(&[LifecycleLogEntry]) -> bool,
+    ) -> Option<Vec<LifecycleLogEntry>> {
+        let deadline = Instant::now() + timeout;
+        let wake = {
+            let mut guard = lock_shared(&self.shared);
+            if guard.test_wake.is_none() {
+                guard.test_wake = Some(Arc::new(Condvar::new()));
+            }
+            guard.test_wake.clone().expect("armed")
+        };
+        loop {
+            let (snapshot, seq) = {
+                let guard = lock_shared(&self.shared);
+                (
+                    guard.log.iter().cloned().collect::<Vec<_>>(),
+                    guard.test_seq,
+                )
+            };
+            if wanted(&snapshot) {
+                return Some(snapshot);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let guard = lock_shared(&self.shared);
+            if guard.test_seq != seq {
+                continue;
+            }
+            // Poison-tolerant like `lock_shared`: a supervised-owner panic
+            // must stay observable, never wedge the waiter.
+            let _ = wake
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(|poison| poison.into_inner());
+        }
+    }
+
+    /// Test-only condition wait over the last desired geometry: same
+    /// arming and wake discipline as
+    /// [`RuntimeHandle::wait_diagnostics_for_test`]. The predicate sees
+    /// the desired-plan snapshot as a slice. Returns the satisfying
+    /// snapshot, or `None` on bound elapse. Never used by production
+    /// paths.
+    pub fn wait_desired_for_test(
+        &self,
+        timeout: Duration,
+        wanted: impl Fn(&[DesiredFrame]) -> bool,
+    ) -> Option<Vec<DesiredFrame>> {
+        let deadline = Instant::now() + timeout;
+        let wake = {
+            let mut guard = lock_shared(&self.shared);
+            if guard.test_wake.is_none() {
+                guard.test_wake = Some(Arc::new(Condvar::new()));
+            }
+            guard.test_wake.clone().expect("armed")
+        };
+        loop {
+            let (snapshot, seq) = {
+                let guard = lock_shared(&self.shared);
+                (guard.last_desired.clone(), guard.test_seq)
+            };
+            if wanted(&snapshot) {
+                return Some(snapshot);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let guard = lock_shared(&self.shared);
+            if guard.test_seq != seq {
+                continue;
+            }
+            // Poison-tolerant like `lock_shared`: a supervised-owner panic
+            // must stay observable, never wedge the waiter.
+            let _ = wake
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(|poison| poison.into_inner());
+        }
+    }
+
     /// Snapshot of the last applied reply presentation (border/underlay
     /// shapes, pager content, tick-time foreground token). The tile main
     /// thread renders these shapes through the existing native carriers,
@@ -1666,6 +1972,11 @@ impl RuntimeHandle {
 
     /// Reap handles retained after a dirty shutdown. Takes the retained set
     /// under the lock, joins only proven exits outside it; the rest stay
+    /// retained and keep blocking overlapping replacement generations.
+    /// Panic and unclean evidence persists in diagnostics, so a later
+    /// shutdown still reports honestly.
+    /// Reap handles retained after a dirty shutdown. Takes the retained set
+    /// under the lock, then joins only proven exits outside it; the rest stay
     /// retained and keep blocking overlapping replacement generations.
     /// Panic and unclean evidence persists in diagnostics, so a later
     /// shutdown still reports honestly.

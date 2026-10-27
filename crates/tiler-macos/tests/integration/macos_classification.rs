@@ -9,13 +9,14 @@
 //!
 //! Fixture contract (mirrors `runtime_phase1.rs`): the fake backend's
 //! `snapshot()` always fails honestly, so the worker never publishes and the
-//! test owns the whole per-app sequence space starting at 1. Engine-side
-//! counters (`frames_emitted`, `frames_overlay_skipped`) prove emission
-//! decisions deterministically; applied-record absence is polled bounded
-//! (nothing outstanding can arrive late once the engine-side proof holds and
-//! earlier batches rendezvoused).
+//! test owns the whole per-app sequence space starting at 1. Positive waits
+//! ride the fake's applied-record condvar (the record itself is the proof,
+//! no polling); negative assertions first fence causally with
+//! `wait_app_settled_for_test` (worker drain-through plus engine tails for
+//! every relevant batch) and then assert immediate absence: nothing
+//! outstanding can arrive late, so no quiet-time poll is needed.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use tiler_macos::classifier::{
@@ -31,7 +32,6 @@ use tiler_macos::runtime_backend::{AxBackend, AxBackendFactory, NativeInputStub}
 const APP_A: u32 = 1001;
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
-const ABSENT_POLL: Duration = Duration::from_millis(300);
 
 // -- Lean fakes ---------------------------------------------------------------
 
@@ -48,7 +48,7 @@ struct FakeState {
 }
 
 struct FakeFactory {
-    state: Arc<Mutex<FakeState>>,
+    state: Arc<(Mutex<FakeState>, Condvar)>,
 }
 
 impl AxBackendFactory for FakeFactory {
@@ -60,16 +60,19 @@ impl AxBackendFactory for FakeFactory {
 }
 
 struct FakeBackend {
-    state: Arc<Mutex<FakeState>>,
+    state: Arc<(Mutex<FakeState>, Condvar)>,
 }
 
 impl AxBackend for FakeBackend {
     fn apply_frame(&mut self, cmd: &FrameCommand) -> AxCompletion {
-        self.state.lock().expect("mutex").applied.push(Applied {
+        let (lock, wake) = &*self.state;
+        lock.lock().expect("mutex").applied.push(Applied {
             window: cmd.window.clone(),
             cmd_id: cmd.cmd_id,
             rect: (cmd.x, cmd.y, cmd.w, cmd.h),
         });
+        // The record itself wakes positive waiters: no polling, no sleep.
+        wake.notify_all();
         AxCompletion::Applied { elapsed_ms: 0 }
     }
 
@@ -82,11 +85,11 @@ impl AxBackend for FakeBackend {
 
 struct Fixture {
     handle: RuntimeHandle,
-    state: Arc<Mutex<FakeState>>,
+    state: Arc<(Mutex<FakeState>, Condvar)>,
 }
 
 fn start(config: RuntimeConfig) -> Fixture {
-    let state = Arc::new(Mutex::new(FakeState::default()));
+    let state = Arc::new((Mutex::new(FakeState::default()), Condvar::new()));
     let handle = Runtime::start(
         config,
         Arc::new(FakeFactory {
@@ -216,41 +219,55 @@ fn desired_rect(fixture: &Fixture, window: &str) -> Option<(i32, i32, i32, i32)>
 }
 
 fn wait_applied(fixture: &Fixture, window: &str) -> Applied {
+    let (lock, wake) = &*fixture.state;
     let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    let mut guard = lock.lock().expect("mutex");
     loop {
-        {
-            let state = fixture.state.lock().expect("mutex");
-            if let Some(record) = state.applied.iter().find(|r| r.window == window).cloned() {
-                return record;
-            }
+        if let Some(record) = guard.applied.iter().find(|r| r.window == window).cloned() {
+            return record;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no applied frame for {window}"
-        );
-        std::thread::sleep(Duration::from_millis(5));
+        let now = std::time::Instant::now();
+        assert!(now < deadline, "no applied frame for {window}");
+        guard = wake
+            .wait_timeout_while(guard, deadline - now, |state| {
+                !state.applied.iter().any(|r| r.window == window)
+            })
+            .expect("mutex")
+            .0;
     }
 }
 
 fn drain_applied(fixture: &Fixture) {
-    fixture.state.lock().expect("mutex").applied.clear();
+    fixture.state.0.lock().expect("mutex").applied.clear();
 }
 
-/// Bounded absence poll: asserts no applied frame for `window` arrives
-/// within the poll bound. Call only after an engine-side proof (desired
-/// geometry or emission counter at flush) plus a drain of earlier batches.
+/// Causal absence assertion: fence first (the worker has drained every
+/// relevant batch through its slot watermark and the engine has processed
+/// every tail), then assert immediate absence. Nothing outstanding can
+/// arrive late, so this is one check, never a quiet-time poll. The app must
+/// be live: a missing generation fails loudly instead of silently skipping
+/// the fence while a producer could still be alive.
 fn assert_no_applied(fixture: &Fixture, window: &str) {
-    let deadline = std::time::Instant::now() + ABSENT_POLL;
-    while std::time::Instant::now() < deadline {
-        {
-            let state = fixture.state.lock().expect("mutex");
-            assert!(
-                !state.applied.iter().any(|r| r.window == window),
-                "unexpected applied frame for {window}"
-            );
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let pid: u32 = window
+        .split('_')
+        .next()
+        .and_then(|head| head.parse().ok())
+        .expect("window identity names its pid");
+    let generation = fixture
+        .handle
+        .app_generation(pid)
+        .expect("absence fence needs a live app generation");
+    assert!(
+        fixture
+            .handle
+            .wait_app_settled_for_test(pid, generation, WAIT_TIMEOUT),
+        "worker did not settle for {window}"
+    );
+    let guard = fixture.state.0.lock().expect("mutex");
+    assert!(
+        !guard.applied.iter().any(|r| r.window == window),
+        "unexpected applied frame for {window}"
+    );
 }
 
 // -- Tests --------------------------------------------------------------------

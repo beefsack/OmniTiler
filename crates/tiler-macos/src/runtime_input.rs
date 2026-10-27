@@ -112,7 +112,11 @@ pub(crate) fn input_main_bound(
             if event.key_code == crate::input_policy::KEY_O {
                 orientation_held = false;
             }
-            lock_shared(&shared).diagnostics.input_ignored += 1;
+            {
+                let mut guard = lock_shared(&shared);
+                guard.diagnostics.input_ignored += 1;
+                guard.notify_test_waiters();
+            }
             continue;
         }
         // Forward semantic actions only on key down with an exact chord
@@ -138,12 +142,20 @@ pub(crate) fn input_main_bound(
             }
         }
         let Some(action) = action else {
-            lock_shared(&shared).diagnostics.input_ignored += 1;
+            {
+                let mut guard = lock_shared(&shared);
+                guard.diagnostics.input_ignored += 1;
+                guard.notify_test_waiters();
+            }
             continue;
         };
         if matches!(action, InputSemanticAction::ToggleOrientation) {
             if orientation_held {
-                lock_shared(&shared).diagnostics.input_ignored += 1;
+                {
+                    let mut guard = lock_shared(&shared);
+                    guard.diagnostics.input_ignored += 1;
+                    guard.notify_test_waiters();
+                }
                 continue;
             }
             orientation_held = true;

@@ -14,7 +14,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tiler_core::directional::WindowId;
 
@@ -403,6 +403,76 @@ impl Inbox {
     }
 }
 
+/// Test-only worker drain mark: one owning worker's end-of-pass proof that
+/// every frame batch through `drained_rev` is terminally accounted (actuated
+/// or fenced, including superseded, stale, redundant, and stop-fenced) for
+/// the exact `generation`. `sends_attempted` counts every worker-to-engine
+/// inbox send attempt so far (observations plus frame and focus completions,
+/// including queue-full drops: a dropped attempt can never arrive late, so
+/// send-count equality across two passes still proves quiescence).
+/// `pending` names retained unsent observations the next pass will retry.
+/// `terminal` marks the final pre-exit mark: the worker sends nothing after
+/// it, so one engine barrier after a terminal mark settles the lifetime.
+/// `dropped_unsent` is only meaningful with `terminal`: retained observations
+/// abandoned at exit. They were never enqueued, so no engine tail exists for
+/// them. The engine fence plus the two-mark equality check (or the terminal
+/// short-circuit) turns these into causal settlement (see
+/// [`crate::runtime::RuntimeHandle::wait_app_settled_for_test`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkerDrainMark {
+    pub(crate) generation: u64,
+    pub(crate) drained_rev: u64,
+    pub(crate) sends_attempted: u64,
+    pub(crate) pending: bool,
+    pub(crate) terminal: bool,
+    pub(crate) dropped_unsent: bool,
+}
+
+/// Atomic outcome of one worker multiplex wait on a [`FrameSlot`]: a taken
+/// batch with its revision, a quiet slice with the revision verifiably
+/// observed empty, or teardown. `Quiet` carries the observed revision so the
+/// worker never names a revision it did not see drained.
+#[derive(Debug)]
+pub(crate) enum FrameWait {
+    Batch(u64, Vec<FrameCommand>),
+    Quiet(u64),
+    Stopped,
+}
+
+impl WorkerDrainMark {
+    pub(crate) fn pass(
+        generation: u64,
+        drained_rev: u64,
+        sends_attempted: u64,
+        pending: bool,
+    ) -> Self {
+        Self {
+            generation,
+            drained_rev,
+            sends_attempted,
+            pending,
+            terminal: false,
+            dropped_unsent: false,
+        }
+    }
+
+    pub(crate) fn terminal(
+        generation: u64,
+        drained_rev: u64,
+        sends_attempted: u64,
+        dropped_unsent: bool,
+    ) -> Self {
+        Self {
+            generation,
+            drained_rev,
+            sends_attempted,
+            pending: false,
+            terminal: true,
+            dropped_unsent,
+        }
+    }
+}
+
 /// Latest-wins frame slot for one app worker. `set_latest` overwrites the
 /// whole pending desired set so rapid re-plans coalesce but never lose the
 /// final desired state - including a whole EMPTY desired set, which supersedes
@@ -417,6 +487,13 @@ impl Inbox {
 pub struct FrameSlot {
     state: Mutex<FrameSlotState>,
     wake: Condvar,
+    /// Test-only drain-mark gate: unset in production. Only terminal
+    /// (pre-exit) marks record unarmed, so a teardown that precedes arming
+    /// still proves settlement; ordinary passes early-return on one atomic
+    /// load with no lock and no wake. Armed by
+    /// [`crate::runtime::RuntimeHandle::wait_app_settled_for_test`] before
+    /// waiting; marks never affect scheduling or policy.
+    mark_armed: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -424,6 +501,8 @@ struct FrameSlotState {
     latest: Option<Vec<FrameCommand>>,
     stopped: bool,
     rev: u64,
+    mark_seq: u64,
+    mark: Option<WorkerDrainMark>,
 }
 
 impl FrameSlot {
@@ -433,8 +512,11 @@ impl FrameSlot {
                 latest: None,
                 stopped: false,
                 rev: 0,
+                mark_seq: 0,
+                mark: None,
             }),
             wake: Condvar::new(),
+            mark_armed: AtomicBool::new(false),
         }
     }
 
@@ -458,8 +540,86 @@ impl FrameSlot {
         self.state.lock().expect("frame slot mutex").rev
     }
 
+    /// Arm test-only drain marking (idempotent). Production never arms:
+    /// unarmed passes cost one atomic load and never lock or wake.
+    pub(crate) fn arm_drain_mark(&self) {
+        self.mark_armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Record one worker end-of-pass drain mark. Terminal (pre-exit) marks
+    /// record unconditionally so a teardown that precedes arming still
+    /// proves settlement; ordinary nonterminal marks early-return unarmed
+    /// (one atomic load, no lock, no wake). Only armed passes wake.
+    pub(crate) fn note_drain(&self, mark: WorkerDrainMark) {
+        if !mark.terminal && !self.mark_armed.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut state = self.state.lock().expect("frame slot mutex");
+        state.mark_seq += 1;
+        state.mark = Some(mark);
+        self.wake.notify_all();
+    }
+
+    /// Current mark sequence (baseline for [`FrameSlot::wait_drain`]).
+    pub(crate) fn mark_seq(&self) -> u64 {
+        self.state.lock().expect("frame slot mutex").mark_seq
+    }
+
+    /// Bounded event wait for a drain mark past `baseline_seq` naming
+    /// `generation` drained through at least `want_rev`. Check-then-wait
+    /// under the slot lock (no lost wake); never holds shared state.
+    /// Returns the mark plus its sequence, or `None` on the deadline.
+    pub(crate) fn wait_drain(
+        &self,
+        baseline_seq: u64,
+        generation: u64,
+        want_rev: u64,
+        deadline: Instant,
+    ) -> Option<(u64, WorkerDrainMark)> {
+        let mut state = self.state.lock().expect("frame slot mutex");
+        loop {
+            if state.mark_seq > baseline_seq
+                && let Some(mark) = state.mark
+                && mark.generation == generation
+                && mark.drained_rev >= want_rev
+            {
+                return Some((state.mark_seq, mark));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let (guard, _) = self
+                .wake
+                .wait_timeout(state, deadline - now)
+                .expect("frame slot mutex");
+            state = guard;
+        }
+    }
+
+    /// Baseline-independent terminal-mark read: the recorded final mark for
+    /// `generation` drained through at least `want_rev`, if any. A slot has
+    /// at most one teardown, so a terminal mark is never stale: when the
+    /// worker parked in teardown before the caller read its baseline, this
+    /// (plus one engine barrier) still settles the lifetime.
+    pub(crate) fn terminal_mark(
+        &self,
+        generation: u64,
+        want_rev: u64,
+    ) -> Option<(u64, WorkerDrainMark)> {
+        let state = self.state.lock().expect("frame slot mutex");
+        if let Some(mark) = state.mark
+            && mark.generation == generation
+            && mark.terminal
+            && mark.drained_rev >= want_rev
+        {
+            return Some((state.mark_seq, mark));
+        }
+        None
+    }
+
     /// Blocking take used by unit tests; production workers multiplex with
-    /// [`FrameSlot::wait_versioned_timeout`].
+    /// [`FrameSlot::wait_batch_or_quiet`].
     #[cfg_attr(not(test), allow(dead_code))]
     fn take_versioned(&self, stop: &AtomicBool) -> Option<(u64, Vec<FrameCommand>)> {
         let mut state = self.state.lock().expect("frame slot mutex");
@@ -474,24 +634,24 @@ impl FrameSlot {
         }
     }
 
-    /// Bounded variant for workers that multiplex frame commands with an
-    /// observation pump: waits at most `timeout` for a pending set, then
-    /// returns `None` so the caller can poll its backend and retry. Command
-    /// wake is still immediate (`set_latest` notifies); the bound only caps
-    /// observation cadence and stop latency. A `None` is ambiguous by
-    /// design - the caller re-checks `stop`/`is_stopped` to tell a quiet
-    /// slice from teardown.
-    pub(crate) fn wait_versioned_timeout(
-        &self,
-        stop: &AtomicBool,
-        timeout: Duration,
-    ) -> Option<(u64, Vec<FrameCommand>)> {
+    /// Bounded multiplex wait with an atomic observation: waits at most
+    /// `timeout` for a pending set, then reports what this call genuinely
+    /// saw under one guard. `Quiet(rev)` names a revision observed empty
+    /// with the lock held from wake to observation, so no `set_latest` can
+    /// land between the wait and the read (a torn separate `current_rev`
+    /// could name a queued-but-untaken revision). Command wake is still
+    /// immediate (`set_latest` notifies with `notify_one`); the bound only
+    /// caps observation cadence and stop latency. A stolen wakeup only
+    /// delays the worker until its own timeout: every waiter here is
+    /// predicate-gated, so a missed notification can delay but never
+    /// falsely satisfy a drain wait.
+    pub(crate) fn wait_batch_or_quiet(&self, stop: &AtomicBool, timeout: Duration) -> FrameWait {
         let mut state = self.state.lock().expect("frame slot mutex");
         if state.stopped || stop.load(Ordering::SeqCst) {
-            return None;
+            return FrameWait::Stopped;
         }
         if let Some(cmds) = state.latest.take() {
-            return Some((state.rev, cmds));
+            return FrameWait::Batch(state.rev, cmds);
         }
         let (guard, _) = self
             .wake
@@ -499,9 +659,12 @@ impl FrameSlot {
             .expect("frame slot mutex");
         state = guard;
         if state.stopped || stop.load(Ordering::SeqCst) {
-            return None;
+            return FrameWait::Stopped;
         }
-        state.latest.take().map(|cmds| (state.rev, cmds))
+        if let Some(cmds) = state.latest.take() {
+            return FrameWait::Batch(state.rev, cmds);
+        }
+        FrameWait::Quiet(state.rev)
     }
 
     pub(crate) fn is_stopped(&self) -> bool {
@@ -968,7 +1131,11 @@ fn handle_drag_gesture(
             settled: None,
         };
     }
-    lock_shared(shared).diagnostics.input_forwarded += 1;
+    {
+        let mut guard = lock_shared(shared);
+        guard.diagnostics.input_forwarded += 1;
+        guard.notify_test_waiters();
+    }
     emit(shared, 0, 0, 0, "input", OP_DRAG_GESTURE, 0);
     let (_verdict, preview, settled) = dispatch_gesture_report(
         session,
@@ -1484,7 +1651,11 @@ fn process_job(
                 // action variant fails the guard's exhaustive match first).
                 unreachable!("workspace actions refuse before dispatch");
             };
-            lock_shared(shared).diagnostics.input_forwarded += 1;
+            {
+                let mut guard = lock_shared(shared);
+                guard.diagnostics.input_forwarded += 1;
+                guard.notify_test_waiters();
+            }
             emit(shared, 0, 0, 0, "input", op, 0);
             // Native mode resolves the subject's homed domain: an unmapped
             // subject refuses instead of planning the skeleton, and a
@@ -2526,6 +2697,8 @@ mod trailing_join_tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            test_wake: None,
+            test_seq: 0,
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
@@ -4762,6 +4935,8 @@ mod drag_gesture_handoff_tests {
             diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
             log: std::collections::VecDeque::new(),
             last_desired: Vec::new(),
+            test_wake: None,
+            test_seq: 0,
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),

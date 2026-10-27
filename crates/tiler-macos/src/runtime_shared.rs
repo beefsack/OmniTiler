@@ -11,7 +11,7 @@
 //! with the move (call sites keep working through `runtime` re-exports).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::{Arc, Condvar, Mutex, atomic::AtomicBool};
 use std::time::Instant;
 
 use crate::runtime_lifecycle::{
@@ -355,6 +355,25 @@ pub(crate) struct Shared {
     pub(crate) log_tx: Option<std::sync::mpsc::SyncSender<LogEvent>>,
     pub(crate) diagnostics: RuntimeDiagnostics,
     pub(crate) log: VecDeque<LifecycleLogEntry>,
+    /// Test-only wake channel for [`crate::runtime::RuntimeHandle`]
+    /// condition waits (`wait_diagnostics_for_test` and siblings): `None`
+    /// in production (every mutation site pays only this `None` check, no
+    /// timers, no threads, no periodic work). The first `wait_*_for_test`
+    /// call arms it lazily under the shared lock; every relevant state
+    /// mutation then bumps [`Shared::test_seq`] and `notify_all`s under
+    /// the same lock, so a waiter that snapshots `(state, seq)` and
+    /// rechecks before parking can never miss a wake. Predicates evaluate
+    /// on owned snapshots with the lock released (they may call back into
+    /// handle snapshot readers - never a blocking wait); the pre-park
+    /// sequence recheck closes the evaluate-then-park race.
+    pub(crate) test_wake: Option<Arc<Condvar>>,
+    /// Monotonic mutation sequence for test-only condition waits: bumped
+    /// under the shared lock by [`Shared::notify_test_waiters`] on every
+    /// notifying mutation. A waiter re-locks after evaluating its
+    /// predicate and parks only when `seq` is unchanged - a changed `seq`
+    /// means a mutation landed in between, so the waiter re-snapshots
+    /// instead of parking past it.
+    pub(crate) test_seq: u64,
     pub(crate) last_desired: Vec<DesiredFrame>,
     /// State key for the last applied reply's geometry (current scopes,
     /// workspace bindings, window homing): a same-key held reply retains
@@ -411,6 +430,18 @@ pub(crate) fn invalidate_clock(shared: &Mutex<Shared>) {
 }
 
 impl Shared {
+    /// Wake any armed test-only condition waiter. Call with the shared
+    /// lock held: bumps the waiter sequence first so a waiter that
+    /// evaluated its predicate on a pre-mutation snapshot re-snapshots
+    /// instead of parking past the wake, then notifies. Production pays
+    /// only the `None` check when unarmed.
+    pub(crate) fn notify_test_waiters(&mut self) {
+        self.test_seq += 1;
+        if let Some(cv) = self.test_wake.clone() {
+            cv.notify_all();
+        }
+    }
+
     /// Push one ring entry and forward its copy to the bounded async sink
     /// under the SAME lock. Sequence allocation, ring order, and channel
     /// enqueue order are therefore identical, so the sink observes the same
@@ -459,6 +490,7 @@ impl Shared {
         {
             self.diagnostics.logger_dropped += 1;
         }
+        self.notify_test_waiters();
     }
 
     pub(crate) fn count_reply(&mut self, token: &str) {
@@ -467,6 +499,7 @@ impl Shared {
             .core_replies
             .entry(token.to_owned())
             .or_insert(0) += 1;
+        self.notify_test_waiters();
     }
 
     pub(crate) fn count_completion(&mut self, token: &str) {
@@ -475,6 +508,7 @@ impl Shared {
             .completions
             .entry(token.to_owned())
             .or_insert(0) += 1;
+        self.notify_test_waiters();
     }
 }
 

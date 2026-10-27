@@ -144,7 +144,7 @@ fn shared_fixture_matches_windows_classify() {
     // tautological evidence and is not done. Core semantics stay owned by
     // core's own fixture tests.
     let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("../../../test-fixtures/window-policy.json"))
+        serde_json::from_str(include_str!("../../../../test-fixtures/window-policy.json"))
             .expect("shared window-policy fixture parses");
     let cases = fixture
         .get("cases")
