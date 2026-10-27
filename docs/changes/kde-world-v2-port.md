@@ -22,8 +22,9 @@
   leave/return freshness, and output-local fullscreen suspension pass physically
   on two mixed-scale outputs. Rapid A/B, fullscreen-window shortcuts and exact
   fixture teardown/restoration remain pending. Full native acceptance remains
-  TBD and this record stays active for the whole port. Host integration and
-  documented unknown host facts remain later work.
+  TBD and this record stays active for the whole port. Stage 6 host integration
+  is complete offline; native host styling/input checks and documented unknown
+  host facts remain unverified.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -47,7 +48,7 @@
 | 3. Observe and actuate | Complete offline: raw clear/frame/member/view attempts, native presentation ingress, operation spending; local verdict, clamp-budget and native-derived migration-source routes deleted | Rust 216/216, exporter 14/14, JS 764/764; host-matched effect build and final native CTest 34/34; native arrival/physical acceptance TBD |
 | 4. Shared policy only | Partial: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear and gesture transport accepted offline. Titlebar-drag Esc and cross-output placement pass physically. Role/local-fixed and approved N5/float/output packages remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
 | 5. Pure presentation and coordinates | Renderer freshness and preview continuity accepted offline; borders/underlays stay exact-current. Physical static member-move/focus return, output-local fullscreen suspension and improved preview continuity pass. No KDE pager renderer. Rapid A/B, fullscreen shortcuts and fixture teardown/restoration pending | Service 317, core/protocol 1,460, Windows Linux 725, JS 750, host effect build/CTest 36, Nix CTest 37, acceptance 6/6 and source guards pass. Physical scope and remaining gaps below; no full stage acceptance |
-| 6. Host integration | Cursor from workspace.cursorPos plus workspace.windowAt, no polling; warp unsupported, never reported applied; active-border color with default system accent; KDE uses the native Plasma pager, so core pager-focused-window color does not apply | Declaration/source checks and adapter tests; border override; native styling remains host-owned |
+| 6. Host integration | Complete offline: fresh cursorPos/windowAt on relevant event/command/gesture captures, correct QList head decoding, no polling or pure-motion captures; warp unsupported, never reported applied; independent active-border override/default system accent; native Plasma pager, no core pager-focused-window color | Pinned declarations/source, producer-shaped capture and unexpected-warp tests, native border theme/override/alpha tests and styling-independence source checks; native checks remain separate |
 | 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
 
@@ -2826,3 +2827,61 @@
   closure is claimed. Visible-but-uncontrollable normalization remains parked.
 - **Exact next action for N5: none offline.** Native role/hidden behavior still
   awaits fixture-scoped testing; continue the separately approved race packages.
+
+## Stage 6 host integration outcome (2026-10-28)
+
+### Inventory and scope
+
+| Item | Inventory before this package | Outcome and source |
+| --- | --- | --- |
+| Cursor | Live `cursorPos` sampling existed; `windowAt` incorrectly read the returned collection as a window. Event/command/gesture captures already sample fresh facts; no polling | `kwin/src/world-observe.ts` now uses existing `decodeList(found, 1)` and reads the normalized head identity; empty, malformed or unreadable results are null. `cursorWindow` remains advisory, stripped before core decode by `crates/omnitiler/src/kde_gesture.rs`; no new hit-target policy |
+| Warp | Delivered: `cursorWarp:false` in capture; `kwin/src/world-entry.ts` logs and ignores unexpected desires, with no cursor actuator | Regression pins false capability in subsequent captures and zero workspace writes/unchanged cursor on an injected nonnull warp reply. The real core does not emit warps with the capability false |
+| Border | Delivered: `ringOutlineForWidth` in `kwin/native-effect/activewindowborder.cpp` reads live `KColorScheme::Selection` by default, or the configured border override | Existing selector moved unchanged into `activeborderlogic.h` for direct native tests: enabled valid positive-alpha theme wins, otherwise fallback verbatim. Underlay/preview retain separate configured fills; no styling crosses the core presentation wire |
+| Pager | Delivered decision: native Plasma pager, no OmniTiler KDE pager renderer | Core pager-focused-window color remains inapplicable. Existing stacking/frame ingress facts are not a KDE pager surface and remain unchanged; native-pager warning/quick fix is a separate backlog item |
+
+- Pinned sibling KWin `v6.7.4`: `src/scripting/workspace_wrapper.h:145-149,355`
+  declares read-only `cursorPos`; `.cpp:148-151` reads the native mouse position.
+  `windowAt` is declared at `.h:483-495` and implemented at `.cpp:369-395` as a
+  topmost-first `QList<Window *>`, filtering native non-hit/hidden surfaces.
+  The supported `v6.6.4` floor has the same APIs (`.h:71,309`, `.cpp:120,341`).
+  These checks use local source, not the declaration file as an API ceiling.
+- A cursor event exists: `cursorPosChanged` (`v6.7.4 .h:276`, connected from
+  `Cursor::posChanged` at `.cpp:61`; also present at `v6.6.4`). There is no host
+  event gap to work around. Current KDE cursor-driven options are disabled;
+  commands and native gesture wakes capture the current point when needed.
+  Retain that event-driven route, not continuous full captures on pure pointer
+  motion, including during games. No new timer, subscription or core option.
+- Tentative technical choice for review: reuse the existing bounded decoder
+  with limit one, matching `windowAt`'s default count rather than accepting an
+  offline-only single-window shape. Native border selector extraction is only a
+  test seam; artwork, eligibility, host accent ownership and defaults are unchanged.
+
+### Evidence and remaining acceptance
+
+- Producer-shaped tests exercise array and non-array Qt list results, braced
+  UUID normalization, malformed/unavailable/getter-failure cases, live sampling
+  on subsequent event and command captures, and no idle/pure-motion capture.
+  The unexpected nonnull warp is explicitly synthetic defense-in-depth evidence,
+  not a claim that the real core produces it on KDE.
+- A decoder mutation probe fails the Qt-list/non-list cases, then passes after
+  restoring bounded list decoding. Null/missing identities also refuse before
+  native-id coercion can invent literal `null`/`undefined` ids.
+- Independent source/contract review accepts the final decoder, warp truth,
+  unchanged host-owned styling and documented scope. Full declared-environment
+  gates pass: locked all-target build/tests/strict clippy for service,
+  core/protocol and Windows Linux subset, **2,540/2,540** tests (334/1,394/87/725);
+  JS typecheck/build and **776/776** tests; host-matched static effect/KCM build
+  plus **36/36** host CTests; hermetic Nix native check **37/37**; exact world
+  acceptance **6/6**; workspace format, whitespace and KWin API guard. No
+  dependencies changed. Later null/missing-identity guard review and full JS
+  gates pass on the final source; Rust/native inputs are unchanged.
+- No live run or physical-input result is claimed. Physical checks: move the
+  pointer then invoke relevant commands/drag on each output; confirm no cursor
+  warp, default accent changes, explicit border override and unchanged independent
+  underlay/preview colors; verify the native Plasma pager remains host-styled.
+  Stage 8 still owns fixture teardown/restoration and integrated native joins.
+- No new product/core choice is parked by this package. Future motion-driven
+  cursor behavior would require its own scope and efficiency/game-safety review;
+  do not enable it by adding motion captures here.
+- **Exact next action for Stage 6: none offline.** Perform the listed physical
+  checks separately; this record stays active for the unfinished port stages.

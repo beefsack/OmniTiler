@@ -244,7 +244,10 @@ decisions of 2026-09-24 are under
   cross-output drop placement is physically confirmed. Focused-fullscreen
   suspension is implemented: physical output-local hide, unaffected other output,
   send, switch hide/reveal and exit restoration pass; window shortcuts unconfirmed.
-  Stages 4/5 remain partial and Stages 6-8 not started.
+  Stages 4/5 remain partial. Stage 6 is complete offline: producer-shaped
+  `windowAt` QList decoding, event-driven cursor capture without polling or
+  pure-motion work, unsupported-warp truth and independent border theme/override
+  coverage. Native styling/input checks remain unverified; Stages 7/8 not started.
   - **DONE offline | Moving-border comparison (2026-10-28):** reproducible
     test-only real-core comparison: Core-live absolute replay trails motion
     (max/mean position error 160/129.14 coordinate units); Core-anchored tracks

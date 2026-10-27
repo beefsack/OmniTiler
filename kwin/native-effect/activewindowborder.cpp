@@ -222,27 +222,13 @@ GesturePointer gesturePointerNow()
     return GesturePointer{true, QPoint(static_cast<int>(x), static_cast<int>(y))};
 }
 
-// Native styling independence (Stage 5): the active ring keeps its own
-// border color/theme tokens (default: live system accent). An explicit
-// override on either side never touches the underlay or drop-preview
-// colors. The alpha gate matches the retired shared predicate: a theme
-// color is used only when theming is requested, the theme color is valid,
-// and its quantized alpha is positive.
-QColor presentationBorderColor(const QColor &themeColor, const QColor &fallbackColor, bool useThemeColor)
-{
-    // Preserve Qt's quantized alpha and original QColor representation.
-    const bool themeValid = themeColor.isValid();
-    const int themeAlpha = themeValid ? themeColor.alpha() : 0;
-    if (useThemeColor && themeValid && themeAlpha > 0) {
-        return themeColor;
-    }
-    return fallbackColor;
-}
-
 // Native ring artwork for one exact width (finding C): the color, theme
 // selection, and corner radius stay live host styling; only the stroke
 // comes from the published inner/outer pair (never live config width, so
-// capture-vs-live config drift cannot move the drawn outer edge).
+// capture-vs-live config drift cannot move the drawn outer edge). The
+// theme/override predicate lives in activeborderlogic.h (shared test seam);
+// the underlay and drop-preview fills below read their own config colors
+// and never this predicate.
 BorderOutline ringOutlineForWidth(double width)
 {
     const QColor fallback = ActiveBorderConfig::borderColor();

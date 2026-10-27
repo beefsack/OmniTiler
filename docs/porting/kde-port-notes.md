@@ -241,6 +241,12 @@ request fixtures pin the JS producer, including populated raw attempts.
   Neither the JS nor the effect side has a warp
   API: cursor-warp is unsupported on KDE. Never claim an applied
   `cursor_warp`.
+  Stage 6 decodes `windowAt`'s `QList<Window *>` with the existing bounded
+  list decoder (default count one); only the normalized head is advisory.
+  `cursorPosChanged` exists (`workspace_wrapper.h:276`, `.cpp:61`), but current
+  KDE cursor-driven options are disabled: fresh sampling on relevant
+  event/command/gesture captures is sufficient. Do not introduce polling or
+  full captures on pure pointer motion, including while games run.
 - Current frame reads use `frameGeometry` (`world-observe.ts::readRect`);
   writes use the guarded `frameGeometry` setter (`world-native.ts`).
   `readClientArea` calls `workspace.clientArea(MaximizeArea, output, desktop)`

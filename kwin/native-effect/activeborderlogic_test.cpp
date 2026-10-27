@@ -63,6 +63,28 @@ void presentationFactsLeaseIsBounded()
     CHECK(KWin::presentationFactsLeaseMs(120000) == 60000);
 }
 
+void presentationBorderColorPrefersValidNontransparentThemeOnlyWhenRequested()
+{
+    // Exact predicate the native ring artwork calls: a valid nontransparent
+    // theme color wins only when theming is requested, including barely
+    // visible (alpha 1) tints. Disabled, invalid, and fully transparent
+    // themes fall back verbatim; an invalid fallback rides through (the
+    // caller owns it), never a guessed color.
+    const QColor theme(42, 130, 218, 255);
+    const QColor fallback(255, 0, 0, 255);
+    CHECK(KWin::presentationBorderColor(theme, fallback, true) == theme);
+    CHECK(KWin::presentationBorderColor(theme, fallback, false) == fallback);
+    CHECK(KWin::presentationBorderColor(QColor(), fallback, true) == fallback);
+    CHECK(KWin::presentationBorderColor(QColor(), fallback, false) == fallback);
+    const QColor faint(42, 130, 218, 1);
+    CHECK(faint.isValid());
+    CHECK(KWin::presentationBorderColor(faint, fallback, true) == faint);
+    const QColor transparent(42, 130, 218, 0);
+    CHECK(transparent.isValid());
+    CHECK(KWin::presentationBorderColor(transparent, fallback, true) == fallback);
+    CHECK(!KWin::presentationBorderColor(theme, QColor(), false).isValid());
+}
+
 } // namespace
 
 int main()
@@ -70,6 +92,7 @@ int main()
     presentationFactsJsonIsVersionedAndComplete();
     presentationFactsStaleDetectsInstanceAndRevision();
     presentationFactsLeaseIsBounded();
+    presentationBorderColorPrefersValidNontransparentThemeOnlyWhenRequested();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

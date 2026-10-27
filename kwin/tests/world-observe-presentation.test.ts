@@ -539,3 +539,151 @@ describe("world observation presentation ingress", () => {
         assert.equal(obs.presentation.foreground, "win-a");
     });
 });
+
+describe("world observation cursor and windowAt producer-shaped capture", () => {
+    function cursorSurface(opts: {
+        cursorPos: unknown;
+        windowAt?: (pos: { x: number; y: number }) => unknown;
+        wins?: FakeWin[];
+    }) {
+        const w = win("win-a");
+        const wins = opts.wins ?? [w];
+        const surface: Record<string, unknown> = {
+            windowList: () => wins,
+            screens: [{ name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
+            desktops: [{ id: "ws-1" }],
+            activeScreen: { name: "out-1" },
+            activeWindow: w,
+            cursorPos: opts.cursorPos,
+            clientArea: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+            currentDesktopForScreen: () => ({ id: "ws-1" }),
+        };
+        if (opts.windowAt !== undefined) {
+            surface["windowAt"] = opts.windowAt;
+        }
+        return surface;
+    }
+
+    function observeCursor(surface: Record<string, unknown>) {
+        return captureWorldObservation({
+            workspace: surface,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId) => ({ logical: `desk-${nativeId}`, out: "out-1", pin: false, disp: false, managed: true }),
+            isFloating: () => false,
+            presentationFacts: STYLE,
+        });
+    }
+
+    it("samples the live cursor position fresh on every capture", () => {
+        const surface = cursorSurface({ cursorPos: { x: 100, y: 100 } });
+        const first = observeCursor(surface);
+        assert.ok(first !== null);
+        assert.deepEqual(first.cursor, { x: 100, y: 100 });
+        surface["cursorPos"] = { x: 321, y: 77 };
+        const second = observeCursor(surface);
+        assert.ok(second !== null);
+        assert.deepEqual(second.cursor, { x: 321, y: 77 });
+    });
+
+    it("reads the QList head from a JS-array windowAt, unwrapping UUID identity", () => {
+        const seen: Array<{ x: number; y: number }> = [];
+        const surface = cursorSurface({
+            cursorPos: { x: 321, y: 77 },
+            windowAt: (pos) => {
+                seen.push(pos);
+                return [{ internalId: "{12345678-1234-1234-1234-1234567890ab}" }];
+            },
+        });
+        const obs = observeCursor(surface);
+        assert.ok(obs !== null);
+        assert.deepEqual(seen, [{ x: 321, y: 77 }]);
+        assert.equal(obs.cursorWindow, "12345678-1234-1234-1234-1234567890ab");
+    });
+
+    it("reads the QList head from a non-array Qt array-like windowAt", () => {
+        const surface = cursorSurface({
+            cursorPos: { x: 10, y: 20 },
+            windowAt: () => ({ length: 1, 0: { internalId: "win-top" } }),
+        });
+        const obs = observeCursor(surface);
+        assert.ok(obs !== null);
+        assert.equal(obs.cursorWindow, "win-top");
+    });
+
+    it("nulls cursorWindow on non-list windowAt returns", () => {
+        for (const [name, windowAt] of [
+            ["single-object", () => ({ internalId: "win-solo" })],
+            ["non-object", () => 42],
+            ["overlong-list", () => [{ internalId: "win-top" }, { internalId: "win-lower" }]],
+        ] as const) {
+            const obs = observeCursor(cursorSurface({ cursorPos: { x: 10, y: 20 }, windowAt }));
+            assert.ok(obs !== null, name);
+            assert.equal(obs.cursorWindow, null, name);
+        }
+    });
+
+    it("nulls cursorWindow on empty, unreadable, or unavailable producer shapes", () => {
+        const throwingLength = { get length(): number { throw new Error("gone"); } };
+        const throwingHead: Record<string, unknown> = {};
+        Object.defineProperty(throwingHead, "length", { enumerable: true, get: () => 1 });
+        Object.defineProperty(throwingHead, "0", { enumerable: true, get: () => { throw new Error("gone"); } });
+        const throwingIdentity: Record<string, unknown> = {};
+        Object.defineProperty(throwingIdentity, "length", { enumerable: true, get: () => 1 });
+        Object.defineProperty(throwingIdentity, "0", {
+            enumerable: true,
+            get: () => ({ get internalId(): unknown { throw new Error("gone"); } }),
+        });
+        const cases: Array<[string, Record<string, unknown>]> = [
+            ["empty-array", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => [] })],
+            ["empty-array-like", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => ({ length: 0 }) })],
+            ["missing", cursorSurface({ cursorPos: { x: 1, y: 2 } })],
+            ["throws", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => { throw new Error("gone"); } })],
+            ["non-object", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => 42 })],
+            ["bad-identity", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => [{ internalId: "has space" }] })],
+            ["null-identity", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => [{ internalId: null }] })],
+            ["missing-identity", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => [{}] })],
+            ["head-unreadable", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => ({ length: 1 }) })],
+            ["throwing-length", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => throwingLength })],
+            ["throwing-head", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => throwingHead })],
+            ["throwing-identity", cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => throwingIdentity })],
+        ];
+        for (const [name, surface] of cases) {
+            const obs = observeCursor(surface);
+            assert.ok(obs !== null, name);
+            assert.equal(obs.cursorWindow, null, name);
+        }
+    });
+
+    it("nulls cursor and cursorWindow when the cursor position is unreadable", () => {
+        for (const [name, cursorPos] of [
+            ["absent", undefined],
+            ["non-object", 42],
+            ["non-numeric", { x: "left", y: 0 }],
+            ["out-of-range", { x: 20000, y: 0 }],
+        ] as const) {
+            const base = cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => [{ internalId: "win-a" }] });
+            if (cursorPos === undefined) {
+                delete base["cursorPos"];
+            } else {
+                base["cursorPos"] = cursorPos;
+            }
+            const obs = observeCursor(base);
+            assert.ok(obs !== null, name);
+            assert.equal(obs.cursor, null, name);
+            assert.equal(obs.cursorWindow, null, name);
+        }
+    });
+
+    it("declares no cursor-driven behavior and focused-output targeting", () => {
+        const obs = observeCursor(cursorSurface({ cursorPos: { x: 1, y: 2 } }));
+        assert.ok(obs !== null);
+        assert.equal(obs.focusFollowsCursor, false);
+        assert.equal(obs.cursorWarp, false);
+        assert.equal(obs.switchTarget, "focused-output");
+        assert.equal(obs.freshPlacement, "focused-output-last-focused");
+    });
+});

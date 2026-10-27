@@ -385,7 +385,19 @@ describe("native KCM static contract", () => {
         assert.match(effect, /presentationBorderColor\(themeColor, fallback, useThemeColor\)/);
         assert.doesNotMatch(unified, /UseThemeColor/);
         assert.match(effect, /KColorScheme::isColorSetSupported\(colorConfig, KColorScheme::Selection\)/);
-        assert.match(effect, /themeValid \? themeColor\.alpha\(\) : 0/);
+        // The theme/override predicate lives in the shared header seam so
+        // the logic test pins it without linking the full effect.
+        assert.match(logic, /inline QColor presentationBorderColor\(const QColor &themeColor, const QColor &fallbackColor, bool useThemeColor\)/);
+        assert.match(logic, /themeValid \? themeColor\.alpha\(\) : 0/);
+        assert.doesNotMatch(effect, /QColor presentationBorderColor\(const QColor &themeColor/);
+        // Underlay and drop-preview fills read their own config colors and
+        // never the border predicate: an override on either side touches
+        // neither of the others.
+        assert.match(effect, /fill\(ActiveBorderConfig::groupUnderlayColor\(\)\)/);
+        assert.match(effect, /fill\(ActiveBorderConfig::dragPreviewColor\(\)\)/);
+        const ringBody = effect.match(/BorderOutline ringOutlineForWidth\(double width\)[\s\S]*?\n\}/)?.[0] ?? "";
+        assert.ok(ringBody.length > 0, "ring outline body found");
+        assert.doesNotMatch(ringBody, /[Uu]nderlay|[Pp]review/);
         assert.doesNotMatch(logic, /activeBorderColor/);
         assert.doesNotMatch(logic, /visual_policy_ffi/);
         assert.match(effect, /m_router\.paint\.borderInner/);

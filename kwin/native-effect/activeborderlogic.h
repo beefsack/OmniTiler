@@ -2,12 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Michael Alexander
 #pragma once
 
-// Shared native-effect logic (Stage 5): only the versioned raw presentation
+// Shared native-effect logic (Stage 5): the versioned raw presentation
 // facts helpers for the KWin script route (Stage 3 ingress, read-only, no
-// policy) remain here. Geometry, eligibility, and visibility derivation are
-// deleted: the effect renders accepted core shapes verbatim (see
-// presentation_consumer.h), native styling stays in the effect, and trigger
-// state (chord/move) is observed natively without a shared predicate.
+// policy) plus the native ring color selector (theme/override predicate
+// with the alpha gate) remain here. Geometry, eligibility, and visibility
+// derivation are deleted: the effect renders accepted core shapes verbatim
+// (see presentation_consumer.h), native styling stays in the effect, and
+// trigger state (chord/move) is observed natively without a shared
+// predicate.
 
 #include <QColor>
 #include <QRectF>
@@ -100,6 +102,23 @@ inline int presentationFactsLeaseMs(int requestedMs)
         return 60000;
     }
     return requestedMs;
+}
+
+// Native styling independence (Stage 5): the active ring keeps its own
+// border color/theme tokens (default: live system accent). An explicit
+// override on either side never touches the underlay or drop-preview
+// colors. The alpha gate matches the retired shared predicate: a theme
+// color is used only when theming is requested, the theme color is valid,
+// and its quantized alpha is positive.
+inline QColor presentationBorderColor(const QColor &themeColor, const QColor &fallbackColor, bool useThemeColor)
+{
+    // Preserve Qt's quantized alpha and original QColor representation.
+    const bool themeValid = themeColor.isValid();
+    const int themeAlpha = themeValid ? themeColor.alpha() : 0;
+    if (useThemeColor && themeValid && themeAlpha > 0) {
+        return themeColor;
+    }
+    return fallbackColor;
 }
 
 } // namespace KWin

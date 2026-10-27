@@ -1392,6 +1392,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         ? screenEntries.map((s) => ({ out: s.name, order: [...nativeOrderFull], current: s.current }))
         : [];
     const equalCount = native.every((n) => n.order.length === (native[0]?.order.length ?? 0));
+    // Fresh cursor sample on each event/command/gesture capture only: no
+    // pure-motion capture (cursor-driven behavior disabled), no polling, no
+    // cursorPosChanged subscription; motion rides the next relevant capture.
+    // Host pins v6.7.4: cursorPos Q_PROPERTY (src/scripting/workspace_wrapper.h:145-149,:355;
+    // src/scripting/workspace_wrapper.cpp:61,:148-151), QList windowAt (h:483-495; cpp:369-395).
     const cursor = (() => {
         try {
             const pos = readProp(target, "cursorPos");
@@ -1407,11 +1412,10 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         }
         return null;
     })();
-    // Raw same-capture script window fact: the live `windowAt` identity at
-    // the cursor position (sibling v6.6.0
-    // src/scripting/workspace_wrapper.h:309, impl .cpp:341, identical at
-    // v6.6.4; single {x, y} takes the default count of 1), or null when
-    // unreadable (no cursor), foreign, or throwing. Advisory only, never a target.
+    // Advisory windowAt head at the cursor position: the host returns a QList
+    // (single {x, y} takes the default count of 1, topmost first), decoded as
+    // a list; the head identity reads, anything else nulls. Advisory only,
+    // never a target.
     const cursorWindow = (() => {
         if (cursor === null) {
             return null;
@@ -1426,10 +1430,16 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 target,
                 [{ x: cursor.x, y: cursor.y }],
             );
-            if (typeof found !== "object" || found === null) {
+            const items = decodeList(found, 1);
+            const head = items !== null && items.length > 0 ? items[0] : null;
+            if (typeof head !== "object" || head === null) {
                 return null;
             }
-            return normalizeNativeId(readProp(found as object, "internalId"));
+            const rawId = readProp(head as object, "internalId");
+            if (rawId === null || rawId === undefined) {
+                return null;
+            }
+            return normalizeNativeId(rawId);
         } catch (error) {
             void error;
             return null;

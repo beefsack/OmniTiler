@@ -3232,6 +3232,15 @@ platform API behavior.
   precedes Stage 5 producing-gesture/native-invalidation freshness work; its
   identity is exposed now, enforcement belongs to that next package.
   [Contract and accepted offline recovery](changes/kde-world-v2-port.md#gesture-transport-accepted-offline-recovery-2026-10-26).
+- KDE host integration, Stage 6 (2026-10-28): existing unsupported warp and
+  native Plasma pager decisions are unchanged. Cursor facts are sampled fresh
+  from `cursorPos` and the advisory `windowAt` list head on relevant
+  event/command/gesture captures, without polling or pure-motion full captures
+  while cursor-driven settings are disabled. Border default live system accent
+  and explicit override stay independent of underlay/preview fills and core
+  pager-focused-window color. Offline adapter/native selector coverage does not
+  establish physical input or native painting acceptance.
+  [Inventory and evidence](changes/kde-world-v2-port.md#stage-6-host-integration-outcome-2026-10-28).
 - Frameless migration placement extraction, 2026-10-23: core publishes
   cross-output sessionless migration placement as an effective frame consumed
   by membership actuation, not as a tile allocation or ordinary float frame
