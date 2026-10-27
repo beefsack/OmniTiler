@@ -55,12 +55,15 @@ foreach ($fn in @(
     "Invoke-StressFocus", "Get-StressGeometry", "Get-StressRing",
     "Initialize-StressTopology", "Refresh-StressRing",
     "Invoke-StressCheckpoint", "Wait-StressReady", "Wait-StressPager", "Invoke-StressCleanup",
-    "Test-StressStalePager",
+    "Test-StressStalePager", "Test-StressBootstrapLayoutKind",
+    "Get-StressBootstrapLayoutState", "Get-StressBootstrapFixMove",
+    "Invoke-StressBootstrapLayout", "Test-StressBootstrapProofRow",
+    "Find-StressBootstrapNewer", "Read-StressBootstrapProof",
     "Invoke-Mock", "Invoke-LiveJourney", "Get-StressPubSummary"
   )) {
   if ($src -notmatch ("function " + $fn)) { throw "missing function $fn" }
 }
-Write-Output "required functions present=58"
+Write-Output "required functions present=65"
 
 # Required seams are matched against comment-stripped code: real call-site
 # literals, not prose. Freshness uses accepted/command-consumed (duplicate
@@ -121,18 +124,20 @@ foreach ($fn in @("Get-StressCliArgs", "Convert-StressTiles",
     "Test-StressOwnerSame", "Read-StressLedgerOwner", "Wait-StressLedgerOwner",
     "Write-StressLeg",
     "Assert-StressOwnerUnreplaced", "Test-StressShouldRestoreSettings",
-    "Invoke-Mock", "Get-StressPubSummary", "Wait-StressReady", "Test-StressStalePager")) {
+    "Invoke-Mock", "Get-StressPubSummary", "Wait-StressReady", "Test-StressStalePager",
+    "Test-StressBootstrapLayoutKind", "Get-StressBootstrapLayoutState",
+    "Get-StressBootstrapFixMove", "Invoke-StressBootstrapLayout",
+    "Test-StressBootstrapProofRow", "Find-StressBootstrapNewer",
+    "Read-StressBootstrapProof")) {
   if ($null -eq (Get-Command $fn -ErrorAction SilentlyContinue)) {
     throw "dot-sourced command missing: $fn"
   }
 }
 Write-Output "dot-source commands present"
-# Preserve strict evidence gates while the pager/world proof gap is unresolved.
-$badOut = (& pwsh -NoProfile -File $Lib -Live 2>&1 | Out-String)
-if ($LASTEXITCODE -eq 0 -or "$badOut" -notmatch "refuse: world-stress native leg parked") {
-  throw "Live pre-effect refusal missing: exit=$LASTEXITCODE out=$badOut"
-}
-Write-Output "live pre-effect refusal present"
+# The pager/world proof gap is closed: no live parking refusal may remain.
+# Static check only: invoking -Live would launch the real journey.
+if ($code -match "native leg parked") { throw "live parking refusal still present" }
+Write-Output "no live parking refusal"
 $dGate = $code.IndexOf("DelayMs must be 0..60000")
 $dBuild = $code.IndexOf("cargo build")
 if ($dGate -lt 0 -or $dBuild -lt 0 -or $dGate -gt $dBuild) { throw "range gate not pre-effect" }

@@ -56,6 +56,48 @@ if ($scaled['win-b'][0] -ne 0 -or $scaled['win-b'][2] -ne 800) { Fail-Mock "norm
 Expect-Throw { Convert-StressTiles $tiles @(0, 0, 800, 560) @(0, 0, 801, 560) } "integrally" "non-integral-scale"
 Rec-Mock "normalize" @{ rows = 3 }
 
+# Bootstrap precondition classifier: exact | pairwise-swap | other, the fix
+# direction toward the authored side, and the combined desired/native state.
+# Covers bootstrap setup: only an exact two-tile pairwise swap may
+# issue one exact-owner directional move; anything else refuses.
+$bsExact = @{ 'win-a' = @(400, 0, 400, 560); 'win-b' = @(0, 0, 400, 560) }
+$bsMirror = @{ 'win-a' = @(0, 0, 400, 560); 'win-b' = @(400, 0, 400, 560) }
+if ((Test-StressBootstrapLayoutKind $bsExact $bsExact) -ne "exact") { Fail-Mock "bootstrap exact" }
+if ((Test-StressBootstrapLayoutKind $bsMirror $bsExact) -ne "pairwise-swap") { Fail-Mock "bootstrap swap" }
+if ((Test-StressBootstrapLayoutKind $bsMirror $bsMirror) -ne "exact") { Fail-Mock "bootstrap mirror exact" }
+$bsOff = @{ 'win-a' = @(401, 0, 400, 560); 'win-b' = @(0, 0, 400, 560) }
+if ((Test-StressBootstrapLayoutKind $bsOff $bsExact) -ne "other") { Fail-Mock "bootstrap 1px not other" }
+$bsThreeA = @{ 'win-a' = @(0, 0, 400, 560); 'win-b' = @(400, 0, 400, 280); 'win-c' = @(400, 280, 400, 280) }
+$bsThreeB = @{ 'win-a' = @(400, 0, 400, 280); 'win-b' = @(0, 0, 400, 560); 'win-c' = @(400, 280, 400, 280) }
+if ((Test-StressBootstrapLayoutKind $bsThreeA $bsThreeA) -ne "exact") { Fail-Mock "bootstrap trio exact" }
+if ((Test-StressBootstrapLayoutKind $bsThreeB $bsThreeA) -ne "other") { Fail-Mock "bootstrap trio not pair-swappable" }
+$bsMissing = @{ 'win-a' = @(400, 0, 400, 560) }
+if ((Test-StressBootstrapLayoutKind $bsMissing $bsExact) -ne "other") { Fail-Mock "bootstrap roster not other" }
+Rec-Mock "bootstrap-kind" @{ rows = 7 }
+if ((Get-StressBootstrapFixMove "win-a" @(0, 0, 400, 560) @(400, 0, 400, 560)) -ne "right") { Fail-Mock "fix right" }
+if ((Get-StressBootstrapFixMove "win-a" @(400, 0, 400, 560) @(0, 0, 400, 560)) -ne "left") { Fail-Mock "fix left" }
+if ((Get-StressBootstrapFixMove "win-a" @(0, 0, 800, 280) @(0, 280, 800, 280)) -ne "down") { Fail-Mock "fix down" }
+if ((Get-StressBootstrapFixMove "win-a" @(0, 280, 800, 280) @(0, 0, 800, 280)) -ne "up") { Fail-Mock "fix up" }
+Expect-Throw { Get-StressBootstrapFixMove "win-a" @(0, 0, 400, 560) @(400, 280, 400, 280) } "no single-axis" "fix-diagonal-refused"
+Expect-Throw { Get-StressBootstrapFixMove "win-a" @(400, 0, 400, 560) @(400, 0, 400, 560) } "no single-axis" "fix-zero-refused"
+Rec-Mock "bootstrap-fixmove" @{ rows = 6 }
+$stExact = Get-StressBootstrapLayoutState $bsExact $bsExact $bsExact
+if ($stExact.desired -ne "exact" -or -not $stExact.matched) { Fail-Mock "state exact" }
+$stSwap = Get-StressBootstrapLayoutState $bsMirror $bsMirror $bsExact
+if ($stSwap.desired -ne "pairwise-swap" -or -not $stSwap.matched) { Fail-Mock "state swap" }
+$stLag = Get-StressBootstrapLayoutState $bsMirror $bsExact $bsExact
+if ($stLag.desired -ne "pairwise-swap" -or $stLag.matched) { Fail-Mock "state lag not matched" }
+$stOther = Get-StressBootstrapLayoutState $bsOff $bsOff $bsExact
+if ($stOther.desired -ne "other") { Fail-Mock "state other" }
+Rec-Mock "bootstrap-state" @{ rows = 4 }
+# Pair scope: the orchestrator refuses before any live effect when the case
+# does not carry exactly the two-window initial_facts pair.
+$triCase = [pscustomobject]@{ initial_facts = [pscustomobject]@{ 'win-a' = @(0, 0, 1, 1); 'win-b' = @(1, 0, 1, 1); 'win-c' = @(0, 1, 2, 1) } }
+$triTopo = @{ DiscoveredWork = @(0, 0, 800, 560); LastTick = 0; LastDispatchTick = 0; LastAdmitTick = 0 }
+$triMark = 0
+Expect-Throw { Invoke-StressBootstrapLayout "nolog" $triTopo @{} @{} @{ pid = 1; creation = "x" } ([ref]$triMark) $triCase @(0, 0, 800, 560) "owner" "ledger" "fx" "sock" "nonce" } "exactly the two-window" "bootstrap-trio-refused"
+Rec-Mock "bootstrap-pair-scope" @{ ok = $true }
+
 # Publication timing summary: pure helper over monotonic queue records.
 # Gaps use accepted stamps; only contiguous burst-to-burst gaps join the
 # burst set, focus/checkpoint overhead gaps stay in the full set only.
@@ -535,6 +577,25 @@ $pgFlip = Wait-StressPager $logPath ([ref]$mark) ([ref]$retained) 9 "o1" 5 "page
 if ([int]$pgFlip.entry.tick -ne 13) { Fail-Mock "same-revision update ignored" }
 if ($pgFlip.entry.cells[0].focused -ne $false) { Fail-Mock "same-revision focus not applied" }
 Rec-Mock "pager-same-revision-supersede" @{ tick = 13 }
+
+# Paired accepted-world proof: an unchanged accepted reply (rev 10) whose
+# ordinary world-apply row stayed silent still proves the checkpoint once
+# the pager pump pairs it. The paired row keeps the original accepted
+# delivery with a paired marker; the payload joins at the same revision
+# with strict no-future-pager/old-world caps unchanged.
+$paired = New-CleanApply 20 10 "accepted"
+$paired.paired = $true
+$pairedCells = New-PagerLine 10
+Write-MockLog @(($pairedCells | ConvertTo-Json -Depth 8 -Compress), ($paired | ConvertTo-Json -Depth 8 -Compress))
+$m = 0
+$pgApply = Wait-StressFreshApply $logPath ([ref]$m) 20 5 "paired"
+if ([int]$pgApply.event.revision -ne 10) { Fail-Mock "paired revision" }
+if ($pgApply.event.paired -ne $true) { Fail-Mock "paired marker" }
+$mark = 0
+$retained = $null
+$pgPaired = Wait-StressPager $logPath ([ref]$mark) ([ref]$retained) 10 "o1" 5 "pager-paired"
+if ([int]$pgPaired.entry.revision -ne 10) { Fail-Mock "paired pager revision" }
+Rec-Mock "pager-paired-proof-accept" @{ revision = 10 }
 
 $line = New-PagerLine 9
 $line.outputs[0].output = "o2"
@@ -1907,6 +1968,282 @@ if (-not (Test-Path -LiteralPath (Join-Path $stopRoot "leg.json") -PathType Leaf
 Rec-Mock "stop-nonzero-functional" @{ exit = $stopCode }
 Remove-Item -LiteralPath $stopRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $stopLed -Recurse -Force -ErrorAction SilentlyContinue
+
+# --- Bootstrap orchestrator shadow tests: live boundaries faked, every join
+# real. Proves the A-path wiring end to end: quiet-exact reuse needs no CLI,
+# a swapped consumed row drives exactly one focus+transport+CLI into the
+# strict synthetic checkpoint, newer pending/corrupt rows refuse before any
+# effect, native lag retries while identity mismatch refuses at once, and
+# wrong tokens never repair. Publication stays untouched (no command-queued
+# steps). win-a rides the real foreground window so the synthetic
+# checkpoint's foreground proof holds without synthetic input.
+$script:BsCalls = [System.Collections.ArrayList]@()
+$script:BsLog = ""
+$script:BsPostTick = 20
+$script:BsPostRev = 8
+$script:BsHwndB = [uint64]222
+$script:BsNativeA = @(0, 0, 400, 560)
+$script:BsNativeB = @(400, 0, 800, 560)
+$script:BsNativeLag = 0
+$script:BsNativeCalls = 0
+function New-BsRow([string]$Tok, [int]$X) {
+  return @{ window = $Tok; out = "o1"; ws = "ws-home"
+    allocation = @{ x = $X; y = 0; w = 400; h = 560 }
+    effective_frame = @{ x = $X; y = 0; w = 400; h = 560 }
+    frame_authority = "controlled"; membership_authority = "controlled"
+    frame_hold = $null; membership_hold = $null
+    floating = $false; float_origin = $null
+    frame_op = ""; clear_op = "" }
+}
+function New-BsApply([int]$Tick, [int]$Rev, [int]$Ax, [int]$Bx) {
+  $base = New-CleanApply $Tick $Rev "accepted"
+  $base.desired_windows = @((New-BsRow "tok-a" $Ax), (New-BsRow "tok-b" $Bx))
+  $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
+  $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  return $base
+}
+function New-BsPager([int]$Rev, [int]$Ax, [int]$Bx, [string]$FocusTok) {
+  $cellHome = @{ x = 0; y = 0; w = 200; h = 40 }
+  $cellAway = @{ x = 200; y = 0; w = 200; h = 40 }
+  $monFull = @(0, 0, 800, 560)
+  $mA = Get-StressExpectedMini $cellHome $monFull @($Ax, 0, 400, 560) 96
+  $mB = Get-StressExpectedMini $cellHome $monFull @($Bx, 0, 400, 560) 96
+  $fa = ($FocusTok -eq "tok-a"); $fb = ($FocusTok -eq "tok-b")
+  $ft = 0
+  if ($fa) { $ft++ }
+  if ($fb) { $ft++ }
+  return @{
+    event = "pager-cells"; tick = 6; observation = 6; revision = $Rev
+    outputs = @(@{ output = "o1"; dpi = 96; cells = @(
+      @{ ord = 1; ws = "ws-home"; cur = $true; rect = $cellHome; focused = ($ft -gt 0); minis = @($fa, $fb); minis_total = 2; minis_omitted = 0; focused_total = $ft; mini_rects = @(@{ x = $mA[0]; y = $mA[1]; w = $mA[2]; h = $mA[3] }, @{ x = $mB[0]; y = $mB[1]; w = $mB[2]; h = $mB[3] }); mini_frames = @(@{ x = $Ax; y = 0; w = 400; h = 560 }, @{ x = $Bx; y = 0; w = 400; h = 560 }); mini_windows = @('tok-a', 'tok-b') },
+      @{ ord = 2; ws = "ws-away"; cur = $false; rect = $cellAway; focused = $false; minis = @(); minis_total = 0; minis_omitted = 0; focused_total = 0; mini_rects = @(); mini_frames = @(); mini_windows = @() }
+    ); cells_total = 2; cells_omitted = 0; active = 0 })
+    outputs_total = 1; outputs_omitted = 0
+  }
+}
+$script:BsFgHwnd = [uint64]([StressNative]::GetForegroundWindow().ToInt64())
+$bsFgPidOut = 0u
+$null = [StressNative]::GetWindowThreadProcessId([StressNative]::GetForegroundWindow(), [ref]$bsFgPidOut)
+$bsFgProc = Microsoft.PowerShell.Management\Get-Process -Id ([int]$bsFgPidOut) -ErrorAction Stop
+$bsFgCreation = ("{0:x16}" -f $bsFgProc.StartTime.ToUniversalTime().ToFileTimeUtc())
+$script:BsFix = @{ pid = [int]$bsFgPidOut; creation = "$bsFgCreation" }
+$script:BsHwndOf = @{ 'win-a' = $script:BsFgHwnd; 'win-b' = $script:BsHwndB }
+function Invoke-StressFocus([string]$FixtureExe, [string]$Socket, [string]$Nonce, [string]$Id, $HwndOf, $FixtureState, [int]$TimeoutSec) {
+  $null = $script:BsCalls.Add(@{ api = "focus"; id = "$Id" })
+}
+function Wait-StressTransportIdle([string]$LedgerDir, [string]$Tag, [int]$TimeoutSec = 15) {
+  $null = $script:BsCalls.Add(@{ api = "transport"; tag = "$Tag" })
+}
+function Invoke-StressCli([string]$OwnerBin, $Argv, [string]$LedgerDir, [string]$Tag) {
+  $null = $script:BsCalls.Add(@{ api = "cli"; argv = @($Argv); tag = "$Tag" })
+  ((@{ event = "directional"; tick = $script:BsPostTick; op = "move"; edge = "cli"; outcome = "dispatched"; origin = "tok-a" }) | ConvertTo-Json -Compress) | Add-Content -LiteralPath $script:BsLog -Encoding utf8
+  ((New-BsApply ($script:BsPostTick + 1) $script:BsPostRev 400 0) | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $script:BsLog -Encoding utf8
+  ((New-BsPager $script:BsPostRev 400 0 "tok-a") | ConvertTo-Json -Depth 8 -Compress) | Add-Content -LiteralPath $script:BsLog -Encoding utf8
+  $script:BsNativeA = @(400, 0, 800, 560)
+  $script:BsNativeB = @(0, 0, 400, 560)
+  return @{ dispatched = $true }
+}
+function Get-StressTitles {
+  return @(@{ hwnd = $script:BsFgHwnd; title = "OmniTilerTestWindow:win-a:runx" }, @{ hwnd = $script:BsHwndB; title = "OmniTilerTestWindow:win-b:runx" })
+}
+function Test-StressHwndOwner([uint64]$Hwnd, $FixtureState, [string]$Tag) { return $true }
+function Read-LivePaired([uint64]$H) {
+  $script:BsNativeCalls++
+  $o = $script:BsNativeA
+  if ([uint64]$H -eq $script:BsHwndB) { $o = $script:BsNativeB }
+  if ($script:BsNativeLag -gt 0 -and $script:BsNativeCalls -le $script:BsNativeLag) {
+    $o = @(10, 0, 410, 560)
+  }
+  return @{ outer = @($o); visible = @($o); ok_outer = $true; ok_visible = $true; alive = $true; visible_flag = $true }
+}
+function New-BsTopo {
+  return @{ NativeOut = "o1"; HomeId = "ws-home"; AwayId = "ws-away"; Ring = @("ws-home", "ws-away")
+    DiscoveredWork = @(0, 0, 800, 560); MonitorFull = @(0, 0, 800, 560)
+    AliasOrd = @{ home = 1; away = 2 }; LastTick = 7; Revision = 7; Seen = @{}
+    Pending = [System.Collections.ArrayList]@(); DispatchMark = 0; PagerRetained = $null
+    LastDispatchTick = 0; LastAdmitTick = 0; HideEpoch = @{} }
+}
+$bsCase = [pscustomobject]@{ initial_facts = [pscustomobject]@{ 'win-a' = @(400, 0, 400, 560); 'win-b' = @(0, 0, 400, 560) } }
+$bsTok = @{ 'win-a' = 'tok-a'; 'win-b' = 'tok-b' }
+$bsRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-bs-" + $PID)
+New-Item -ItemType Directory -Force -Path $bsRoot | Out-Null
+$script:MockReadyMode = "ready"
+$cqCount = { return @($WS_STEPS | Where-Object { $_.name -eq "command-queued" }).Count }
+# Quiet exact: one consumed committed row, silent owner. Reuse must succeed
+# with no wait and no live call, cursor unmoved, proof committed.
+$script:BsLog = Join-Path $bsRoot "exact.log"
+@(((New-BsApply 7 7 400 0) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:BsLog -Encoding utf8
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 0
+$script:BsNativeA = @(400, 0, 800, 560); $script:BsNativeB = @(0, 0, 400, 560)
+$bsTopo = New-BsTopo; $bsMark = 1
+$cqBefore = & $cqCount
+Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce"
+if (@($script:BsCalls).Count -ne 0) { Fail-Mock "quiet exact issued live calls" }
+if ([int]$bsMark -ne 1) { Fail-Mock "quiet exact moved the apply cursor" }
+if ([int]$bsTopo.LastTick -ne 7 -or [int]$bsTopo.Revision -ne 7) { Fail-Mock "quiet exact not committed" }
+if ((& $cqCount) -ne $cqBefore) { Fail-Mock "quiet exact queued commands" }
+Rec-Mock "bootstrap-orchestrator-quiet-exact" @{ ok = $true }
+# Swapped consumed row: exactly one focus+transport+CLI in order, then the
+# strict synthetic checkpoint commits the exact layout and drains the queue.
+$script:BsLog = Join-Path $bsRoot "swap.log"
+@(((New-BsApply 7 7 0 400) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:BsLog -Encoding utf8
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 0
+$script:BsNativeA = @(0, 0, 400, 560); $script:BsNativeB = @(400, 0, 800, 560)
+$bsTopo = New-BsTopo; $bsMark = 1
+$cqBefore = & $cqCount
+Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce"
+$bsOrder = @($script:BsCalls | ForEach-Object { $_.api })
+if (($bsOrder -join ",") -ne "focus,transport,cli") { Fail-Mock "swap call order $($bsOrder -join ',')" }
+if ("$($script:BsCalls[0].id)" -ne "win-a") { Fail-Mock "swap mover wrong" }
+if ((@($script:BsCalls[2].argv) -join " ") -ne "directional --move --direction right") { Fail-Mock "swap argv wrong" }
+if ([int]$bsTopo.LastTick -ne 21 -or [int]$bsTopo.Revision -ne 8) { Fail-Mock "swap checkpoint not committed" }
+if ([int]$bsMark -le 1) { Fail-Mock "swap apply cursor not advanced" }
+if (@($bsTopo.Pending).Count -ne 0) { Fail-Mock "swap queue not drained" }
+if ((& $cqCount) -ne $cqBefore) { Fail-Mock "swap queued case commands" }
+Rec-Mock "bootstrap-orchestrator-swap" @{ mover = "win-a"; direction = "right" }
+# Newer clean proof supersedes a stale pin: repin, no actuation.
+$script:BsLog = Join-Path $bsRoot "repin.log"
+@(((New-BsApply 7 7 0 400) | ConvertTo-Json -Depth 8 -Compress), ((New-BsApply 8 8 400 0) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:BsLog -Encoding utf8
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 0
+$script:BsNativeA = @(400, 0, 800, 560); $script:BsNativeB = @(0, 0, 400, 560)
+$bsTopo = New-BsTopo; $bsMark = 1
+Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce"
+if (@($script:BsCalls).Count -ne 0) { Fail-Mock "repin actuated from stale desired" }
+if ([int]$bsTopo.LastTick -ne 8) { Fail-Mock "repin did not settle on the latest proof" }
+Rec-Mock "bootstrap-orchestrator-repin" @{ tick = 8 }
+# Newer pending and corrupt rows refuse before any effect.
+$script:BsLog = Join-Path $bsRoot "pend.log"
+$bsPend = New-BsApply 8 8 400 0
+$bsPend.desired_transfers = @(@{ op = "op-9"; kind = "window" })
+@(((New-BsApply 7 7 400 0) | ConvertTo-Json -Depth 8 -Compress), (($bsPend) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:BsLog -Encoding utf8
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 0
+$script:BsNativeA = @(400, 0, 800, 560); $script:BsNativeB = @(0, 0, 400, 560)
+$bsTopo = New-BsTopo; $bsMark = 1
+Expect-Throw { Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce" } "newer pending row not settled" "bootstrap-newer-pending"
+if (@($script:BsCalls).Count -ne 0) { Fail-Mock "pending refusal had live calls" }
+Rec-Mock "bootstrap-orchestrator-newer-pending" @{ ok = $true }
+$script:BsLog = Join-Path $bsRoot "corrupt.log"
+$bsCorrupt = New-BsApply 8 8 400 0
+$bsCorrupt.desired_windows_omitted = 99
+@(((New-BsApply 7 7 400 0) | ConvertTo-Json -Depth 8 -Compress), (($bsCorrupt) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:BsLog -Encoding utf8
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 0
+$bsTopo = New-BsTopo; $bsMark = 1
+Expect-Throw { Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce" } "omitted desired_windows_omitted" "bootstrap-newer-corrupt"
+if (@($script:BsCalls).Count -ne 0) { Fail-Mock "corrupt refusal had live calls" }
+Rec-Mock "bootstrap-orchestrator-newer-corrupt" @{ ok = $true }
+# Native lag retries to agreement; identity mismatch refuses at once.
+$script:BsLog = Join-Path $bsRoot "lag.log"
+@(((New-BsApply 7 7 400 0) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:BsLog -Encoding utf8
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 2
+$script:BsNativeA = @(400, 0, 800, 560); $script:BsNativeB = @(0, 0, 400, 560)
+$bsTopo = New-BsTopo; $bsMark = 1
+Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce"
+if ([int]$script:BsNativeCalls -lt 3) { Fail-Mock "native lag not retried" }
+if (@($script:BsCalls).Count -ne 0) { Fail-Mock "lagged exact issued live calls" }
+Rec-Mock "bootstrap-orchestrator-native-lag" @{ ok = $true }
+$bsBadHwnd = @{ 'win-a' = [uint64]999999; 'win-b' = $script:BsHwndB }
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 0
+$bsTopo = New-BsTopo; $bsMark = 1
+Expect-Throw { Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $bsBadHwnd $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce" } "hwnd changed" "bootstrap-identity-refused"
+if (@($script:BsCalls).Count -ne 0) { Fail-Mock "identity refusal had live calls" }
+Rec-Mock "bootstrap-orchestrator-identity" @{ ok = $true }
+# Wrong tokens refuse with no other repair: null token, unknown roster, and
+# a non-pairwise desired shape.
+$bsNoTok = @{ 'win-a' = 'tok-a' }
+$script:BsCalls.Clear(); $bsTopo = New-BsTopo; $bsMark = 1
+Expect-Throw { Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsNoTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce" } "null token" "bootstrap-null-token"
+$bsWrongTok = @{ 'win-a' = 'tok-a'; 'win-b' = 'tok-zzz' }
+$script:BsCalls.Clear(); $bsTopo = New-BsTopo; $bsMark = 1
+Expect-Throw { Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsWrongTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce" } "roster" "bootstrap-roster-refused"
+$script:BsLog = Join-Path $bsRoot "other.log"
+@(((New-BsApply 7 7 0 0) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:BsLog -Encoding utf8
+$script:BsCalls.Clear(); $script:BsNativeCalls = 0; $script:BsNativeLag = 0
+$script:BsNativeA = @(0, 0, 400, 560); $script:BsNativeB = @(0, 0, 400, 560)
+$bsTopo = New-BsTopo; $bsMark = 1
+Expect-Throw { Invoke-StressBootstrapLayout $script:BsLog $bsTopo $bsTok $script:BsHwndOf $script:BsFix ([ref]$bsMark) $bsCase @(0, 0, 800, 560) "dummy-owner" "dummy-ledger" "dummy-fx" "sock" "nonce" } "neither exact nor a two-tile pairwise swap" "bootstrap-other-refused"
+if (@($script:BsCalls).Count -ne 0) { Fail-Mock "other-shape refusal had live calls" }
+Rec-Mock "bootstrap-orchestrator-token-shape" @{ ok = $true }
+# Departure cursor race (close-win-b): rows appended between the scan
+# snapshot and a second cursor-advance read are skipped forever when the
+# owner then goes quiet. The join must advance only over the inspected
+# snapshot. The shim serves snapshot A (roster still holds tok-b) on the
+# first read and snapshot B (A plus the departed clean proof) on every
+# later read, modelling one concurrent owner append inside a single poll
+# iteration; all other paths delegate to the real reader.
+$depRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-depart-" + $PID)
+New-Item -ItemType Directory -Force -Path $depRoot | Out-Null
+$script:DepartLog = Join-Path $depRoot "owner.log"
+function New-DepartApply([int]$Tick, [int]$Rev, [bool]$HoldB) {
+  $b = New-CleanApply $Tick $Rev "accepted"
+  $rows = [System.Collections.ArrayList]@(@{
+    window = "tok-a"; out = "o1"; ws = "ws-home"
+    allocation = @{ x = 0; y = 0; w = 400; h = 560 }
+    effective_frame = @{ x = 0; y = 0; w = 400; h = 560 }
+    frame_authority = "controlled"; membership_authority = "controlled"
+    frame_hold = $null; membership_hold = $null
+    floating = $false; float_origin = $null
+    frame_op = ""; clear_op = ""
+  })
+  if ($HoldB) {
+    $null = $rows.Add(@{
+      window = "tok-b"; out = "o1"; ws = "ws-home"
+      allocation = @{ x = 400; y = 0; w = 400; h = 560 }
+      effective_frame = @{ x = 400; y = 0; w = 400; h = 560 }
+      frame_authority = "controlled"; membership_authority = "controlled"
+      frame_hold = $null; membership_hold = $null
+      floating = $false; float_origin = $null
+      frame_op = ""; clear_op = ""
+    })
+  }
+  $b.desired_windows = @($rows)
+  return $b
+}
+$depHold = New-DepartApply 28 40 $true
+$depProof = New-DepartApply 29 41 $false
+@((($depHold) | ConvertTo-Json -Depth 8 -Compress), (($depHold) | ConvertTo-Json -Depth 8 -Compress)) | Set-Content -LiteralPath $script:DepartLog -Encoding utf8
+$script:DepartOrigReader = (Get-Item 'function:Read-StressOwnerLog').ScriptBlock
+$script:DepartSnapA = @(& $script:DepartOrigReader $script:DepartLog)
+((($depProof) | ConvertTo-Json -Depth 8 -Compress)) | Add-Content -LiteralPath $script:DepartLog -Encoding utf8
+$script:DepartSnapB = @(& $script:DepartOrigReader $script:DepartLog)
+$script:DepartReads = 0
+function Read-StressOwnerLog([string]$LogPath) {
+  if ("$LogPath" -ne "$script:DepartLog") { return (& $script:DepartOrigReader $LogPath) }
+  $script:DepartReads++
+  if ([int]$script:DepartReads -le 1) { return @($script:DepartSnapA) }
+  return @($script:DepartSnapB)
+}
+$script:DepartOrigTitles = (Get-Item 'function:Get-StressTitles').ScriptBlock
+function Get-StressTitles { return @(@{ hwnd = [uint64]111; title = "OmniTilerTestWindow:win-a:runx" }) }
+$depMark = 0
+$depTick = Wait-StressDeparted $script:DepartLog ([ref]$depMark) "tok-b" "win-b" 5
+if ([int]$depTick -ne 29) { Fail-Mock "departed race proof not joined" }
+if ([int]$depMark -ne 3) { Fail-Mock "departed cursor not past proof" }
+Rec-Mock "departed-race-proof-joined" @{ tick = 29 }
+# Strictness is unchanged: corrupt omissions fail fast, pending defers to
+# the settled row, a lingering native title refuses.
+$depCorrupt = New-DepartApply 29 41 $false
+$depCorrupt.members_omitted = 1
+Write-MockLog @(($depCorrupt | ConvertTo-Json -Depth 8 -Compress))
+$depMark = 0
+Expect-Throw { Wait-StressDeparted $logPath ([ref]$depMark) "tok-b" "win-b" 2 } "omitted" "departed-corrupt-omission"
+$depPend = New-DepartApply 29 41 $false
+$depPend.desired_transfers = @(@{ op = "op-9"; kind = "window" })
+$depProof2 = New-DepartApply 29 42 $false
+Write-MockLog @((($depPend) | ConvertTo-Json -Depth 8 -Compress), (($depProof2) | ConvertTo-Json -Depth 8 -Compress))
+$depMark = 0
+$depTick2 = Wait-StressDeparted $logPath ([ref]$depMark) "tok-b" "win-b" 5
+if ([int]$depTick2 -ne 29) { Fail-Mock "departed pending not deferred" }
+Rec-Mock "departed-pending-deferred" @{ tick = 29 }
+function Get-StressTitles { return @(@{ hwnd = [uint64]111; title = "OmniTilerTestWindow:win-a:runx" }, @{ hwnd = [uint64]222; title = "OmniTilerTestWindow:win-b:runx" }) }
+Write-MockLog @(($depProof2 | ConvertTo-Json -Depth 8 -Compress))
+$depMark = 0
+Expect-Throw { Wait-StressDeparted $logPath ([ref]$depMark) "tok-b" "win-b" 2 } "still titled" "departed-title-lingers"
+Set-Item -Path 'function:Read-StressOwnerLog' -Value $script:DepartOrigReader
+Set-Item -Path 'function:Get-StressTitles' -Value $script:DepartOrigTitles
+Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $bsRoot -Recurse -Force -ErrorAction SilentlyContinue
+$script:MockReadyMode = "not-ready"
 
 Remove-Item -LiteralPath $mockRoot -Recurse -Force -ErrorAction SilentlyContinue
 $report = @{ status = "pass"; stage = "WorldStressMockFaults"; steps = $WSM_STEPS }

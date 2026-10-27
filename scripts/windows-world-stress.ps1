@@ -1309,7 +1309,7 @@ function Wait-StressDeparted([string]$LogPath, [ref]$Mark, [string]$Token, [stri
       if ($null -ne (Get-StressHwndOfCaller $titles $Id)) { Fail-Ws "close $Id hwnd still titled" }
       return $tick
     }
-    $cursor = @(Read-StressOwnerLog $LogPath).Count
+    $cursor = $events.Count
     Start-Sleep -Milliseconds 50
   }
   Fail-Ws "close-$Id settlement timeout"
@@ -1445,6 +1445,323 @@ function Refresh-StressRing($ApplyEvent, $Topo) {
     Fail-Ws "alias ordinals not [home=1, away=2] after rebind"
   }
   return $ring
+}
+
+function Test-StressBootstrapLayoutKind($ActualById, $AuthoredById) {
+  # Pure pairwise-mirror classifier over caller-id -> [x,y,w,h] width rects.
+  # Returns "exact" when every id matches, "pairwise-swap" when exactly two
+  # ids carry each other's authored tile, else "other" (the caller refuses;
+  # no broader repair is supported).
+  $aIds = @($ActualById.Keys | Sort-Object)
+  $eIds = @($AuthoredById.Keys | Sort-Object)
+  if ($aIds.Count -ne $eIds.Count) { return "other" }
+  if (($aIds -join ",") -ne ($eIds -join ",")) { return "other" }
+  if ($aIds.Count -eq 0) { return "other" }
+  $match = $true
+  foreach ($id in $aIds) {
+    $a = @($ActualById[$id]); $e = @($AuthoredById[$id])
+    if (@($a).Count -ne 4 -or @($e).Count -ne 4) { return "other" }
+    if ([int]$a[0] -ne [int]$e[0] -or [int]$a[1] -ne [int]$e[1] -or
+        [int]$a[2] -ne [int]$e[2] -or [int]$a[3] -ne [int]$e[3]) { $match = $false; break }
+  }
+  if ($match) { return "exact" }
+  if ($aIds.Count -eq 2) {
+    $x = $aIds[0]; $y = $aIds[1]
+    $ax = @($ActualById[$x]); $ay = @($ActualById[$y])
+    $ex = @($AuthoredById[$x]); $ey = @($AuthoredById[$y])
+    if ([int]$ax[0] -eq [int]$ey[0] -and [int]$ax[1] -eq [int]$ey[1] -and
+        [int]$ax[2] -eq [int]$ey[2] -and [int]$ax[3] -eq [int]$ey[3] -and
+        [int]$ay[0] -eq [int]$ex[0] -and [int]$ay[1] -eq [int]$ex[1] -and
+        [int]$ay[2] -eq [int]$ex[2] -and [int]$ay[3] -eq [int]$ex[3]) {
+      return "pairwise-swap"
+    }
+  }
+  return "other"
+}
+
+function Get-StressBootstrapLayoutState($DesiredAllocs, $NativeWidths, $AuthoredTiles) {
+  # Pure setup decision input: classifies the settled desired allocations and
+  # reports whether the fresh identity-bound native outers agree per id.
+  # Returns @{ desired = "exact"|"pairwise-swap"|"other"; matched = $bool }.
+  # The caller refuses on "other" and retries lag while matched is false.
+  $kind = Test-StressBootstrapLayoutKind $DesiredAllocs $AuthoredTiles
+  $matched = $false
+  if ($kind -ne "other") {
+    $matched = (Test-StressBootstrapLayoutKind $NativeWidths $DesiredAllocs) -eq "exact"
+  }
+  return @{ desired = $kind; matched = $matched }
+}
+
+function Get-StressBootstrapFixMove([string]$Mover, $ActualRect, $AuthoredRect) {
+  # Single-axis step from the mover's proven actual rect toward its authored
+  # side. Anything ambiguous (diagonal, zero, malformed) refuses: the setup
+  # covers exactly a two-tile pairwise swap, never a search.
+  $a = @($ActualRect); $e = @($AuthoredRect)
+  if (@($a).Count -ne 4 -or @($e).Count -ne 4) { Fail-Ws "bootstrap fix refuse: malformed rect for $Mover" }
+  $dx = [int]$e[0] - [int]$a[0]
+  $dy = [int]$e[1] - [int]$a[1]
+  if ($dx -gt 0 -and $dy -eq 0) { return "right" }
+  if ($dx -lt 0 -and $dy -eq 0) { return "left" }
+  if ($dy -gt 0 -and $dx -eq 0) { return "down" }
+  if ($dy -lt 0 -and $dx -eq 0) { return "up" }
+  Fail-Ws "bootstrap fix refuse: mover $Mover needs no single-axis step"
+  return ""
+}
+
+function Test-StressBootstrapProofRow($Event, [string]$Tag, [string]$FailWord) {
+  # Settled-proof gate for one candidate bootstrap row, mirroring the
+  # ReuseSettled/final-probe contract: clean omissions with paired geometry
+  # and no pending intent. Pending-worded corruption fails with $FailWord
+  # (unproven world past the proof, never a skip here); other corruption
+  # rethrows. Never advances past an unproven row.
+  try {
+    $null = Test-StressApplyClean $Event $Tag
+  } catch {
+    $msg = "$($_.Exception.Message)"
+    if ($msg -match "pending transfers|pending operations|held scopes|present|pending op|floating|authority not controlled|float origin") {
+      Fail-Ws "${Tag}: $FailWord"
+    }
+    throw
+  }
+  if (Test-StressApplyPending $Event) { Fail-Ws "${Tag}: $FailWord" }
+  return $true
+}
+
+function Find-StressBootstrapNewer($LogPath, [int]$AfterIndex, $NeedTick, [string]$Tag) {
+  # Newer-progress scan after a pinned proof index: repin to the latest clean
+  # settled world-apply at/after the fence, fail fast on any newer pending
+  # or corrupt row, ignore unrelated lines. Returns $null when nothing newer
+  # is relevant. Never mixes unproven rows with the pinned world.
+  $events = @(Read-StressOwnerLog $LogPath)
+  $found = $null
+  for ($ri = $AfterIndex + 1; $ri -lt $events.Count; $ri++) {
+    $cand = $events[$ri]
+    if ("$($cand.event)" -ne "world-apply") { continue }
+    if ("$($cand.delivery)" -ne "accepted" -and "$($cand.delivery)" -ne "command-consumed") { continue }
+    if ([int]$cand.tick -lt [int]$NeedTick) { continue }
+    $null = Test-StressBootstrapProofRow $cand "$Tag-newer" "newer pending row not settled"
+    $found = @{ event = $cand; index = $ri }
+  }
+  return $found
+}
+
+function Read-StressBootstrapProof($LogPath, $NeedTick, [ref]$Cursor, [int]$TimeoutSec, [string]$Tag) {
+  # Latest-proof acquisition with ReuseSettled/final-probe semantics: reuse
+  # the exact committed row at Cursor-1 when it is a clean settled
+  # observation at/after the fence (a quiet owner emits nothing newer, so no
+  # wait is needed); otherwise join the next fresh settled row within the
+  # bound. Then repin to the latest clean proof (newer pending/corrupt fails
+  # fast). Advances Cursor past the pinned row. Never ignores newer progress
+  # and never mixes unproven rows with the committed world.
+  $tLocal = [int]$Cursor.Value
+  $pinned = $null
+  $events = @(Read-StressOwnerLog $LogPath)
+  $reuseIdx = $tLocal - 1
+  if ($reuseIdx -ge 0 -and $reuseIdx -lt $events.Count) {
+    $cand = $events[$reuseIdx]
+    if ("$($cand.event)" -eq "world-apply" -and
+        ("$($cand.delivery)" -eq "accepted" -or "$($cand.delivery)" -eq "command-consumed") -and
+        [int]$cand.tick -ge [int]$NeedTick) {
+      $null = Test-StressBootstrapProofRow $cand "$Tag-reuse" "committed row not settled"
+      $pinned = @{ event = $cand; index = $reuseIdx }
+      $tLocal = $reuseIdx + 1
+    }
+  }
+  if ($null -eq $pinned) {
+    $tRef = [ref]$tLocal
+    $r = Wait-StressFreshApply $LogPath $tRef $NeedTick $TimeoutSec "$Tag-fresh"
+    $tLocal = [int]$tRef.Value
+    $pinned = @{ event = $r.event; index = ($tLocal - 1) }
+  }
+  $re = Find-StressBootstrapNewer $LogPath $pinned.index $NeedTick $Tag
+  if ($null -ne $re) {
+    $pinned = $re
+    $tLocal = [int]$re.index + 1
+  }
+  $Cursor.Value = $tLocal
+  return $pinned
+}
+
+function Invoke-StressBootstrapLayout($LogPath, $Topo, $TokOf, $HwndOf, $FixtureState, [ref]$Mark, $Case, $AuthoredWork, $OwnerCopy, $LedgerDir, $FixtureExe, $Socket, $Nonce) {
+  # Harness-only bootstrap precondition: the runner stages initial_facts
+  # physical positions before owner start, then only checks roster/view, so
+  # an owner retile can mirror the bootstrap pair (authored win-a right while
+  # actual win-a lands left). Establish the exact authored bootstrap layout
+  # through the existing exact-owner directional move ONLY when fresh clean
+  # desired/native state proves the exact two-tile pairwise swap, reusing the
+  # committed proof row when it already covers the fence, repinning to the
+  # latest clean proof, and reconfirming after native readbacks; an
+  # already-exact layout issues no setup command. Anything else refuses
+  # fail-closed: no arbitrary convergence, reordering, search, or other
+  # mismatch repair. Setup evidence rides bootstrap-fix/bootstrap-layout
+  # labels, outside the 102 stress commands and their publication rate.
+  # Two-leaf same-axis moves are R2a SwapNeighbor under the product default
+  # group-with-neighbor (plan_local in crates/tiler-core/src/directional.rs;
+  # tests r2a_swap_two_child_leaf_neighbor_s1_02_s2_01_s3_01_m1 and
+  # flat_swap_leaves_binary_group_and_escape_rules_unchanged), so one move
+  # of the misplaced mover toward its authored side swaps the pair.
+  $bootIds = @($Case.initial_facts.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object)
+  if ($bootIds.Count -ne 2) { Fail-Ws "bootstrap layout refuse: covers exactly the two-window initial_facts pair" }
+  foreach ($id in $bootIds) {
+    if ($null -eq $TokOf[$id] -or "$($TokOf[$id])" -eq "") { Fail-Ws "bootstrap layout refuse: null token for $id" }
+    if ($null -eq $HwndOf[$id]) { Fail-Ws "bootstrap layout refuse: no hwnd for $id" }
+  }
+  $facts = @{}
+  foreach ($id in $bootIds) { $facts[$id] = @($Case.initial_facts.PSObject.Properties[$id].Value) }
+  $authoredTiles = Convert-StressTiles $facts $AuthoredWork $Topo.DiscoveredWork
+  $need = [int]$Topo.LastTick
+  foreach ($f in @($Topo.LastDispatchTick, $Topo.LastAdmitTick)) {
+    try { if ([int]$f -gt $need) { $need = [int]$f } } catch {}
+  }
+  # Bounded sampling budget shared by proof acquisition and native agreement:
+  # remaining-budget accounting below means no fixed inner wait can consume
+  # the outer deadline. The later focus (15s), transport-idle (15s) and
+  # synthetic-checkpoint (60s) phases keep their existing signatures and
+  # bounds and run sequentially after sampling; nothing nests unboundedly.
+  $deadline = (Get-Date).AddSeconds(60)
+  $tLocal = [int]$Mark.Value
+  $pin = $null
+  $ev = $null
+  $allocs = $null
+  $dKind = $null
+  $native = $null
+  while ($true) {
+  if ((Get-Date) -ge $deadline) { Fail-Ws "bootstrap layout not settled: sampling budget exhausted" }
+  if ($null -eq $pin) {
+    $remain = [int](($deadline - (Get-Date)).TotalSeconds)
+    if ($remain -lt 2) { $remain = 2 }
+    $pin = Read-StressBootstrapProof $LogPath $need ([ref]$tLocal) $remain "bootstrap-layout"
+  }
+  $ev = $pin.event
+  $null = Refresh-StressRing $ev $Topo
+  $desired = @{}
+  foreach ($row in @($ev.desired_windows)) { $desired["$($row.window)"] = $row }
+  $wantToks = @()
+  foreach ($id in $bootIds) { $wantToks += "$($TokOf[$id])" }
+  $gotToks = @($desired.Keys | Sort-Object)
+  $wantSorted = @($wantToks | Sort-Object)
+  if (($gotToks -join ",") -ne ($wantSorted -join ",")) {
+    Fail-Ws "bootstrap layout refuse: roster $($gotToks -join ',') != bootstrap $($wantSorted -join ',')"
+  }
+  $viewRow = @($ev.desired_outputs | Where-Object { "$($_.output)" -eq "$($Topo.NativeOut)" } | Select-Object -First 1)
+  if ($viewRow.Count -ne 1 -or "$($viewRow[0].logical_view)" -ne "$($Topo.HomeId)") {
+    Fail-Ws "bootstrap layout refuse: bootstrap view is not home"
+  }
+  $allocs = @{}
+  foreach ($id in $bootIds) {
+    $row = $desired["$($TokOf[$id])"]
+    if ("$($row.out)" -ne "$($Topo.NativeOut)") { Fail-Ws "bootstrap layout refuse: $id out $($row.out)" }
+    if ("$($row.ws)" -ne "$($Topo.HomeId)") { Fail-Ws "bootstrap layout refuse: $id not homed home" }
+    $al = Get-StressRowField $row "allocation"
+    $ef = Get-StressRowField $row "effective_frame"
+    if ($null -eq $al -or $null -eq $ef) { Fail-Ws "bootstrap layout refuse: $id missing allocation/effective" }
+    if ([int]$al.x -ne [int]$ef.x -or [int]$al.y -ne [int]$ef.y -or
+        [int]$al.w -ne [int]$ef.w -or [int]$al.h -ne [int]$ef.h) {
+      Fail-Ws "bootstrap layout refuse: $id effective != allocation"
+    }
+    foreach ($h in @("frame_hold", "membership_hold")) {
+      $hv = Get-StressRowField $row $h
+      if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "bootstrap layout refuse: $id $h present" }
+    }
+    if ($row.floating -ne $false) { Fail-Ws "bootstrap layout refuse: $id floating" }
+    if ($null -ne $row.float_origin -and "$($row.float_origin)" -ne "") { Fail-Ws "bootstrap layout refuse: $id float origin" }
+    if ("$($row.frame_op)" -ne "" -or "$($row.clear_op)" -ne "") { Fail-Ws "bootstrap layout refuse: $id pending op" }
+    if ("$($row.frame_authority)" -ne "controlled" -or "$($row.membership_authority)" -ne "controlled") {
+      Fail-Ws "bootstrap layout refuse: $id authority not controlled"
+    }
+    $allocs[$id] = @([int]$al.x, [int]$al.y, [int]$al.w, [int]$al.h)
+  }
+  $dKind = Test-StressBootstrapLayoutKind $allocs $authoredTiles
+  if ($dKind -eq "other") {
+    Fail-Ws "bootstrap layout refuse: desired is neither exact nor a two-tile pairwise swap"
+  }
+  # Fresh identity-bound native outers must agree with the settled desired
+  # before any setup effect; actuation lag retries to the deadline while
+  # identity mismatches refuse immediately.
+  $native = $null
+  $nErr = "no native sample yet"
+  while ((Get-Date) -lt $deadline) {
+    try {
+      $cand = @{}
+      $titles = Get-StressTitles
+      foreach ($id in $bootIds) {
+        $hwnd = Get-StressHwndOfCaller $titles "$id"
+        if ($null -eq $hwnd) { throw "bootstrap-layout lag: no hwnd for $id" }
+        if ("$hwnd" -ne "$($HwndOf[$id])") { Fail-Ws "bootstrap layout refuse: hwnd changed for $id" }
+        $null = Test-StressHwndOwner ([uint64]$hwnd) $FixtureState "bootstrap-layout-$id"
+        $pr = Read-LivePaired ([uint64]$hwnd)
+        if (-not $pr.alive) { Fail-Ws "bootstrap layout refuse: $id not alive" }
+        if (-not $pr.ok_outer) { Fail-Ws "bootstrap layout refuse: $id outer unreadable" }
+        if (-not $pr.ok_visible) { Fail-Ws "bootstrap layout refuse: $id visible unreadable while shown" }
+        if ($pr.visible_flag -ne $true) { throw "bootstrap-layout lag: $id not visible while shown" }
+        $o = @($pr.outer); $v = @($pr.visible)
+        if ([int]$v[0] -ne [int]$o[0] -or [int]$v[1] -ne [int]$o[1] -or
+            [int]$v[2] -ne [int]$o[2] -or [int]$v[3] -ne [int]$o[3]) {
+          throw "bootstrap-layout lag: $id visible != outer"
+        }
+        $a = @($allocs[$id])
+        if ([int]$o[0] -ne [int]$a[0] -or [int]$o[1] -ne [int]$a[1] -or
+            [int]$o[2] -ne ([int]$a[0] + [int]$a[2]) -or [int]$o[3] -ne ([int]$a[1] + [int]$a[3])) {
+          throw "bootstrap-layout lag: $id outer [$($o -join ',')] != allocation [$($a -join ',')]"
+        }
+        $cand[$id] = @([int]$o[0], [int]$o[1], ([int]$o[2] - [int]$o[0]), ([int]$o[3] - [int]$o[1]))
+      }
+      $native = $cand
+      break
+    } catch {
+      $nErr = "$($_.Exception.Message)"
+      if ($nErr -notmatch "bootstrap-layout lag:") { throw }
+      Start-Sleep -Milliseconds 200
+    }
+  }
+  if ($null -eq $native) { Fail-Ws "bootstrap layout not settled: $nErr" }
+  $st = Get-StressBootstrapLayoutState $allocs $native $authoredTiles
+  if ($st.desired -ne $dKind -or -not $st.matched) {
+    Fail-Ws "bootstrap layout refuse: native/desired do not prove $dKind"
+  }
+  # Reconfirm after native readbacks and before any setup actuation: rows
+  # that landed during sampling repin to the latest clean proof (re-derive
+  # and re-verify within the deadline); newer pending/corrupt rows fail
+  # fast. Never act from a superseded desired.
+  $re = Find-StressBootstrapNewer $LogPath $pin.index $need "bootstrap-layout"
+  if ($null -eq $re) { break }
+  $pin = $re
+  $tLocal = [int]$re.index + 1
+  $ev = $null
+  $allocs = $null
+  $dKind = $null
+  $native = $null
+  }
+  if ($dKind -eq "exact") {
+    $Mark.Value = $tLocal
+    $Topo.LastTick = [int]$ev.tick
+    if ([int]$ev.revision -gt [int]$Topo.Revision) { $Topo.Revision = [int]$ev.revision }
+    Rec-Ws "bootstrap-layout" @{ layout = "exact"; revision = [int]$ev.revision; tick = [int]$ev.tick }
+    return
+  }
+  # Pairwise swap: one exact-owner directional move of the misplaced mover
+  # toward its authored side. Explicit fixture focus first restores the focus
+  # contract (Invoke-StressFocus guards abort when blocked); the CLI route
+  # carries op/direction only and the owner resolves the live foreground.
+  $mover = $bootIds[0]
+  $dir = Get-StressBootstrapFixMove $mover @($allocs[$mover]) @($authoredTiles[$mover])
+  Invoke-StressFocus $FixtureExe $Socket $Nonce $mover $HwndOf $FixtureState 15
+  $argv = @("directional", "--move", "--direction", "$dir")
+  Wait-StressTransportIdle $LedgerDir "bootstrap-fix"
+  $null = Invoke-StressCli $OwnerCopy $argv $LedgerDir "bootstrap-fix"
+  Rec-Ws "bootstrap-fix" @{ mover = $mover; direction = $dir; argv = ($argv -join " ") }
+  $null = $Topo.Pending.Add(@{ argv = $argv; op = "bootstrap-fix-move" })
+  $fixTiles = [pscustomobject]@{}
+  foreach ($id in $bootIds) { $fixTiles | Add-Member -NotePropertyName "$id" -NotePropertyValue @($facts[$id]) }
+  $fixHoming = [pscustomobject]@{}
+  foreach ($id in $bootIds) { $fixHoming | Add-Member -NotePropertyName "$id" -NotePropertyValue "home" }
+  $fixAction = [pscustomobject]@{
+    op = "checkpoint"; name = "bootstrap-layout"; view = "home"; members = @($bootIds);
+    homing = $fixHoming; tiles = $fixTiles; focus = "$mover";
+    foreground = "$mover"; pager_current = "home"; pager_occupied = @("home")
+  }
+  $fixPagerMark = 0
+  Invoke-StressCheckpoint $fixAction $Case $AuthoredWork $Topo $TokOf $HwndOf $FixtureState $Mark ([ref]$fixPagerMark) $LogPath $OwnerCopy
 }
 
 function Wait-StressReady([string]$OwnerCopy, [string]$Name, [int]$TimeoutSec) {
@@ -2105,7 +2422,6 @@ function Invoke-Mock {
 }
 
 function Invoke-LiveJourney {
-  Fail-Ws "refuse: world-stress native leg parked pending exact pager/world proof binding (see docs/changes/platform-neutral-stress-acceptance.md)"
   # Pre-effect validation: range gates run before any cargo build, settings
   # write, owner/fixture launch, or run-dir creation.
   if ($DelayMs -lt 0 -or $DelayMs -gt 60000) { Fail-Ws "refuse: DelayMs must be 0..60000" }
@@ -2248,6 +2564,12 @@ function Invoke-LiveJourney {
       Rec-Ws "admit" @{ id = $id; hwnd = "$($hwndOf[$id])"; token = $tok }
     }
     $topo = Initialize-StressTopology $logPath ([ref]$mark) $case $tokOf $boot.ids $authoredWork ([int]$bootstrapFence.LastAdmitTick)
+    # Harness-only bootstrap precondition: establish the exact authored
+    # bootstrap layout through one exact-owner directional move when fresh
+    # state proves the pairwise swap, or no setup command when already
+    # exact. Runs before the publication clock starts, so setup stays
+    # outside the 102 stress commands and their rate.
+    $null = Invoke-StressBootstrapLayout $logPath $topo $tokOf $hwndOf @{ pid = $serverPid; creation = $serverCreation } ([ref]$mark) $case $authoredWork $ownerCopy $ledgerDir $fixtureCopy $sock $nonce
     # Pager scan starts at zero: the matching line for the init revision may
     # precede the init row in the log; revisions only grow so the latest
     # match stays correct while checkpoints advance monotonically.
@@ -2419,6 +2741,6 @@ if ($Stop) {
   }
   exit 0
 }
-if ($Live) { Fail-Ws "refuse: world-stress native leg parked pending exact pager/world proof binding (see docs/changes/platform-neutral-stress-acceptance.md)" }
+if ($Live) { Invoke-LiveJourney; exit 0 }
 if ("$($MyInvocation.InvocationName)" -eq ".") { return }
 Write-Output "windows-world-stress parsed (no action without -Mock/-Live/-Stop)"
