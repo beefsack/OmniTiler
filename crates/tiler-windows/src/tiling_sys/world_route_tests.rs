@@ -578,6 +578,86 @@ fn production_observation_tick_proves_nothing_on_unreadable_natives() {
 }
 
 #[test]
+fn production_tick_captures_paired_proof_under_trace_only() {
+    // Blocker shape at tick level: a quiet accept (no writes, no hover)
+    // stays silent on the ordinary world log, yet captures its exact
+    // report-bound proof row under trace; trace-off captures nothing.
+    fn seeded_trace_state(trace: bool) -> super::TileLoop {
+        let mut state = test_state();
+        state.trace = trace;
+        state.ensure_device("DEV1");
+        let key = crate::native_guards::WindowKey {
+            hwnd: 101,
+            pid: 202,
+            creation: "proc-1".to_owned(),
+        };
+        state.member_tokens.insert(key.clone(), "w1".to_owned());
+        state.member_tags.insert(key.clone(), "tag-1".to_owned());
+        state.member_identity.insert(
+            key.clone(),
+            crate::model::ProcessIdentity {
+                pid: 202,
+                process_creation: "proc-1".to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+            },
+        );
+        state
+    }
+    let mut state = seeded_trace_state(true);
+    let observed = vec![observed_window()];
+    let (dir, store, areas, fulls) = route_dirs("trace-proof");
+    let me = route_me();
+    let first = super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("seed tick converges");
+    let proof = state.world.trace_proof().expect("proof captured").clone();
+    assert_eq!(proof["event"], serde_json::json!("world-apply"));
+    assert_eq!(proof["revision"], serde_json::json!(first.state_revision));
+    assert_eq!(
+        proof["observation"],
+        serde_json::json!(first.based_on_observation_seq)
+    );
+    assert_eq!(
+        proof["request"],
+        serde_json::json!(first.request_id.clone())
+    );
+    assert_eq!(proof["geometry_status"], serde_json::json!("paired"));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Trace-off captures nothing, even on a fresh accept.
+    let mut dark = seeded_trace_state(false);
+    let (dir2, store2, areas2, fulls2) = route_dirs("trace-proof-dark");
+    let _ = super::world_tick::run_observation_tick(
+        &mut dark,
+        &me,
+        &store2,
+        &dir2,
+        &observed,
+        &[],
+        &areas2,
+        0,
+        &fulls2,
+        None,
+        false,
+    )
+    .expect("dark tick converges");
+    assert!(dark.world.trace_proof().is_none());
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
 fn production_select_route_reports_honest_outcome_without_proof() {
     // Actual production select route (`workspace_do_select`) through the
     // world tick with synthetic members on fake HWNDs: the command

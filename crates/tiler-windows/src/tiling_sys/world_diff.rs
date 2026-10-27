@@ -85,7 +85,7 @@ use tiler_core::directional::OutputId;
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
     ClearAttempt, EffectKind, FrameAttempt, FrameSetter, HoldReason, MemberAttempt, ScopeAuthority,
-    TransferKind, TransferTarget, ViewAttempt, WorldReply,
+    TransferKind, TransferTarget, ViewAttempt, WorldCommand, WorldReply,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -335,6 +335,79 @@ pub(super) enum ForegroundState {
 /// visibility, and enumeration reads are always live: the facade keeps no
 /// cache of them, so removal rechecks observe racing host changes.
 ///
+/// Fresh accepted explicit-selection arrival provenance for one apply pass:
+/// the exact one-shot arrival focus effects of a freshly accepted
+/// explicit-workspace-selection reply, as `(effect id, target)` pairs.
+/// Minted only by the command path from the exact accepted report (command
+/// plus sequence) and reply; duplicates, command-consumed replays,
+/// observation replies, and every non-selection command mint nothing. The
+/// native seam admits the exact-desktop foreground exception only for an
+/// effect whose id AND target both match, so a directional focus,
+/// send/migrate follow, automatic admission, focus-follows-cursor, or
+/// observation effect can never ride it — even when one shares the same
+/// reply. Never a policy input: the core alone decides the target.
+#[derive(Debug, Clone, Default)]
+pub(super) struct SelectionArrivalGrant {
+    arrivals: Vec<(String, String)>,
+}
+
+impl SelectionArrivalGrant {
+    /// True for explicit workspace-selection commands only: the five
+    /// `Select*` variants. `SwitchView`, send/migrate (including follow),
+    /// directional focus/move, and every other command never qualify. Must
+    /// be derived from the exact dispatched command value, never a string
+    /// or a view transfer.
+    pub(super) fn selects(command: &WorldCommand) -> bool {
+        matches!(
+            command,
+            WorldCommand::SelectWorkspace { .. }
+                | WorldCommand::SelectNumbered { .. }
+                | WorldCommand::SelectRelative { .. }
+                | WorldCommand::SelectPrevious { .. }
+                | WorldCommand::SelectTrailing { .. }
+        )
+    }
+
+    /// Mint from the exact accepted report/reply triple at dispatch time:
+    /// `Some` only for a fresh `accepted` delivery of a selection command
+    /// carrying that command's explicit arrival focus effect. Only effects
+    /// exactly equal to the command's explicit outcome qualify (see
+    /// [`OneShotEffect::is_explicit_focus_for`]): automatic admission
+    /// (`af-*`) and focus-follows-cursor (`ffc-*`) effects that may share
+    /// the same reply never mint, nor does any effect of another command.
+    pub(super) fn for_accepted(
+        command: Option<&WorldCommand>,
+        command_seq: Option<u64>,
+        reply: &WorldReply,
+        delivery: &str,
+    ) -> Option<Self> {
+        if delivery != "accepted" {
+            return None;
+        }
+        let command = command?;
+        if !Self::selects(command) {
+            return None;
+        }
+        let seq = command_seq?;
+        let arrivals = reply
+            .effects
+            .iter()
+            .filter(|effect| effect.is_explicit_focus_for(seq))
+            .map(|effect| (effect.id.clone(), effect.target.0.clone()))
+            .collect::<Vec<_>>();
+        if arrivals.is_empty() {
+            return None;
+        }
+        Some(Self { arrivals })
+    }
+
+    pub(super) fn allows(&self, effect_id: &str, target: &str) -> bool {
+        self.arrivals
+            .iter()
+            .any(|(id, bound)| id == effect_id && bound == target)
+    }
+}
+
 /// Reads take `&mut self`: production reads advance a side observation map
 /// and consume one-shot invalidation state, so even proofs are mutating.
 /// Callers already hold the actuator mutably.
@@ -447,6 +520,21 @@ pub(super) trait NativeOps {
     fn focus_window_traced(&mut self, token: &str) -> (Result<bool, ()>, FocusCallDiag) {
         let outcome = self.focus_window(token);
         (outcome, FocusCallDiag::default())
+    }
+    /// Adapter-dispatched focus attempt for one exact one-shot effect: the
+    /// same record as [`Self::focus_window_traced`] plus the effect binding
+    /// the production seam checks against its fresh accepted
+    /// [`SelectionArrivalGrant`] (effect id AND dispatch target). The
+    /// default ignores the binding (no exception); the production seam
+    /// overrides. The diff always calls this (never the unbound form) for
+    /// reply effects.
+    fn focus_window_traced_selected(
+        &mut self,
+        token: &str,
+        effect_id: &str,
+    ) -> (Result<bool, ()>, FocusCallDiag) {
+        let _ = effect_id;
+        self.focus_window_traced(token)
     }
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
     /// Trace-only executed visibility posts collected this pass (actual
@@ -730,6 +818,20 @@ impl NativeOps for FakeNative {
                     call_mono_ms: None,
                     ret_mono_ms: None,
                     gui_before: None,
+                    refusal_gate: None,
+                    refusal_reason: None,
+                    target_visible: None,
+                    target_cloaked: None,
+                    target_hidden: None,
+                    fg_identity: None,
+                    fg_gate_identity: None,
+                    fg_veto_kind: None,
+                    fg_readable: None,
+                    fg_shell: None,
+                    fg_fullscreen: None,
+                    fg_visible: None,
+                    fg_exe: None,
+                    desktop_exception: false,
                 },
             );
         }
@@ -790,6 +892,20 @@ impl NativeOps for FakeNative {
                 call_mono_ms: Some(call_mono_ms),
                 ret_mono_ms: Some(ret_mono_ms),
                 gui_before,
+                refusal_gate: None,
+                refusal_reason: None,
+                target_visible: None,
+                target_cloaked: None,
+                target_hidden: None,
+                fg_identity: None,
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: false,
             },
         )
     }
@@ -1238,20 +1354,75 @@ pub(super) fn gui_trace_label(state: &GuiFocusState) -> String {
 /// the primitive on the shared log `mono_ms` basis, never the surrounding
 /// preflight. `gui_before` is the trace-gated target GUI-thread read
 /// immediately before the call (`None` when trace is off: suppressed, never
-/// `Unknown`-fabricated).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// `Unknown`-fabricated). The refusal detail below is refusal-only and
+/// trace-armed only: `Some` solely on a traced `Ok(false)` pre-primitive
+/// veto (scope, focus classification, focus-write veto, move/size veto),
+/// `None` on every other outcome including success and off-trace vetos, so
+/// success and off-trace paths probe nothing extra. `refusal_gate` names the
+/// vetoing gate (`scope`, `classify-focus`, `focus-write-veto`,
+/// `move-size-veto`); `refusal_reason` carries the focus-classification
+/// reason only (`None` on the other gates). `target_visible`/`target_cloaked`
+/// snapshot the observed target facts at dispatch and `target_hidden` the
+/// hide-claim ledger at dispatch (identity only, never captions, paths, or
+/// app content). `target_visible` is normally `Some(true)`: observation
+/// rejects invisible windows up front, but a later facts re-read can race
+/// to `visible: false`. Such a target refuses through `scope` if out of
+/// scope, otherwise through `classify-focus` with reason `hidden`. `fg_identity`
+/// samples the foreground HWND at dispatch as `none` (no foreground),
+/// `target` (foreground already names the refused target HWND), or `other`.
+/// It is a post-veto HWND relation only, not a fully identity-validated
+/// foreground read and not gate-time causal proof: the vetos already decided
+/// before this sample, and only a fresh proven read proves arrival.
+/// The `fg_gate_*` detail below is refusal-only, trace-armed, and
+/// `focus-write-veto`-only: `Some` solely on a traced `Ok(false)`
+/// focus-write veto, `None` on every other gate and outcome. It replays the
+/// gate's own decision reads (never a new native probe): `fg_gate_identity`
+/// is the gate-time foreground HWND relation (`none`/`target`/`other`)
+/// from the veto's own foreground sample, distinct from the later
+/// post-veto `fg_identity` sample above; `fg_veto_kind` is the coarse veto
+/// class (`readable-fullscreen` for a readable captionless-fullscreen
+/// foreground, `unreadable` for a vetoed foreground that never validated
+/// as the same-pass hidden departure, `hidden-departure` for a veto after
+/// the foreground matched the known same-pass hidden departure);
+/// `fg_readable` is the visible-lane readability of that sample;
+/// `fg_shell`/`fg_fullscreen` are its facts when read (including the hidden
+/// read inside the departure lane). `fg_visible` is the visible-read fact
+/// on the readable lane, otherwise the existing entry `is_visible`
+/// decision. `fg_exe` is the
+/// foreground executable basename only, never a full path. `fg_shell` is
+/// the observed shell boolean, never a class name; the relation is an HWND
+/// relation, never a validated identity.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct FocusCallDiag {
     pub(super) primitive_called: bool,
     pub(super) native_return: Option<bool>,
-    /// Actual bounded-prime outcome immediately before the primitive
-    /// (`Some(inserted)`) whenever the primitive ran; `None` when the
-    /// primitive never ran (early veto) or never returned a count. Runs
-    /// after every veto, so a vetoed effect never primes; never proof.
+    /// Actual bounded-prime outcome (`Some(inserted)`) whenever priming ran,
+    /// including an exact-desktop arrival refused by post-prime rechecks.
+    /// `None` when priming never ran or returned no count; never proof.
     pub(super) prime_inserted: Option<u8>,
     pub(super) api: Option<&'static str>,
     pub(super) call_mono_ms: Option<u64>,
     pub(super) ret_mono_ms: Option<u64>,
     pub(super) gui_before: Option<GuiFocusState>,
+    pub(super) refusal_gate: Option<&'static str>,
+    pub(super) refusal_reason: Option<&'static str>,
+    pub(super) target_visible: Option<bool>,
+    pub(super) target_cloaked: Option<bool>,
+    pub(super) target_hidden: Option<bool>,
+    pub(super) fg_identity: Option<&'static str>,
+    pub(super) fg_gate_identity: Option<&'static str>,
+    pub(super) fg_veto_kind: Option<&'static str>,
+    pub(super) fg_readable: Option<bool>,
+    pub(super) fg_shell: Option<bool>,
+    pub(super) fg_fullscreen: Option<bool>,
+    pub(super) fg_visible: Option<bool>,
+    pub(super) fg_exe: Option<String>,
+    /// True only when the foreground-fullscreen veto was passed through the
+    /// exact-desktop explicit-selection exception on this call (the setter
+    /// may still have refused at a later gate, so this never implies
+    /// actuation or arrival). `false` on every other path, so rows without
+    /// the exception keep their prior shape.
+    pub(super) desktop_exception: bool,
 }
 
 /// Trace-only native API vocabulary for focus dispatch rows: the exact
@@ -1259,8 +1430,8 @@ pub(super) struct FocusCallDiag {
 /// focus call (its boolean return never proves arrival; only the
 /// read-back does, and no `GetLastError` is read: the API defines no
 /// useful last error). `prime_inserted` is the actual E8 last-input prime
-/// outcome immediately before the primitive (`Some(inserted)` whenever
-/// the primitive ran, `None` on any pre-primitive veto); it is never
+/// outcome (`Some(inserted)` whenever priming ran, including post-prime
+/// arrival recheck refusals; `None` when priming never ran); it is never
 /// trusted as proof. The nonactivating view path hides/reveals through
 /// async `SetWindowPos` without pumping (hide `0x4097`, show `0x4057`, see
 /// [`crate::product_hide::sys::NA_POS_HIDE_FLAGS`]/
@@ -1327,10 +1498,9 @@ pub(super) struct FocusDispatchDiag {
     /// veto) or never returned a bool. Lets a user trace distinguish native
     /// acceptance from wrapper fences without re-reading gates.
     pub(super) native_return: Option<bool>,
-    /// Actual bounded-prime outcome immediately before the primitive
-    /// (`Some(inserted)`) whenever the primitive ran; `None` on any row
-    /// whose primitive never ran. Lets a native leg prove the pre-setter
-    /// prime ordering without re-reading gates.
+    /// Actual bounded-prime outcome (`Some(inserted)`) whenever priming ran,
+    /// including post-prime arrival recheck refusals without a setter.
+    /// `None` when priming never ran; never arrival proof.
     pub(super) prime_inserted: Option<u8>,
     /// Full target native identity (HWND plus PID plus process creation)
     /// for the `member-admitted` join. `None` only when the target
@@ -1338,6 +1508,38 @@ pub(super) struct FocusDispatchDiag {
     pub(super) hwnd: Option<u64>,
     pub(super) pid: Option<u32>,
     pub(super) creation: Option<String>,
+    /// Trace-only refusal detail projected from [`FocusCallDiag`]: the
+    /// vetoing pre-primitive gate plus non-sensitive safe state, `Some`
+    /// solely on a traced `Ok(false)` pre-primitive veto (see
+    /// [`FocusCallDiag`]), `None` otherwise. Serialized into the
+    /// `world-apply` row only when `refusal_gate` is `Some`; non-refusal
+    /// rows omit the keys entirely, so row parsers must tolerate their
+    /// absence. Refusal rows retain a null `refusal_reason` outside the
+    /// classification gate. `fg_identity` stays a post-veto HWND relation there too,
+    /// never gate-time causal proof. The `fg_gate_*` detail rides only the
+    /// traced `focus-write-veto` refusal rows (see [`FocusCallDiag`]);
+    /// every other refusal row omits those keys entirely.
+    pub(super) refusal_gate: Option<&'static str>,
+    pub(super) refusal_reason: Option<&'static str>,
+    pub(super) target_visible: Option<bool>,
+    pub(super) target_cloaked: Option<bool>,
+    pub(super) target_hidden: Option<bool>,
+    pub(super) fg_identity: Option<&'static str>,
+    pub(super) fg_gate_identity: Option<&'static str>,
+    pub(super) fg_veto_kind: Option<&'static str>,
+    pub(super) fg_readable: Option<bool>,
+    pub(super) fg_shell: Option<bool>,
+    pub(super) fg_fullscreen: Option<bool>,
+    pub(super) fg_visible: Option<bool>,
+    pub(super) fg_exe: Option<String>,
+    /// Trace-only exact-desktop exception marker projected from
+    /// [`FocusCallDiag`]: `true` solely when this dispatch passed the
+    /// foreground-fullscreen veto through the explicit-selection desktop
+    /// exception. The marker records the gate pass only: a later gate may
+    /// still refuse (or the setter may never run), so it never implies
+    /// actuation or arrival. Serialized into the `world-apply` row only
+    /// when `true`; rows without the exception omit the key entirely.
+    pub(super) desktop_exception: bool,
 }
 
 /// Trace-only in-flight clearing/landing record: why one remembered focus
@@ -3283,6 +3485,20 @@ pub(super) fn apply_world_reply(
                         hwnd: None,
                         pid: None,
                         creation: None,
+                        refusal_gate: None,
+                        refusal_reason: None,
+                        target_visible: None,
+                        target_cloaked: None,
+                        target_hidden: None,
+                        fg_identity: None,
+                        fg_gate_identity: None,
+                        fg_veto_kind: None,
+                        fg_readable: None,
+                        fg_shell: None,
+                        fg_fullscreen: None,
+                        fg_visible: None,
+                        fg_exe: None,
+                        desktop_exception: false,
                     });
                 }
             }};
@@ -3489,6 +3705,20 @@ pub(super) fn apply_world_reply(
                             hwnd: Some(base.key.hwnd),
                             pid: Some(base.key.pid),
                             creation: Some(base.key.creation.clone()),
+                            refusal_gate: None,
+                            refusal_reason: None,
+                            target_visible: None,
+                            target_cloaked: None,
+                            target_hidden: None,
+                            fg_identity: None,
+                            fg_gate_identity: None,
+                            fg_veto_kind: None,
+                            fg_readable: None,
+                            fg_shell: None,
+                            fg_fullscreen: None,
+                            fg_visible: None,
+                            fg_exe: None,
+                            desktop_exception: false,
                         });
                     }
                     stats.held += 1;
@@ -3511,7 +3741,8 @@ pub(super) fn apply_world_reply(
         // target GUI-thread read immediately before the primitive rides
         // along as a dispatch-time observation only, never proof of
         // arrival; the landing GUI below is sampled at the read-back.
-        let (setter_outcome, call_diag) = ops.focus_window_traced(&effect.target.0);
+        let (setter_outcome, call_diag) =
+            ops.focus_window_traced_selected(&effect.target.0, &effect.id);
         let setter = match &setter_outcome {
             Ok(true) => "accepted",
             Ok(false) => "refused",
@@ -3615,6 +3846,20 @@ pub(super) fn apply_world_reply(
                 hwnd: Some(base.key.hwnd),
                 pid: Some(base.key.pid),
                 creation: Some(base.key.creation.clone()),
+                refusal_gate: call_diag.refusal_gate,
+                refusal_reason: call_diag.refusal_reason,
+                target_visible: call_diag.target_visible,
+                target_cloaked: call_diag.target_cloaked,
+                target_hidden: call_diag.target_hidden,
+                fg_identity: call_diag.fg_identity,
+                fg_gate_identity: call_diag.fg_gate_identity,
+                fg_veto_kind: call_diag.fg_veto_kind,
+                fg_readable: call_diag.fg_readable,
+                fg_shell: call_diag.fg_shell,
+                fg_fullscreen: call_diag.fg_fullscreen,
+                fg_visible: call_diag.fg_visible,
+                fg_exe: call_diag.fg_exe,
+                desktop_exception: call_diag.desktop_exception,
             });
         }
         if foreground {

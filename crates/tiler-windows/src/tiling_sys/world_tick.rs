@@ -276,26 +276,6 @@ fn should_log_apply(
         > 0
 }
 
-/// Trace-only pager-presentation change oracle for the `world-apply` diag:
-/// true when a freshly incorporated reply's pager renderer content differs
-/// from the previously incorporated reply. The pump renders exactly
-/// `reply.presentation.pager` plus `reply.presentation.foreground`, so only
-/// those two ride the gate: raw source-rect changes inside pager windows,
-/// focus-token changes, and workspace/current marks all compare here, while
-/// border/underlay shapes (never rendered by the pager) stay out. No
-/// previous reply (boot baseline) counts as changed so the first pager
-/// baseline always pairs with its world proof. Pure comparison over already
-/// owned replies: no native reads, no actuation, no policy.
-fn pager_presentation_changed(previous: Option<&WorldReply>, next: &WorldReply) -> bool {
-    match previous {
-        None => true,
-        Some(prev) => {
-            prev.presentation.pager != next.presentation.pager
-                || prev.presentation.foreground != next.presentation.foreground
-        }
-    }
-}
-
 /// Bounded fresh-focus trace row for the `world-apply` diag (TRACE-ONLY).
 /// The token/cursor/settings describe the CURRENT report; the nested
 /// `last_focused_leg` is the core's cached historical leg decision (last
@@ -693,7 +673,7 @@ fn apply_diag_value(
         .iter()
         .take(MAX_APPLY_DIAG_FOCUS)
         .map(|row| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "id": row.id.clone(),
                 "target": row.target.clone(),
                 "kind": row.kind,
@@ -714,7 +694,49 @@ fn apply_diag_value(
                 "hwnd": row.hwnd,
                 "pid": row.pid,
                 "creation": row.creation.clone(),
-            })
+            });
+            // Exception-only volume: the exact-desktop marker exists solely
+            // on dispatches that passed the foreground-fullscreen veto
+            // through the explicit-selection exception. Every other row
+            // omits the key entirely, never as false.
+            if row.desktop_exception {
+                value["desktop_exception"] = serde_json::json!(true);
+            }
+            // Refusal-only volume: the refusal detail keys exist solely on
+            // traced `Ok(false)` veto rows (`refusal_gate` is `Some` only
+            // there). Every other row omits them entirely, never as nulls.
+            // The `fg_gate_*` gate-time keys ride only the
+            // `focus-write-veto` refusal rows; other gates omit them.
+            if let Some(gate) = row.refusal_gate {
+                value["refusal_gate"] = serde_json::json!(gate);
+                value["refusal_reason"] = serde_json::json!(row.refusal_reason);
+                value["target_visible"] = serde_json::json!(row.target_visible);
+                value["target_cloaked"] = serde_json::json!(row.target_cloaked);
+                value["target_hidden"] = serde_json::json!(row.target_hidden);
+                value["fg_identity"] = serde_json::json!(row.fg_identity);
+                if let Some(gate_identity) = row.fg_gate_identity {
+                    value["fg_gate_identity"] = serde_json::json!(gate_identity);
+                }
+                if let Some(kind) = row.fg_veto_kind {
+                    value["fg_veto_kind"] = serde_json::json!(kind);
+                }
+                if let Some(readable) = row.fg_readable {
+                    value["fg_readable"] = serde_json::json!(readable);
+                }
+                if let Some(shell) = row.fg_shell {
+                    value["fg_shell"] = serde_json::json!(shell);
+                }
+                if let Some(fullscreen) = row.fg_fullscreen {
+                    value["fg_fullscreen"] = serde_json::json!(fullscreen);
+                }
+                if let Some(visible) = row.fg_visible {
+                    value["fg_visible"] = serde_json::json!(visible);
+                }
+                if let Some(exe) = row.fg_exe.as_deref() {
+                    value["fg_exe"] = serde_json::json!(exe);
+                }
+            }
+            value
         })
         .collect();
     // Trace-only in-flight clearing/landing rows for this pass: why each
@@ -917,11 +939,10 @@ fn apply_diag_value(
 /// no input-hook cost, no native re-read, no per-window dump. Returns true
 /// when a row was emitted (the caller records the hover triple then, never
 /// on quiet ticks).
-// Seventeen inputs are the disjoint trace context plus the pass products
+// Sixteen inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, cursor-hit/FFC,
-// dispatched-report geometry basis, hover-change, fresh-presentation
-// change); bundling would hide the call-site borrow split the tick relies
-// on.
+// dispatched-report geometry basis, hover-change); bundling would hide the
+// call-site borrow split the tick relies on.
 #[allow(clippy::too_many_arguments)]
 fn log_apply_diag(
     log_path: &std::path::Path,
@@ -940,7 +961,6 @@ fn log_apply_diag(
     ffc_enabled: bool,
     report: &tiler_core::world_report::WorldReport,
     hover_changed: bool,
-    fresh_presentation_changed: bool,
 ) -> bool {
     if !trace
         || !(should_log_apply(
@@ -951,8 +971,7 @@ fn log_apply_diag(
             clear_attempts,
             frame_attempts,
             reply,
-        ) || hover_changed
-            || fresh_presentation_changed)
+        ) || hover_changed)
     {
         return false;
     }
@@ -1467,15 +1486,38 @@ pub(super) fn run_observation_tick(
         &captured.focused_global,
         captured.focus_follows_cursor,
     );
-    // Fresh-presentation pairing (TRACE-ONLY): a freshly incorporated
-    // Accepted reply whose pager renderer content changed since the
-    // previously incorporated reply must emit its bounded world-apply
-    // snapshot even with no writes/hover/settlement, so every pager
-    // revision advance pairs with an accepted world proof. Duplicate
-    // deliveries never incorporate, so they never force; unchanged
-    // presentations stay quiet. Pure comparison over owned replies.
-    let fresh_presentation_changed =
-        delivery != "duplicate" && pager_presentation_changed(world.last_reply(), &reply);
+    // Bounded accepted trace-proof snapshot (TRACE-ONLY): the exact
+    // `world-apply` projection for this reply, captured on every fresh
+    // (non-duplicate) accept even when the ordinary world log stays
+    // silent, so a later `pager-cells` emission can pair it. Duplicates
+    // reuse the cached snapshot and must never relabel it; stale or
+    // ignored acks retain the fallback snapshot below.
+    let fresh_run = delivery != "duplicate";
+    let proof_row = if trace && fresh_run {
+        Some(apply_diag_value(
+            tick,
+            &reply,
+            delivery,
+            "observation",
+            &stats,
+            &member_attempts,
+            &view_attempts,
+            &clear_attempts,
+            &frame_attempts,
+            fresh_route_value(
+                &captured.focused_global,
+                captured.cursor,
+                captured.fresh_placement.as_wire_str(),
+                captured.switch_target.as_wire_str(),
+                world.engine().fresh_focus_trace(),
+            ),
+            hover_hit.clone(),
+            captured.focus_follows_cursor,
+            &report,
+        ))
+    } else {
+        None
+    };
     let emitted = log_apply_diag(
         &log_path,
         trace,
@@ -1499,7 +1541,6 @@ pub(super) fn run_observation_tick(
         captured.focus_follows_cursor,
         &report,
         hover_changed,
-        fresh_presentation_changed,
     );
     // Record the hover triple only for an emitted row, never on quiet
     // ticks, so a changed hover keeps triggering until it is on the trace.
@@ -1585,13 +1626,18 @@ pub(super) fn run_observation_tick(
     // transient busy/gap ticks until an eligible observation runs it. A
     // fresh run clears a matching stash even when the ack races stale:
     // incorporation already happened, only the claim is withheld.
-    let fresh_run = delivery != "duplicate";
     if fresh_run {
         TileLoop::clear_gesture_override_on_incorporation(&mut state.gesture_override, &reply);
     }
     match ack_outcome {
         super::world_sequencer::AckOutcome::Applied(_) => {
             world.note_diff_applied(&reply);
+            // Advance the paired trace-proof with the snapshot it proves:
+            // only a fresh run claims incorporation, so duplicates, stale
+            // and ignored outcomes never reach here with a replacement.
+            if fresh_run {
+                world.note_trace_proof(proof_row);
+            }
             Some(reply)
         }
         super::world_sequencer::AckOutcome::Stale(_) => None,
@@ -1958,6 +2004,18 @@ pub(super) fn run_world_command(
     );
     native.set_diagnostics_trace(trace);
     world.sync_diff_gate();
+    // Fresh accepted selection arrivals only: the exact-desktop foreground
+    // exception binds this report's accepted explicit arrival effect (the
+    // grant carries the reply's own effect id plus target, minted from the
+    // exact report command and sequence). Any other delivery (duplicate,
+    // command-consumed) or command arms nothing; the observation path never
+    // reaches this line.
+    native.set_selection_arrival(super::world_diff::SelectionArrivalGrant::for_accepted(
+        report.command.as_ref(),
+        report.command_seq,
+        &reply,
+        delivery,
+    ));
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
@@ -1978,11 +2036,35 @@ pub(super) fn run_world_command(
         &captured.focused_global,
         captured.focus_follows_cursor,
     );
-    // Same fresh-presentation pairing as the observation path (see above):
-    // command-consumed replies incorporate like accepted ones, so a pager
-    // content change there pairs too; duplicates never force.
-    let fresh_presentation_changed =
-        delivery != "duplicate" && pager_presentation_changed(world.last_reply(), &reply);
+    // Bounded accepted trace-proof snapshot (TRACE-ONLY), same contract
+    // as the observation path: command-consumed replies incorporate like
+    // accepted ones, so they capture too; duplicates never relabel.
+    let fresh_run = delivery != "duplicate";
+    let proof_row = if trace && fresh_run {
+        Some(apply_diag_value(
+            tick,
+            &reply,
+            delivery,
+            command_kind,
+            &stats,
+            &member_attempts,
+            &view_attempts,
+            &clear_attempts,
+            &frame_attempts,
+            fresh_route_value(
+                &captured.focused_global,
+                captured.cursor,
+                captured.fresh_placement.as_wire_str(),
+                captured.switch_target.as_wire_str(),
+                world.engine().fresh_focus_trace(),
+            ),
+            hover_hit.clone(),
+            captured.focus_follows_cursor,
+            &report,
+        ))
+    } else {
+        None
+    };
     let emitted = log_apply_diag(
         &log_path,
         trace,
@@ -2006,7 +2088,6 @@ pub(super) fn run_world_command(
         captured.focus_follows_cursor,
         &report,
         hover_changed,
-        fresh_presentation_changed,
     );
     if emitted {
         world.note_hover_traced(
@@ -2085,12 +2166,14 @@ pub(super) fn run_world_command(
         super::world_sequencer::AckOutcome::Applied(_) => {
             world.note_diff_applied(&reply);
             // Incorporation proof only on a fresh run; a stale cached
-            // reply never clears the stashed terminal.
-            if delivery != "duplicate" {
+            // reply never clears the stashed terminal. The paired
+            // trace-proof advances here with the snapshot it proves.
+            if fresh_run {
                 TileLoop::clear_gesture_override_on_incorporation(
                     &mut state.gesture_override,
                     &reply,
                 );
+                world.note_trace_proof(proof_row);
             }
             Some(reply)
         }
@@ -2884,6 +2967,20 @@ mod apply_diag_tests {
                 hwnd: None,
                 pid: None,
                 creation: None,
+                refusal_gate: None,
+                refusal_reason: None,
+                target_visible: None,
+                target_cloaked: None,
+                target_hidden: None,
+                fg_identity: None,
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: false,
             }],
             ..Default::default()
         };
@@ -2919,6 +3016,20 @@ mod apply_diag_tests {
                 hwnd: None,
                 pid: None,
                 creation: None,
+                refusal_gate: None,
+                refusal_reason: None,
+                target_visible: None,
+                target_cloaked: None,
+                target_hidden: None,
+                fg_identity: None,
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: false,
             }],
             ..Default::default()
         };
@@ -3006,47 +3117,7 @@ mod apply_diag_tests {
     }
 
     #[test]
-    fn pager_presentation_changed_gates_on_pager_content_only() {
-        use tiler_core::geometry::Rect;
-        let base_frame = Rect {
-            x: 0,
-            y: 0,
-            w: 960,
-            h: 540,
-        };
-        let base = pager_reply_with("w1", base_frame);
-        // Boot baseline always pairs: the first pager baseline needs its
-        // world proof even when the first pass carries no other evidence.
-        assert!(pager_presentation_changed(None, &base));
-        // Identical re-presentation stays quiet: no new pager revision, no
-        // forced row, no log-per-wake flood.
-        assert!(!pager_presentation_changed(Some(&base), &base));
-        // Foreground-only change re-logs: the pump marks focus from this
-        // token, so the revision advance needs its world proof.
-        let fg_moved = pager_reply_with("w2", base_frame);
-        assert!(pager_presentation_changed(Some(&base), &fg_moved));
-        // Subquantum raw-source change re-logs: a 1px frame shift that the
-        // miniature projection would round away still changes the exact
-        // content source the pager renders from.
-        let shifted = pager_reply_with(
-            "w1",
-            Rect {
-                x: 0,
-                y: 0,
-                w: 961,
-                h: 540,
-            },
-        );
-        assert!(pager_presentation_changed(Some(&base), &shifted));
-        // Border/underlay shapes never ride the pager gate: mutating them
-        // alone must not force a row.
-        let mut bordered = base.clone();
-        bordered.presentation.border.visible = true;
-        assert!(!pager_presentation_changed(Some(&base), &bordered));
-    }
-
-    #[test]
-    fn fresh_presentation_pairs_quiet_accepted_row() {
+    fn quiet_accepted_row_stays_silent_without_presentation_forcing() {
         use tiler_core::geometry::Rect;
         use tiler_core::world_report::FrameAttempt;
         let quiet = super::super::world_diff::ApplyStats::default();
@@ -3071,10 +3142,10 @@ mod apply_diag_tests {
             (None, None, None, "retained"),
         );
         let report = report_shell(vec![]);
-        static PAIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = PAIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        static QUIET_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = QUIET_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "tiler-world-pair-{}-{}-{}",
+            "tiler-world-quiet-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3083,12 +3154,12 @@ mod apply_diag_tests {
             seq
         ));
         std::fs::create_dir_all(&dir).expect("trace log dir");
-        // A quiet Accepted pass whose pager content changed emits its
-        // bounded world-apply snapshot: the pager revision advance pairs
-        // with an accepted world proof carrying the same revision.
-        let paired_log = dir.join("paired.log");
-        assert!(log_apply_diag(
-            &paired_log,
+        // A quiet Accepted pass stays silent even when its pager renderer
+        // content changed: presentation-only forcing is retired; the pump
+        // pairs the stored proof with its own payload emission instead.
+        let silent_log = dir.join("silent.log");
+        assert!(!log_apply_diag(
+            &silent_log,
             true,
             41,
             &moved,
@@ -3104,16 +3175,10 @@ mod apply_diag_tests {
             false,
             &report,
             false,
-            true,
         ));
-        let paired_text = std::fs::read_to_string(&paired_log).expect("paired row");
-        let paired: serde_json::Value =
-            serde_json::from_str(paired_text.lines().next().expect("one row")).expect("row parses");
-        assert_eq!(paired["event"], serde_json::json!("world-apply"));
-        assert_eq!(paired["delivery"], serde_json::json!("accepted"));
-        assert_eq!(paired["revision"], serde_json::json!(moved.state_revision));
-        // The identical no-op stays quiet: same presentation, no attempts,
-        // no hover, no settlement forces nothing.
+        assert!(!silent_log.exists());
+        // The identical no-op stays quiet: no attempts, no hover, no
+        // settlement forces nothing.
         let quiet_log = dir.join("quiet.log");
         assert!(!log_apply_diag(
             &quiet_log,
@@ -3132,7 +3197,6 @@ mod apply_diag_tests {
             false,
             &report,
             false,
-            pager_presentation_changed(Some(&idle), &idle),
         ));
         assert!(!quiet_log.exists());
         // The trace gate still dominates: no row when trace is off, even
@@ -3161,9 +3225,182 @@ mod apply_diag_tests {
             false,
             &report,
             false,
-            true,
         ));
         assert!(!dark_log.exists());
+    }
+
+    #[test]
+    fn paired_proof_binds_unchanged_revision40() {
+        // Blocker shape (world 39 / pager 40 on one tick): two accepted
+        // replies with identical content except the revision both stay
+        // silent on the ordinary world log, yet each builds an exact
+        // report-bound proof row the pump can pair with its payload.
+        use tiler_core::geometry::Rect;
+        use tiler_core::world_report::FrameAttempt;
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_frames: Vec<FrameAttempt> = Vec::new();
+        let frame = Rect {
+            x: 0,
+            y: 0,
+            w: 960,
+            h: 540,
+        };
+        let screens = vec![screen_shell(
+            "o1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            8,
+            8,
+            true,
+            true,
+        )];
+        let report = report_shell(screens);
+        let mut rev39 = pager_reply_with("w1", frame);
+        rev39.state_revision = 39;
+        let mut rev40 = rev39.clone();
+        rev40.state_revision = 40;
+        for reply in [&rev39, &rev40] {
+            assert!(
+                !should_log_apply(
+                    "observation",
+                    &quiet,
+                    &empty_members,
+                    &empty_views,
+                    &[],
+                    &empty_frames,
+                    reply,
+                ),
+                "unchanged accept must stay silent on the ordinary log"
+            );
+        }
+        let route = || {
+            fresh_route_value(
+                "",
+                None,
+                "focused-output-last-focused",
+                "cursor-output",
+                (None, None, None, "retained"),
+            )
+        };
+        let row39 = apply_diag_value(
+            41,
+            &rev39,
+            "accepted",
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            route(),
+            None,
+            false,
+            &report,
+        );
+        let row40 = apply_diag_value(
+            42,
+            &rev40,
+            "accepted",
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            route(),
+            None,
+            false,
+            &report,
+        );
+        for (row, revision) in [(&row39, 39), (&row40, 40)] {
+            assert_eq!(row["event"], serde_json::json!("world-apply"));
+            assert_eq!(row["delivery"], serde_json::json!("accepted"));
+            assert_eq!(row["revision"], serde_json::json!(revision));
+            assert_eq!(row["observation"], serde_json::json!(3));
+            assert_eq!(row["request"], serde_json::json!("req-9"));
+            // Actual corresponding report provenance: paired geometry with
+            // a numeric zero omission, never a null or missing field.
+            assert_eq!(row["geometry_status"], serde_json::json!("paired"));
+            assert_eq!(row["desired_geometry_omitted"], serde_json::json!(0));
+            assert_eq!(
+                row["geometry_report"]["request"],
+                serde_json::json!("req-9")
+            );
+            assert_eq!(row["geometry_report"]["observation"], serde_json::json!(3));
+        }
+        assert_ne!(row39["revision"], row40["revision"]);
+    }
+
+    #[test]
+    fn paired_proof_row_is_honest_over_caps() {
+        // Over-cap geometry stays honest in stored proof rows: the capped
+        // rows render with the unbounded total behind the omitted count, so
+        // the runner still fails closed instead of trusting a truncated
+        // proof.
+        use tiler_core::geometry::Rect;
+        use tiler_core::world_report::FrameAttempt;
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let empty_frames: Vec<FrameAttempt> = Vec::new();
+        let mut screens = Vec::new();
+        for n in 0..(MAX_APPLY_DIAG_SCREENS + 1) {
+            screens.push(screen_shell(
+                &format!("o{n}"),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 560,
+                },
+                8,
+                8,
+                true,
+                n == 0,
+            ));
+        }
+        let report = report_shell(screens);
+        let reply = reply_shell();
+        let row = apply_diag_value(
+            10,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &empty_frames,
+            serde_json::json!({}),
+            None,
+            false,
+            &report,
+        );
+        assert_eq!(row["geometry_status"], serde_json::json!("paired"));
+        assert_eq!(row["desired_geometry_omitted"], serde_json::json!(1));
+        assert_eq!(
+            row["desired_geometry"]
+                .as_array()
+                .expect("geometry rows")
+                .len(),
+            MAX_APPLY_DIAG_SCREENS
+        );
     }
 
     #[test]
@@ -3364,6 +3601,20 @@ mod apply_diag_tests {
                 hwnd: None,
                 pid: None,
                 creation: None,
+                refusal_gate: None,
+                refusal_reason: None,
+                target_visible: None,
+                target_cloaked: None,
+                target_hidden: None,
+                fg_identity: None,
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: false,
             }],
             ..Default::default()
         };
@@ -3408,6 +3659,368 @@ mod apply_diag_tests {
         // No foreground-edge metadata folded this pass either: the sidecar
         // omission rides the same diag, zero when nothing folded.
         assert_eq!(value["foreground_meta_omitted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn diag_focus_refusal_detail_rides_only_refusal_rows() {
+        // Refusal-only volume: the six refusal keys exist solely on traced
+        // `Ok(false)` veto rows. A traced move/size refusal projects its
+        // gate plus safe state accurately, while success and skipped rows in
+        // the same pass carry no such keys at all (absent, never null).
+        fn dispatch_row(
+            id: &str,
+            setter: &'static str,
+            foreground: bool,
+            hold: Option<&'static str>,
+            primitive_called: bool,
+            refusal_gate: Option<&'static str>,
+        ) -> super::super::world_diff::FocusDispatchDiag {
+            super::super::world_diff::FocusDispatchDiag {
+                id: id.to_owned(),
+                target: "w1".to_owned(),
+                kind: "focus",
+                dispatched: true,
+                setter,
+                foreground,
+                hold,
+                fg_baseline: None,
+                fg_live: None,
+                api: None,
+                call_mono_ms: None,
+                ret_mono_ms: None,
+                gui_dispatch: None,
+                gui_landing: None,
+                primitive_called,
+                native_return: None,
+                prime_inserted: None,
+                hwnd: Some(61001),
+                pid: Some(2301),
+                creation: Some("proc-308".to_owned()),
+                refusal_gate,
+                refusal_reason: None,
+                target_visible: Some(true),
+                target_cloaked: Some(false),
+                target_hidden: Some(true),
+                fg_identity: Some("none"),
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: false,
+            }
+        }
+        let reply = reply_shell();
+        let stats = super::super::world_diff::ApplyStats {
+            held: 2,
+            focus_dispatch: vec![
+                dispatch_row(
+                    "ffc-refused",
+                    "refused",
+                    false,
+                    Some("foreground-unproven"),
+                    false,
+                    Some("move-size-veto"),
+                ),
+                super::super::world_diff::FocusDispatchDiag {
+                    refusal_gate: None,
+                    refusal_reason: None,
+                    target_visible: None,
+                    target_cloaked: None,
+                    target_hidden: None,
+                    fg_identity: None,
+                    fg_gate_identity: None,
+                    fg_veto_kind: None,
+                    fg_readable: None,
+                    fg_shell: None,
+                    fg_fullscreen: None,
+                    fg_visible: None,
+                    fg_exe: None,
+                    ..dispatch_row("ffc-ok", "accepted", true, None, true, None)
+                },
+                super::super::world_diff::FocusDispatchDiag {
+                    refusal_gate: None,
+                    refusal_reason: None,
+                    target_visible: None,
+                    target_cloaked: None,
+                    target_hidden: None,
+                    fg_identity: None,
+                    fg_gate_identity: None,
+                    fg_veto_kind: None,
+                    fg_readable: None,
+                    fg_shell: None,
+                    fg_fullscreen: None,
+                    fg_visible: None,
+                    fg_exe: None,
+                    ..dispatch_row(
+                        "ffc-skipped",
+                        "skipped",
+                        false,
+                        Some("view-not-shown"),
+                        false,
+                        None,
+                    )
+                },
+            ],
+            ..Default::default()
+        };
+        let value = apply_diag_value(
+            15,
+            &reply,
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            Some("w1".to_owned()),
+            true,
+            &report_shell(vec![]),
+        );
+        let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
+        assert_eq!(dispatch.len(), 3);
+        // Traced refusal: gate plus safe state projected accurately.
+        assert_eq!(
+            dispatch[0]["refusal_gate"],
+            serde_json::json!("move-size-veto")
+        );
+        assert!(dispatch[0]["refusal_reason"].is_null());
+        assert_eq!(dispatch[0]["target_visible"], serde_json::json!(true));
+        assert_eq!(dispatch[0]["target_cloaked"], serde_json::json!(false));
+        assert_eq!(dispatch[0]["target_hidden"], serde_json::json!(true));
+        assert_eq!(dispatch[0]["fg_identity"], serde_json::json!("none"));
+        // A non-focus-write gate carries no gate-time keys either.
+        for key in [
+            "fg_gate_identity",
+            "fg_veto_kind",
+            "fg_readable",
+            "fg_shell",
+            "fg_fullscreen",
+            "fg_visible",
+            "fg_exe",
+        ] {
+            assert!(
+                dispatch[0].get(key).is_none(),
+                "non-focus-write refusal row carries {key}"
+            );
+        }
+        // Success and skipped rows: keys absent, never null.
+        for row in dispatch.iter().skip(1) {
+            for key in [
+                "refusal_gate",
+                "refusal_reason",
+                "target_visible",
+                "target_cloaked",
+                "target_hidden",
+                "fg_identity",
+                "fg_gate_identity",
+                "fg_veto_kind",
+                "fg_readable",
+                "fg_shell",
+                "fg_fullscreen",
+                "fg_visible",
+                "fg_exe",
+            ] {
+                assert!(row.get(key).is_none(), "non-refusal row carries {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn diag_focus_write_veto_gate_detail_rides_refusal_row() {
+        // Gate-time volume: a traced `focus-write-veto` refusal projects
+        // the veto's own attribution (relation, kind, readability, shell,
+        // fullscreen, visibility, exe basename) while a same-pass success
+        // row omits every refusal key.
+        fn veto_row() -> super::super::world_diff::FocusDispatchDiag {
+            super::super::world_diff::FocusDispatchDiag {
+                id: "ffc-veto".to_owned(),
+                target: "w1".to_owned(),
+                kind: "focus",
+                dispatched: true,
+                setter: "refused",
+                foreground: false,
+                hold: Some("foreground-unproven"),
+                fg_baseline: None,
+                fg_live: None,
+                api: None,
+                call_mono_ms: None,
+                ret_mono_ms: None,
+                gui_dispatch: None,
+                gui_landing: None,
+                primitive_called: false,
+                native_return: None,
+                prime_inserted: None,
+                hwnd: Some(61001),
+                pid: Some(2301),
+                creation: Some("proc-308".to_owned()),
+                refusal_gate: Some("focus-write-veto"),
+                refusal_reason: None,
+                target_visible: Some(true),
+                target_cloaked: Some(false),
+                target_hidden: Some(false),
+                fg_identity: Some("other"),
+                fg_gate_identity: Some("other"),
+                fg_veto_kind: Some("readable-fullscreen"),
+                fg_readable: Some(true),
+                fg_shell: Some(true),
+                fg_fullscreen: Some(true),
+                fg_visible: Some(true),
+                fg_exe: Some("explorer.exe".to_owned()),
+                desktop_exception: false,
+            }
+        }
+        let reply = reply_shell();
+        let mut stats = super::super::world_diff::ApplyStats {
+            held: 1,
+            focus_dispatch: vec![
+                veto_row(),
+                super::super::world_diff::FocusDispatchDiag {
+                    id: "ffc-ok".to_owned(),
+                    ..veto_row()
+                },
+            ],
+            ..Default::default()
+        };
+        // Rewrite the second row as a proven success with no refusal
+        // detail (struct-update above copies the veto base first).
+        stats.focus_dispatch[1].setter = "accepted";
+        stats.focus_dispatch[1].foreground = true;
+        stats.focus_dispatch[1].hold = None;
+        stats.focus_dispatch[1].refusal_gate = None;
+        stats.focus_dispatch[1].refusal_reason = None;
+        stats.focus_dispatch[1].target_visible = None;
+        stats.focus_dispatch[1].target_cloaked = None;
+        stats.focus_dispatch[1].target_hidden = None;
+        stats.focus_dispatch[1].fg_identity = None;
+        stats.focus_dispatch[1].fg_gate_identity = None;
+        stats.focus_dispatch[1].fg_veto_kind = None;
+        stats.focus_dispatch[1].fg_readable = None;
+        stats.focus_dispatch[1].fg_shell = None;
+        stats.focus_dispatch[1].fg_fullscreen = None;
+        stats.focus_dispatch[1].fg_visible = None;
+        stats.focus_dispatch[1].fg_exe = None;
+        let value = apply_diag_value(
+            15,
+            &reply,
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            Some("w1".to_owned()),
+            true,
+            &report_shell(vec![]),
+        );
+        let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
+        assert_eq!(dispatch.len(), 2);
+        assert_eq!(
+            dispatch[0]["refusal_gate"],
+            serde_json::json!("focus-write-veto")
+        );
+        assert_eq!(dispatch[0]["fg_gate_identity"], serde_json::json!("other"));
+        assert_eq!(
+            dispatch[0]["fg_veto_kind"],
+            serde_json::json!("readable-fullscreen")
+        );
+        assert_eq!(dispatch[0]["fg_readable"], serde_json::json!(true));
+        assert_eq!(dispatch[0]["fg_shell"], serde_json::json!(true));
+        assert_eq!(dispatch[0]["fg_fullscreen"], serde_json::json!(true));
+        assert_eq!(dispatch[0]["fg_visible"], serde_json::json!(true));
+        assert_eq!(dispatch[0]["fg_exe"], serde_json::json!("explorer.exe"));
+        for key in [
+            "refusal_gate",
+            "refusal_reason",
+            "target_visible",
+            "target_cloaked",
+            "target_hidden",
+            "fg_identity",
+            "fg_gate_identity",
+            "fg_veto_kind",
+            "fg_readable",
+            "fg_shell",
+            "fg_fullscreen",
+            "fg_visible",
+            "fg_exe",
+            "desktop_exception",
+        ] {
+            assert!(dispatch[1].get(key).is_none(), "success row carries {key}");
+        }
+    }
+
+    #[test]
+    fn diag_desktop_exception_key_rides_only_exception_rows() {
+        // The exact-desktop marker serializes solely on dispatches that
+        // used the exception; every other row omits the key entirely
+        // (never `false`), preserving the prior row shape for parsers.
+        fn exception_row() -> super::super::world_diff::FocusDispatchDiag {
+            super::super::world_diff::FocusDispatchDiag {
+                id: "fx-7".to_owned(),
+                target: "w6".to_owned(),
+                kind: "focus",
+                dispatched: true,
+                setter: "accepted",
+                foreground: false,
+                hold: Some("foreground-unproven"),
+                fg_baseline: None,
+                fg_live: None,
+                api: Some(super::super::world_diff::FOCUS_SETTER_API),
+                call_mono_ms: Some(7),
+                ret_mono_ms: Some(9),
+                gui_dispatch: None,
+                gui_landing: None,
+                primitive_called: true,
+                native_return: Some(true),
+                prime_inserted: Some(2),
+                hwnd: Some(120_001),
+                pid: Some(2401),
+                creation: Some("proc-401".to_owned()),
+                refusal_gate: None,
+                refusal_reason: None,
+                target_visible: None,
+                target_cloaked: None,
+                target_hidden: None,
+                fg_identity: None,
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: true,
+            }
+        }
+        let reply = reply_shell();
+        let stats = super::super::world_diff::ApplyStats {
+            focus_dispatch: vec![exception_row()],
+            ..Default::default()
+        };
+        let value = apply_diag_value(
+            17,
+            &reply,
+            "accepted",
+            "select-workspace",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            Some("w0".to_owned()),
+            false,
+            &report_shell(vec![]),
+        );
+        let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
+        assert_eq!(dispatch.len(), 1);
+        assert_eq!(dispatch[0]["desktop_exception"], serde_json::json!(true));
     }
 
     #[test]
@@ -3546,6 +4159,20 @@ mod apply_diag_tests {
                     hwnd: None,
                     pid: None,
                     creation: None,
+                    refusal_gate: None,
+                    refusal_reason: None,
+                    target_visible: None,
+                    target_cloaked: None,
+                    target_hidden: None,
+                    fg_identity: None,
+                    fg_gate_identity: None,
+                    fg_veto_kind: None,
+                    fg_readable: None,
+                    fg_shell: None,
+                    fg_fullscreen: None,
+                    fg_visible: None,
+                    fg_exe: None,
+                    desktop_exception: false,
                 })
                 .collect(),
             ..Default::default()

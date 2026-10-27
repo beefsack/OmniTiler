@@ -210,8 +210,12 @@ const MAX_PAGER_CELLS_TRACE_MINIS: usize = 8;
 /// to `mini_rects`/`mini_windows`, so an exact frame proof survives
 /// miniature rounding (a 1px source change re-logs even when the projected
 /// miniature is identical). Focus marks ride the cells verbatim (never
-/// recomputed here: no second projection). Tick and reply identity ride the
-/// line for correlation only.
+/// recomputed here: no second projection). Tick and full reply identity
+/// (request, observation, revision) ride the line for correlation only:
+/// the change gate never reads them.
+/// Eight inputs are the disjoint trace context plus the payload; bundling
+/// would hide the call-site borrow split the pump relies on.
+#[allow(clippy::too_many_arguments)]
 fn pager_cells_trace_value(
     pagers: &[OutputPager],
     output_token: &dyn Fn(&str) -> String,
@@ -220,6 +224,7 @@ fn pager_cells_trace_value(
     tick: u64,
     observation: u64,
     revision: u64,
+    request: &str,
 ) -> serde_json::Value {
     let mut outputs = Vec::new();
     for pager in pagers.iter().take(MAX_PAGER_CELLS_TRACE_OUTPUTS) {
@@ -300,6 +305,7 @@ fn pager_cells_trace_value(
     serde_json::json!({
         "event": "pager-cells",
         "tick": tick,
+        "request": request,
         "observation": observation,
         "revision": revision,
         "outputs": outputs,
@@ -312,9 +318,10 @@ fn pager_cells_trace_value(
 /// per-cell ordinal/workspace/current/rect/any-focused, per-miniature focus
 /// bits, rects, raw source rects and window tokens, every total, and the
 /// top-level output counts. Raw source rects ride the signature so a
-/// sub-miniature-quantum frame change still re-logs. Tick and reply identity
-/// ride the logged line but never the gate, so a new tick with identical
-/// cells stays silent - while omitted growth past the cap still re-logs.
+/// sub-miniature-quantum frame change still re-logs. Tick and full reply
+/// identity (request, observation, revision) ride the logged line but never
+/// the gate, so a new tick or a re-issued reply with identical cells stays
+/// silent - while omitted growth past the cap still re-logs.
 fn pager_cells_trace_signature(value: &serde_json::Value) -> String {
     let outputs = value
         .get("outputs")
@@ -342,6 +349,7 @@ fn emit_pager_cells(
     tick: u64,
     observation: u64,
     revision: u64,
+    request: &str,
 ) {
     if !state.trace {
         return;
@@ -354,6 +362,7 @@ fn emit_pager_cells(
         tick,
         observation,
         revision,
+        request,
     );
     let signature = pager_cells_trace_signature(&value);
     if state.pager_cells_last.as_deref() == Some(signature.as_str()) {
@@ -361,6 +370,24 @@ fn emit_pager_cells(
     }
     state.pager_cells_last = Some(signature);
     log_json_at(log_path, value);
+    // Paired accepted-world proof (TRACE-ONLY): emit the exact stored
+    // snapshot proof with this payload change, never a regenerated row.
+    // The enforced key is the full (request, observation, revision) triple
+    // of the exact reply the pagers above were built from (carried on the
+    // cells line for correlation, outside the change gate): the stored
+    // proof must name that same triple, or the pairing suppresses instead
+    // of emitting old-world evidence for a newer payload. No product
+    // effect, no extra emission when the payload gate stays silent.
+    if let Some(proof) = state.world.trace_proof() {
+        let bound = proof.get("request").and_then(|v| v.as_str()) == Some(request)
+            && proof.get("observation").and_then(|v| v.as_u64()) == Some(observation)
+            && proof.get("revision").and_then(|v| v.as_u64()) == Some(revision);
+        if bound {
+            let mut row = proof.clone();
+            row["paired"] = serde_json::json!(true);
+            log_json_at(log_path, row);
+        }
+    }
 }
 
 /// Pure content mapping from core pager screens to portable pager content:
@@ -751,12 +778,17 @@ pub(super) fn sync_taskbar_pager(
     // rectangles rides the last applied reply. The adapter only maps opaque
     // lifetimes back to member keys (a mechanical race may lag membership)
     // and lays out; it never sorts, renumbers, or filters content. No reply
-    // yet (startup) renders no workspaces.
-    let (screens, foreground, observation, revision): (
+    // yet (startup) renders no workspaces. The snapshot tuple carries the
+    // full (request, observation, revision) identity of the exact reply
+    // the pagers below are built from; the trace gate and the paired-proof
+    // guard below key on that same triple, so a newer snapshot can never
+    // pair with an older proof.
+    let (screens, foreground, observation, revision, request): (
         Vec<tiler_core::world_presentation::PagerScreen>,
         String,
         u64,
         u64,
+        String,
     ) = state
         .world
         .last_reply()
@@ -766,6 +798,7 @@ pub(super) fn sync_taskbar_pager(
                 reply.presentation.foreground.clone(),
                 reply.based_on_observation_seq,
                 reply.state_revision,
+                reply.request_id.clone(),
             )
         })
         .unwrap_or_default();
@@ -847,7 +880,15 @@ pub(super) fn sync_taskbar_pager(
     // change-gated, bounded, no native effect.
     if state.trace {
         let tick = state.tick;
-        emit_pager_cells(state, &pagers, log_path, tick, observation, revision);
+        emit_pager_cells(
+            state,
+            &pagers,
+            log_path,
+            tick,
+            observation,
+            revision,
+            &request,
+        );
     }
     // Queue lookups only for served miniatures that can actually draw an
     // icon: artwork nobody can see is never loaded.
@@ -2665,6 +2706,7 @@ mod pager_host_tests {
             state.tick,
             reply.based_on_observation_seq,
             reply.state_revision,
+            &reply.request_id,
         );
         assert_eq!(value["event"], serde_json::json!("pager-cells"));
         assert_eq!(
@@ -2672,6 +2714,7 @@ mod pager_host_tests {
             serde_json::json!(reply.based_on_observation_seq)
         );
         assert_eq!(value["revision"], serde_json::json!(reply.state_revision));
+        assert_eq!(value["request"], serde_json::json!(reply.request_id));
         let cells = value["outputs"][0]["cells"]
             .as_array()
             .expect("traced cells");
@@ -2834,6 +2877,7 @@ mod pager_host_tests {
             7,
             42,
             43,
+            "req-cells",
         );
         assert_eq!(value["event"], serde_json::json!("pager-cells"));
         assert_eq!(value["tick"], serde_json::json!(7));
@@ -2944,6 +2988,7 @@ mod pager_host_tests {
             7,
             42,
             43,
+            "req-cells",
         );
         assert_eq!(gate_lines(&log).len(), 1, "baseline logs once");
         emit_pager_cells(
@@ -2953,6 +2998,7 @@ mod pager_host_tests {
             8,
             44,
             45,
+            "req-cells",
         );
         assert_eq!(
             gate_lines(&log).len(),
@@ -2968,6 +3014,7 @@ mod pager_host_tests {
             8,
             44,
             45,
+            "req-cells",
         );
         assert_eq!(gate_lines(&log).len(), 2, "focus flip re-logs");
         emit_pager_cells(
@@ -2977,6 +3024,7 @@ mod pager_host_tests {
             8,
             44,
             45,
+            "req-cells",
         );
         assert_eq!(gate_lines(&log).len(), 2, "repeat stays silent");
         // A focus flip at the SAME tick and reply still re-logs: the gate
@@ -2992,6 +3040,7 @@ mod pager_host_tests {
             8,
             44,
             45,
+            "req-cells",
         );
         assert_eq!(gate_lines(&log).len(), 3, "same-revision flip re-logs");
         // Omitted growth past the output cap re-logs even when the first
@@ -3033,15 +3082,15 @@ mod pager_host_tests {
             .collect();
         let mut ten = nine.clone();
         ten.push(trace_only_pager("mon-9"));
-        emit_pager_cells(&mut gate_state, &nine, &log, 10, 50, 51);
+        emit_pager_cells(&mut gate_state, &nine, &log, 10, 50, 51, "req-cells");
         assert_eq!(gate_lines(&log).len(), 4, "nine-output baseline logs");
-        emit_pager_cells(&mut gate_state, &ten, &log, 10, 50, 51);
+        emit_pager_cells(&mut gate_state, &ten, &log, 10, 50, 51, "req-cells");
         assert_eq!(
             gate_lines(&log).len(),
             5,
             "omitted growth re-logs with identical first eight"
         );
-        emit_pager_cells(&mut gate_state, &ten, &log, 11, 52, 53);
+        emit_pager_cells(&mut gate_state, &ten, &log, 11, 52, 53, "req-cells");
         assert_eq!(gate_lines(&log).len(), 5, "repeat stays silent");
         // Trace off emits nothing and never arms the gate.
         gate_state.trace = false;
@@ -3053,9 +3102,307 @@ mod pager_host_tests {
             9,
             46,
             47,
+            "req-cells",
         );
         assert_eq!(gate_lines(&log).len(), 5, "trace off stays silent");
         assert_eq!(gate_state.pager_cells_last, None);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn paired_world_proof_emits_only_with_cells_change() {
+        use crate::pager::{OutputPager, PagerCell};
+        fn one_pager(focused: bool) -> OutputPager {
+            let rect = tiler_core::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 72,
+                h: 40,
+            };
+            OutputPager {
+                output: "mon-a".to_owned(),
+                strip: rect,
+                ids: vec!["ws-1".to_owned()],
+                cells: vec![PagerCell {
+                    rect,
+                    active: true,
+                    ordinal: 1,
+                    minis: vec![rect],
+                    mini_focused: vec![focused],
+                    mini_keys: Vec::new(),
+                    mini_sources: vec![rect],
+                    mini_icons: Vec::new(),
+                }],
+                active_index: 0,
+                dpi: 96,
+                focused_highlight: (0xbd, 0x93, 0xf9),
+            }
+        }
+        fn paired_row(revision: u64, observation: u64) -> serde_json::Value {
+            serde_json::json!({
+                "event": "world-apply",
+                "tick": 7,
+                "request": "req-3",
+                "revision": revision,
+                "observation": observation,
+                "delivery": "accepted",
+            })
+        }
+        let mut state = test_state();
+        state.trace = true;
+        static PAIRED_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = PAIRED_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-pager-paired-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("trace log dir");
+        let log = dir.join("run.log");
+        // A fresh accept's stored proof pairs with the payload change that
+        // renders its snapshot: one cells line plus the exact stored row
+        // marked paired, with the same revision/observation/request.
+        state.world.note_trace_proof(Some(paired_row(43, 42)));
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&one_pager(false)),
+            &log,
+            7,
+            42,
+            43,
+            "req-3",
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 2, "baseline pairs cells with proof");
+        let proof: serde_json::Value = serde_json::from_str(&lines[1]).expect("paired row parses");
+        assert_eq!(proof["event"], serde_json::json!("world-apply"));
+        assert_eq!(proof["paired"], serde_json::json!(true));
+        assert_eq!(proof["revision"], serde_json::json!(43));
+        assert_eq!(proof["observation"], serde_json::json!(42));
+        assert_eq!(proof["request"], serde_json::json!("req-3"));
+        assert_eq!(proof["delivery"], serde_json::json!("accepted"));
+        // Identical repeats stay silent: no cells line, no paired row.
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&one_pager(false)),
+            &log,
+            8,
+            42,
+            43,
+            "req-3",
+        );
+        assert_eq!(gate_lines(&log).len(), 2, "repeat stays silent");
+        // Same-revision renderer change re-pairs to the same snapshot.
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&one_pager(true)),
+            &log,
+            8,
+            42,
+            43,
+            "req-3",
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 4, "same-revision flip re-pairs");
+        let repair: serde_json::Value =
+            serde_json::from_str(&lines[3]).expect("repaired row parses");
+        assert_eq!(repair["paired"], serde_json::json!(true));
+        assert_eq!(repair["revision"], serde_json::json!(43));
+        // A newer snapshot without its own proof suppresses the stale
+        // pairing: the newer payload logs alone, never with old-world
+        // evidence.
+        state.world.note_trace_proof(Some(paired_row(99, 98)));
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&one_pager(false)),
+            &log,
+            9,
+            42,
+            43,
+            "req-3",
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 5, "stale proof suppresses pairing");
+        let lone: serde_json::Value = serde_json::from_str(&lines[4]).expect("lone row parses");
+        assert_eq!(lone["event"], serde_json::json!("pager-cells"));
+        // A request mismatch suppresses too, even with matching
+        // observation and revision: the enforced key is the full triple
+        // of the exact reply the pagers were built from.
+        state.world.note_trace_proof(Some(paired_row(43, 42)));
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&one_pager(true)),
+            &log,
+            11,
+            42,
+            43,
+            "req-stale",
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 6, "request mismatch suppresses pairing");
+        let lone: serde_json::Value = serde_json::from_str(&lines[5]).expect("lone row parses");
+        assert_eq!(lone["event"], serde_json::json!("pager-cells"));
+        assert_eq!(lone["request"], serde_json::json!("req-stale"));
+        // No stored proof at all: the payload logs alone.
+        state.world.note_trace_proof(None);
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&one_pager(false)),
+            &log,
+            12,
+            42,
+            43,
+            "req-3",
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 7, "payload without proof logs alone");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&lines[6]).expect("row parses")["event"],
+            serde_json::json!("pager-cells")
+        );
+        // No stored proof at all: the payload logs alone.
+        state.world.note_trace_proof(None);
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&one_pager(false)),
+            &log,
+            12,
+            42,
+            43,
+            "req-3",
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 7, "payload without proof logs alone");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&lines[6]).expect("row parses")["event"],
+            serde_json::json!("pager-cells")
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn paired_proof_tracks_real_reply_triple_across_accepts() {
+        // Integrated accept-to-accept regression with genuine engine
+        // replies (the rev39 -> rev40 shape): each fresh accept captures
+        // its own proof under trace, and the pump pairs only the proof
+        // whose full (request, observation, revision) names the exact
+        // reply the pagers were built from.
+        let (mut state, me, store, dir, output, _, _) = focus_rig();
+        state.trace = true;
+        let frame = frame_of_focus();
+        let home = state.active_view(&output).expect("seeded view");
+        let target = state
+            .workspace_ids(&output)
+            .into_iter()
+            .find(|id| id != &home)
+            .expect("second workspace");
+        // First accept under trace: the previously silent snapshot captures
+        // its proof, bound to its own triple.
+        focus_select(&mut state, &me, &store, &dir, &output, &target, frame);
+        let reply_b = state.world.last_reply().expect("revB applied").clone();
+        let proof_b = state.world.trace_proof().expect("revB proof").clone();
+        assert_eq!(proof_b["request"], serde_json::json!(reply_b.request_id));
+        assert_eq!(
+            proof_b["observation"],
+            serde_json::json!(reply_b.based_on_observation_seq)
+        );
+        assert_eq!(
+            proof_b["revision"],
+            serde_json::json!(reply_b.state_revision)
+        );
+        // Second accept replaces the proof with its own triple.
+        focus_select(&mut state, &me, &store, &dir, &output, &home, frame);
+        let reply_c = state.world.last_reply().expect("revC applied").clone();
+        assert_ne!(
+            (
+                reply_c.request_id.clone(),
+                reply_c.based_on_observation_seq,
+                reply_c.state_revision
+            ),
+            (
+                reply_b.request_id.clone(),
+                reply_b.based_on_observation_seq,
+                reply_b.state_revision
+            ),
+            "test needs two distinct accepts"
+        );
+        let proof_c = state.world.trace_proof().expect("revC proof").clone();
+        assert_eq!(proof_c["request"], serde_json::json!(reply_c.request_id));
+        assert_eq!(
+            proof_c["observation"],
+            serde_json::json!(reply_c.based_on_observation_seq)
+        );
+        assert_eq!(
+            proof_c["revision"],
+            serde_json::json!(reply_c.state_revision)
+        );
+        static TRACK_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = TRACK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-pager-track-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("trace log dir");
+        let log = dir.join("run.log");
+        // Pump the exact revC snapshot the pagers were built from: one
+        // cells line plus the revC proof, never the revB row.
+        let pager = focus_pager_for(&state, &output, "tok-creation-fa");
+        let tick = state.tick;
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&pager),
+            &log,
+            tick,
+            reply_c.based_on_observation_seq,
+            reply_c.state_revision,
+            &reply_c.request_id,
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 2, "revC snapshot pairs revC proof");
+        let paired: serde_json::Value = serde_json::from_str(&lines[1]).expect("paired row parses");
+        assert_eq!(paired["paired"], serde_json::json!(true));
+        assert_eq!(paired["request"], serde_json::json!(reply_c.request_id));
+        assert_eq!(
+            paired["observation"],
+            serde_json::json!(reply_c.based_on_observation_seq)
+        );
+        assert_eq!(
+            paired["revision"],
+            serde_json::json!(reply_c.state_revision)
+        );
+        // A stale revB triple against the revC snapshot suppresses: same
+        // payload family, older request identity, no old-world evidence.
+        // The payload must differ from the last emission so the change
+        // gate reaches the guard.
+        let mut skewed = pager.clone();
+        if skewed.cells[0].mini_focused.is_empty() {
+            skewed.cells[0].mini_focused = vec![true];
+        } else {
+            skewed.cells[0].mini_focused[0] = !skewed.cells[0].mini_focused[0];
+        }
+        emit_pager_cells(
+            &mut state,
+            std::slice::from_ref(&skewed),
+            &log,
+            tick,
+            reply_b.based_on_observation_seq,
+            reply_b.state_revision,
+            &reply_b.request_id,
+        );
+        let lines = gate_lines(&log);
+        assert_eq!(lines.len(), 3, "stale triple logs payload alone");
+        let lone: serde_json::Value = serde_json::from_str(&lines[2]).expect("lone row parses");
+        assert_eq!(lone["event"], serde_json::json!("pager-cells"));
+        assert_eq!(lone["request"], serde_json::json!(reply_b.request_id));
         clear_pending_seams();
     }
 
@@ -3139,6 +3486,7 @@ mod pager_host_tests {
             7,
             42,
             43,
+            "req-cells",
         );
         let b = pager_cells_trace_value(
             std::slice::from_ref(&second),
@@ -3148,6 +3496,7 @@ mod pager_host_tests {
             7,
             42,
             43,
+            "req-cells",
         );
         assert_eq!(
             a["outputs"][0]["cells"][0]["mini_rects"],
@@ -3165,6 +3514,25 @@ mod pager_host_tests {
             pager_cells_trace_signature(&a),
             pager_cells_trace_signature(&b),
             "raw source rides the change gate"
+        );
+        // Request identity rides the logged line but never the gate: the
+        // same payload under a re-issued request keeps its signature, so
+        // correlation can never force a re-log.
+        let rerun = pager_cells_trace_value(
+            std::slice::from_ref(&first),
+            &|device| format!("wire-{device}"),
+            &|_, workspace| workspace.to_owned(),
+            &token_of,
+            8,
+            42,
+            43,
+            "req-rerun",
+        );
+        assert_eq!(rerun["request"], serde_json::json!("req-rerun"));
+        assert_eq!(
+            pager_cells_trace_signature(&a),
+            pager_cells_trace_signature(&rerun),
+            "request stays outside the change gate"
         );
         let mut gate_state = test_state();
         gate_state.trace = true;
@@ -3188,6 +3556,7 @@ mod pager_host_tests {
             7,
             42,
             43,
+            "req-cells",
         );
         emit_pager_cells(
             &mut gate_state,
@@ -3196,6 +3565,7 @@ mod pager_host_tests {
             7,
             42,
             43,
+            "req-cells",
         );
         assert_eq!(gate_lines(&log).len(), 2, "1px source change re-logs");
         clear_pending_seams();

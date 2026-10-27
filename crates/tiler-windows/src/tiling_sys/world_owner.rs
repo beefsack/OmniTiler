@@ -50,6 +50,17 @@ pub(super) struct WorldOwner {
     seq: WorldSequencer,
     diff: HostDiff,
     last_reply: Option<WorldReply>,
+    /// Bounded accepted trace-proof row for the current `last_reply`
+    /// (TRACE-ONLY): the exact `world-apply` projection built from the
+    /// accepted reply plus its dispatched report at accept time, even when
+    /// the ordinary world log stayed silent. Replaced together with
+    /// `last_reply` on every fresh Applied ack under trace; stale, ignored
+    /// and duplicate outcomes retain the fallback snapshot. The pager pump
+    /// pairs this row with its payload emission only when its
+    /// (request, observation, revision) still names the snapshot actually
+    /// rendered, so later state can never relabel captured proof. Never a
+    /// second policy, never regenerated from current caches.
+    last_proof: Option<serde_json::Value>,
     has_accepted: bool,
 }
 
@@ -70,6 +81,7 @@ impl WorldOwner {
             seq,
             diff,
             last_reply: None,
+            last_proof: None,
             has_accepted: false,
         })
     }
@@ -198,6 +210,21 @@ impl WorldOwner {
 
     pub(super) fn last_reply(&self) -> Option<&WorldReply> {
         self.last_reply.as_ref()
+    }
+
+    /// Borrow the bounded accepted trace-proof row for the current
+    /// snapshot (`None` until a fresh accept captures one under trace).
+    pub(super) fn trace_proof(&self) -> Option<&serde_json::Value> {
+        self.last_proof.as_ref()
+    }
+
+    /// Store (`Some`) or clear (`None`) the bounded accepted trace-proof
+    /// row. Call only in the Applied ack arm for a fresh (non-duplicate)
+    /// delivery, next to `note_diff_applied`, so the proof and
+    /// `last_reply` advance together; stale, ignored and duplicate
+    /// outcomes must not call this and retain the fallback snapshot.
+    pub(super) fn note_trace_proof(&mut self, row: Option<serde_json::Value>) {
+        self.last_proof = row;
     }
 
     /// Synchronous invalidation before dispatch (dirty-until-ack).

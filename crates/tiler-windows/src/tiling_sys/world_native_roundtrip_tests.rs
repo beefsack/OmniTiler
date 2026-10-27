@@ -1630,3 +1630,393 @@ fn floating_select_actuates_hide_reveal_and_settles() {
         Some(peer.as_str())
     );
 }
+
+/// Authority regression through the real command path: an occupied ->
+/// empty -> occupied select roundtrip mints the core's own remembered-focus
+/// arrival effect on return, and only a fresh `accepted` delivery of that
+/// exact select command arms the desktop exception for it. Duplicate
+/// redelivery, redundant selects, directional focus, and observations never
+/// arm. The return leg then actuates past a scripted exact desktop through
+/// the production grant.
+#[test]
+fn selection_return_core_effect_binds_exact_grant() {
+    use tiler_core::world_report::EffectKind;
+
+    let mut env = env_with(209_201);
+    let o1 = env.state.output_token(DEV1);
+    let areas = vec![super::super::super::MonitorArea {
+        device: DEV1.to_owned(),
+        work: rect(0, 0, 1920, 1040),
+        full: rect(0, 0, 1920, 1080),
+    }];
+    let fulls = vec![rect(0, 0, 1920, 1080)];
+    let w6 = win_key(209_201, 2611, "proc-611");
+    let w7 = win_key(209_202, 2612, "proc-612");
+    for (key, token, vis) in [
+        (&w6, "w6", rect(0, 0, 800, 600)),
+        (&w7, "w7", rect(810, 0, 800, 600)),
+    ] {
+        admit_bare(&mut env, key, token);
+        script_live(key, token, vis, plain_facts());
+        S_ADMIT.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_HIDE.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(valid_claim(key.hwnd, &identity_of(key))))
+        });
+        S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
+    }
+    let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+    // Tick 1: ws1 occupied with w6 focused, so the core remembers it.
+    let observed = live_visible_observed();
+    let tick1 = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        w6.hwnd,
+        None,
+    );
+    assert!(
+        tick1.reply.windows.iter().any(|w| w.lifetime.0 == "w6"),
+        "tick1 stages w6: {:?}",
+        tick1.reply.windows
+    );
+    let ws1 = owner.engine().logical_view(&o1).expect("head view");
+    let ws2 = second_workspace(&owner, &o1, &ws1);
+    // Away to the empty workspace: no arrival focus is minted.
+    let observed = live_visible_observed();
+    let away = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId(o1.clone()),
+            workspace: ws2.clone(),
+        }),
+    );
+    assert_eq!(away.delivery, "accepted");
+    assert!(
+        away.reply.effects.is_empty(),
+        "empty arrival mints no focus: {:?}",
+        away.reply.effects
+    );
+    assert!(
+        away.reply
+            .transfers
+            .iter()
+            .any(|t| t.target_workspace == ws2),
+        "away selection retains its flight: {:?}",
+        away.reply.transfers
+    );
+    // Back to the occupied workspace through the real command path with a
+    // production-like wall-clock stamp (see run_world_command): dispatch,
+    // deliver, diff-apply, receipt, and acknowledgement, mirroring the
+    // live_tick stages while retaining the outcome and report so duplicate
+    // redelivery is provable below.
+    let observed = live_visible_observed();
+    super::super::super::world_tick::snapshot_frames(&mut env.state, &observed);
+    owner.invalidate();
+    let back_command = WorldCommand::SelectWorkspace {
+        output: OutputId(o1.clone()),
+        workspace: ws1.clone(),
+    };
+    const BACK_MS: u64 = 5_000_000;
+    let inputs = env.state.inputs();
+    let back_report = owner
+        .try_dispatch_command(
+            &inputs,
+            Some(&observed),
+            &[],
+            &areas,
+            0,
+            BACK_MS,
+            back_command.clone(),
+        )
+        .expect("back dispatch");
+    let back_seq = back_report.command_seq.expect("command sequence");
+    let (back_delivery, back_reply) = match owner.deliver_production(&back_report) {
+        WorldOutcome::Accepted(reply) => ("accepted", reply),
+        WorldOutcome::Duplicate(reply) => ("duplicate", reply),
+        WorldOutcome::CommandConsumed(reply) => ("command-consumed", reply),
+        WorldOutcome::Rejected { kind, message } => panic!("back rejected {kind}: {message}"),
+    };
+    assert_eq!(back_delivery, "accepted");
+    let inputs = env.state.inputs();
+    let captured = capture_world(&inputs, Some(&observed), &[], &areas, 0);
+    let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
+    let (homing, rings, views) = owner.core_projections();
+    let mut desired_frames: HashMap<String, Rect> = HashMap::new();
+    for row in &back_reply.windows {
+        if !row.floating
+            && let Some(target) = row.effective_frame
+        {
+            desired_frames.insert(row.lifetime.0.clone(), target);
+        }
+    }
+    let mut native = LiveNative::assemble(
+        &env.me,
+        &fulls,
+        &env.state.output_tokens,
+        homing,
+        rings,
+        views,
+        desired_frames,
+        areas.to_vec(),
+        env.state.applied_homing.clone(),
+        env.state.applied_views.clone(),
+        &env.state.member_tokens,
+        &env.state.member_tags,
+        &env.state.member_identity,
+        &mut env.state.hidden_claims,
+        &env.state.sticky,
+        &env.state.float_topmost_prev,
+        &env.state.scope,
+        &env.state.scope_hosts,
+        None,
+        false,
+        &env.store,
+        &env.dir,
+        &env.state.active,
+        moving_prims(),
+    );
+    owner.sync_diff_gate();
+    let mut frame_attempts = Vec::new();
+    let mut member_attempts = Vec::new();
+    let mut view_attempts = Vec::new();
+    let mut clear_attempts = Vec::new();
+    let _stats = owner.apply_accepted(
+        &back_reply,
+        &fresh,
+        &mut native,
+        &mut frame_attempts,
+        &mut member_attempts,
+        &mut view_attempts,
+        &mut clear_attempts,
+        BACK_MS,
+    );
+    let (mut proven_h, mut proven_v) = native.receipt_updates(&back_reply);
+    merge_applied_transfers(
+        &back_reply,
+        &member_attempts,
+        &view_attempts,
+        &fresh,
+        &mut native,
+        &mut proven_h,
+        &mut proven_v,
+    );
+    drop(native);
+    for (token, home) in proven_h {
+        env.state.applied_homing.insert(token, home);
+    }
+    for (output, view) in proven_v {
+        env.state.applied_views.insert(output, view);
+    }
+    for attempt in &member_attempts {
+        owner.note_member_attempt(attempt.clone());
+    }
+    for attempt in &view_attempts {
+        owner.note_view_attempt(attempt.clone());
+    }
+    for attempt in &frame_attempts {
+        owner.note_frame_attempt(attempt.clone());
+    }
+    let mut pending = std::mem::take(&mut env.state.pending_closed);
+    let (ack, pruned) = owner.ack(&back_reply, &mut pending);
+    env.state.pending_closed = pending;
+    for token in pruned {
+        env.state.applied_homing.remove(&token);
+    }
+    match ack {
+        AckOutcome::Applied(_) => owner.note_diff_applied(&back_reply),
+        AckOutcome::Stale(_) => {}
+        AckOutcome::Ignored { reason } => panic!("ack ignored: {reason}"),
+    }
+    // The core mints exactly one explicit remembered-focus arrival effect,
+    // and no automatic one beside it.
+    let seq = back_seq;
+    assert_eq!(
+        back_reply.effects.len(),
+        1,
+        "return mints exactly the arrival effect: {:?}",
+        back_reply.effects
+    );
+    let fx = &back_reply.effects[0];
+    assert_eq!(fx.kind, EffectKind::Focus);
+    assert_eq!(fx.target.0, "w6");
+    assert!(
+        fx.is_explicit_focus_for(seq),
+        "core-minted arrival outcome: {:?}",
+        fx.id
+    );
+    // Only the fresh accepted select arms, bound to the exact pair.
+    let grant = SelectionArrivalGrant::for_accepted(
+        Some(&back_command),
+        Some(seq),
+        &back_reply,
+        back_delivery,
+    )
+    .expect("accepted select must mint");
+    assert!(grant.allows(&fx.id, "w6"));
+    // Redelivering the exact same report is a duplicate: never re-arms.
+    let duplicate = match owner.deliver_production(&back_report) {
+        tiler_core::world_engine::WorldOutcome::Duplicate(reply) => reply,
+        other => panic!("expected duplicate, got {other:?}"),
+    };
+    assert!(duplicate.effects.iter().any(|effect| effect.id == fx.id));
+    assert!(
+        SelectionArrivalGrant::for_accepted(
+            Some(&back_command),
+            Some(seq),
+            &duplicate,
+            "duplicate"
+        )
+        .is_none(),
+        "duplicate delivery never re-arms"
+    );
+    // A redundant select (already showing) mints no arrival: nothing to arm.
+    let observed = live_visible_observed();
+    let repeat = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        Some(back_command.clone()),
+    );
+    assert_eq!(repeat.delivery, "accepted");
+    assert!(
+        repeat.reply.effects.is_empty(),
+        "redundant select mints nothing: {:?}",
+        repeat.reply.effects
+    );
+    assert!(
+        SelectionArrivalGrant::for_accepted(
+            Some(&back_command),
+            repeat.command_seq,
+            &repeat.reply,
+            repeat.delivery,
+        )
+        .is_none(),
+        "effect-free select never arms"
+    );
+    // A one-shot focus effect is real but never a selection arrival.
+    let observed = live_visible_observed();
+    let dir_command = WorldCommand::Focus {
+        window: tiler_core::directional::WindowId("w7".to_owned()),
+        direction: "left".to_owned(),
+    };
+    let directed = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        w6.hwnd,
+        Some(dir_command.clone()),
+    );
+    assert_eq!(directed.delivery, "accepted");
+    assert!(
+        directed
+            .reply
+            .effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::Focus),
+        "directional focus mints its effect: {:?}",
+        directed.reply.effects
+    );
+    assert!(
+        SelectionArrivalGrant::for_accepted(
+            Some(&dir_command),
+            directed.command_seq,
+            &directed.reply,
+            directed.delivery,
+        )
+        .is_none(),
+        "non-selection focus never arms"
+    );
+    // An observation tick mints no arrival focus: nothing to arm, even
+    // against a selection command value.
+    let observed = live_visible_observed();
+    let idle = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    assert!(
+        idle.reply.effects.is_empty(),
+        "observation mints no focus: {:?}",
+        idle.reply.effects
+    );
+    assert!(
+        SelectionArrivalGrant::for_accepted(
+            Some(&back_command),
+            idle.command_seq,
+            &idle.reply,
+            "accepted",
+        )
+        .is_none(),
+        "observation never arms"
+    );
+    // The core-minted return effect actuates past a scripted exact desktop
+    // through the production grant: fresh diff, scripted natives, the exact
+    // accepted (command, sequence, reply) triple.
+    let desktop = win_key(209_203, 2613, "proc-613");
+    script_healthy_desktop(&desktop);
+    // Members only: the scripted desktop foreground is not inventory.
+    let observed: Vec<_> = live_visible_observed()
+        .into_iter()
+        .filter(|w| w.token != "fg")
+        .collect();
+    let inputs = env.state.inputs();
+    let captured = capture_world(&inputs, Some(&observed), &[], &areas, desktop.hwnd);
+    assert!(captured.inventory_complete);
+    let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
+    let mut diff = HostDiff::new(ADAPTER, GENERATION);
+    diff.gate.current_obs = back_reply.based_on_observation_seq;
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    native.set_selection_arrival(Some(grant));
+    let stats = apply_world_reply(
+        &mut diff,
+        &back_reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert_eq!(row.id, fx.id);
+    assert_eq!(row.target, "w6");
+    assert!(row.dispatched);
+    assert!(
+        row.primitive_called,
+        "core-minted return arrival must reach the setter past the desktop"
+    );
+    assert!(row.desktop_exception);
+}

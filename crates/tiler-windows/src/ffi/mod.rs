@@ -115,7 +115,7 @@ pub use pager::{
 pub use process::{
     ProcError, ProcessHandle, WaitOutcome, creation_key_of, current_image_path, current_process_id,
     image_path_of, integrity_rid_current, integrity_rid_of, local_app_data_dir, open_process_with,
-    session_of_pid, terminate_process, user_sid_of, wait_for_object,
+    session_of_pid, terminate_process, user_sid_of, wait_for_object, windows_directory,
 };
 pub use pump::{MsgWaitOutcome, TimerMessage, drain_messages, msg_wait, msg_wait_raw};
 pub use pump::{kill_thread_timer, prime_thread_queue, set_thread_timer, wait_timer_message};

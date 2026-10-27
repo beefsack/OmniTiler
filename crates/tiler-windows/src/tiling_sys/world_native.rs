@@ -61,7 +61,7 @@
 //! workspace never proves by echoing desired state. Unknown stays unknown
 //! so the core retains pending flights instead of settling on a guess.
 
-use super::world_diff::{FreshWindow, NativeOps};
+use super::world_diff::{FreshWindow, NativeOps, SelectionArrivalGrant};
 use crate::product_hide::sys::{VisibilityPostDiag, VisibilityPostTrace};
 
 /// Trace-only native hide-claim lane: the world actuator's post sink arms
@@ -135,6 +135,13 @@ pub(super) struct NativePrimitives {
     pub observe:
         fn(u64, &ProcessIdentity, &[Rect], &mut TokenMap) -> Result<ObservedWindow, ObserveError>,
     pub window_pid: fn(u64) -> u32,
+    /// Live shell-window handle (`GetShellWindow`); `0` when unavailable.
+    /// Read fresh per desktop-proof attempt, never cached.
+    pub shell_window: fn() -> u64,
+    /// Expected system shell executable path derived from the trusted
+    /// native Windows directory (`FOLDERID_Windows`, never `WINDIR`);
+    /// `None` when unreadable (fail closed).
+    pub system_shell_path: fn() -> Option<String>,
     pub is_visible: fn(u64) -> bool,
     pub is_iconic: fn(u64) -> bool,
     pub set_outer: fn(u64, Rect) -> bool,
@@ -195,6 +202,56 @@ pub(super) enum ObserveError {
     Unknown,
 }
 
+/// Gate-time attribution for one [`LiveNative::focus_write_vetoed`] veto:
+/// the decided outcome plus the decision reads that decided it. Stored
+/// only on a traced veto (trace-armed veto-only); passes and off-trace
+/// calls store nothing and allocate nothing. The refusal diagnostic
+/// replays it with no new native probe. Never a behavior input: the veto
+/// boolean already decided before this is read.
+#[derive(Debug, Clone, Default)]
+struct FocusWriteVetoDetail {
+    /// Gate-time foreground HWND relation from the veto's own sample:
+    /// `none` (no foreground), `target` (already the write target),
+    /// `other`. Distinct from the later post-veto helper sample.
+    gate_identity: &'static str,
+    /// Coarse veto class: `readable-fullscreen` (readable
+    /// captionless-fullscreen foreground), `unreadable` (vetoed without
+    /// validating as the same-pass hidden departure), `hidden-departure`
+    /// (vetoed after the foreground matched the known same-pass hidden
+    /// departure).
+    kind: &'static str,
+    /// Visible-lane readability of the gate-time sample.
+    readable: bool,
+    /// Gate-time foreground facts when read (visible read, or the hidden
+    /// read inside the departure lane); `None` when unread.
+    shell: Option<bool>,
+    fullscreen: Option<bool>,
+    /// Visible-read facts on the readable lane; otherwise the existing
+    /// entry `is_visible` decision, not a later hidden-read fact.
+    visible: Option<bool>,
+    /// Foreground executable basename only, never a full path.
+    exe: Option<String>,
+}
+
+/// Foreground executable basename for trace detail: the file name only,
+/// never a full path or any other identity content.
+fn exe_basename(exe_path: &str) -> Option<String> {
+    std::path::Path::new(exe_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Proven exact-desktop foreground for one selection-arrival focus call:
+/// the shell handle plus the shell process identity live-proven at the
+/// gate. The post-prime recheck requires a fresh proof equal to this one
+/// before the setter runs; any drift refuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopProof {
+    fg: u64,
+    pid: u32,
+    creation: String,
+}
+
 fn real_observe(
     hwnd: u64,
     me: &ProcessIdentity,
@@ -217,6 +274,15 @@ fn real_observe_hidden(
 
 fn real_window_pid(hwnd: u64) -> u32 {
     crate::ffi::window_pid(hwnd)
+}
+
+fn real_shell_window() -> u64 {
+    crate::ffi::shell_window()
+}
+
+fn real_system_shell_path() -> Option<String> {
+    crate::ffi::windows_directory()
+        .map(|dir| dir.join("explorer.exe").to_string_lossy().into_owned())
 }
 
 fn real_is_visible(hwnd: u64) -> bool {
@@ -399,6 +465,8 @@ impl Default for NativePrimitives {
         Self {
             observe: real_observe,
             window_pid: real_window_pid,
+            shell_window: real_shell_window,
+            system_shell_path: real_system_shell_path,
             is_visible: real_is_visible,
             is_iconic: real_is_iconic,
             set_outer: real_set_outer,
@@ -482,6 +550,30 @@ pub(super) struct LiveNative<'a> {
     /// hidden claim from a prior pass never matches because a fresh
     /// `assemble` starts with `None`.
     na_hidden_departure: Option<(WindowKey, ProcessIdentity)>,
+    /// Gate-time attribution from the last [`Self::focus_write_vetoed`]
+    /// veto (see [`FocusWriteVetoDetail`]): stored only on a traced veto,
+    /// `None` on passes and off-trace calls. Reset at each
+    /// `focus_window_traced` entry so a stale pass never leaks into
+    /// another gate's refusal row; consumed only for the
+    /// `focus-write-veto` refusal detail.
+    focus_veto_detail: Option<FocusWriteVetoDetail>,
+    /// Fresh accepted explicit-selection arrival grant for this pass (see
+    /// [`SelectionArrivalGrant`]): the exact one-shot focus effect ids the
+    /// command path armed before apply. `None` on observation ticks and
+    /// non-selection commands. Consulted only through the effect-bound
+    /// [`NativeOps::focus_window_traced_selected`] lane.
+    selection_arrival: Option<SelectionArrivalGrant>,
+    /// Synchronous arm for the dispatch immediately around the current
+    /// [`NativeOps::focus_window_traced_selected`] call (see that lane):
+    /// true only between the exact effect-id binding check and the veto
+    /// gate of the same call. Never set on observation ticks, unbound
+    /// calls, or non-selection effects; always cleared before return.
+    selection_arrival_armed: bool,
+    /// Gate-time exact-desktop proof for the current
+    /// [`Self::focus_window_traced`] call when the foreground-fullscreen
+    /// veto passed through the selection-arrival exception. Reset at each
+    /// call entry; the post-prime recheck requires a fresh equal proof.
+    desktop_proof: Option<DesktopProof>,
     pub sticky: &'a BTreeMap<WindowKey, bool>,
     pub float_topmost_prev: &'a BTreeMap<WindowKey, bool>,
     pub scope: &'a [String],
@@ -559,6 +651,10 @@ impl<'a> LiveNative<'a> {
             member_identity,
             hidden_claims,
             na_hidden_departure: None,
+            focus_veto_detail: None,
+            selection_arrival: None,
+            selection_arrival_armed: false,
+            desktop_proof: None,
             sticky,
             float_topmost_prev,
             scope,
@@ -698,31 +794,106 @@ impl<'a> LiveNative<'a> {
     /// visible-membership tag, continued invisibility, and the foreground
     /// still naming the same window before the setter runs.
     fn focus_write_vetoed(&mut self, hwnd: u64) -> bool {
+        // Armed only by the effect-bound selected lane for the dispatch
+        // immediately around this call (see
+        // `focus_window_traced_selected`); every other path reads false.
+        let arrival = self.selection_arrival_armed;
         let fg = (self.prims.foreground)();
+        let gate_identity = if fg == 0 {
+            "none"
+        } else if fg == hwnd {
+            "target"
+        } else {
+            "other"
+        };
         if fg == 0 || fg == hwnd {
             return false;
         }
         if let Ok(w) = (self.prims.observe)(fg, self.me, self.fulls, &mut self.tokens) {
-            return w.facts.captionless_fullscreen;
+            // Exact-desktop selection-arrival exception: a readable
+            // fullscreen foreground that proves to be the live verified
+            // desktop passes (proof stored for the post-prime recheck).
+            // Anything unproven vetoes below exactly as before.
+            if w.facts.captionless_fullscreen
+                && arrival
+                && let Some(proof) = self.prove_exact_desktop(fg, &w)
+            {
+                self.desktop_proof = Some(proof);
+                return false;
+            }
+            let vetoed = w.facts.captionless_fullscreen;
+            // Trace-armed veto-only stash: passes and off-trace calls
+            // store nothing (no exe allocation, detail stays `None`).
+            if vetoed && self.trace {
+                self.focus_veto_detail = Some(FocusWriteVetoDetail {
+                    gate_identity,
+                    kind: "readable-fullscreen",
+                    readable: true,
+                    shell: Some(w.facts.shell),
+                    fullscreen: Some(w.facts.captionless_fullscreen),
+                    visible: Some(w.facts.visible),
+                    exe: exe_basename(&w.identity.exe_path),
+                });
+            }
+            return vetoed;
         }
         // Hidden lane, same-pass departure only. A newly visible
         // foreground never rides here (its visible read above decided).
+        // Every veto below records `unreadable` until the foreground
+        // proves to be the known same-pass departure HWND; from there
+        // every reject records `hidden-departure`. All stashes are
+        // trace-armed veto-only (see above).
         if (self.prims.is_visible)(fg) {
+            // Visible yet unreadable (elevated/foreign-session analogue):
+            // the gate's own visibility read rides the detail.
+            self.note_focus_veto(|| FocusWriteVetoDetail {
+                gate_identity,
+                kind: "unreadable",
+                readable: false,
+                visible: Some(true),
+                ..FocusWriteVetoDetail::default()
+            });
             return true;
         }
         let Some((dep_key, dep_expected)) = self.na_hidden_departure.clone() else {
+            self.note_focus_veto(|| FocusWriteVetoDetail {
+                gate_identity,
+                kind: "unreadable",
+                readable: false,
+                visible: Some(false),
+                ..FocusWriteVetoDetail::default()
+            });
             return true;
         };
         if fg != dep_key.hwnd {
+            self.note_focus_veto(|| FocusWriteVetoDetail {
+                gate_identity,
+                kind: "unreadable",
+                readable: false,
+                visible: Some(false),
+                ..FocusWriteVetoDetail::default()
+            });
             return true;
         }
+        let hidden_veto = || FocusWriteVetoDetail {
+            gate_identity,
+            kind: "hidden-departure",
+            readable: false,
+            // Gate-time visibility from the existing decision read above
+            // (`is_visible` was false on entry here), never a new probe.
+            visible: Some(false),
+            ..FocusWriteVetoDetail::default()
+        };
         let Some(expected) = self.member_identity.get(&dep_key).cloned() else {
+            self.note_focus_veto(hidden_veto);
             return true;
         };
         if expected != dep_expected {
+            self.note_focus_veto(hidden_veto);
             return true;
         }
         let Some(record) = self.hidden_claims.get(&dep_key).cloned() else {
+            self.note_focus_veto(hidden_veto);
             return true;
         };
         if !crate::model::valid_claim_tag(&record.claim.tag)
@@ -730,14 +901,34 @@ impl<'a> LiveNative<'a> {
             || record.claim.process.pid != dep_key.pid
             || record.claim.process.process_creation != dep_key.creation
         {
+            self.note_focus_veto(hidden_veto);
             return true;
         }
         if !self.identity_ok(&dep_key, &expected) || !self.lifetime_ok(&dep_key) {
+            self.note_focus_veto(hidden_veto);
             return true;
         }
         let w = match (self.prims.observe_hidden)(fg, self.me, self.fulls, &mut self.tokens) {
             Ok(w) => w,
-            Err(_) => return true,
+            Err(_) => {
+                self.note_focus_veto(hidden_veto);
+                return true;
+            }
+        };
+        // The hidden read landed: its facts (shell/fullscreen/
+        // visibility/exe basename) ride only an actual traced refusal,
+        // built lazily here from the already-read `w` with no re-read.
+        // `readable` stays the visible-lane readability (false here).
+        let hidden_facts = || FocusWriteVetoDetail {
+            gate_identity,
+            kind: "hidden-departure",
+            readable: false,
+            shell: Some(w.facts.shell),
+            fullscreen: Some(w.facts.captionless_fullscreen),
+            // Gate-time visibility from the existing decision read, not
+            // the hidden read: `is_visible` was false on entry here.
+            visible: Some(false),
+            exe: exe_basename(&w.identity.exe_path),
         };
         if w.hwnd != dep_key.hwnd
             || w.identity.pid != dep_key.pid
@@ -746,15 +937,18 @@ impl<'a> LiveNative<'a> {
             || w.identity.user_sid != expected.user_sid
             || w.identity.session_id != expected.session_id
         {
+            self.note_focus_veto(hidden_facts);
             return true;
         }
         if self
             .stored_tag(&dep_key)
             .is_some_and(|stored| w.member_tag.as_deref().is_none_or(|live| live != stored))
         {
+            self.note_focus_veto(hidden_facts);
             return true;
         }
         if w.facts.captionless_fullscreen {
+            self.note_focus_veto(hidden_facts);
             return true;
         }
         // Hidden is expected here, so the focus-eligibility predicate runs
@@ -763,6 +957,7 @@ impl<'a> LiveNative<'a> {
         let mut facts = w.facts;
         facts.visible = true;
         if crate::tiling::classify_focus(&facts).is_err() {
+            self.note_focus_veto(hidden_facts);
             return true;
         }
         // Finish rechecks against a foreign reappearance between the entry
@@ -773,9 +968,118 @@ impl<'a> LiveNative<'a> {
             || (self.prims.window_pid)(fg) != dep_key.pid
             || !self.identity_ok(&dep_key, &expected)
         {
+            self.note_focus_veto(hidden_facts);
             return true;
         }
         false
+    }
+
+    /// Exact-desktop proof for the selection-arrival exception (user
+    /// 2026-10-27): the fresh foreground must equal the nonzero live shell
+    /// handle, with live-proven shell process identity/lifetime
+    /// (HWND/PID/creation agreement across the gate's own reads), matching
+    /// owner user/session, and the system-shell executable. Observed
+    /// class/shell/fullscreen facts are corroborative only and never decide:
+    /// only this proof passes. Any mismatch or unreadable verification
+    /// fails closed (`None`).
+    fn prove_exact_desktop(
+        &mut self,
+        gate_fg: u64,
+        gate_obs: &super::ObservedWindow,
+    ) -> Option<DesktopProof> {
+        // The gate's own observation must name the gate foreground: a
+        // mismatched observed HWND never proves, however well its identity
+        // reads.
+        if gate_obs.hwnd != gate_fg {
+            return None;
+        }
+        // Fast-path skip before the slow reads below; the final bracket at
+        // the end decides.
+        let shell = (self.prims.shell_window)();
+        if shell == 0 || shell != gate_fg {
+            return None;
+        }
+        if (self.prims.foreground)() != gate_fg {
+            return None;
+        }
+        let pid = (self.prims.window_pid)(gate_fg);
+        if pid == 0 {
+            return None;
+        }
+        let ident = (self.prims.process_identity)(gate_fg)?;
+        if ident.pid != pid || ident.process_creation.is_empty() {
+            return None;
+        }
+        // HWND/PID/creation agreement across the gate's own reads: a
+        // recycled handle or drifted observation never proves.
+        if gate_obs.identity.pid != pid
+            || gate_obs.identity.process_creation != ident.process_creation
+            || gate_obs.identity.exe_path != ident.exe_path
+            || gate_obs.identity.user_sid != ident.user_sid
+            || gate_obs.identity.session_id != ident.session_id
+        {
+            return None;
+        }
+        if ident.user_sid != self.me.user_sid || ident.session_id != self.me.session_id {
+            return None;
+        }
+        let expected = (self.prims.system_shell_path)()?;
+        if !crate::lifecycle::exe_paths_equal(&ident.exe_path, &expected) {
+            return None;
+        }
+        // Final bracket after the slow reads above: the shell handle, the
+        // foreground, and the HWND-to-PID mapping must still agree. No
+        // atomicity is claimed (the host may still race past this point;
+        // the post-prime recheck guards that), but no known-slow read sits
+        // past this check.
+        if (self.prims.foreground)() != gate_fg
+            || (self.prims.shell_window)() != gate_fg
+            || (self.prims.window_pid)(gate_fg) != pid
+        {
+            return None;
+        }
+        Some(DesktopProof {
+            fg: gate_fg,
+            pid,
+            creation: ident.process_creation,
+        })
+    }
+
+    /// Fresh exact-desktop re-proof for the post-prime stability recheck:
+    /// same proof as [`Self::prove_exact_desktop`] against a fresh gate
+    /// observation (never the stale gate read). `None` fails closed.
+    fn reprove_exact_desktop(&mut self) -> Option<DesktopProof> {
+        let shell = (self.prims.shell_window)();
+        if shell == 0 {
+            return None;
+        }
+        let fg = (self.prims.foreground)();
+        if fg == 0 || fg != shell {
+            return None;
+        }
+        let gate_obs = (self.prims.observe)(fg, self.me, self.fulls, &mut self.tokens).ok()?;
+        if !gate_obs.facts.captionless_fullscreen {
+            return None;
+        }
+        self.prove_exact_desktop(fg, &gate_obs)
+    }
+
+    /// Arm the fresh accepted explicit-selection arrival grant for this
+    /// pass. Called only by the command path with
+    /// [`SelectionArrivalGrant::for_accepted`]; observation ticks and
+    /// non-selection commands leave the default `None`.
+    pub(super) fn set_selection_arrival(&mut self, grant: Option<SelectionArrivalGrant>) {
+        self.selection_arrival = grant;
+    }
+
+    /// Trace-gated veto stash: the builder runs only when trace is
+    /// armed, so off-trace calls neither build the payload (no exe
+    /// allocation) nor store anything. Callers must pass the builder
+    /// itself, never a prebuilt value: arguments evaluate first.
+    fn note_focus_veto(&mut self, build: impl FnOnce() -> FocusWriteVetoDetail) {
+        if self.trace {
+            self.focus_veto_detail = Some(build());
+        }
     }
 
     /// Live move/size veto independent of the hook queue: the target or
@@ -1206,6 +1510,69 @@ impl<'a> LiveNative<'a> {
     /// freshly proven frames, oldest first.
     pub(super) fn take_hidden_seeds(&mut self) -> Vec<(WindowKey, Rect)> {
         std::mem::take(&mut self.hidden_seeds)
+    }
+
+    /// Trace-only refusal detail for one `Ok(false)` pre-primitive focus
+    /// veto (scope, focus classification, focus-write veto, move/size veto).
+    /// Returns the default (all-`None`) record when trace is off (suppressed:
+    /// no diagnostic native read), else the gate plus non-sensitive safe
+    /// state: the observed target visibility/cloak at dispatch, the
+    /// hide-claim ledger at dispatch, and the foreground identity class
+    /// (`none` when no foreground, `target` when it already names the
+    /// refused target HWND, `other` otherwise). The single foreground sample
+    /// is a post-veto HWND relation only, never a gate and never proof of
+    /// arrival; the vetos already decided before this records why, and the
+    /// one read is the only added probing (success and off-trace paths run
+    /// none). The `focus-write-veto` gate additionally replays the veto's
+    /// own gate-time attribution (relation, kind, readability, shell,
+    /// fullscreen, visibility, exe basename) from the veto's decision
+    /// reads: no new probe, and the gate-time relation may differ from the
+    /// post-veto sample above when the foreground raced between them.
+    /// Never a behavior input.
+    fn focus_refusal_diag(
+        &mut self,
+        gate: &'static str,
+        reason: Option<&'static str>,
+        key: &WindowKey,
+        w: &super::ObservedWindow,
+    ) -> super::world_diff::FocusCallDiag {
+        use super::world_diff::FocusCallDiag;
+        if !self.trace {
+            return FocusCallDiag::default();
+        }
+        let fg = (self.prims.foreground)();
+        let fg_identity = if fg == 0 {
+            "none"
+        } else if fg == key.hwnd {
+            "target"
+        } else {
+            "other"
+        };
+        let mut diag = FocusCallDiag {
+            refusal_gate: Some(gate),
+            refusal_reason: reason,
+            target_visible: Some(w.facts.visible),
+            target_cloaked: Some(w.facts.cloaked),
+            target_hidden: Some(self.committed_hidden(key)),
+            fg_identity: Some(fg_identity),
+            // True when this call passed the foreground-fullscreen veto
+            // through the desktop exception but refused at this gate (a
+            // later gate or the post-prime stability recheck).
+            desktop_exception: self.desktop_proof.is_some(),
+            ..FocusCallDiag::default()
+        };
+        if gate == "focus-write-veto"
+            && let Some(detail) = self.focus_veto_detail.take()
+        {
+            diag.fg_gate_identity = Some(detail.gate_identity);
+            diag.fg_veto_kind = Some(detail.kind);
+            diag.fg_readable = Some(detail.readable);
+            diag.fg_shell = detail.shell;
+            diag.fg_fullscreen = detail.fullscreen;
+            diag.fg_visible = detail.visible;
+            diag.fg_exe = detail.exe;
+        }
+        diag
     }
 }
 
@@ -1680,6 +2047,27 @@ impl NativeOps for LiveNative<'_> {
         self.focus_window_traced(token).0
     }
 
+    fn focus_window_traced_selected(
+        &mut self,
+        token: &str,
+        effect_id: &str,
+    ) -> (Result<bool, ()>, super::world_diff::FocusCallDiag) {
+        // Exact effect binding, checked synchronously with the exact effect
+        // id and dispatch target: only a pair in the fresh accepted
+        // selection grant arms the desktop exception for the dispatch
+        // immediately below. Any other effect (directional, send/migrate
+        // follow, automatic admission, cursor-follow, observation) or a
+        // tampered id/target pair runs the existing gates unchanged. The
+        // flag clears before return, so no later call can ride it.
+        self.selection_arrival_armed = self
+            .selection_arrival
+            .as_ref()
+            .is_some_and(|grant| grant.allows(effect_id, token));
+        let outcome = self.focus_window_traced(token);
+        self.selection_arrival_armed = false;
+        outcome
+    }
+
     fn take_visibility_posts(&mut self) -> (Vec<VisibilityPostDiag>, usize) {
         self.vis_posts.take()
     }
@@ -1698,9 +2086,9 @@ impl NativeOps for LiveNative<'_> {
     ) -> (Result<bool, ()>, super::world_diff::FocusCallDiag) {
         use super::world_diff::{FOCUS_SETTER_API, FocusCallDiag, GuiFocusState};
         // Pre-primitive vetos report no primitive detail: the adapter
-        // dispatched, the native setter never ran. Behavior (outcome)
-        // matches the previous `focus_window` exactly; only the record is
-        // new.
+        // dispatched, the native setter never ran. The diagnostic record
+        // distinguishes preflight refusal from execution. The approved
+        // exact-desktop arrival lane still requires all later rechecks.
         let vetoed = |outcome: Result<bool, ()>| {
             (
                 outcome,
@@ -1712,9 +2100,32 @@ impl NativeOps for LiveNative<'_> {
                     call_mono_ms: None,
                     ret_mono_ms: None,
                     gui_before: None,
+                    refusal_gate: None,
+                    refusal_reason: None,
+                    target_visible: None,
+                    target_cloaked: None,
+                    target_hidden: None,
+                    fg_identity: None,
+                    fg_gate_identity: None,
+                    fg_veto_kind: None,
+                    fg_readable: None,
+                    fg_shell: None,
+                    fg_fullscreen: None,
+                    fg_visible: None,
+                    fg_exe: None,
+                    // Early returns run before the veto gate, so no
+                    // desktop proof can exist yet.
+                    desktop_exception: false,
                 },
             )
         };
+        // A stale gate-time veto record or desktop proof from a prior call
+        // never leaks into this call: the veto below always re-records.
+        // (`selection_arrival_armed` is intentionally not reset here: the
+        // selected lane arms it immediately before this call and clears it
+        // immediately after, with no reentrant focus call between.)
+        self.focus_veto_detail = None;
+        self.desktop_proof = None;
         let Some(key) = self.key_of(token) else {
             return vetoed(Err(()));
         };
@@ -1735,30 +2146,86 @@ impl NativeOps for LiveNative<'_> {
             return vetoed(Err(()));
         }
         if !crate::tiling::scope_allows(self.scope, &w.identity.exe_path) {
-            return vetoed(Ok(false));
+            let diag = self.focus_refusal_diag("scope", None, &key, &w);
+            return (Ok(false), diag);
         }
         if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
             return vetoed(Err(()));
         }
         // Focus carries the overlay exemption (maximized/fullscreen members
         // focus, like the legacy actuation); everything else still refuses.
-        if crate::tiling::classify_focus(&w.facts).is_err() {
-            return vetoed(Ok(false));
+        if let Err(reason) = crate::tiling::classify_focus(&w.facts) {
+            let diag = self.focus_refusal_diag("classify-focus", Some(reason.as_str()), &key, &w);
+            return (Ok(false), diag);
         }
         if self.focus_write_vetoed(key.hwnd) {
-            return vetoed(Ok(false));
+            let diag = self.focus_refusal_diag("focus-write-veto", None, &key, &w);
+            return (Ok(false), diag);
         }
         if self.move_size_vetoed(key.hwnd) {
-            return vetoed(Ok(false));
+            let diag = self.focus_refusal_diag("move-size-veto", None, &key, &w);
+            return (Ok(false), diag);
         }
         // Bounded last-input prime immediately before the single setter:
         // one E8 down/up pair so the owner holds last-input rights when
-        // the setter runs. After every veto above, so a vetoed effect
-        // never synthesizes input; stamps below stay strictly around the
-        // setter. No wait, retry, or queue coupling; injected E8 never
+        // the setter runs. Refusals above never synthesize input; an
+        // exception-only recheck below can still refuse after priming and
+        // records its count. Stamps strictly bracket only the setter.
+        // No wait, retry, or queue coupling; injected E8 never
         // dispatches a command (the product filter drops it first).
         let prime_inserted = (self.prims.prime)(FOCUS_PRIME_VK);
+        // Exception-only pre-actuation rechecks: the slow desktop proof
+        // and the prime above leave a window where a hook, a target drift,
+        // or a modal loop may have started. Every other path keeps its
+        // existing probes exactly (no recheck without a gate proof).
+        if self.desktop_proof.is_some() {
+            // Racing external invalidation fails closed as ambiguous
+            // (at-most-once), exactly like the entry gate. The prime
+            // already ran, so its outcome rides the record even though the
+            // primitive never runs.
+            if (self.prims.hook_pending)() {
+                let (_, mut diag) = vetoed(Err(()));
+                diag.prime_inserted = Some(prime_inserted);
+                diag.desktop_exception = true;
+                return (Err(()), diag);
+            }
+            // Fresh target revalidation against a new observation: HWND
+            // plus PID plus creation, scope, classification, identity, and
+            // lifetime. Any drift fails closed as ambiguous, like entry.
+            let fresh_target =
+                (self.prims.observe)(key.hwnd, self.me, self.fulls, &mut self.tokens);
+            let target_ok = match &fresh_target {
+                Ok(tw) => {
+                    tw.hwnd == key.hwnd
+                        && tw.identity.pid == key.pid
+                        && tw.identity.process_creation == key.creation
+                        && crate::tiling::scope_allows(self.scope, &tw.identity.exe_path)
+                        && crate::tiling::classify_focus(&tw.facts).is_ok()
+                        && self.identity_ok(&key, &expected)
+                        && self.lifetime_ok(&key)
+                }
+                Err(_) => false,
+            };
+            if !target_ok {
+                let (_, mut diag) = vetoed(Err(()));
+                diag.prime_inserted = Some(prime_inserted);
+                diag.desktop_exception = true;
+                return (Err(()), diag);
+            }
+            // A modal loop starting on the target or foreground thread
+            // refuses under the existing move-size vocabulary.
+            if self.move_size_vetoed(key.hwnd) {
+                let mut diag = self.focus_refusal_diag("move-size-veto", None, &key, &w);
+                diag.prime_inserted = Some(prime_inserted);
+                return (Ok(false), diag);
+            }
+            // Final desktop stability recheck runs after the GUI probe at
+            // the native boundary (see below).
+        }
         // Trace-gated pre-call GUI read: no native call while trace is off.
+        // A dispatch-time observation only, never proof of arrival: it
+        // deliberately runs before the final desktop recheck below so the
+        // shell/foreground stability bracket sits at the native boundary.
         let gui_before = if self.trace {
             match crate::ffi::gui_thread_focus(key.hwnd) {
                 Some(focus) => Some(GuiFocusState::Known {
@@ -1771,6 +2238,23 @@ impl NativeOps for LiveNative<'_> {
         } else {
             None
         };
+        // Final desktop stability recheck at the native boundary: a fresh
+        // proof must equal the gate proof or the call refuses with no
+        // retry, replay, or geometry write. `desktop_exception` still marks
+        // the gate pass (it never implies the setter ran); the
+        // `arrival-recheck` reason distinguishes this refusal from a
+        // gate-time veto.
+        if let Some(gate_proof) = self.desktop_proof.clone() {
+            let stable = self
+                .reprove_exact_desktop()
+                .is_some_and(|fresh| fresh == gate_proof);
+            if !stable {
+                let mut diag =
+                    self.focus_refusal_diag("focus-write-veto", Some("arrival-recheck"), &key, &w);
+                diag.prime_inserted = Some(prime_inserted);
+                return (Ok(false), diag);
+            }
+        }
         // Stamps strictly around the primitive, never the preflight above.
         let call_mono_ms = super::trace::log_mono_ms();
         let ok = (self.prims.focus)(key.hwnd);
@@ -1794,6 +2278,20 @@ impl NativeOps for LiveNative<'_> {
                     call_mono_ms: Some(call_mono_ms),
                     ret_mono_ms: Some(ret_mono_ms),
                     gui_before,
+                    refusal_gate: None,
+                    refusal_reason: None,
+                    target_visible: None,
+                    target_cloaked: None,
+                    target_hidden: None,
+                    fg_identity: None,
+                    fg_gate_identity: None,
+                    fg_veto_kind: None,
+                    fg_readable: None,
+                    fg_shell: None,
+                    fg_fullscreen: None,
+                    fg_visible: None,
+                    fg_exe: None,
+                    desktop_exception: self.desktop_proof.is_some(),
                 },
             );
         }
@@ -1807,6 +2305,20 @@ impl NativeOps for LiveNative<'_> {
                 call_mono_ms: Some(call_mono_ms),
                 ret_mono_ms: Some(ret_mono_ms),
                 gui_before,
+                refusal_gate: None,
+                refusal_reason: None,
+                target_visible: None,
+                target_cloaked: None,
+                target_hidden: None,
+                fg_identity: None,
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: self.desktop_proof.is_some(),
             },
         )
     }

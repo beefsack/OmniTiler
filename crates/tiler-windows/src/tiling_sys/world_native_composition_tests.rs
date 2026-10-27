@@ -1779,6 +1779,8 @@ fn cycle_prims() -> NativePrimitives {
     NativePrimitives {
         observe: s_observe,
         window_pid: fake_backed_pid,
+        shell_window: || 0,
+        system_shell_path: || None,
         is_visible: fake_backed_visible,
         is_iconic: fake_backed_iconic,
         set_outer: s_set_outer_moving,

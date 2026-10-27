@@ -11,7 +11,10 @@
 
 use super::super::rmax03_adapter_tests::test_state;
 use super::super::world_capture::capture_world;
-use super::super::world_diff::{FakeNative, FreshHost, HostDiff, NativeOps, apply_world_reply};
+use super::super::world_diff::{
+    FakeNative, FocusCallDiag, FreshHost, HostDiff, NativeOps, SelectionArrivalGrant,
+    apply_world_reply,
+};
 use super::super::world_native_receipts::observed_view_receipts;
 use super::super::world_owner::WorldOwner;
 use super::super::world_sequencer::AckOutcome;
@@ -28,8 +31,8 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
-    ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
-    WindowDesire, WorldCommand, WorldReply,
+    EffectKind, OneShotEffect, ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTarget,
+    WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand, WorldReply,
 };
 
 const ADAPTER: &str = "adapter-1";
@@ -81,6 +84,19 @@ fn observed_for(
     vis: Rect,
     facts: WindowFacts,
 ) -> super::super::ObservedWindow {
+    observed_for_with_exe(key, token, vis, facts, EXE)
+}
+
+/// [`observed_for`] with an explicit executable path for the observed
+/// identity (foreground shell-vs-game separation). The basename only ever
+/// reaches the trace; the full path stays in the observation.
+fn observed_for_with_exe(
+    key: &WindowKey,
+    token: &str,
+    vis: Rect,
+    facts: WindowFacts,
+    exe: &str,
+) -> super::super::ObservedWindow {
     let outer = Rect {
         x: vis.x - 8,
         y: vis.y - 8,
@@ -97,7 +113,7 @@ fn observed_for(
             hwnd: key.hwnd,
             pid: key.pid,
             process_creation: key.creation.clone(),
-            exe_path: EXE.to_owned(),
+            exe_path: exe.to_owned(),
             user_sid: "S-1-5-21-1000".to_owned(),
             session_id: 1,
             // Generic fixture-style identity: the proof-only owned-helper
@@ -119,11 +135,52 @@ thread_local! {
     static S_OBSERVE: RefCell<HashMap<u64, super::super::ObservedWindow>> =
         RefCell::new(HashMap::new());
     static S_PID: RefCell<HashMap<u64, u32>> = RefCell::new(HashMap::new());
+    /// Scripted live shell-window handle (`GetShellWindow`); `0` means
+    /// unavailable. Reset per test.
+    static S_SHELL: RefCell<u64> = const { RefCell::new(0) };
+    /// Scripted shell-handle read sequence: popped per `shell_window`
+    /// read while nonempty (mid-call shell drift analogue), else `S_SHELL`.
+    /// Reset per test.
+    static S_SHELL_SEQ: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// Scripted pid read sequence: popped per `window_pid` read whose HWND
+    /// matches the front entry (mid-call recycle analogue); other HWNDs
+    /// read `S_PID`. Reset per test.
+    static S_PID_SEQ: RefCell<Vec<(u64, u32)>> = const { RefCell::new(Vec::new()) };
+    /// Scripted identity read sequence: popped per `process_identity` read
+    /// whose HWND matches the front entry (`None` = unreadable, fail
+    /// closed); other HWNDs read `S_IDENT`. Reset per test.
+    static S_IDENT_SEQ: RefCell<Vec<(u64, Option<ProcessIdentity>)>> =
+        const { RefCell::new(Vec::new()) };
+    /// Scripted system-shell-path read sequence: popped per
+    /// `system_shell_path` read while nonempty, else `S_SYSTEM_SHELL`.
+    /// Reset per test.
+    static S_SYS_SEQ: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
+    /// HWND whose move/size probe flips to active once the prime runs
+    /// (mid-call modal analogue); `None` keeps the `S_MOVE_SIZE` map
+    /// exactly. Reset per test.
+    static S_MODAL_AFTER_PRIME: RefCell<Option<u64>> = const { RefCell::new(None) };
+    /// HWND whose observation fails once the prime runs (mid-call target
+    /// departure analogue); `None` keeps `s_observe` exactly. Reset per
+    /// test.
+    static S_UNOBSERVE_AFTER_PRIME: RefCell<Option<u64>> = const { RefCell::new(None) };
+    /// Scripted expected system shell executable path (`None` = unreadable,
+    /// fail closed). Reset per test.
+    static S_SYSTEM_SHELL: RefCell<Option<String>> = const { RefCell::new(None) };
     static S_VISIBLE: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
     static S_ICONIC: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
     static S_SET_OK: RefCell<HashMap<u64, bool>> = RefCell::new(HashMap::new());
     static S_SET_CALLS: RefCell<Vec<(u64, Rect)>> = const { RefCell::new(Vec::new()) };
     static S_FG: RefCell<u64> = const { RefCell::new(0) };
+    /// Scripted foreground race sequence: when nonempty, each foreground
+    /// read pops the front entry instead of `S_FG`, so a test can move the
+    /// foreground mid-call and prove the gate-time sample differs from the
+    /// later post-veto sample. Reset per test.
+    static S_FG_SEQ: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// Every scripted foreground read, in order. The refusal diagnostic's
+    /// single foreground sample is the only trace-gated read: probe-budget
+    /// tests count it here, proving zero added probing off-trace and on
+    /// success and exactly one added read on a traced refusal.
+    static S_FG_CALLS: RefCell<u64> = const { RefCell::new(0) };
     static S_FOCUS_OK: RefCell<HashMap<u64, bool>> = RefCell::new(HashMap::new());
     static S_TAG: RefCell<HashMap<u64, String>> = RefCell::new(HashMap::new());
     static S_HOOK: RefCell<bool> = const { RefCell::new(false) };
@@ -137,6 +194,11 @@ thread_local! {
     /// Scripted racing game HWND for the veto test: when set, the
     /// cross-DPI fake raises a fullscreen foreground mid-call.
     static S_GAME_FG: RefCell<Option<u64>> = const { RefCell::new(None) };
+    /// Scripted post-prime foreground HWND: when set, the foreground lane
+    /// reports the staged value until the prime runs, then this HWND
+    /// (mid-call race analogue: the prime moved the foreground). Reset per
+    /// test; `None` keeps the existing sequence behavior exactly.
+    static S_FG_AFTER_PRIME: RefCell<Option<u64>> = const { RefCell::new(None) };
     static S_ADMIT: RefCell<HashMap<u64, Result<WindowIdentity, AdmitOutcome>>> =
         RefCell::new(HashMap::new());
     static S_HIDE: RefCell<HashMap<u64, Result<WindowIdentity, String>>> =
@@ -168,11 +230,21 @@ thread_local! {
 fn reset_script() {
     S_OBSERVE.with(|m| m.borrow_mut().clear());
     S_PID.with(|m| m.borrow_mut().clear());
+    S_SHELL.with(|m| *m.borrow_mut() = 0);
+    S_SHELL_SEQ.with(|m| m.borrow_mut().clear());
+    S_PID_SEQ.with(|m| m.borrow_mut().clear());
+    S_IDENT_SEQ.with(|m| m.borrow_mut().clear());
+    S_SYS_SEQ.with(|m| m.borrow_mut().clear());
+    S_MODAL_AFTER_PRIME.with(|m| *m.borrow_mut() = None);
+    S_UNOBSERVE_AFTER_PRIME.with(|m| *m.borrow_mut() = None);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = None);
     S_VISIBLE.with(|m| m.borrow_mut().clear());
     S_ICONIC.with(|m| m.borrow_mut().clear());
     S_SET_OK.with(|m| m.borrow_mut().clear());
     S_SET_CALLS.with(|m| m.borrow_mut().clear());
     S_FG.with(|m| *m.borrow_mut() = 0);
+    S_FG_SEQ.with(|m| m.borrow_mut().clear());
+    S_FG_CALLS.with(|m| *m.borrow_mut() = 0);
     S_FOCUS_OK.with(|m| m.borrow_mut().clear());
     S_TAG.with(|m| m.borrow_mut().clear());
     S_HOOK.with(|m| *m.borrow_mut() = false);
@@ -185,6 +257,7 @@ fn reset_script() {
     S_DPI.with(|m| m.borrow_mut().clear());
     S_MONITORS.with(|m| m.borrow_mut().clear());
     S_GAME_FG.with(|m| *m.borrow_mut() = None);
+    S_FG_AFTER_PRIME.with(|m| *m.borrow_mut() = None);
     S_CURSOR.with(|m| *m.borrow_mut() = None);
     S_WARP_CALLS.with(|m| m.borrow_mut().clear());
     S_FAIL_WARP.with(|m| *m.borrow_mut() = false);
@@ -224,6 +297,12 @@ fn s_observe(
     _fulls: &[Rect],
     _tokens: &mut super::super::TokenMap,
 ) -> Result<super::super::ObservedWindow, super::ObserveError> {
+    // Mid-call target departure analogue: once the prime runs, this HWND
+    // reads unreadable.
+    if S_PRIMED.with(|m| *m.borrow()) && S_UNOBSERVE_AFTER_PRIME.with(|m| *m.borrow()) == Some(hwnd)
+    {
+        return Err(super::ObserveError::Unknown);
+    }
     // Production contract: the visible reader rejects hidden windows as
     // Unknown (see `observe_window` line 950), so the scripted lane must
     // too. Prior fakes returned hidden entries here and masked the
@@ -254,14 +333,65 @@ fn s_dpi(hwnd: u64) -> Option<u32> {
 fn scripted() -> NativePrimitives {
     NativePrimitives {
         observe: s_observe,
-        window_pid: |hwnd| S_PID.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(0)),
+        window_pid: |hwnd| {
+            if let Some(pid) = S_PID_SEQ.with(|seq| {
+                let mut seq = seq.borrow_mut();
+                match seq.first() {
+                    Some((front_hwnd, _)) if *front_hwnd == hwnd => Some(seq.remove(0).1),
+                    _ => None,
+                }
+            }) {
+                return pid;
+            }
+            S_PID.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(0))
+        },
+        shell_window: || {
+            S_SHELL_SEQ.with(|seq| {
+                let mut seq = seq.borrow_mut();
+                if seq.is_empty() {
+                    S_SHELL.with(|m| *m.borrow())
+                } else {
+                    seq.remove(0)
+                }
+            })
+        },
+        system_shell_path: || {
+            S_SYS_SEQ.with(|seq| {
+                let mut seq = seq.borrow_mut();
+                if seq.is_empty() {
+                    S_SYSTEM_SHELL.with(|m| m.borrow().clone())
+                } else {
+                    seq.remove(0)
+                }
+            })
+        },
         is_visible: |hwnd| S_VISIBLE.with(|m| m.borrow().contains(&hwnd)),
         is_iconic: |hwnd| S_ICONIC.with(|m| m.borrow().contains(&hwnd)),
         set_outer: |hwnd, outer| {
             S_SET_CALLS.with(|m| m.borrow_mut().push((hwnd, outer)));
             S_SET_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
         },
-        foreground: || S_FG.with(|m| *m.borrow()),
+        foreground: || {
+            S_FG_CALLS.with(|m| {
+                let seen = *m.borrow();
+                *m.borrow_mut() = seen.saturating_add(1);
+            });
+            // Post-prime race lane: once the prime ran, the foreground
+            // reports the raced HWND when one is staged.
+            if S_PRIMED.with(|m| *m.borrow())
+                && let Some(raced) = S_FG_AFTER_PRIME.with(|m| *m.borrow())
+            {
+                return raced;
+            }
+            S_FG_SEQ.with(|seq| {
+                let mut seq = seq.borrow_mut();
+                if seq.is_empty() {
+                    S_FG.with(|m| *m.borrow())
+                } else {
+                    seq.remove(0)
+                }
+            })
+        },
         focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
         prime: |vk| {
             S_PRIME_CALLS.with(|m| m.borrow_mut().push(vk));
@@ -280,7 +410,18 @@ fn scripted() -> NativePrimitives {
             true
         },
         dpi: s_dpi,
-        process_identity: |hwnd| S_IDENT.with(|m| m.borrow().get(&hwnd).cloned()),
+        process_identity: |hwnd| {
+            if let Some(hit) = S_IDENT_SEQ.with(|seq| {
+                let mut seq = seq.borrow_mut();
+                match seq.first() {
+                    Some((front_hwnd, _)) if *front_hwnd == hwnd => Some(seq.remove(0).1),
+                    _ => None,
+                }
+            }) {
+                return hit;
+            }
+            S_IDENT.with(|m| m.borrow().get(&hwnd).cloned())
+        },
         read_topmost: |_| false,
         admit: |hwnd, _me, _expected, _tag, _topmost| {
             S_ADMIT_CALLS.with(|m| m.borrow_mut().push(hwnd));
@@ -324,6 +465,13 @@ fn scripted() -> NativePrimitives {
             })
         },
         move_size: |hwnd| {
+            // Mid-call modal analogue: once the prime runs, the staged
+            // HWND reports an active move/size loop.
+            if S_PRIMED.with(|m| *m.borrow())
+                && S_MODAL_AFTER_PRIME.with(|m| *m.borrow()) == Some(hwnd)
+            {
+                return Some(true);
+            }
             S_MOVE_SIZE.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(Some(false)))
         },
         observe_hidden: s_observe_hidden,
@@ -2625,6 +2773,13 @@ struct LiveTick {
     reply: WorldReply,
     members: Vec<tiler_core::world_report::MemberAttempt>,
     views: Vec<tiler_core::world_report::ViewAttempt>,
+    /// Sequencer delivery of the produced reply (`accepted`, `duplicate`,
+    /// or `command-consumed`): lets tests prove fresh-accepted-only
+    /// behavior without re-implementing the dispatch path.
+    delivery: &'static str,
+    /// Command sequence of the dispatched report (`None` for
+    /// observation-only ticks): binds reply effects to their command.
+    command_seq: Option<u64>,
 }
 
 /// One production tick through the real owner with scripted natives:
@@ -2715,10 +2870,10 @@ fn live_tick_cursor(
             )
             .expect("dispatch command"),
     };
-    let reply = match owner.deliver_production(&report) {
-        WorldOutcome::Accepted(reply)
-        | WorldOutcome::Duplicate(reply)
-        | WorldOutcome::CommandConsumed(reply) => reply,
+    let (delivery, reply) = match owner.deliver_production(&report) {
+        WorldOutcome::Accepted(reply) => ("accepted", reply),
+        WorldOutcome::Duplicate(reply) => ("duplicate", reply),
+        WorldOutcome::CommandConsumed(reply) => ("command-consumed", reply),
         WorldOutcome::Rejected { kind, message } => panic!("production rejected {kind}: {message}"),
     };
     let mut inputs = env.state.inputs();
@@ -2816,6 +2971,8 @@ fn live_tick_cursor(
         reply,
         members: member_attempts,
         views: view_attempts,
+        delivery,
+        command_seq: report.command_seq,
     }
 }
 
@@ -3105,6 +3262,2173 @@ fn hide_identity_drift_refuses_without_seed() {
     );
     assert!(!native.hidden_claims.contains_key(&rig.leaving));
     assert!(native.take_hidden_seeds().is_empty());
+}
+
+/// Trace-only refusal diagnostics for the four `Ok(false)` pre-primitive
+/// focus branches: scope, `classify_focus`, focus-write veto, move/size veto.
+/// Each names its gate plus non-sensitive safe state (target
+/// visibility/cloak/ledger-hidden at dispatch, foreground identity class);
+/// classify additionally carries its reason. Refusal-only, trace-armed only:
+/// off-trace and success paths report no detail and probe nothing extra.
+#[test]
+fn focus_refusal_diag_reports_scope_gate() {
+    let mut env = env_with(110_301);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_301, 2301, "proc-301");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    // Nonempty scope naming another basename refuses this member.
+    env.state.scope = vec!["other.exe".to_owned()];
+    // Foreground already names the refused target.
+    S_FG.with(|m| *m.borrow_mut() = key.hwnd);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.native_return, None);
+    assert_eq!(diag.prime_inserted, None);
+    assert_eq!(diag.refusal_gate, Some("scope"));
+    assert_eq!(diag.refusal_reason, None);
+    assert_eq!(diag.target_visible, Some(true));
+    assert_eq!(diag.target_cloaked, Some(false));
+    assert_eq!(diag.target_hidden, Some(false));
+    assert_eq!(diag.fg_identity, Some("target"));
+    assert_eq!(diag.gui_before, None);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+#[test]
+fn focus_refusal_diag_reports_classify_reason() {
+    let mut env = env_with(110_302);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_302, 2302, "proc-302");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    let mut facts = plain_facts();
+    facts.tool_window = true;
+    script_live(&key, "w1", rect(0, 0, 800, 600), facts);
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("classify-focus"));
+    assert_eq!(diag.refusal_reason, Some("tool"));
+    assert_eq!(diag.target_visible, Some(true));
+    assert_eq!(diag.target_cloaked, Some(false));
+    assert_eq!(diag.target_hidden, Some(false));
+    // No foreground anywhere: the null class, never a guess.
+    assert_eq!(diag.fg_identity, Some("none"));
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+#[test]
+fn focus_refusal_diag_reports_focus_write_veto() {
+    let mut env = env_with(110_303);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_303, 2303, "proc-303");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    // Live fullscreen competitor holds the foreground.
+    let fg_key = win_key(110_304, 2304, "proc-304");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            fg_key.hwnd,
+            observed_for(&fg_key, "fg", rect(0, 0, 1920, 1080), fg_facts),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(fg_key.hwnd, fg_key.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(fg_key.hwnd));
+    S_FG.with(|m| *m.borrow_mut() = fg_key.hwnd);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.refusal_reason, None);
+    assert_eq!(diag.target_visible, Some(true));
+    assert_eq!(diag.target_cloaked, Some(false));
+    assert_eq!(diag.target_hidden, Some(false));
+    assert_eq!(diag.fg_identity, Some("other"));
+    // Gate-time attribution replays the veto's own sample: readable
+    // fullscreen nonshell fixture app, relation `other` like the
+    // post-veto sample here (they diverge only on a mid-call race).
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert_eq!(diag.fg_readable, Some(true));
+    assert_eq!(diag.fg_shell, Some(false));
+    assert_eq!(diag.fg_fullscreen, Some(true));
+    assert_eq!(diag.fg_visible, Some(true));
+    assert_eq!(diag.fg_exe.as_deref(), Some("app.exe"));
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// Gate-time veto attribution: a readable captionless-fullscreen shell
+/// foreground (Explorer desktop) vetoes with its gate-time relation plus
+/// shell/fullscreen/visibility facts and the exe basename (never a path).
+#[test]
+fn focus_write_veto_diag_readable_fullscreen_shell() {
+    let mut env = env_with(110_320);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_320, 2320, "proc-320");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let fg_key = win_key(110_321, 2321, "proc-321");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    fg_facts.shell = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            fg_key.hwnd,
+            observed_for_with_exe(
+                &fg_key,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Windows\\explorer.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(fg_key.hwnd, fg_key.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(fg_key.hwnd));
+    S_FG.with(|m| *m.borrow_mut() = fg_key.hwnd);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_identity, Some("other"));
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert_eq!(diag.fg_readable, Some(true));
+    assert_eq!(diag.fg_shell, Some(true));
+    assert_eq!(diag.fg_fullscreen, Some(true));
+    assert_eq!(diag.fg_visible, Some(true));
+    assert_eq!(diag.fg_exe.as_deref(), Some("explorer.exe"));
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// Gate-time veto attribution: a readable captionless-fullscreen nonshell
+/// foreground (game) vetoes identically except shell/exe, so the next live
+/// leg separates shell from game without a class probe.
+#[test]
+fn focus_write_veto_diag_readable_fullscreen_nonshell() {
+    let mut env = env_with(110_322);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_322, 2322, "proc-322");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let fg_key = win_key(110_323, 2323, "proc-323");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            fg_key.hwnd,
+            observed_for_with_exe(
+                &fg_key,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Games\\game.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(fg_key.hwnd, fg_key.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(fg_key.hwnd));
+    S_FG.with(|m| *m.borrow_mut() = fg_key.hwnd);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert_eq!(diag.fg_readable, Some(true));
+    assert_eq!(diag.fg_shell, Some(false));
+    assert_eq!(diag.fg_fullscreen, Some(true));
+    assert_eq!(diag.fg_exe.as_deref(), Some("game.exe"));
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+}
+
+/// Gate-time veto attribution: an invisible unreadable foreign foreground
+/// (no observation, no departure) vetoes as `unreadable` with no fg facts.
+#[test]
+fn focus_write_veto_diag_unreadable_foreign() {
+    let mut env = env_with(110_324);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_324, 2324, "proc-324");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    // Foreign foreground: no observation entry and not visible, so the
+    // visible read fails Unknown and the hidden lane has no departure.
+    S_FG.with(|m| *m.borrow_mut() = 990_324);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+    assert_eq!(diag.fg_veto_kind, Some("unreadable"));
+    assert_eq!(diag.fg_readable, Some(false));
+    assert_eq!(diag.fg_shell, None);
+    assert_eq!(diag.fg_fullscreen, None);
+    assert_eq!(diag.fg_visible, Some(false));
+    assert_eq!(diag.fg_exe, None);
+}
+
+/// Gate-time veto attribution: a visible-but-unobservable foreign
+/// foreground (elevated/foreign-session analogue: visible yet the read
+/// fails) vetoes as `unreadable`, never as a departure.
+#[test]
+fn focus_write_veto_diag_unreadable_visible_foreign() {
+    let mut env = env_with(110_325);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_325, 2325, "proc-325");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    // Visible HWND with no observation entry: the visible read fails
+    // while `is_visible` still holds, so the veto records `unreadable`
+    // before any departure check.
+    S_VISIBLE.with(|m| m.borrow_mut().insert(990_325));
+    S_FG.with(|m| *m.borrow_mut() = 990_325);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("unreadable"));
+    assert_eq!(diag.fg_readable, Some(false));
+    assert_eq!(diag.fg_shell, None);
+    // The gate's own visibility read rides the detail: visible here.
+    assert_eq!(diag.fg_visible, Some(true));
+}
+
+/// Gate-time veto attribution: a stale prior hidden claim without a
+/// same-pass departure record is `unreadable`, never `hidden-departure`,
+/// even with an exact committed claim and fresh hidden facts.
+#[test]
+fn focus_write_veto_diag_stale_claim_is_unreadable() {
+    let mut env = env_with(110_326);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_326, 2326, "proc-326");
+    let departed = win_key(110_327, 2327, "proc-327");
+    admit_member(&mut env, &target, &ws, "w1", false);
+    admit_member(&mut env, &departed, &ws, "w2", false);
+    script_live(&target, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            departed.hwnd,
+            observed_for(&departed, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(departed.hwnd, departed.pid));
+    S_IDENT.with(|m| m.borrow_mut().insert(departed.hwnd, identity_of(&departed)));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(departed.hwnd, "member-tag-1".to_owned())
+    });
+    env.state.hidden_claims.insert(
+        departed.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(departed.hwnd, &identity_of(&departed)),
+            iconic: false,
+        },
+    );
+    S_FG.with(|m| *m.borrow_mut() = departed.hwnd);
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+    assert_eq!(diag.fg_veto_kind, Some("unreadable"));
+    assert_eq!(diag.fg_readable, Some(false));
+    assert_eq!(diag.fg_visible, Some(false));
+}
+
+/// Gate-time veto attribution: the same-pass hidden departure with
+/// fullscreen hidden facts vetoes as `hidden-departure` carrying the
+/// hidden read's facts, proving the departure lane was validated.
+#[test]
+fn focus_write_veto_diag_hidden_departure_fullscreen() {
+    let mut env = env_with(110_328);
+    let ws1 = "ws1".to_owned();
+    let ws2 = "ws2".to_owned();
+    let out = env.state.output_token(DEV1);
+    let leaving = win_key(110_328, 2328, "proc-328");
+    let entering = win_key(110_329, 2329, "proc-329");
+    admit_member(&mut env, &leaving, &ws1, "w1", false);
+    admit_member(&mut env, &entering, &ws2, "w2", false);
+    env.state.hidden_claims.insert(
+        entering.clone(),
+        super::super::HiddenRecord {
+            claim: script_claim(entering.hwnd, &identity_of(&entering)),
+            iconic: false,
+        },
+    );
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            leaving.hwnd,
+            observed_for_with_exe(
+                &leaving,
+                "w1",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Games\\game.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(leaving.hwnd, leaving.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(leaving.hwnd));
+    S_TAG.with(|m| {
+        m.borrow_mut()
+            .insert(leaving.hwnd, "member-tag-1".to_owned())
+    });
+    S_IDENT.with(|m| m.borrow_mut().insert(leaving.hwnd, identity_of(&leaving)));
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            entering.hwnd,
+            observed_for(&entering, "w2", rect(0, 0, 800, 600), plain_facts()),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(entering.hwnd, entering.pid));
+    for key in [&leaving, &entering] {
+        S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
+        S_ADMIT.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(script_claim(key.hwnd, &identity_of(key))))
+        });
+        S_HIDE.with(|m| {
+            m.borrow_mut()
+                .insert(key.hwnd, Ok(valid_claim(key.hwnd, &identity_of(key))))
+        });
+        S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
+    }
+    S_IDENT.with(|m| m.borrow_mut().insert(entering.hwnd, identity_of(&entering)));
+    S_FG.with(|m| *m.borrow_mut() = leaving.hwnd);
+    env.state.applied_views.insert(out.clone(), ws1.clone());
+    let mut native =
+        assemble_with_views(&mut env, moving_prims(), Some((out.clone(), ws2.clone())));
+    assert_eq!(native.switch_view_nonactivating(&out, &ws2), Ok(true));
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w2");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+    assert_eq!(diag.fg_veto_kind, Some("hidden-departure"));
+    assert_eq!(diag.fg_readable, Some(false));
+    assert_eq!(diag.fg_fullscreen, Some(true));
+    assert_eq!(diag.fg_visible, Some(false));
+    assert_eq!(diag.fg_exe.as_deref(), Some("game.exe"));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// Gate-time vs post-veto race: the foreground moves between the veto's
+/// own sample and the diagnostic sample, so the gate-time relation keeps
+/// the veto's `other` while the post-veto sample reads `target`.
+#[test]
+fn focus_write_veto_diag_gate_time_beats_later_sample() {
+    let mut env = env_with(110_330);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_330, 2330, "proc-330");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let fg_key = win_key(110_331, 2331, "proc-331");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            fg_key.hwnd,
+            observed_for(&fg_key, "fg", rect(0, 0, 1920, 1080), fg_facts),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(fg_key.hwnd, fg_key.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(fg_key.hwnd));
+    // The veto's own sample sees the fullscreen competitor; the later
+    // post-veto helper sample sees the target (foreground raced home).
+    // The readable-fullscreen path takes exactly one gate read, then the
+    // single diagnostic sample.
+    S_FG_SEQ.with(|m| *m.borrow_mut() = vec![fg_key.hwnd, key.hwnd]);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+    assert_eq!(diag.fg_identity, Some("target"));
+}
+
+/// Trace gating for the gate-time detail: off-trace vetoes and traced
+/// successes carry no gate-time fields and probe nothing extra.
+#[test]
+fn focus_write_veto_diag_gate_detail_trace_gated() {
+    // Off-trace veto: identical refusal outcome with no gate-time detail.
+    let mut env = env_with(110_332);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_332, 2332, "proc-332");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let fg_key = win_key(110_333, 2333, "proc-333");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            fg_key.hwnd,
+            observed_for(&fg_key, "fg", rect(0, 0, 1920, 1080), fg_facts),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(fg_key.hwnd, fg_key.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(fg_key.hwnd));
+    S_FG.with(|m| *m.borrow_mut() = fg_key.hwnd);
+    let mut native = assemble(&mut env, scripted());
+    let before = S_FG_CALLS.with(|m| *m.borrow());
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, None);
+    assert_eq!(diag.fg_gate_identity, None);
+    assert_eq!(diag.fg_veto_kind, None);
+    assert_eq!(diag.fg_readable, None);
+    assert_eq!(diag.fg_shell, None);
+    assert_eq!(diag.fg_fullscreen, None);
+    assert_eq!(diag.fg_visible, None);
+    assert_eq!(diag.fg_exe, None);
+    let off_trace_reads = S_FG_CALLS.with(|m| *m.borrow()) - before;
+    // Traced veto: the same gate reads plus exactly one diagnostic
+    // sample; the gate-time detail rides without any further probe.
+    let mut env = env_with(110_334);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_334, 2334, "proc-334");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let fg_key = win_key(110_335, 2335, "proc-335");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            fg_key.hwnd,
+            observed_for(&fg_key, "fg", rect(0, 0, 1920, 1080), fg_facts),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(fg_key.hwnd, fg_key.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(fg_key.hwnd));
+    S_FG.with(|m| *m.borrow_mut() = fg_key.hwnd);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let before = S_FG_CALLS.with(|m| *m.borrow());
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert_eq!(diag.fg_gate_identity, Some("other"));
+    assert_eq!(
+        S_FG_CALLS.with(|m| *m.borrow()) - before,
+        off_trace_reads + 1,
+        "traced focus-write veto adds only the one diagnostic sample"
+    );
+    // Traced success: no refusal detail at all.
+    let mut env = env_with(110_336);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_337, 2337, "proc-337");
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w2");
+    assert_eq!(outcome, Ok(true));
+    assert_eq!(diag.refusal_gate, None);
+    assert_eq!(diag.fg_gate_identity, None);
+    assert_eq!(diag.fg_veto_kind, None);
+    assert_eq!(diag.fg_exe, None);
+}
+
+/// Storage minimality: the gate-time stash stays `None` on a traced
+/// success (readable non-fullscreen pass) and on any off-trace veto.
+/// Diagnostics-only means no exe allocation and no stored detail outside
+/// a traced refusal.
+#[test]
+fn focus_veto_detail_none_on_success_and_off_trace() {
+    // Traced success: readable non-fullscreen foreground passes, and no
+    // gate-time detail is stored (this is the former exe-allocation site).
+    let mut env = env_with(110_340);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let other = win_key(110_339, 2339, "proc-339");
+    let target = win_key(110_340, 2340, "proc-340");
+    admit_member(&mut env, &other, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&other, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = other.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w2");
+    assert_eq!(outcome, Ok(true));
+    assert_eq!(diag.fg_gate_identity, None);
+    assert_eq!(diag.fg_veto_kind, None);
+    assert_eq!(diag.fg_exe, None);
+    assert!(
+        native.focus_veto_detail.is_none(),
+        "traced success must store no gate-time detail"
+    );
+    // Off-trace veto: readable fullscreen refuses, and no gate-time
+    // detail is stored either.
+    let mut env = env_with(110_341);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_341, 2341, "proc-341");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let fg_key = win_key(110_342, 2342, "proc-342");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            fg_key.hwnd,
+            observed_for(&fg_key, "fg", rect(0, 0, 1920, 1080), fg_facts),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(fg_key.hwnd, fg_key.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(fg_key.hwnd));
+    S_FG.with(|m| *m.borrow_mut() = fg_key.hwnd);
+    let mut native = assemble(&mut env, scripted());
+    let (outcome, _) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(
+        native.focus_veto_detail.is_none(),
+        "off-trace veto must store no gate-time detail"
+    );
+}
+
+/// Builder laziness: `note_focus_veto` runs its payload builder only
+/// when trace is armed. This observes invocation itself, proving
+/// off-trace never builds the payload (no exe allocation) rather than
+/// merely discarding a prebuilt value.
+#[test]
+fn note_focus_veto_builds_only_when_traced() {
+    use super::FocusWriteVetoDetail;
+    let mut env = env_with(110_343);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_343, 2343, "proc-343");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    let built = std::cell::RefCell::new(false);
+    let builder = || {
+        *built.borrow_mut() = true;
+        FocusWriteVetoDetail {
+            gate_identity: "other",
+            kind: "unreadable",
+            readable: false,
+            ..FocusWriteVetoDetail::default()
+        }
+    };
+    // Off-trace: the builder never runs and nothing is stored.
+    native.note_focus_veto(builder);
+    assert!(
+        !*built.borrow(),
+        "off-trace must not invoke the payload builder"
+    );
+    assert!(native.focus_veto_detail.is_none());
+    // Traced: the builder runs exactly once and the detail is stored.
+    // (`builder` moved above, so rebuild an identical one here.)
+    native.set_diagnostics_trace(true);
+    native.note_focus_veto(|| {
+        *built.borrow_mut() = true;
+        FocusWriteVetoDetail {
+            gate_identity: "other",
+            kind: "unreadable",
+            readable: false,
+            ..FocusWriteVetoDetail::default()
+        }
+    });
+    assert!(*built.borrow());
+    assert!(native.focus_veto_detail.is_some());
+}
+
+#[test]
+fn focus_refusal_diag_reports_move_size_veto() {
+    let mut env = env_with(110_305);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_305, 2305, "proc-305");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    // A ledger-hidden target still dispatches no setter while its thread
+    // runs a move/size loop: the hidden-at-dispatch flag reads true.
+    env.state.hidden_claims.insert(
+        key.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(key.hwnd, &identity_of(&key)),
+            iconic: false,
+        },
+    );
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(true)));
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("move-size-veto"));
+    assert_eq!(diag.refusal_reason, None);
+    assert_eq!(diag.target_visible, Some(true));
+    assert_eq!(diag.target_cloaked, Some(false));
+    assert_eq!(diag.target_hidden, Some(true));
+    assert_eq!(diag.fg_identity, Some("none"));
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+    S_MOVE_SIZE.with(|m| m.borrow_mut().remove(&key.hwnd));
+}
+
+#[test]
+fn focus_refusal_diag_off_trace_reports_no_detail() {
+    let mut env = env_with(110_306);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_306, 2306, "proc-306");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(true)));
+    // Trace off: identical refusal outcome with no diagnostic detail.
+    let mut native = assemble(&mut env, scripted());
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, None);
+    assert_eq!(diag.refusal_reason, None);
+    assert_eq!(diag.target_visible, None);
+    assert_eq!(diag.target_cloaked, None);
+    assert_eq!(diag.target_hidden, None);
+    assert_eq!(diag.fg_identity, None);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+    S_MOVE_SIZE.with(|m| m.borrow_mut().remove(&key.hwnd));
+}
+
+#[test]
+fn focus_refusal_diag_success_reports_no_detail() {
+    let mut env = env_with(110_307);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let old = win_key(110_307, 2307, "proc-307");
+    let target = win_key(110_308, 2308, "proc-308");
+    admit_member(&mut env, &old, &ws, "w1", false);
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&old, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FG.with(|m| *m.borrow_mut() = old.hwnd);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut prims = scripted();
+    prims.focus = |hwnd| {
+        S_FOCUS_CALLS.with(|m| m.borrow_mut().push(hwnd));
+        S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true))
+    };
+    let mut native = assemble(&mut env, prims);
+    // Trace armed: the accepted setter still carries no refusal detail,
+    // with exactly one prime and one setter as before.
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w2");
+    assert_eq!(outcome, Ok(true));
+    assert!(diag.primitive_called);
+    assert_eq!(diag.refusal_gate, None);
+    assert_eq!(diag.refusal_reason, None);
+    assert_eq!(diag.target_visible, None);
+    assert_eq!(diag.target_cloaked, None);
+    assert_eq!(diag.target_hidden, None);
+    assert_eq!(diag.fg_identity, None);
+    assert_eq!(S_PRIME_CALLS.with(|m| m.borrow().clone()), vec![0xE8]);
+    assert_eq!(
+        S_FOCUS_CALLS.with(|m| m.borrow().clone()),
+        vec![target.hwnd]
+    );
+}
+
+#[test]
+fn focus_refusal_diag_reports_cloaked_target() {
+    // Cloak engages after admission: the target still observes (visible
+    // lane) but classifies `cloaked`, so the refusal carries the reason
+    // with the cloaked target bit set.
+    let mut env = env_with(110_309);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_309, 2309, "proc-309");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    let mut facts = plain_facts();
+    facts.cloaked = true;
+    script_live(&key, "w1", rect(0, 0, 800, 600), facts);
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("classify-focus"));
+    assert_eq!(diag.refusal_reason, Some("cloaked"));
+    assert_eq!(diag.target_visible, Some(true));
+    assert_eq!(diag.target_cloaked, Some(true));
+    assert_eq!(diag.target_hidden, Some(false));
+    assert_eq!(diag.fg_identity, Some("none"));
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+#[test]
+fn focus_refusal_diag_reports_raced_invisible_target() {
+    // Production hide race (`observe.rs`: the visible gate passes, then the
+    // facts re-read observes the window hidden): the observation succeeds
+    // with `visible: false` facts, so `classify-focus` refuses with reason
+    // `hidden` and the diag reports the raced target bit. A fully hidden
+    // window that fails the observation gate instead takes the `Err`
+    // branch, never `Ok(false)`: no test fabricates that path.
+    let mut env = env_with(110_310);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_310, 2310, "proc-310");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    let mut facts = plain_facts();
+    facts.visible = false;
+    script_live(&key, "w1", rect(0, 0, 800, 600), facts);
+    env.state.applied_views.insert(out, ws);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("classify-focus"));
+    assert_eq!(diag.refusal_reason, Some("hidden"));
+    assert_eq!(diag.target_visible, Some(false));
+    assert_eq!(diag.target_cloaked, Some(false));
+    assert_eq!(diag.target_hidden, Some(false));
+    assert_eq!(diag.fg_identity, Some("none"));
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// Foreground probe budget: the diagnostic sample is the only trace-gated
+/// read. Off-trace refusals and success (traced or not) add zero reads;
+/// a traced refusal adds exactly one on top of the vetoes' own reads.
+#[test]
+fn focus_refusal_diag_foreground_probe_budget() {
+    fn fg_calls() -> u64 {
+        S_FG_CALLS.with(|m| *m.borrow())
+    }
+    // Scope branch: no veto reads at all.
+    let mut env = env_with(110_311);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_311, 2311, "proc-311");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    env.state.scope = vec!["other.exe".to_owned()];
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window_traced("w1").0, Ok(false));
+    assert_eq!(fg_calls(), 0, "off-trace scope refusal probes nothing");
+    let mut env = env_with(110_312);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_312, 2312, "proc-312");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    env.state.scope = vec!["other.exe".to_owned()];
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w1");
+    assert_eq!(outcome, Ok(false));
+    assert_eq!(diag.refusal_gate, Some("scope"));
+    assert_eq!(fg_calls(), 1, "traced scope refusal adds one sample");
+    // Move/size branch: the traced refusal adds exactly one read over the
+    // veto's own reads, whatever those are.
+    let mut env = env_with(110_313);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_313, 2313, "proc-313");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(true)));
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window_traced("w1").0, Ok(false));
+    let veto_reads = fg_calls();
+    let mut env = env_with(110_314);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_314, 2314, "proc-314");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_MOVE_SIZE.with(|m| m.borrow_mut().insert(key.hwnd, Some(true)));
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    assert_eq!(native.focus_window_traced("w1").0, Ok(false));
+    assert_eq!(
+        fg_calls(),
+        veto_reads + 1,
+        "traced veto refusal adds one sample"
+    );
+    S_MOVE_SIZE.with(|m| {
+        m.borrow_mut().remove(&110_313);
+        m.borrow_mut().remove(&key.hwnd);
+    });
+    // Success: trace arming adds no reads (vetoes read identically either
+    // way, and the accepted path takes no sample).
+    let mut env = env_with(110_315);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_316, 2316, "proc-316");
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut native = assemble(&mut env, scripted());
+    assert_eq!(native.focus_window_traced("w2").0, Ok(true));
+    let untraced_reads = fg_calls();
+    let mut env = env_with(110_317);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(110_318, 2318, "proc-318");
+    admit_member(&mut env, &target, &ws, "w2", false);
+    script_live(&target, "w2", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out, ws);
+    S_FOCUS_OK.with(|m| m.borrow_mut().insert(target.hwnd, true));
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    assert_eq!(native.focus_window_traced("w2").0, Ok(true));
+    assert_eq!(fg_calls(), untraced_reads, "trace adds no reads on success");
+}
+
+/// Workspace-return regression, occupied -> empty -> occupied: the
+/// empty-workspace visit leaves the exact desktop holding the foreground,
+/// and the return leg's remembered-target arrival focus effect must reach
+/// the native setter through the explicit-selection desktop exception.
+/// Failed before the fix: the readable-fullscreen desktop vetoed before the
+/// primitive ran (user run-01dd65cae8797264 L97/103).
+#[test]
+fn selection_return_past_desktop_foreground_dispatches_setter() {
+    use super::super::world_diff::SelectionArrivalGrant;
+    use tiler_core::directional::OutputId as CoreOutputId;
+
+    let mut env = env_with(120_001);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(120_001, 2401, "proc-401");
+    admit_member(&mut env, &key, &ws, "w6", false);
+    script_live(&key, "w6", rect(0, 0, 800, 600), plain_facts());
+    env.state.applied_views.insert(out.clone(), ws.clone());
+    // Exact desktop holds the foreground after the empty-workspace visit:
+    // readable captionless fullscreen shell owned by Explorer.
+    let desktop = win_key(120_002, 2402, "proc-402");
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    fg_facts.shell = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            desktop.hwnd,
+            observed_for_with_exe(
+                &desktop,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Windows\\explorer.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(desktop.hwnd, desktop.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(desktop.hwnd));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            desktop.hwnd,
+            ProcessIdentity {
+                pid: desktop.pid,
+                process_creation: desktop.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    S_SHELL.with(|m| *m.borrow_mut() = desktop.hwnd);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = desktop.hwnd);
+    // Return-leg reply: remembered-target arrival focus effect on the
+    // occupied workspace, exactly as the core mints it (`fx-<seq>`).
+    let observed = vec![observed_for(
+        &key,
+        "w6",
+        rect(0, 0, 800, 600),
+        plain_facts(),
+    )];
+    let (mut diff, fresh) = convert(&env, &observed);
+    let mut reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
+    reply.effects.push(OneShotEffect {
+        id: "fx-7".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("w6".to_owned()),
+        issued_revision: 1,
+    });
+    // Authority binding through the production mint: the exact accepted
+    // select command, its sequence, and this reply's own explicit effect.
+    let command = WorldCommand::SelectWorkspace {
+        output: CoreOutputId(out.clone()),
+        workspace: ws.clone(),
+    };
+    let grant = SelectionArrivalGrant::for_accepted(Some(&command), Some(7), &reply, "accepted");
+    assert!(grant.is_some(), "select must mint the arrival grant");
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    native.set_selection_arrival(grant);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert_eq!(row.id, "fx-7");
+    assert_eq!(row.target, "w6");
+    assert!(row.dispatched);
+    assert!(
+        row.primitive_called,
+        "selection-return arrival must reach the setter past the desktop foreground"
+    );
+    assert!(
+        row.desktop_exception,
+        "the dispatch row must mark the desktop exception"
+    );
+}
+
+/// Shared rig for the selection-arrival exception tests: a healthy arrival
+/// target plus a healthy exact-desktop foreground (readable fullscreen
+/// shell, full identity agreement, live shell handle, system Explorer
+/// path). Each negative mutates exactly one lane.
+fn script_arrival_target(env: &mut Env, key: &WindowKey, token: &str, ws: &str) {
+    admit_member(env, key, ws, token, false);
+    script_live(key, token, rect(0, 0, 800, 600), plain_facts());
+    let out = env.state.output_token(DEV1);
+    env.state.applied_views.insert(out, ws.to_owned());
+}
+
+fn script_healthy_desktop(desktop: &WindowKey) {
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    fg_facts.shell = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            desktop.hwnd,
+            observed_for_with_exe(
+                desktop,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Windows\\explorer.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(desktop.hwnd, desktop.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(desktop.hwnd));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            desktop.hwnd,
+            ProcessIdentity {
+                pid: desktop.pid,
+                process_creation: desktop.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    S_SHELL.with(|m| *m.borrow_mut() = desktop.hwnd);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = desktop.hwnd);
+}
+
+/// Arrival reply carrying one core-shaped explicit focus effect.
+fn fx_reply(out: &str, ws: &str, id: &str, target: &str) -> WorldReply {
+    let mut reply = reply_shell(7, 1, &[(out, ws)]);
+    reply.effects.push(OneShotEffect {
+        id: id.to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId(target.to_owned()),
+        issued_revision: 1,
+    });
+    reply
+}
+
+/// Production grant mint for one accepted select reply.
+fn select_grant(out: &str, ws: &str, reply: &WorldReply) -> Option<SelectionArrivalGrant> {
+    let command = WorldCommand::SelectWorkspace {
+        output: OutputId(out.to_owned()),
+        workspace: ws.to_owned(),
+    };
+    // Handcrafted replies in this file mint `fx-7`: the sequence must name
+    // it exactly, or no explicit effect matches and nothing mints.
+    SelectionArrivalGrant::for_accepted(Some(&command), Some(7), reply, "accepted")
+}
+
+/// One effect-bound arrival dispatch through the production seam.
+fn arrival_call(
+    env: &mut Env,
+    grant: Option<SelectionArrivalGrant>,
+    token: &str,
+    effect: &str,
+) -> (Result<bool, ()>, FocusCallDiag) {
+    let mut native = assemble(env, scripted());
+    native.set_diagnostics_trace(true);
+    native.set_selection_arrival(grant);
+    native.focus_window_traced_selected(token, effect)
+}
+
+/// The exception passes a fully proven desktop: setter runs once after one
+/// prime, and the record marks the exception.
+#[test]
+fn selection_arrival_passes_proven_desktop_direct() {
+    let mut env = env_with(120_010);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_010, 2410, "proc-410");
+    let desktop = win_key(120_011, 2411, "proc-411");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    assert!(grant.is_some());
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(true));
+    assert!(diag.primitive_called);
+    assert_eq!(diag.native_return, Some(true));
+    assert!(diag.desktop_exception);
+    assert_eq!(S_PRIME_CALLS.with(|m| m.borrow().len()), 1);
+}
+
+/// A competing fullscreen game still vetoes with the grant armed: the
+/// handle is not the live shell window.
+#[test]
+fn selection_arrival_still_vetoes_fullscreen_game() {
+    let mut env = env_with(120_020);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_020, 2420, "proc-420");
+    let game = win_key(120_021, 2421, "proc-421");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            game.hwnd,
+            observed_for_with_exe(
+                &game,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Games\\game.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(game.hwnd, game.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(game.hwnd));
+    S_FG.with(|m| *m.borrow_mut() = game.hwnd);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// An unknown fullscreen app with the shell handle equal to it still
+/// vetoes: the executable is not the system shell.
+#[test]
+fn selection_arrival_still_vetoes_unknown_fullscreen_app() {
+    let mut env = env_with(120_030);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_030, 2430, "proc-430");
+    let foreign = win_key(120_031, 2431, "proc-431");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            foreign.hwnd,
+            observed_for_with_exe(
+                &foreign,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Apps\\unknown.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(foreign.hwnd, foreign.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(foreign.hwnd));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            foreign.hwnd,
+            ProcessIdentity {
+                pid: foreign.pid,
+                process_creation: foreign.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Apps\\unknown.exe".to_owned(),
+            },
+        )
+    });
+    // Even with the shell handle naming this window, the executable proof
+    // fails closed.
+    S_SHELL.with(|m| *m.borrow_mut() = foreign.hwnd);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = foreign.hwnd);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// An unreadable shell-handle foreground vetoes: nothing proves the
+/// desktop without a readable observation.
+#[test]
+fn selection_arrival_unreadable_shell_vetoes() {
+    let mut env = env_with(120_040);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_040, 2440, "proc-440");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    // Shell handle names an unreadable window: no observation entry and
+    // not visible, so the gate fails closed before any desktop proof.
+    S_SHELL.with(|m| *m.borrow_mut() = 990_040);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = 990_040);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("unreadable"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A spoofed Progman-class window that is not the live shell handle
+/// vetoes: class and basename alone are never authority.
+#[test]
+fn selection_arrival_spoof_progman_vetoes() {
+    let mut env = env_with(120_050);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_050, 2450, "proc-450");
+    let spoof = win_key(120_051, 2451, "proc-451");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    fg_facts.shell = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            spoof.hwnd,
+            observed_for_with_exe(
+                &spoof,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Windows\\explorer.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(spoof.hwnd, spoof.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(spoof.hwnd));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            spoof.hwnd,
+            ProcessIdentity {
+                pid: spoof.pid,
+                process_creation: spoof.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    // Live shell handle is a different window: the spoof's class, facts,
+    // and basename prove nothing.
+    S_SHELL.with(|m| *m.borrow_mut() = 991_051);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = spoof.hwnd);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A fullscreen WorkerW surface (same Explorer process, desktop geometry)
+/// that is not the exact shell handle vetoes.
+#[test]
+fn selection_arrival_workerw_surface_vetoes() {
+    let mut env = env_with(120_060);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_060, 2460, "proc-460");
+    let worker = win_key(120_061, 2461, "proc-461");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    fg_facts.shell = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            worker.hwnd,
+            observed_for_with_exe(
+                &worker,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Windows\\explorer.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(worker.hwnd, worker.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(worker.hwnd));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            worker.hwnd,
+            ProcessIdentity {
+                pid: worker.pid,
+                process_creation: worker.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    // Exact desktop is a different handle in the same process.
+    S_SHELL.with(|m| *m.borrow_mut() = 991_061);
+    S_PID.with(|m| m.borrow_mut().insert(991_061, worker.pid));
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = worker.hwnd);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A recycled shell handle (same HWND number, new process creation)
+/// vetoes: HWND/PID/creation must agree across the gate's own reads.
+#[test]
+fn selection_arrival_recycled_shell_identity_vetoes() {
+    let mut env = env_with(120_070);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_070, 2470, "proc-470");
+    let desktop = win_key(120_071, 2471, "proc-471");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Same-process HWND reuse: the live process creation no longer matches
+    // the observation read.
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            desktop.hwnd,
+            ProcessIdentity {
+                pid: desktop.pid,
+                process_creation: "proc-471-recycled".to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A non-system Explorer executable behind the shell handle vetoes: the
+/// path must equal the trusted system directory derivation.
+#[test]
+fn selection_arrival_wrong_shell_executable_vetoes() {
+    let mut env = env_with(120_080);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_080, 2480, "proc-480");
+    let desktop = win_key(120_081, 2481, "proc-481");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Consistent reads, but the executable is not the system shell.
+    S_OBSERVE.with(|m| {
+        if let Some(entry) = m.borrow_mut().get_mut(&desktop.hwnd) {
+            entry.identity.exe_path = "C:\\Evil\\explorer.exe".to_owned();
+        }
+    });
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            desktop.hwnd,
+            ProcessIdentity {
+                pid: desktop.pid,
+                process_creation: desktop.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Evil\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A shell process under a different user/session vetoes.
+#[test]
+fn selection_arrival_shell_user_session_mismatch_vetoes() {
+    let mut env = env_with(120_090);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_090, 2490, "proc-490");
+    let desktop = win_key(120_091, 2491, "proc-491");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Consistent reads under a foreign session.
+    S_OBSERVE.with(|m| {
+        if let Some(entry) = m.borrow_mut().get_mut(&desktop.hwnd) {
+            entry.identity.user_sid = "S-1-5-21-9999".to_owned();
+            entry.identity.session_id = 9;
+        }
+    });
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            desktop.hwnd,
+            ProcessIdentity {
+                pid: desktop.pid,
+                process_creation: desktop.creation.clone(),
+                user_sid: "S-1-5-21-9999".to_owned(),
+                session_id: 9,
+                exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// An unavailable shell handle (`GetShellWindow` zero) vetoes: a null
+/// foreground proves nothing.
+#[test]
+fn selection_arrival_missing_shell_handle_vetoes() {
+    let mut env = env_with(120_100);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_100, 2500, "proc-500");
+    let desktop = win_key(120_101, 2501, "proc-501");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    S_SHELL.with(|m| *m.borrow_mut() = 0);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A foreground race to a game between the gate proof and the setter
+/// refuses: the post-prime recheck requires a fresh equal proof. The prime
+/// already ran (ordering preserved), but the setter never does.
+#[test]
+fn selection_arrival_foreground_race_to_game_refuses_after_prime() {
+    let mut env = env_with(120_110);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_110, 2510, "proc-510");
+    let desktop = win_key(120_111, 2511, "proc-511");
+    let game = win_key(120_112, 2512, "proc-512");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let mut game_facts = plain_facts();
+    game_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            game.hwnd,
+            observed_for_with_exe(
+                &game,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                game_facts,
+                "C:\\Games\\game.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(game.hwnd, game.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(game.hwnd));
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    // Race driven by prime state, not read counts: the foreground names
+    // the desktop until the prime runs, then the game.
+    S_FG_AFTER_PRIME.with(|m| *m.borrow_mut() = Some(game.hwnd));
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    // The recheck refusal names its reason distinctly from a gate-time
+    // veto, and still records the prime that ran before the race.
+    assert_eq!(diag.refusal_reason, Some("arrival-recheck"));
+    assert_eq!(diag.prime_inserted, Some(2));
+    // The gate did pass through the exception before the race, so the row
+    // marks it even though the setter never ran.
+    assert!(diag.desktop_exception);
+    assert_eq!(S_PRIME_CALLS.with(|m| m.borrow().len()), 1);
+}
+
+/// Shared assertions for an exception-path post-prime desktop/modal
+/// refusal: no setter, named gate plus reason, the actual prime outcome,
+/// and the gate-pass marker (never an actuation claim).
+fn assert_recheck_refusal(diag: &FocusCallDiag, gate: &'static str, reason: Option<&'static str>) {
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some(gate));
+    assert_eq!(diag.refusal_reason, reason);
+    assert_eq!(diag.prime_inserted, Some(2));
+    assert!(diag.desktop_exception);
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+    assert_eq!(S_PRIME_CALLS.with(|m| m.borrow().len()), 1);
+}
+
+/// Shared assertions for an exception-path post-prime ambiguous hold
+/// (hook or target drift): no setter, no refusal gate (at-most-once, like
+/// entry), but the prime outcome and gate-pass marker still ride.
+fn assert_recheck_ambiguous(outcome: &Result<bool, ()>, diag: &FocusCallDiag) {
+    assert_eq!(outcome, &Err(()));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, None);
+    assert_eq!(diag.prime_inserted, Some(2));
+    assert!(diag.desktop_exception);
+    assert!(S_FOCUS_CALLS.with(|m| m.borrow().is_empty()));
+    assert_eq!(S_PRIME_CALLS.with(|m| m.borrow().len()), 1);
+}
+
+/// A mismatched observed HWND never proves: the gate observation must name
+/// the gate foreground itself.
+#[test]
+fn selection_arrival_mismatched_observed_hwnd_vetoes() {
+    let mut env = env_with(120_160);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_160, 2560, "proc-560");
+    let desktop = win_key(120_161, 2561, "proc-561");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Identity reads agree, but the observation names another window.
+    S_OBSERVE.with(|m| {
+        if let Some(entry) = m.borrow_mut().get_mut(&desktop.hwnd) {
+            entry.hwnd = desktop.hwnd + 50;
+        }
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A shell handle that changes during the recheck refuses: the gate proof
+/// passed, the final bracket does not.
+#[test]
+fn selection_arrival_shell_drift_during_recheck_refuses() {
+    let mut env = env_with(120_161);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_162, 2562, "proc-562");
+    let desktop = win_key(120_163, 2563, "proc-563");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Gate fast-path plus bracket agree; the recheck reads unavailable.
+    // (The gate proof itself samples the shell handle twice.)
+    S_SHELL_SEQ.with(|m| m.borrow_mut().extend([desktop.hwnd, desktop.hwnd, 0]));
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
+}
+
+/// A shell PID that changes during the recheck proof refuses.
+#[test]
+fn selection_arrival_pid_drift_during_recheck_refuses() {
+    let mut env = env_with(120_164);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_165, 2565, "proc-565");
+    let desktop = win_key(120_166, 2566, "proc-566");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Two gate reads agree, then the recheck proof reads a recycled PID.
+    S_PID_SEQ.with(|m| {
+        m.borrow_mut().extend([
+            (desktop.hwnd, desktop.pid),
+            (desktop.hwnd, desktop.pid),
+            (desktop.hwnd, 9999),
+        ])
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
+}
+
+/// A shell PID that changes inside the recheck's final bracket refuses:
+/// the recheck proof passed, the closing HWND-to-PID read does not.
+#[test]
+fn selection_arrival_pid_drift_in_final_bracket_refuses() {
+    let mut env = env_with(120_167);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_168, 2568, "proc-568");
+    let desktop = win_key(120_169, 2569, "proc-569");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Gate pair plus recheck proof agree; only the bracket read drifts.
+    S_PID_SEQ.with(|m| {
+        m.borrow_mut().extend([
+            (desktop.hwnd, desktop.pid),
+            (desktop.hwnd, desktop.pid),
+            (desktop.hwnd, desktop.pid),
+            (desktop.hwnd, 9999),
+        ])
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
+}
+
+/// A shell process creation that changes during the recheck refuses.
+#[test]
+fn selection_arrival_creation_drift_during_recheck_refuses() {
+    let mut env = env_with(120_170);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_171, 2571, "proc-571");
+    let desktop = win_key(120_172, 2572, "proc-572");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let desktop_ident = || ProcessIdentity {
+        pid: desktop.pid,
+        process_creation: desktop.creation.clone(),
+        user_sid: "S-1-5-21-1000".to_owned(),
+        session_id: 1,
+        exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+    };
+    // Gate identity pops healthy; only the recheck pops the recycled
+    // creation.
+    S_IDENT_SEQ.with(|m| {
+        m.borrow_mut().extend([
+            (desktop.hwnd, Some(desktop_ident())),
+            (
+                desktop.hwnd,
+                Some(ProcessIdentity {
+                    process_creation: "proc-572-recycled".to_owned(),
+                    ..desktop_ident()
+                }),
+            ),
+        ])
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
+}
+
+/// A shell executable that changes during the recheck refuses.
+#[test]
+fn selection_arrival_exe_drift_during_recheck_refuses() {
+    let mut env = env_with(120_173);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_174, 2574, "proc-574");
+    let desktop = win_key(120_175, 2575, "proc-575");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let desktop_ident = || ProcessIdentity {
+        pid: desktop.pid,
+        process_creation: desktop.creation.clone(),
+        user_sid: "S-1-5-21-1000".to_owned(),
+        session_id: 1,
+        exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+    };
+    S_IDENT_SEQ.with(|m| {
+        m.borrow_mut().extend([
+            (desktop.hwnd, Some(desktop_ident())),
+            (
+                desktop.hwnd,
+                Some(ProcessIdentity {
+                    exe_path: "C:\\Evil\\explorer.exe".to_owned(),
+                    ..desktop_ident()
+                }),
+            ),
+        ])
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
+}
+
+/// A shell user/session that changes during the recheck refuses.
+#[test]
+fn selection_arrival_session_drift_during_recheck_refuses() {
+    let mut env = env_with(120_176);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_177, 2577, "proc-577");
+    let desktop = win_key(120_178, 2578, "proc-578");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let desktop_ident = || ProcessIdentity {
+        pid: desktop.pid,
+        process_creation: desktop.creation.clone(),
+        user_sid: "S-1-5-21-1000".to_owned(),
+        session_id: 1,
+        exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+    };
+    S_IDENT_SEQ.with(|m| {
+        m.borrow_mut().extend([
+            (desktop.hwnd, Some(desktop_ident())),
+            (
+                desktop.hwnd,
+                Some(ProcessIdentity {
+                    user_sid: "S-1-5-21-9999".to_owned(),
+                    session_id: 9,
+                    ..desktop_ident()
+                }),
+            ),
+        ])
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
+}
+
+/// An unreadable shell identity during the recheck refuses: the gate
+/// proof passed, the fresh proof cannot read.
+#[test]
+fn selection_arrival_unreadable_recheck_refuses() {
+    let mut env = env_with(120_179);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_180, 2580, "proc-580");
+    let desktop = win_key(120_181, 2581, "proc-581");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let desktop_ident = || ProcessIdentity {
+        pid: desktop.pid,
+        process_creation: desktop.creation.clone(),
+        user_sid: "S-1-5-21-1000".to_owned(),
+        session_id: 1,
+        exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+    };
+    S_IDENT_SEQ.with(|m| {
+        m.borrow_mut()
+            .extend([(desktop.hwnd, Some(desktop_ident())), (desktop.hwnd, None)])
+    });
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
+}
+
+/// A hook arriving after the prime holds ambiguous: at-most-once, like
+/// entry, with the prime outcome recorded.
+#[test]
+fn selection_arrival_hook_after_prime_holds_ambiguous() {
+    let mut env = env_with(120_182);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_183, 2583, "proc-583");
+    let desktop = win_key(120_184, 2584, "proc-584");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let mut prims = scripted();
+    prims.hook_pending = || S_PRIMED.with(|m| *m.borrow());
+    let mut native = assemble(&mut env, prims);
+    native.set_diagnostics_trace(true);
+    native.set_selection_arrival(grant);
+    let (outcome, diag) = native.focus_window_traced_selected("w6", "fx-7");
+    assert_recheck_ambiguous(&outcome, &diag);
+}
+
+/// A modal loop starting after the prime refuses under the existing
+/// move-size vocabulary, with the prime outcome recorded.
+#[test]
+fn selection_arrival_modal_after_prime_refuses() {
+    let mut env = env_with(120_185);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_186, 2586, "proc-586");
+    let desktop = win_key(120_187, 2587, "proc-587");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    S_MODAL_AFTER_PRIME.with(|m| *m.borrow_mut() = Some(target.hwnd));
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert_recheck_refusal(&diag, "move-size-veto", None);
+}
+
+/// A target that departs after the prime holds ambiguous: at-most-once,
+/// like entry, with the prime outcome recorded.
+#[test]
+fn selection_arrival_target_departure_after_prime_holds_ambiguous() {
+    let mut env = env_with(120_188);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_189, 2589, "proc-589");
+    let desktop = win_key(120_190, 2590, "proc-590");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    S_UNOBSERVE_AFTER_PRIME.with(|m| *m.borrow_mut() = Some(target.hwnd));
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_recheck_ambiguous(&outcome, &diag);
+}
+
+/// A fullscreen file-Explorer window that is not the exact shell handle
+/// vetoes: same executable, wrong window.
+#[test]
+fn selection_arrival_fullscreen_explorer_window_vetoes() {
+    let mut env = env_with(120_191);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_192, 2592, "proc-592");
+    let browser = win_key(120_193, 2593, "proc-593");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            browser.hwnd,
+            observed_for_with_exe(
+                &browser,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Windows\\explorer.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(browser.hwnd, browser.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(browser.hwnd));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            browser.hwnd,
+            ProcessIdentity {
+                pid: browser.pid,
+                process_creation: browser.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Windows\\explorer.exe".to_owned(),
+            },
+        )
+    });
+    // Exact desktop is a different handle: no exemption for fellow
+    // Explorer windows.
+    S_SHELL.with(|m| *m.borrow_mut() = 991_193);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = browser.hwnd);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A fullscreen shell popup (Start surface) that is not the exact shell
+/// handle vetoes: shell process family, wrong window and executable.
+#[test]
+fn selection_arrival_fullscreen_shell_popup_vetoes() {
+    let mut env = env_with(120_194);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_195, 2595, "proc-595");
+    let popup = win_key(120_196, 2596, "proc-596");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    let mut fg_facts = plain_facts();
+    fg_facts.captionless_fullscreen = true;
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            popup.hwnd,
+            observed_for_with_exe(
+                &popup,
+                "fg",
+                rect(0, 0, 1920, 1080),
+                fg_facts,
+                "C:\\Windows\\SystemApps\\StartMenuExperienceHost.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(popup.hwnd, popup.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(popup.hwnd));
+    S_IDENT.with(|m| {
+        m.borrow_mut().insert(
+            popup.hwnd,
+            ProcessIdentity {
+                pid: popup.pid,
+                process_creation: popup.creation.clone(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Windows\\SystemApps\\StartMenuExperienceHost.exe".to_owned(),
+            },
+        )
+    });
+    S_SHELL.with(|m| *m.borrow_mut() = 991_196);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = popup.hwnd);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// Exact effect binding: a grant for (`fx-7`, `w6`) authorizes neither a
+/// tampered id nor a tampered target.
+#[test]
+fn selection_arrival_rejects_ungranted_effect_id() {
+    let mut env = env_with(120_120);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_120, 2520, "proc-520");
+    let other = win_key(120_122, 2522, "proc-522");
+    let desktop = win_key(120_121, 2521, "proc-521");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_arrival_target(&mut env, &other, "w9", &ws);
+    script_healthy_desktop(&desktop);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    for (token, effect) in [("w6", "fx-8"), ("w9", "fx-7")] {
+        let (outcome, diag) = arrival_call(&mut env, grant.clone(), token, effect);
+        assert_eq!(outcome, Ok(false), "unbound pair must veto");
+        assert!(!diag.primitive_called);
+        assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+        assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+        assert!(!diag.desktop_exception);
+        assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+    }
+}
+
+/// Without a grant the same desktop foreground vetoes: directional focus,
+/// send/migrate follow, and observation effects never ride the exception.
+#[test]
+fn ungranted_arrival_still_vetoes_desktop() {
+    let mut env = env_with(120_130);
+    let ws = "ws1".to_owned();
+    let target = win_key(120_130, 2530, "proc-530");
+    let desktop = win_key(120_131, 2531, "proc-531");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    // Unbound lane (no effect id, no grant): existing behavior exactly.
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let (outcome, diag) = native.focus_window_traced("w6");
+    assert_eq!(outcome, Ok(false));
+    assert!(!diag.primitive_called);
+    assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
+    assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
+    assert!(!diag.desktop_exception);
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// A non-fullscreen taskbar foreground needs no exception: the ordinary
+/// gate passes without marking it.
+#[test]
+fn selection_arrival_taskbar_foreground_needs_no_exception() {
+    let mut env = env_with(120_140);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_140, 2540, "proc-540");
+    let taskbar = win_key(120_141, 2541, "proc-541");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    let fg_facts = plain_facts();
+    S_OBSERVE.with(|m| {
+        m.borrow_mut().insert(
+            taskbar.hwnd,
+            observed_for_with_exe(
+                &taskbar,
+                "fg",
+                rect(0, 1040, 1920, 40),
+                fg_facts,
+                "C:\\Windows\\explorer.exe",
+            ),
+        )
+    });
+    S_PID.with(|m| m.borrow_mut().insert(taskbar.hwnd, taskbar.pid));
+    S_VISIBLE.with(|m| m.borrow_mut().insert(taskbar.hwnd));
+    S_SHELL.with(|m| *m.borrow_mut() = 991_141);
+    S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
+    S_FG.with(|m| *m.borrow_mut() = taskbar.hwnd);
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let grant = select_grant(&out, &ws, &reply);
+    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    assert_eq!(outcome, Ok(true));
+    assert!(diag.primitive_called);
+    assert!(!diag.desktop_exception);
+}
+
+/// Observation-only replies dispatch no focus: with the desktop holding
+/// the foreground and no effects, the pass emits no dispatch row.
+#[test]
+fn observation_only_desktop_focus_loss_dispatches_nothing() {
+    let mut env = env_with(120_150);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let target = win_key(120_150, 2550, "proc-550");
+    let desktop = win_key(120_151, 2551, "proc-551");
+    script_arrival_target(&mut env, &target, "w6", &ws);
+    script_healthy_desktop(&desktop);
+    let observed = vec![observed_for(
+        &target,
+        "w6",
+        rect(0, 0, 800, 600),
+        plain_facts(),
+    )];
+    let (mut diff, fresh) = convert(&env, &observed);
+    // Observation reply: no effects, no grant (observation ticks never
+    // arm one).
+    let reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert!(stats.focus_dispatch.is_empty());
+    assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
+}
+
+/// Grant authority binding: only the five explicit-selection commands
+/// qualify, only on a fresh `accepted` delivery, and only for the reply's
+/// own focus effects. Every other command, delivery, or effect shape mints
+/// nothing, so directional focus, send/migrate follow, view switches, and
+/// replays can never arm the desktop exception.
+#[test]
+fn selection_grant_binds_exact_accepted_select_focus_effects() {
+    use tiler_core::directional::WindowId as CoreWindowId;
+
+    let out = "out-1".to_owned();
+    let ws = "ws-1".to_owned();
+    let reply = fx_reply(&out, &ws, "fx-7", "w6");
+    let selects = [
+        WorldCommand::SelectWorkspace {
+            output: OutputId(out.clone()),
+            workspace: ws.clone(),
+        },
+        WorldCommand::SelectNumbered {
+            output: Some(OutputId(out.clone())),
+            index: 2,
+        },
+        WorldCommand::SelectRelative {
+            output: None,
+            delta: 1,
+        },
+        WorldCommand::SelectPrevious { output: None },
+        WorldCommand::SelectTrailing { output: None },
+    ];
+    for command in &selects {
+        assert!(
+            SelectionArrivalGrant::selects(command),
+            "selection command must qualify: {command:?}"
+        );
+    }
+    let non_selects = [
+        WorldCommand::Focus {
+            window: CoreWindowId("w6".to_owned()),
+            direction: "left".to_owned(),
+        },
+        WorldCommand::FocusDirectional {
+            window: CoreWindowId("w6".to_owned()),
+            direction: "left".to_owned(),
+        },
+        WorldCommand::Send {
+            window: CoreWindowId("w6".to_owned()),
+            target_output: OutputId(out.clone()),
+            target_workspace: ws.clone(),
+            follow: true,
+        },
+        WorldCommand::SwitchView {
+            output: OutputId(out.clone()),
+            workspace: ws.clone(),
+        },
+        WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-2".to_owned()),
+            target_output: OutputId(out.clone()),
+            workspace: ws.clone(),
+        },
+    ];
+    for command in &non_selects {
+        assert!(
+            !SelectionArrivalGrant::selects(command),
+            "non-selection command must not qualify: {command:?}"
+        );
+    }
+    // Exact accepted select reply: the grant carries the reply's own
+    // explicit arrival effect (id plus target), and nothing else.
+    let select = &selects[0];
+    let grant = SelectionArrivalGrant::for_accepted(Some(select), Some(7), &reply, "accepted")
+        .expect("accepted select must mint");
+    assert!(grant.allows("fx-7", "w6"));
+    assert!(!grant.allows("fx-7", "w9"), "tampered target never binds");
+    assert!(!grant.allows("fx-8", "w6"), "other ids never bind");
+    // A wrong sequence mints nothing even for a selection command: the
+    // effect is not this command's explicit outcome.
+    assert!(
+        SelectionArrivalGrant::for_accepted(Some(select), Some(8), &reply, "accepted").is_none()
+    );
+    assert!(SelectionArrivalGrant::for_accepted(Some(select), None, &reply, "accepted").is_none());
+    // Replays never re-arm.
+    assert!(
+        SelectionArrivalGrant::for_accepted(Some(select), Some(7), &reply, "duplicate").is_none()
+    );
+    assert!(
+        SelectionArrivalGrant::for_accepted(Some(select), Some(7), &reply, "command-consumed")
+            .is_none()
+    );
+    // Non-selection commands never mint, even accepted with a sequence.
+    for command in &non_selects {
+        assert!(
+            SelectionArrivalGrant::for_accepted(Some(command), Some(7), &reply, "accepted")
+                .is_none(),
+            "non-selection command must not mint: {command:?}"
+        );
+    }
+    // An accepted select with no focus effects (empty-workspace arrival)
+    // mints nothing: there is no arrival to except.
+    let bare = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
+    assert!(
+        SelectionArrivalGrant::for_accepted(Some(select), Some(7), &bare, "accepted").is_none()
+    );
+    // Automatic admission and cursor-follow effects sharing a select reply
+    // never mint: only the command's explicit outcome binds.
+    let mut mixed = reply.clone();
+    for (id, target) in [("af-w6", "w6"), ("ffc-w6", "w6")] {
+        mixed.effects.push(OneShotEffect {
+            id: id.to_owned(),
+            kind: EffectKind::Focus,
+            target: WindowId(target.to_owned()),
+            issued_revision: 1,
+        });
+    }
+    let grant = SelectionArrivalGrant::for_accepted(Some(select), Some(7), &mixed, "accepted")
+        .expect("explicit effect still mints beside automatic ones");
+    assert!(grant.allows("fx-7", "w6"));
+    assert!(!grant.allows("af-w6", "w6"), "admission intent never binds");
+    assert!(!grant.allows("ffc-w6", "w6"), "cursor-follow never binds");
 }
 
 #[path = "world_native_composition_tests.rs"]

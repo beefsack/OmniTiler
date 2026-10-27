@@ -20,7 +20,10 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
     PROCESS_NAME_WIN32, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
 };
-use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
+use windows_sys::Win32::UI::Shell::{
+    FOLDERID_LocalAppData, FOLDERID_Windows, SHGetKnownFolderPath,
+};
+use windows_sys::core::GUID;
 use windows_sys::core::PWSTR;
 
 /// Process-query failure in the previous mapping vocabulary.
@@ -317,9 +320,19 @@ pub fn session_of_pid(pid: u32) -> Result<u32, ProcError> {
 }
 
 pub fn local_app_data_dir() -> Result<PathBuf, ProcError> {
+    known_folder_path(&FOLDERID_LocalAppData)
+}
+
+/// Trusted system Windows directory (`FOLDERID_Windows` known folder, never
+/// the `WINDIR` environment value): the authority for the expected system
+/// shell executable path. Fails closed like every other query here.
+pub fn windows_directory() -> Option<PathBuf> {
+    known_folder_path(&FOLDERID_Windows).ok()
+}
+
+fn known_folder_path(id: *const GUID) -> Result<PathBuf, ProcError> {
     let mut out: PWSTR = std::ptr::null_mut();
-    let hr =
-        unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, std::ptr::null_mut(), &mut out) };
+    let hr = unsafe { SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &mut out) };
     if hr != 0 || out.is_null() {
         return Err(ProcError::Code(hr as u32));
     }

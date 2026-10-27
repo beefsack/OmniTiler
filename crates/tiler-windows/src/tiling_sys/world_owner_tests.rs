@@ -559,3 +559,52 @@ fn t2_supported_and_floating_movers_adopt_once() {
         }
     }
 }
+
+#[test]
+fn trace_proof_advances_with_snapshot_and_ignores_replay() {
+    // The bounded accepted trace-proof row advances with the snapshot it
+    // proves and survives non-applied outcomes: a replayed ack consumes no
+    // flight (Ignored) and retains the fallback snapshot; later state can
+    // never relabel the captured row.
+    let state = staged_state();
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
+    let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
+    assert!(world.trace_proof().is_none());
+    let observed = vec![observed_window()];
+    let retained: Vec<RetainedRow> = Vec::new();
+    let areas = vec![area()];
+    let report = world
+        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
+        .expect("dispatch");
+    let reply = match world.deliver_production(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let mut pending = state.pending_closed.clone();
+    let (ack, _) = world.ack(&reply, &mut pending);
+    assert!(matches!(ack, AckOutcome::Applied(_)));
+    let mut row = serde_json::json!({
+        "event": "world-apply",
+        "delivery": "accepted",
+        "request": reply.request_id.clone(),
+        "revision": reply.state_revision,
+        "observation": reply.based_on_observation_seq,
+    });
+    world.note_trace_proof(Some(row.clone()));
+    assert_eq!(world.trace_proof().expect("proof stored"), &row);
+    // Later state cannot relabel the captured proof: mutating the source
+    // leaves the stored snapshot untouched.
+    row["revision"] = serde_json::json!(9999);
+    assert_ne!(
+        world.trace_proof().expect("proof retained")["revision"],
+        serde_json::json!(9999)
+    );
+    // A replayed ack consumes no flight (Ignored) and retains the fallback.
+    let (replay, _) = world.ack(&reply, &mut pending);
+    assert!(matches!(replay, AckOutcome::Ignored { .. }));
+    assert!(world.trace_proof().is_some(), "ignored ack retains proof");
+    // Explicit clear drops it.
+    world.note_trace_proof(None);
+    assert!(world.trace_proof().is_none());
+}
