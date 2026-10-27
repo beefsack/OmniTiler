@@ -1294,6 +1294,8 @@ decisions of 2026-09-24 are under
   reduce full command wall time to 11.514s first-launch / 9.082s warm;
   five lifecycle exit/reap polls remain for causal join synchronization
   ([evidence](changes/macos-world-v2-port.md#test-iteration-speed-2026-10-27)).
+  Diagnose the occasional offline focus-walk first-dispatch timeout separately;
+  its cause is unproven and retry/full no-scaffold checks passed.
   (a) direct-wake latency unit with measured native before/after numbers;
   (b) ordered ingress queue carrying every command to core;
   (c) macOS native stress runner against the shared spec (shared oracles stay

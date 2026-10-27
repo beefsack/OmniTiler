@@ -1319,6 +1319,14 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 - Final locked build, strict all-target clippy, workspace format and whitespace
   checks pass. No-scaffold full tests and strict clippy also pass from an isolated
   copy of the staged sources. No shared core/protocol or stress-oracle changes.
+- Publication incorporated an upstream shared frame change and repeated the full
+  build/test/clippy/format gates successfully, including exact no-scaffold tests.
+  The timing table above predates that rebase; adapter source is unchanged, but
+  these are not fresh measurements of the new shared dependency. One additional
+  offline full run hit `focus_gaps_trace::native_focus_walk_retains_at_edge_per_tier1`
+  (`first dispatch: Timeout`). An immediate integration rerun and the true
+  no-scaffold full run passed. That test moved without oracle edits; the timeout's
+  cause and relationship to consolidated parallel execution remain unproven.
 - Five original lifecycle polls remain in `runtime_phase1`: relaunch overlap,
   stopped-worker reap, slow-sink reap, panic-relaunch and blocked-input reap.
   Their prior waits are retained separately from this completed consolidation
@@ -1331,6 +1339,13 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   warm; protocol has two targets, 7.915s including compilation and 0.607s warm.
   All tests pass (1,381 core, 63 protocol). These measurements do not demonstrate
   a comparable startup bottleneck, so no shared-crate consolidation is proposed.
+
+### Tentative follow-up decisions
+
+| Tentative decision | Alternatives and recommendation | Evidence |
+| --- | --- | --- |
+| Leave shared-crate test layouts unchanged | Consolidate them or retain them; retain unless profiling demonstrates a comparable bottleneck | Warm core 1.998s, protocol 0.607s; no demonstrated comparable startup delay |
+| Diagnose the offline focus-walk timeout separately without weakening its oracle | Increase the timeout or reproduce the causal dispatch stall; reproduce before changing assertions or deadlines | One full-run failure, passing integration retry and exact no-scaffold full run; cause unknown |
 
 ## Risks and open evidence
 
