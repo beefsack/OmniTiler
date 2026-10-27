@@ -5156,6 +5156,24 @@ native acceptance still separate:
   three-way classifier and `None`-membership rows stay tentative pending the
   post-port review.
 
+## macOS follow-up review decisions 2026-10-28
+
+User-confirmed 2026-10-28
+([port record](changes/macos-world-v2-port.md#follow-up-decisions-user-confirmed-2026-10-28)):
+
+- Shared-crate test layouts stay unchanged; consolidation only if profiling
+  shows a comparable startup bottleneck.
+- The focus-walk test fences its first command on the applied startup
+  observation plus an engine fence, then sends one command; no timeout
+  increase or command retry.
+- The five lifecycle exit/reap waits stay; the exact-generation join draft
+  failed review and is not retried unless newly directed.
+- User input rides the existing saturation-bypassing FIFO inbox lane;
+  observations and feedback stay bounded; queued select/send drain claims are
+  retained, never busy-dropped (delivered `3d64b5c5`).
+- The stale live baseline receipt is retired (archived, not deleted) and a
+  fresh read-only baseline is captured before the next fixture leg.
+
 ## Native adoption 2026-10-24
 
 User-approved 2026-10-24; core implementation delivered, native acceptance TBD:

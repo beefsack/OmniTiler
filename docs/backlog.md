@@ -1373,8 +1373,9 @@ decisions of 2026-09-24 are under
   the startup observation; test-only repair (wait for applied startup
   observation, fence, then one chord) pending.
   (a) direct-wake latency unit with measured native before/after numbers;
-  blocked on reconciling the retained live baseline receipt (18
-  protected-window mismatches, cause unattributed);
+  user 2026-10-28: retire the stale live baseline receipt (archived) and
+  capture a fresh read-only baseline first
+  ([decisions](decisions.md#macos-follow-up-review-decisions-2026-10-28));
   (b) delivered offline 2026-10-28: every user command reaches core FIFO, T3
   supersession retained (`3d64b5c5`);
   (c) macOS native stress runner against the shared spec (shared oracles stay

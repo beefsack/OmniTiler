@@ -1288,6 +1288,10 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   windows or remove the receipt merely to retry. Direct-wake work remains paired
   with its blocked before/after measurement rather than claiming an offline
   implementation as native acceptance.
+- User decision 2026-10-28: the mismatches are the user's own window changes.
+  Retire the inspected receipt (archived outside the repository, not deleted)
+  and capture a fresh read-only baseline of the current state before the next
+  fixture leg. No automatic restoration of unrelated windows.
 
 ## Test iteration speed (2026-10-27)
 
@@ -1361,9 +1365,9 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   All tests pass (1,381 core, 63 protocol). These measurements do not demonstrate
   a comparable startup bottleneck, so no shared-crate consolidation is proposed.
 
-### Tentative follow-up decisions
+### Follow-up decisions (user-confirmed 2026-10-28)
 
-| Tentative decision | Alternatives and recommendation | Evidence |
+| Decision | Alternatives and recommendation | Evidence |
 | --- | --- | --- |
 | Leave shared-crate test layouts unchanged | Consolidate them or retain them; retain unless profiling demonstrates a comparable bottleneck | Warm core 1.998s, protocol 0.607s; no demonstrated comparable startup delay |
 | Fence startup observation before the focus-walk test's first command | Wait for applied observation plus an engine fence; do not increase timeouts or retry commands | The failure receipt orders refused-no-focus before startup observation; the test is not yet repaired |
