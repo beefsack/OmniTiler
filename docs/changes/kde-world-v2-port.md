@@ -64,13 +64,133 @@
   placement and titlebar-drag Esc cancellation pass physically.
 - Esc-cancel support is titlebar-only: Meta-drag plus Esc collides with the
   desktop lock-screen shortcut; no fix is planned. Strict border coverage still
-  hides the moving border. The approved, unstarted Core-live/Core-anchored
-  offline comparison is [next in the backlog](../backlog.md#open-work), not a
-  production API decision; shared API review waits for macOS drag evidence.
+  hides the moving border. The Core-live/Core-anchored
+  [comparison below](#moving-border-offline-comparison-2026-10-28) is now complete
+  offline, not a production API decision; shared API review waits for macOS drag
+  evidence.
 - Remaining: fullscreen-window shortcuts, rapid A/B drags after `c0435a3c`,
   in-flight old-paint rejection beyond the static checks, and a fixture-only
   teardown/restoration pass. These partial physical results do not close the
   whole port or replace independent native state joins.
+
+## Moving-border offline comparison (2026-10-28)
+
+- Scope: reproducible test-only comparison through real `WorldEngine` reports
+  and presentation replies; no shipping behavior, wire shape, accepted Stage 5
+  coverage rule, underlay or preview changes. Native outcomes remain TBD.
+- Compare absolute core replies (Core-live) with a test-only core-derived
+  relative border descriptor applied to the live frame (Core-anchored).
+  Tentative measurement choice: give both candidates the same exact causal
+  structural witness and latest-publish ordering, so geometry tracking is the
+  discriminator rather than unequal stale-paint protection. The witness and
+  descriptor are harness vocabulary, not an approved shared API.
+- Acceptance: continuous motion faster than completion; held paint across
+  focus, close/reuse, fullscreen and layout boundaries; group-defined underlay;
+  gesture A/B isolation and later valid recovery. Measure pipeline stages and
+  tracking separately; distinguish deterministic schedule latency from execution
+  cost. No timing inference, polling, sleeps or settle waits.
+- Outcome: comparison complete offline in
+  [`moving_border_comparison.rs`](../../crates/tiler-core/tests/moving_border_comparison.rs).
+  Eight tests use real typed `WorldReport` ingress, `WorldEngine::handle_report`
+  and `WorldReply` shapes, real close/gesture terminals and workspace-tiling
+  commands. Candidate renderers, source generations, descriptor and scheduling
+  are test-only. No production code or dependency changed; the wider port and
+  its active record remain open.
+
+### Discriminator findings
+
+| Discriminator | Core-live | Core-anchored |
+| --- | --- | --- |
+| Continuous active move outruns completion | Border remains visible after first paint, but replays stale absolute geometry: maximum/mean position error **160/129.14** coordinate units; width-plus-height error **24/12.40** | Same visibility and publication schedule; position and size errors **0** on every visible repaint, using live frame plus core-derived outsets |
+| Held old paint after focus change | Refuses; retained paint hides; fresh covering reply recovers. A -> B -> A also refuses the original A reply | Same; matching subject identity on return does not replace causal proof |
+| Close and reuse the native handle | Explicit close hides/refuses; old lifetime cannot paint after handle reuse; fresh lifetime reply recovers | Same, including changed position and dimensions |
+| Fullscreen entry and exit | Old visible paint refuses immediately; core covering reply stays hidden with `Fullscreen`; exit recovers. Pre-entry paint still refuses after entry/exit ABA | Same; live anchoring never overrides core eligibility |
+| Layout change and restoration | Old paint refuses on each boundary; real `ToggleWorkspaceTiling` changes Tiled -> Floating -> Tiled; new covering replies recover | Same; restoring an equivalent layout does not restore an earlier causal epoch |
+| End gesture A, start B, deliver A | Real Released/Started terminals; held A reply refuses before B paint and after B paint; B recovers on the same subject | Same; no cross-gesture resurrection |
+| Underlay while mover follows | Real two-member group shape stays group-defined, never mover-anchored; exact invalidation hides/refuses old underlay during motion; covering capture restores | Identical unchanged exact underlay gate; border anchoring does not grant underlay continuity |
+| Older publication after newer paint | Refuses without changing painted sequence/shape, under an identical structural witness | Same |
+
+- Boundary tests separately offer an old reply to a **never-painted** candidate,
+  before any newer paint exists, so duplicate/order rejection cannot mask the
+  structural witness check. Retained-paint invalidation and later recovery are
+  separate assertions. Disabling the structural offer check causes four named
+  tests (focus, close, fullscreen, layout) to fail; restoring it passes all eight.
+  Gesture handoff also has an independent producer-token refusal.
+- The real underlay's stationary and covering outer rectangle is
+  `(-9,-9,1618,578)`, the group union expanded by gap + border + extension (9),
+  not the mover's expanded rectangle. Motion advances full invalidation but
+  not structural freshness. Both candidates refuse the stale underlay, including
+  snapshots completing after later motion; captured coverage is never retagged
+  with completion-time freshness. Preview production code is untouched; this
+  comparison does not establish native preview outcomes.
+
+### Stage measurements and tracking limits
+
+- Deterministic schedule: 40 observation/paint ticks, motion 20 coordinate units
+  per tick plus varying width/height, one real active move; a latest-wins pending
+  observation slot feeds a core start every four ticks. There are 10 completions,
+  29 superseded pending observations, nine painted replies and one pipeline-tail
+  reply whose paint falls outside the run. Terminals/commands bypass this
+  coalescing experiment; it is not authority to drop lifecycle edges.
+- Real core transitions execute synchronously on captured reports at virtual
+  completion. The following are **measured virtual tick deltas**, not native
+  milliseconds, transport timings or asynchronous core benchmarks. Both
+  candidates share these stages; anchoring removes geometry's dependency on
+  reply age, not core processing time.
+
+| Stage (nine painted replies) | Min / max / mean, ticks, both candidates |
+| --- | --- |
+| Observation -> core start | 0 / 0 / 0.00 (latest observation captured immediately before start) |
+| Core start -> completion | 3 / 3 / 3.00 |
+| Completion -> publication | 1 / 1 / 1.00 |
+| Publication -> first paint | 1 / 1 / 1.00 |
+| Observation -> first paint | 5 / 5 / 5.00 |
+| Retained reply age, every visible repaint (35 samples) | 5 / 8 / 6.46 |
+
+- Each candidate is visible for 35 ticks and hidden for the initial five pipeline
+  ticks. No subsequent geometry-only hide occurs. Errors above are sampled on
+  all 35 visible repaints: position is `abs(dx)+abs(dy)` and dimension error is
+  `abs(dw)+abs(dh)` against the live frame expanded by core style (gap 2, width 4).
+  Core-live's position lag grows between replies; anchored geometry uses the
+  current frame on each repaint despite the same retained descriptor age.
+- A single illustrative serial debug run separately times report construction
+  (40 reports: 54,977 ns total), real core handling (10 calls: 5,877,546 ns),
+  publication wrapping (10: 5,999 ns), both-candidate offers (6,078 ns) and
+  anchored retained lookup/descriptor application (35: 7,156 ns). These include
+  test scaffolding/clock overhead, vary across runs and are not production
+  latency or comparative renderer-cost evidence. No threshold uses them.
+
+### Recommendation, tentative choices and verification
+
+- **Recommendation, not selection:** carry Core-anchored forward to the
+  cross-platform core review. It removes the demonstrated geometry lag without
+  changing policy ownership or hiding on every motion event. Core-live stays the
+  simpler absolute-reply baseline, but latest-wins alone cannot remove in-flight
+  computation/publication/paint latency. Reduce those stages where measured;
+  do not mask their lag with aggressive hiding.
+- Tentative experiment choices: identical structural gates for a fair comparison;
+  monotonic source epoch plus subject/lifetime/gesture tokens; relative inner
+  and outer deltas extracted from real core shapes; the deterministic schedule
+  above. They are prototype choices for review, not production field names,
+  source-coverage guarantees or an approved descriptor API. The descriptor's
+  neutral subject/eligibility/style envelope is modeled by the test publication
+  plus relative descriptor, not added to the wire.
+- Parked: final shared API/ownership and complete eligibility/style/scale witness
+  vocabulary, production source-hook coverage and actual per-stage transport/
+  native paint latency. The harness starts at typed core reports: it does not
+  execute KDE JS capture, broker encoding/decoding, D-Bus or KWin paint hooks,
+  nor Windows/macOS native rendering. Native outcomes remain TBD. No accepted
+  Stage 5 gate is relaxed and no product behavior is selected.
+- Direct final verification, declared environment: locked core all-target tests
+  **1,391/1,391 across 30 suites**, focused comparison **8/8**, strict all-target
+  core clippy, exact world acceptance **6/6**, workspace format and whitespace
+  checks pass. Mutation probe fails
+  four targeted cases with the offer witness disabled, then all eight pass after
+  restoration. Earlier drafts with duplicate/order-masked boundary assertions
+  or incomplete underlay coverage are not accepted evidence.
+- Reproduce: `devenv shell --impure -- cargo test --locked -p tiler-core --test moving_border_comparison -- --nocapture --test-threads=1`.
+  Next: obtain macOS drag evidence, then review this comparison in the shared-core
+  discussion before approving any production presentation API or implementation.
 
 ## Stage 1 implementation boundary
 

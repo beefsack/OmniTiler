@@ -234,18 +234,16 @@ decisions of 2026-09-24 are under
   suspension is implemented: physical output-local hide, unaffected other output,
   send, switch hide/reveal and exit restoration pass; window shortcuts unconfirmed.
   Stages 4/5 remain partial and Stages 6-8 not started.
-  - **NEXT | Moving-border offline comparison:** approved, not started;
-    prototype/measurement only, no production API approval. Compare **Core-live**
-    (latest-wins observation through the existing report path; core-computed
-    absolute shapes) with **Core-anchored** (neutral core descriptor of subject,
-    eligibility, style and relative outsets; renderer paints against the live
-    native frame). Anchored structural witness stays exact while geometry is
-    live; underlay and preview are unchanged. Discriminate continuous motion
-    outrunning core completion; old paint after focus, close/reuse, fullscreen or
-    layout change must not revive; underlay stays group-defined while border
-    follows; no cross-gesture resurrection. Measure each stage separately.
-    Current KDE strict coverage hides the border during drags; Windows redraws
-    the last reply without an exactness gate. Final shared API waits for the
+  - **DONE offline | Moving-border comparison (2026-10-28):** reproducible
+    test-only real-core comparison: Core-live absolute replay trails motion
+    (max/mean position error 160/129.14 coordinate units); Core-anchored tracks
+    live position/size exactly with the same causal structural gate. Both reject
+    old paint across focus, close/reuse, fullscreen, layout and gesture A/B
+    boundaries; underlay remains exact/group-defined and preview unchanged.
+    Separate virtual pipeline measurements and native limits are in the
+    [findings](changes/kde-world-v2-port.md#moving-border-offline-comparison-2026-10-28).
+    Tentative recommendation: carry anchored presentation into review, not
+    production. Shipping behavior unchanged; final shared API waits for the
     cross-platform core review after macOS drag evidence.
   - Review tentative technical names:
     `with_focused_fullscreen_presentation_suspension()`,
