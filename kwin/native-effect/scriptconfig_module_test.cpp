@@ -279,6 +279,128 @@ void clearWindowsKeys()
     KSharedConfig::openConfig(QStringLiteral("kwinrc"))->sync();
 }
 
+QWidget *virtualDesktopsRow(KWin::ScriptConfigModule &module)
+{
+    return module.widget()->findChild<QWidget *>(QStringLiteral("virtualDesktopsWarningRow"));
+}
+
+QLabel *virtualDesktopsLabel(KWin::ScriptConfigModule &module)
+{
+    return module.widget()->findChild<QLabel *>(QStringLiteral("virtualDesktopsWarningLabel"));
+}
+
+void seedPerOutputVirtualDesktops(bool enabled)
+{
+    KConfigGroup group = windowsGroup();
+    group.writeEntry(QStringLiteral("PerOutputVirtualDesktops"), enabled);
+    group.sync();
+    KSharedConfig::openConfig(QStringLiteral("kwinrc"))->sync();
+}
+
+void clearPerOutputVirtualDesktops()
+{
+    KConfigGroup group = windowsGroup();
+    group.deleteEntry(QStringLiteral("PerOutputVirtualDesktops"));
+    group.sync();
+    KSharedConfig::openConfig(QStringLiteral("kwinrc"))->sync();
+}
+
+void seedWorkspaceMode(const QString &mode)
+{
+    KConfigGroup group = scriptGroup();
+    group.writeEntry(QStringLiteral("workspaceMode"), mode);
+    group.sync();
+}
+
+void virtualDesktopWarningMatrix()
+{
+    // Fixed module id for the safe-open action.
+    CHECK(KWin::ScriptConfigModule::virtualDesktopsModuleId() == QStringLiteral("kcm_kwin_virtualdesktops"));
+    // Pure selector: either separate mode warns only when KWin reports
+    // per-output desktops known and off; shared/unknown never warns.
+    CHECK(KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("per-output-local"), true, false));
+    CHECK(KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("global-unique"), true, false));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("per-output-local"), true, true));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("global-unique"), true, true));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("shared"), true, false));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("shared"), true, true));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("shared"), false, false));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("per-output-local"), false, false));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("global-unique"), false, false));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QStringLiteral("bogus"), true, false));
+    CHECK(!KWin::ScriptConfigModule::needsVirtualDesktopWarning(QString(), true, false));
+    // A missing kwinrc key reads as the KDE default (off), never unknown,
+    // and the read itself creates nothing.
+    clearPerOutputVirtualDesktops();
+    {
+        bool known = false;
+        CHECK(!KWin::ScriptConfigModule::readPerOutputVirtualDesktops(&known));
+        CHECK(known);
+        CHECK(!windowsGroup().hasKey(QStringLiteral("PerOutputVirtualDesktops")));
+    }
+    // Live visibility transitions across modes with the host flag off.
+    seedWorkspaceMode(QStringLiteral("per-output-local"));
+    seedPerOutputVirtualDesktops(false);
+    {
+        CountingScriptModule module(nullptr, KPluginMetaData());
+        module.load();
+        CHECK(virtualDesktopsRow(module) != nullptr);
+        CHECK(virtualDesktopsLabel(module) != nullptr);
+        CHECK(module.widget()->findChild<QPushButton *>(QStringLiteral("virtualDesktopsOpenButton")) != nullptr);
+        CHECK(windowVisible(virtualDesktopsRow(module)));
+        CHECK(virtualDesktopsLabel(module)->text() == module.virtualDesktopWarningText());
+        CHECK(!module.needsSave());
+        // A pure refresh never dirties the page.
+        module.refreshVirtualDesktopWarning();
+        CHECK(!module.needsSave());
+        CHECK(windowVisible(virtualDesktopsRow(module)));
+        QComboBox *mode = workspaceModeCombo(module);
+        CHECK(mode != nullptr);
+        if (mode) {
+            mode->setCurrentIndex(mode->findData(QStringLiteral("shared")));
+            CHECK(!windowVisible(virtualDesktopsRow(module)));
+            mode->setCurrentIndex(mode->findData(QStringLiteral("global-unique")));
+            CHECK(windowVisible(virtualDesktopsRow(module)));
+        }
+        // Injected launcher seam captures the fixed module id. Simulating
+        // the user enabling per-screen desktops in the opened page hides
+        // the row on return with no combo/load and no dirty change.
+        CHECK(windowVisible(virtualDesktopsRow(module)));
+        const bool dirtyBefore = module.needsSave();
+        QString launched;
+        module.setVirtualDesktopsLauncherHandler([&launched](const QString &id) {
+            launched = id;
+            seedPerOutputVirtualDesktops(true);
+        });
+        module.requestOpenVirtualDesktops();
+        CHECK(launched == QStringLiteral("kcm_kwin_virtualdesktops"));
+        CHECK(!windowVisible(virtualDesktopsRow(module)));
+        CHECK(module.needsSave() == dirtyBefore);
+        // Ordinary save leaves the host [Windows] key untouched.
+        module.scriptSucceed = true;
+        module.save();
+        CHECK(windowsGroup().readEntry(QStringLiteral("PerOutputVirtualDesktops"), false) == true);
+        CHECK(windowsGroup().hasKey(QStringLiteral("PerOutputVirtualDesktops")));
+    }
+    // Host flag on: separate modes stay silent and save still preserves it.
+    seedPerOutputVirtualDesktops(true);
+    {
+        CountingScriptModule module(nullptr, KPluginMetaData());
+        module.load();
+        CHECK(!windowVisible(virtualDesktopsRow(module)));
+        CHECK(!module.needsSave());
+        module.scriptSucceed = true;
+        module.save();
+        CHECK(windowsGroup().readEntry(QStringLiteral("PerOutputVirtualDesktops"), false) == true);
+    }
+    clearPerOutputVirtualDesktops();
+    {
+        KConfigGroup group = scriptGroup();
+        group.deleteEntry(QStringLiteral("workspaceMode"));
+        group.sync();
+    }
+}
+
 void windowRowAndButtonStates()
 {
     // Bool rows are always visible with exactly one button; the borders row
@@ -1189,9 +1311,9 @@ void startupOnlySaveDisablesSendWithRestartMessage()
     if (!mode) {
         return;
     }
-    // Aligned KDE offers per-output-local and shared only: no global-unique.
-    CHECK(mode->count() == 2);
-    CHECK(mode->findData(QStringLiteral("global-unique")) < 0);
+    // Aligned KDE offers all three workspace modes.
+    CHECK(mode->count() == 3);
+    CHECK(mode->findData(QStringLiteral("global-unique")) >= 0);
     CHECK(mode->findData(QStringLiteral("per-output-local")) >= 0);
     CHECK(mode->findData(QStringLiteral("shared")) >= 0);
     const QString modeTarget = otherWorkspaceMode(storedWorkspaceMode());
@@ -1586,6 +1708,7 @@ int main(int argc, char **argv)
         windowBordersFixDeletesKey();
         windowFailedSendShowsError();
         windowOperationsLogOneLinePerOperation();
+        virtualDesktopWarningMatrix();
     } else {
         std::fprintf(stderr, "unknown scenario: %s\n", argv[1]);
         return EXIT_FAILURE;

@@ -591,7 +591,14 @@ mod tests {
         // text does.
         assert!(header.contains("kli18n(\"Fallback border color\")"));
         assert!(header.contains("kli18n(\"Fallback border color:\")"));
-        assert!(header.contains("kli18n(\"Per output, local\")"));
+        assert!(header.contains("kli18n(\"Displays have separate workspaces\")"));
+        assert_eq!(
+            header
+                .matches("kli18n(\"Displays have separate workspaces\")")
+                .count(),
+            2
+        );
+        assert!(header.contains("kli18n(\"Workspaces span displays\")"));
         assert!(header.contains("kli18n(\"Gap between tiled windows:\")"));
         assert!(header.contains("static_assert(kKdeExposedFieldCount == 16"));
         assert!(header.contains("\"below-tabs\""));

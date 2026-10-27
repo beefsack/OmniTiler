@@ -337,6 +337,13 @@ request fixtures pin the JS producer, including populated raw attempts.
   linked-vs-separate modes are valid on every platform; no new setting
   is added.
 
+Stage 7 is delivered offline (2026-10-28): all three tokens, exact labels,
+read-only separate-mode warning and a native **Open Virtual Desktops** action.
+The fixed `kcm_kwin_virtualdesktops` page opens without automatically writing
+`kwinrc [Windows] PerOutputVirtualDesktops`; the user owns any change. Native
+all-mode and actual page-opening checks remain TBD; see the
+[outcome](../changes/kde-world-v2-port.md#stage-7-workspace-modes-outcome-2026-10-28).
+
 ## Approved core changes this port must deliver
 
 - Host-owned native adoption (user-approved 2026-10-24, implemented

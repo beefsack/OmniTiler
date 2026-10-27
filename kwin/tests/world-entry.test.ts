@@ -7,6 +7,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry, mintAdapterIncarnation } from "../src/world-entry";
+import { captureWorldObservation } from "../src/world-observe";
+import { isSeparateWorkspaceMode } from "../src/workspace-native";
 import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 import { isOpaqueId } from "../src/world-seq";
 
@@ -145,7 +147,7 @@ function fakeSignal(): FakeSignal {
     };
 }
 
-function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown): Harness {
+function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true): Harness {
     const world = makeWorld();
     const calls: CapturedCall[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -193,6 +195,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             }
         },
         clientArea: (_area: number, _out: unknown, _desk: unknown) => ({ x: 0, y: 0, width: 800, height: 600 }),
+        ...(perOutputSeam ? {
         currentDesktopForScreen: (_screen: unknown) => world.currentDesktop,
         setCurrentDesktopForScreen: (deskRef: unknown, _screen: unknown) => {
             const found = world.desktops.find((d) => (d as unknown) === deskRef);
@@ -200,6 +203,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
                 world.currentDesktop = found;
             }
         },
+        } : {}),
         sendClientToScreen: (_mover: unknown, _out: unknown) => undefined,
         createDesktop: (...args: ReadonlyArray<unknown>) => {
             if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string") {
@@ -273,6 +277,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         readWorkspaceModeFn: () => mode,
         readDefaultTiledFn: () => defaultTiled,
         ...(refillFn !== undefined ? { readMigrationSourceRefillFn: refillFn } : {}),
+        ...(optionsValue !== undefined ? { options: optionsValue } : {}),
     });
     assert.ok(handle !== null);
     const runTimers = (maxDelay = 120): void => {
@@ -397,25 +402,19 @@ describe("world entry discovery and observation", () => {
         assert.ok((reportOf(h)["screens"] as Array<unknown>).length >= 1);
     });
 
-    it("accepts per-output-local and shared; global-unique falls back with a logged reason", () => {
-        for (const mode of ["per-output-local", "shared"]) {
+    it("passes all three workspace modes through verbatim with no fallback", () => {
+        for (const mode of ["per-output-local", "global-unique", "shared"]) {
             const h = makeHarness(mode);
             discover(h);
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             assert.equal(reportOf(h)["mode"], mode);
+            assert.ok(
+                !h.logs.some((l) => l.includes("workspace-mode-fallback")),
+                `no fallback for ${mode}`,
+            );
+            h.handle?.stop();
         }
-        // Tentative (user review pending): a persisted `global-unique`
-        // falls back to `per-output-local` on the world route, once.
-        const h = makeHarness("global-unique");
-        discover(h);
-        h.handle?.requestWorkspaceRelative(1);
-        h.runTimers();
-        assert.equal(reportOf(h)["mode"], "per-output-local");
-        assert.ok(
-            h.logs.some((l) => l.includes("workspace-mode-fallback") && l.includes("from=global-unique")),
-            "fallback logged",
-        );
     });
 
     it("wires the saved default tiling into reports and the snapshot", () => {
@@ -1229,6 +1228,382 @@ describe("world entry aligned bindings", () => {
         // logical binding stays core-owned with the views lane empty.
         assert.deepEqual(second["views"], [{ out: "out", view: "" }]);
         assert.deepEqual(second["native"], [{ out: "out", order: ["ws1", "ws2"], current: "ws1" }]);
+    });
+});
+
+describe("world entry all-mode native coverage", () => {
+    // Producer-shaped two-output native surface: one global desktop list
+    // of four natives, out-A viewing ws1, out-B viewing ws4 with its sole
+    // window homed on ws4 (ws1-3 empty on B). The 6.6 shape drops the
+    // per-output seam so the shared currentDesktop is current everywhere.
+    const NATIVES4 = ["ws1", "ws2", "ws3", "ws4"];
+    function makeTwoOutputHarness(
+        mode: unknown,
+        opts: { optionsValue?: unknown; perOutputSeam?: boolean; sharedCurrent?: string } = {},
+    ): Harness & { currents: Map<string, string>; surface: unknown } {
+        const perOutputSeam = opts.perOutputSeam ?? true;
+        const sharedId = opts.sharedCurrent ?? "ws1";
+        const desktops = NATIVES4.map((id) => desk(id));
+        const byId = new Map(desktops.map((d) => [d.id, d]));
+        const sharedDesk = (id: string): FakeDesktop => {
+            const found = byId.get(id);
+            assert.ok(found !== undefined, `desktop ${id} exists`);
+            return found as FakeDesktop;
+        };
+        const screens = [
+            { name: "out-A", geometry: { x: 0, y: 0, width: 1920, height: 1080 } },
+            { name: "out-B", geometry: { x: 1920, y: 0, width: 1920, height: 1080 } },
+        ];
+        const currents = new Map([["out-A", "ws1"], ["out-B", "ws4"]]);
+        const wA = win("win-a1", "out-A", sharedDesk("ws1"), 0);
+        const wB = win("win-b4", "out-B", sharedDesk("ws4"), 1920);
+        const world = {
+            screens,
+            desktops,
+            wins: [wA, wB],
+            activeScreen: { name: "out-A" },
+            activeWindow: wA as FakeWindow | null,
+            currentDesktop: sharedDesk(sharedId),
+            created: [] as string[],
+            removed: [] as string[],
+            focused: [] as string[],
+            membershipWrites: [] as string[],
+            geometryWrites: [] as string[],
+        };
+        const calls: CapturedCall[] = [];
+        const timers: Array<{ delay: number; cb: () => void }> = [];
+        const logs: string[] = [];
+        const shortcuts = new Map<string, () => void>();
+        const signals: Record<string, FakeSignal> = {
+            windowAdded: fakeSignal(),
+            windowRemoved: fakeSignal(),
+            windowActivated: fakeSignal(),
+            desktopsChanged: fakeSignal(),
+            screensChanged: fakeSignal(),
+            currentDesktopChanged: fakeSignal(),
+            activeScreenChanged: fakeSignal(),
+        };
+        const surface = {
+            windowList: () => world.wins,
+            screens: world.screens,
+            desktops: world.desktops,
+            activeScreen: world.activeScreen,
+            cursorPos: { x: 2, y: 100 },
+            windowAdded: (signals.windowAdded as FakeSignal).signal,
+            windowRemoved: (signals.windowRemoved as FakeSignal).signal,
+            windowActivated: (signals.windowActivated as FakeSignal).signal,
+            desktopsChanged: (signals.desktopsChanged as FakeSignal).signal,
+            screensChanged: (signals.screensChanged as FakeSignal).signal,
+            currentDesktopChanged: (signals.currentDesktopChanged as FakeSignal).signal,
+            activeScreenChanged: (signals.activeScreenChanged as FakeSignal).signal,
+            get activeWindow() {
+                return world.activeWindow;
+            },
+            set activeWindow(ref: unknown) {
+                const found = world.wins.find((w) => (w as unknown) === ref);
+                if (found) {
+                    world.focused.push(found.internalId);
+                }
+            },
+            get currentDesktop() {
+                return world.currentDesktop;
+            },
+            set currentDesktop(ref: unknown) {
+                const found = world.desktops.find((d) => (d as unknown) === ref);
+                if (found) {
+                    world.currentDesktop = found;
+                }
+            },
+            clientArea: (_area: number, _out: unknown, _desk: unknown) => ({ x: 0, y: 0, width: 800, height: 600 }),
+            ...(perOutputSeam ? {
+                currentDesktopForScreen: (screen: { name: string }) => sharedDesk(currents.get(screen.name) ?? ""),
+                setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
+                    currents.set(screen.name, (deskRef as FakeDesktop).id);
+                },
+            } : {}),
+            sendClientToScreen: (_mover: unknown, _out: unknown) => undefined,
+            createDesktop: (...args: ReadonlyArray<unknown>) => {
+                if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string") {
+                    throw new Error("Insufficient arguments");
+                }
+                const id = `native-${world.desktops.length + 1}`;
+                world.desktops.push(desk(id, args[1] as string));
+                world.created.push(id);
+            },
+            removeDesktop: (ref: unknown) => {
+                const id = (ref as FakeDesktop).id;
+                world.desktops = world.desktops.filter((d) => d.id !== id);
+                world.removed.push(id);
+            },
+        };
+        const handle = startWorldAdapterEntry({
+            workspace: surface,
+            owner: "owner-a",
+            adapter: "test-adapter",
+            callDbus: (_service, _path, _iface, method, payload, callback) => {
+                calls.push({ method, payload, callback });
+                if (method === "QueueWorldCommand") {
+                    const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                } else if (method === "TakeCommandResult") {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }
+            },
+            scheduleOnce: (delay, cb) => {
+                timers.push({ delay, cb });
+                return () => undefined;
+            },
+            log: (message) => {
+                logs.push(message);
+            },
+            gestureActive: () => false,
+            registerShortcutFn: (name, _text, _seq, cb) => {
+                shortcuts.set(name, cb);
+                return true;
+            },
+            readWorkspaceModeFn: () => mode,
+            readDefaultTiledFn: () => true,
+            ...(opts.optionsValue !== undefined ? { options: opts.optionsValue } : {}),
+        });
+        assert.ok(handle !== null);
+        const runTimers = (maxDelay = 120): void => {
+            for (let i = 0; i < timers.length; i += 1) {
+                const t = timers[i] as { delay: number; cb: () => void };
+                if (t.delay <= maxDelay) {
+                    timers.splice(i, 1);
+                    i -= 1;
+                    t.cb();
+                }
+            }
+        };
+        return {
+            world, calls, timers, logs, shortcuts, signals, handle,
+            currents, surface,
+            runTimers,
+            lastCall: (method: string): CapturedCall => {
+                const found = [...calls].reverse().find((c) => c.method === method);
+                assert.ok(found !== undefined, `expected ${method}`);
+                return found as CapturedCall;
+            },
+        };
+    }
+
+    const warnsOf = (h: Harness): string[] =>
+        h.logs.filter((l) => l.includes("per-output-unavailable"));
+
+    // One native-event capture round settled with an accepted reply, so
+    // the next round dispatches fresh (no flight, no busy refusal).
+    const captureRound = (h: Harness, rev: string): void => {
+        for (const handler of [...(h.signals.desktopsChanged as FakeSignal).handlers]) {
+            handler();
+        }
+        h.runTimers();
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, rev));
+    };
+
+    it("separates per-output-local from bogus/shared for binding replication", () => {
+        assert.equal(isSeparateWorkspaceMode("per-output-local"), true);
+        assert.equal(isSeparateWorkspaceMode("global-unique"), true);
+        assert.equal(isSeparateWorkspaceMode("shared"), false);
+        assert.equal(isSeparateWorkspaceMode("bogus"), false);
+        assert.equal(isSeparateWorkspaceMode(undefined), false);
+        assert.equal(isSeparateWorkspaceMode(null), false);
+    });
+
+    for (const mode of ["per-output-local", "global-unique"]) {
+        it(`rides ${mode} with independent currents over the shared four-native list`, () => {
+            const h = makeTwoOutputHarness(mode);
+            discover(h);
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const report = reportOf(h);
+            assert.equal(report["mode"], mode);
+            // The global native desktop list projects per output with an
+            // independent current each; every order has the same length.
+            assert.deepEqual(report["native"], [
+                { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws1" },
+                { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws4" },
+            ]);
+            assert.equal(report["equalCount"], true);
+            assert.equal(report["hostOwned"], true);
+            // Host-owned adapters omit logical views: the core derives
+            // receipts from the native current map.
+            assert.deepEqual(report["views"], [
+                { out: "out-A", view: "" },
+                { out: "out-B", view: "" },
+            ]);
+            // Membership truth: out-B/ws4 occupied, ws1-3 empty on B.
+            const wins = report["windows"] as Array<Record<string, unknown>>;
+            const homed = wins.find((w) => w["win"] === "win-b4");
+            assert.ok(homed !== undefined, "ws4 member observed");
+            assert.equal(homed["out"], "out-B");
+            assert.deepEqual(homed["desktops"], ["ws4"]);
+            assert.ok(
+                !wins.some((w) => w["win"] !== "win-b4" && w["out"] === "out-B"),
+                "ws1-3 empty on out-B",
+            );
+            h.handle?.stop();
+        });
+    }
+
+    it("rides shared with the same global list and membership", () => {
+        const h = makeTwoOutputHarness("shared");
+        discover(h);
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const report = reportOf(h);
+        assert.equal(report["mode"], "shared");
+        assert.deepEqual((report["native"] as Array<Record<string, unknown>>)[1], {
+            out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws4",
+        });
+        assert.equal(report["equalCount"], true);
+        const wins = report["windows"] as Array<Record<string, unknown>>;
+        assert.deepEqual(wins.find((w) => w["win"] === "win-b4")?.["desktops"], ["ws4"]);
+        h.handle?.stop();
+    });
+
+    for (const mode of ["per-output-local", "global-unique", "shared"]) {
+        it(`degrades ${mode} to shared with linked currents on a 6.6 host`, () => {
+            const h = makeTwoOutputHarness(mode, { perOutputSeam: false, sharedCurrent: "ws2" });
+            discover(h);
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const report = reportOf(h);
+            // The observer resolves the effective mode: per-output
+            // requests degrade predictably where the API is absent.
+            assert.equal(report["mode"], "shared");
+            // The shared currentDesktop is current on every output.
+            assert.deepEqual(report["native"], [
+                { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2" },
+                { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2" },
+            ]);
+            assert.equal(report["equalCount"], true);
+            h.handle?.stop();
+        });
+    }
+
+    it("reports truthful nativeWs on the occupied cell through actual capture", () => {
+        const h = makeTwoOutputHarness("global-unique");
+        const surface = (h as unknown as { surface: unknown }).surface;
+        const obs = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "global-unique",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: () => null,
+            replicateBindingsPerOutput: true,
+        });
+        assert.ok(obs !== null, "observation captures");
+        assert.equal((obs as { mode: unknown }).mode, "global-unique");
+        // Binding replication emits one row per (output, native) with a
+        // distinct logical each over the four-native list.
+        const withBind = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "global-unique",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId: string, out?: string) => out === undefined
+                ? { logical: `L-${nativeId}`, out: "out-A", pin: true, disp: false, managed: true }
+                : { logical: `L-${out}/${nativeId}`, out, pin: true, disp: false, managed: true },
+            replicateBindingsPerOutput: true,
+        });
+        assert.ok(withBind !== null);
+        assert.equal((withBind as { bindings: Array<unknown> }).bindings.length, 8);
+        const pair = (withBind as { bindings: Array<{ logical: string; native: string; out: string }> }).bindings
+            .filter((b) => b.native === "ws4");
+        assert.deepEqual(pair.map((b) => `${b.out}=${b.logical}`).sort(), ["out-A=L-out-A/ws4", "out-B=L-out-B/ws4"]);
+        // Shared keeps one row per native.
+        const sharedObs = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "shared",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId: string) => ({ logical: `L-${nativeId}`, out: "out-A", pin: true, disp: false, managed: true }),
+            replicateBindingsPerOutput: false,
+        });
+        assert.ok(sharedObs !== null);
+        assert.equal((sharedObs as { bindings: Array<unknown> }).bindings.length, 4);
+        // The occupied out-B/ws4 domain homes win-b4 with its nativeWs;
+        // ws1-3 carry no out-B members.
+        const domains = (obs as { domains: Array<{ id: string; ws: string; windows: Array<{ win: string; nativeWs: string | null }> }> }).domains;
+        const cell = domains.find((d) => d.id === "out-B" && d.ws === "ws4");
+        assert.ok(cell !== undefined, "occupied cell observed");
+        assert.deepEqual(cell.windows.map((w) => w.win), ["win-b4"]);
+        assert.equal(cell.windows[0]?.nativeWs, "ws4");
+        assert.ok(
+            !domains.some((d) => d.id === "out-B" && d.ws !== "ws4" && d.windows.length > 0),
+            "ws1-3 empty on out-B",
+        );
+        h.handle?.stop();
+    });
+
+    it("warns change-gated only for separate modes with the flag off", () => {
+        // Off + separate warns once on the discovery capture with the mode.
+        const off = makeHarness("per-output-local", false, true, undefined, { perOutputVirtualDesktops: false });
+        discover(off);
+        assert.equal(warnsOf(off).length, 1);
+        assert.ok(warnsOf(off)[0]?.includes("mode=per-output-local") && warnsOf(off)[0]?.includes("reason=kwin-per-output-off"));
+        // A second capture without change stays gated.
+        captureRound(off, "1");
+        assert.equal(warnsOf(off).length, 1);
+        // On stays silent; unknown stays silent; shared stays silent.
+        for (const [mode, options] of [
+            ["per-output-local", { perOutputVirtualDesktops: true }],
+            ["global-unique", { perOutputVirtualDesktops: true }],
+            ["per-output-local", undefined],
+            ["shared", { perOutputVirtualDesktops: false }],
+        ] as const) {
+            const h = options === undefined
+                ? makeHarness(mode)
+                : makeHarness(mode, false, true, undefined, { ...options });
+            discover(h);
+            captureRound(h, "1");
+            assert.deepEqual(warnsOf(h), [], `silent for mode=${String(mode)} flag=${JSON.stringify(options)}`);
+            h.handle?.stop();
+        }
+        // Global-unique off warns with its own mode token.
+        const gu = makeHarness("global-unique", false, true, undefined, { perOutputVirtualDesktops: false });
+        discover(gu);
+        assert.equal(warnsOf(gu).length, 1);
+        assert.ok(warnsOf(gu)[0]?.includes("mode=global-unique"));
+        gu.handle?.stop();
+        // A 6.6 host (no seam, unreadable flag) stays silent and degrades.
+        const legacy = makeHarness("per-output-local", false, true, undefined, undefined, false);
+        discover(legacy);
+        captureRound(legacy, "1");
+        assert.deepEqual(warnsOf(legacy), []);
+        assert.equal(reportOf(legacy)["mode"], "shared");
+        legacy.handle?.stop();
+        off.handle?.stop();
+    });
+
+    it("re-warns only on a new off transition", () => {
+        const flags = { perOutputVirtualDesktops: false };
+        const h = makeHarness("per-output-local", false, true, undefined, flags);
+        discover(h);
+        assert.equal(warnsOf(h).length, 1);
+        // Off flips on: silent, but the gate key advances on capture.
+        flags.perOutputVirtualDesktops = true;
+        captureRound(h, "1");
+        assert.equal(warnsOf(h).length, 1);
+        // Stays on: still gated.
+        captureRound(h, "2");
+        assert.equal(warnsOf(h).length, 1);
+        // Flips off again: a new transition warns once more.
+        flags.perOutputVirtualDesktops = false;
+        captureRound(h, "3");
+        assert.equal(warnsOf(h).length, 2);
+        captureRound(h, "4");
+        assert.equal(warnsOf(h).length, 2);
+        h.handle?.stop();
     });
 });
 

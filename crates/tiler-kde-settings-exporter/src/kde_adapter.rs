@@ -117,19 +117,27 @@ pub struct KdeEnumOverride {
 }
 
 /// Native workspace-mode presentation: labels and tips genuinely differ
-/// from the catalog (`Per output, local` vs `Per-output local`, KWin
-/// version notes vs scope notes).
+/// from the catalog (approved user vocabulary in
+/// `docs/decisions.md#workspace-vocabulary-2026-10-24`: both separate
+/// modes read "Displays have separate workspaces", shared reads
+/// "Workspaces span displays"; KWin version notes vs scope notes).
 pub const KDE_ENUM_OVERRIDES: &[KdeEnumOverride] = &[
     KdeEnumOverride {
         field_id: settings_catalog::FIELD_WORKSPACE_MODE,
         token: "per-output-local",
-        label: "Per output, local",
-        tip: "Requires KWin 6.7 or later; KWin 6.6 uses shared",
+        label: "Displays have separate workspaces",
+        tip: "Per-output local: each output keeps its own set. Requires KWin 6.7 or later; KWin 6.6 uses shared",
+    },
+    KdeEnumOverride {
+        field_id: settings_catalog::FIELD_WORKSPACE_MODE,
+        token: "global-unique",
+        label: "Displays have separate workspaces",
+        tip: "Global unique: distinct sets with cross-output swap. Requires KWin 6.7 or later; KWin 6.6 uses shared",
     },
     KdeEnumOverride {
         field_id: settings_catalog::FIELD_WORKSPACE_MODE,
         token: "shared",
-        label: "Shared",
+        label: "Workspaces span displays",
         tip: "",
     },
 ];
@@ -152,13 +160,12 @@ pub fn kde_option_text(field_id: &str, option: &EnumOption) -> (&'static str, &'
     }
 }
 
-/// KDE-withheld catalog tokens: valid in the shared catalog (and on other
-/// platforms) but offered by no KDE surface. KDE cannot present globally
-/// unique numbers because desktop positions and names are global; a
-/// persisted `global-unique` value falls back to `per-output-local` on the
-/// world route with a logged reason (Tentative, user review pending).
-pub const KDE_WITHHELD_OPTIONS: &[(&str, &str)] =
-    &[(settings_catalog::FIELD_WORKSPACE_MODE, "global-unique")];
+/// KDE-withheld catalog tokens: valid in the shared catalog but offered
+/// by no KDE surface. Intentionally empty: the approved workspace
+/// vocabulary offers all three scope modes on KDE (the former
+/// `global-unique` withholding is superseded). Kept as an explicit seam
+/// so emitters still filter through one place.
+pub const KDE_WITHHELD_OPTIONS: &[(&str, &str)] = &[];
 
 /// Catalog enum options actually offered on KDE: catalog order minus the
 /// withheld tokens above. Emitters must use this (never raw
@@ -736,7 +743,7 @@ mod tests {
         for entry in KDE_ENUM_OVERRIDES {
             assert_eq!(entry.field_id, settings_catalog::FIELD_WORKSPACE_MODE);
         }
-        assert_eq!(KDE_ENUM_OVERRIDES.len(), 2);
+        assert_eq!(KDE_ENUM_OVERRIDES.len(), 3);
         for option in kde_exposed_options(settings_catalog::FIELD_WORKSPACE_MODE) {
             let override_entry =
                 kde_enum_override(settings_catalog::FIELD_WORKSPACE_MODE, option.token)
@@ -772,8 +779,11 @@ mod tests {
 
     #[test]
     fn withheld_options_stay_catalog_valid_but_unoffered() {
-        // `global-unique` remains a valid catalog token (other platforms,
-        // legacy callers) but no KDE surface offers it.
+        // No KDE withholding remains: the approved workspace vocabulary
+        // offers all three scope modes on KDE (the former `global-unique`
+        // withholding is superseded). Every withheld token must still
+        // exist in the catalog and stay unoffered, so the seam keeps its
+        // contract while empty.
         for (field_id, token) in KDE_WITHHELD_OPTIONS {
             let def = settings_catalog::find_field(field_id).expect("catalog def");
             assert!(
@@ -791,7 +801,7 @@ mod tests {
             .iter()
             .map(|option| option.token)
             .collect();
-        assert_eq!(exposed, vec!["per-output-local", "shared"]);
+        assert_eq!(exposed, vec!["per-output-local", "global-unique", "shared"]);
         // The catalog default is never withheld.
         let def =
             settings_catalog::find_field(settings_catalog::FIELD_WORKSPACE_MODE).expect("mode def");

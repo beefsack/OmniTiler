@@ -5011,6 +5011,11 @@ User-approved 2026-10-24 (final confirmations):
   linked-vs-separate modes are valid on every platform; no new setting
   is added. Windows Settings uses "Workspaces span displays" without changing
   the stored `shared` token. The KDE warning is a port requirement.
+- KDE Stage 7 implementation status (2026-10-28): all three tokens and exact
+  labels, separate-mode warning and navigation-only Virtual Desktops action are
+  delivered offline ([outcome](changes/kde-world-v2-port.md#stage-7-workspace-modes-outcome-2026-10-28)).
+  Native all-mode acceptance remains TBD. Opening settings never automatically
+  toggles the host option; no Activities/multi-desktop or configure decision changes.
 
 ## macOS v2 implementation decisions 2026-10-25
 

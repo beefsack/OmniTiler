@@ -107,6 +107,20 @@ public:
     void requestWindowFix(const QString &key);
     void requestWindowRevert(const QString &key);
 
+    // Read-only separate-mode host warning (Stage 7): visible only when a
+    // separate workspace mode is selected while KWin's
+    // [Windows] PerOutputVirtualDesktops is off. Never writes the KWin
+    // setting; the action opens the fixed Virtual Desktops page (safe open
+    // only, never shell/user argv).
+    static QString virtualDesktopsModuleId();
+    static bool needsVirtualDesktopWarning(const QString &workspaceMode, bool perOutputKnown,
+                                           bool perOutputEnabled);
+    static bool readPerOutputVirtualDesktops(bool *known = nullptr);
+    void setVirtualDesktopsLauncherHandler(std::function<void(const QString &)> handler);
+    QString virtualDesktopWarningText() const;
+    void refreshVirtualDesktopWarning();
+    void requestOpenVirtualDesktops();
+
 Q_SIGNALS:
     void shortcutTaskRequested(std::function<void()> task, quint64 generation);
 
@@ -243,6 +257,7 @@ private:
     QString m_scriptStatus;
 
     QString m_windowConflictError;
+    std::function<void(const QString &)> m_virtualDesktopsLauncher;
 };
 
 } // namespace KWin

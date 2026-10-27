@@ -254,7 +254,11 @@ decisions of 2026-09-24 are under
   Stages 4/5 remain partial. Stage 6 is complete offline: producer-shaped
   `windowAt` QList decoding, event-driven cursor capture without polling or
   pure-motion work, unsupported-warp truth and independent border theme/override
-  coverage. Native styling/input checks remain unverified; Stages 7/8 not started.
+  coverage. Native styling/input checks remain unverified. Stage 7 workspace
+  modes is complete offline: all three tokens and exact labels, separate-mode
+  warning and navigation-only Virtual Desktops action, producer/broker/native
+  settings regressions. Native all-mode acceptance remains TBD; Stage 8 not
+  started. Activities/multi-desktop and async configure stay deferred investigations.
   - **DONE offline | Moving-border comparison (2026-10-28):** reproducible
     test-only real-core comparison: Core-live absolute replay trails motion
     (max/mean position error 160/129.14 coordinate units); Core-anchored tracks

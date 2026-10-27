@@ -24,7 +24,9 @@
   fixture teardown/restoration remain pending. Full native acceptance remains
   TBD and this record stays active for the whole port. Stage 6 host integration
   is complete offline; native host styling/input checks and documented unknown
-  host facts remain unverified.
+  host facts remain unverified. Stage 7 workspace modes are complete offline:
+  all three tokens, approved labels, separate-mode warning and safe settings
+  navigation are delivered; native all-mode acceptance remains TBD.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -49,7 +51,7 @@
 | 4. Shared policy only | Partial: raw candidate capture and shared Rust fixed-size wire classification; obsolete selectors and native float-navigation removed; shortcuts command-only; N6 toggle/birth-clear and gesture transport accepted offline. Titlebar-drag Esc and cross-output placement pass physically. Role/local-fixed and approved N5/float/output packages remain | N6 core 1,339, protocol 57, Windows Linux subset 725, service 278 and JS 737 pass; acceptance 6/6. Full stage acceptance not claimed |
 | 5. Pure presentation and coordinates | Renderer freshness and preview continuity accepted offline; borders/underlays stay exact-current. Physical static member-move/focus return, output-local fullscreen suspension and improved preview continuity pass. No KDE pager renderer. Rapid A/B, fullscreen shortcuts and fixture teardown/restoration pending | Service 317, core/protocol 1,460, Windows Linux 725, JS 750, host effect build/CTest 36, Nix CTest 37, acceptance 6/6 and source guards pass. Physical scope and remaining gaps below; no full stage acceptance |
 | 6. Host integration | Complete offline: fresh cursorPos/windowAt on relevant event/command/gesture captures, correct QList head decoding, no polling or pure-motion captures; warp unsupported, never reported applied; independent active-border override/default system accent; native Plasma pager, no core pager-focused-window color | Pinned declarations/source, producer-shaped capture and unexpected-warp tests, native border theme/override/alpha tests and styling-independence source checks; native checks remain separate |
-| 7. Workspace modes and investigations | Keep per-output-local default, global-unique separate, shared linked; equal_workspace_count is a host limit; required separate-mode warning when KWin per-output desktops are off, settings action if feasible | All-mode offline/native cases; labels "Displays have separate workspaces" / "Workspaces span displays"; Activities/multi-desktop and configure investigations below, no speculative core changes |
+| 7. Workspace modes and investigations | Complete offline: per-output-local default, global-unique separate, shared linked; equal_workspace_count stays a host limit; separate-mode warning opens Virtual Desktops without writing host config | All-mode producer/broker cases, exact labels "Displays have separate workspaces" / "Workspaces span displays", native warning/launcher tests pass. Native all-mode checks TBD; Activities/multi-desktop and configure remain deferred investigations, no core changes |
 | 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
 
 ### Physical checkpoint (2026-10-27)
@@ -2827,6 +2829,101 @@
   closure is claimed. Visible-but-uncontrollable normalization remains parked.
 - **Exact next action for N5: none offline.** Native role/hidden behavior still
   awaits fixture-scoped testing; continue the separately approved race packages.
+
+## Stage 7 workspace modes outcome (2026-10-28)
+
+- Inventory: catalog tokens/default and shared core modes exist, but KDE export
+  still withholds `global-unique` and entry rewrites it to `per-output-local`.
+  Those stale tentative restrictions conflict with the approved
+  [workspace vocabulary](../decisions.md#workspace-vocabulary-2026-10-24).
+  Separate-mode warning and Virtual Desktops settings action are absent; native
+  option labels do not match the approved vocabulary.
+- Restore all three unchanged tokens on KDE, retaining per-output-local default,
+  separate local/global-unique views and linked shared views. Keep equal workspace
+  count a host limitation, not a fourth mode; no core policy change.
+- Add read-only detection of KWin's per-output setting, a separate-mode warning
+  and safe opening of the Virtual Desktops settings page. No KWin configuration
+  writes. Tentative technical choice: reuse existing host-setting detection and
+  launcher conventions rather than invent another settings transport.
+- Bounded units: inventory/pinned API investigation; minimal paired settings and
+  capture implementation with producer-shaped all-mode regressions; independent
+  review; full relevant KDE/service/exporter/native and shared regression gates.
+- Native all-mode checks remain separate. Activities/multi-desktop and async
+  configure remain deferred investigations; tentative Activities defaults do not
+  authorize implementation. The port record remains active after this stage.
+
+### Delivered boundary and pinned facts
+
+- Catalog ownership/default/tokens were already delivered in
+  `crates/tiler-core/src/settings_catalog.rs` and `workspace_scope.rs`.
+  `crates/tiler-kde-settings-exporter/src/kde_adapter.rs` now exposes all three
+  unchanged tokens and exact approved labels; the two separate entries retain
+  distinct explanatory tooltips. Generated schema/descriptors match. Shared
+  catalog and core policy are unchanged.
+- `kwin/src/world-entry.ts` no longer rewrites saved `global-unique`; both
+  separate modes replicate per-output bindings. Existing KWin 6.6 effective-shared
+  fallback remains. The capture's `equalCount:true` remains a native global-list
+  limitation, not linked views. Change-gated diagnostics read the live
+  `options.perOutputVirtualDesktops` flag without writes or polling; unknown is
+  silent, not invented disabled evidence.
+- `kwin/native-effect/unifiedsettings_module.cpp` reads
+  `kwinrc [Windows] PerOutputVirtualDesktops` (default false), warns for either
+  selected separate mode and offers **Open Virtual Desktops**. The fixed
+  `kcm_kwin_virtualdesktops` module opens in `KCMultiDialog`; no shell, automatic
+  toggle or host configuration write. Warning refreshes after dialog return,
+  load and mode changes without dirtying the settings page.
+- Sibling KWin `v6.7.4`: `src/options.h:132` exposes the flag; scripting exposes
+  the live options object at `src/scripting/scripting.cpp:224-227`.
+  `src/scripting/workspace_wrapper.h:364-375` exposes per-output current/setter
+  APIs. `src/kcms/desktop/virtualdesktopssettings.kcfg:12` names the config key;
+  `src/kcms/desktop/CMakeLists.txt:16` registers the module;
+  `src/kcms/desktop/ui/main.qml:223-233` labels its checkbox
+  "Switch desktops independently for each screen". These facts establish safe
+  navigation feasibility, not native success on every installation.
+- Tentative technical choices for later review: read-only KConfig detection in
+  settings plus the existing live script flag; a native modal module opener;
+  exact common separate-mode labels differentiated by tooltips. No new product
+  or shared architecture decision. Automatic host toggling remains unapproved;
+  recommendation: retain navigation-only and let the user change host settings.
+
+### Evidence and remaining acceptance
+
+- `kwin/tests/world-entry.test.ts` drives real capture with two outputs/four
+  native desktops, independent currents for both separate tokens, shared
+  fallback, B/ws4 occupied with B1-3 empty, truthful native membership, equal
+  count and replicated bindings. Warning off/on/off, shared, unknown and 6.6
+  cases pass. It does not infer linked core behavior from native observations.
+- `crates/omnitiler/tests/world_service_flow.rs` sends all three raw mode reports
+  through the real broker/core: separate disjoint rings/current receipts versus
+  one linked shared set, equal lengths, all four truthful native bindings and
+  empty B1-3 cells. Existing core `world_modes_contract.rs` independently retains
+  numbering/history/swap distinctions; no second policy oracle is introduced.
+- Native settings tests pin the warning matrix, mode changes, missing-key default,
+  no key creation, safe fixed module id, no host mutation on save, clean refresh
+  and warning recovery after a simulated user change in the opened page.
+  Independent review found the return-refresh gap; its regression now passes.
+  Exact labels replace the draft global-unique label suffix.
+- Final post-rebase declared-environment gates: locked all-target build/tests
+  and strict clippy for service/exporter/core/protocol/Windows Linux subset,
+  **2,579/2,579** tests (**335/14/1,418/87/725**); exporter exact check; JS typecheck/build and
+  **786/786** tests; static host effect/KCM build and **36/36** CTests; hermetic
+  native check **37/37**; exact world acceptance **6/6**; workspace format,
+  whitespace and KWin 6.6 API guard. The new test's boolean-assert lint is repaired
+  and strict clippy passes. Incoming linked-focus changes are included in the
+  fresh full regression run. No dependencies changed.
+- No live mutation, native all-mode or physical acceptance is claimed. User
+  checks: on two outputs, verify all three saved modes across restart; separate
+  modes switch independently with the host checkbox on, shared switches together;
+  confirm empty padded desktops. With the checkbox off, verify both separate-mode
+  warnings, no shared warning, correct settings page and refresh on return.
+  Restore the original mode and host setting after each check. Actual native
+  module discovery/opening remains a physical check, not proven by its injected
+  offline launcher seam.
+- **Exact next action: Stage 8 fixture-first all-mode native acceptance**, with
+  independent visibility/frame/foreground joins and exact restoration. Activities,
+  multi-desktop membership and async configure stay deferred; investigate native
+  evidence before proposing any core change. Their existing tentative decisions
+  and unsupported outcomes remain unchanged.
 
 ## Stage 6 host integration outcome (2026-10-28)
 

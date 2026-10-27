@@ -4,6 +4,8 @@
 
 #include <KConfigGroup>
 #include <KSharedConfig>
+#include <KCMultiDialog>
+#include <KLocalizedString>
 #include <QLoggingCategory>
 
 #include <QComboBox>
@@ -211,6 +213,11 @@ UnifiedSettingsModule::UnifiedSettingsModule(QObject *parent, const KPluginMetaD
                 [this] { requestWindowFix(QStringLiteral("ElectricBorders")); });
     }
     refreshWindowConflicts();
+    if (m_ui.virtualDesktopsOpenButton != nullptr) {
+        connect(m_ui.virtualDesktopsOpenButton, &QPushButton::clicked, this,
+                &UnifiedSettingsModule::requestOpenVirtualDesktops);
+    }
+    refreshVirtualDesktopWarning();
 
     m_scriptRestartRequired = false;
     m_scriptStatus = QStringLiteral("No pending script setting in this dialog.");
@@ -1589,6 +1596,9 @@ void UnifiedSettingsModule::updateScriptState()
     unmanagedWidgetChangeState(m_gapReconfigurePending
                                || (!m_loadedScriptValues.isEmpty() && current != m_loadedScriptValues));
     unmanagedWidgetDefaultState(current == defaults);
+    // Read-only presentation (row visibility/label only, never a dirty
+    // flag), so refreshes driven by the signals above stay clean.
+    refreshVirtualDesktopWarning();
 }
 
 void UnifiedSettingsModule::load()
@@ -1610,6 +1620,7 @@ void UnifiedSettingsModule::load()
     refreshShortcutState();
     m_windowConflictError.clear();
     refreshWindowConflicts();
+    refreshVirtualDesktopWarning();
 
     const KConfigGroup group(KSharedConfig::openConfig(QStringLiteral("kwinrc")),
                              KdeSettingsAdapter::scriptConfigGroupName());
@@ -2164,6 +2175,83 @@ void UnifiedSettingsModule::updateWindowConflictPresentation()
     if (m_ui.windowConflictErrorLabel != nullptr) {
         m_ui.windowConflictErrorLabel->setText(m_windowConflictError);
     }
+}
+
+QString UnifiedSettingsModule::virtualDesktopsModuleId()
+{
+    return QStringLiteral("kcm_kwin_virtualdesktops");
+}
+
+bool UnifiedSettingsModule::needsVirtualDesktopWarning(const QString &workspaceMode, bool perOutputKnown,
+                                                       bool perOutputEnabled)
+{
+    const bool separate = workspaceMode == QStringLiteral("per-output-local")
+        || workspaceMode == QStringLiteral("global-unique");
+    return separate && perOutputKnown && !perOutputEnabled;
+}
+
+bool UnifiedSettingsModule::readPerOutputVirtualDesktops(bool *known)
+{
+    // Read-only following the window-conflict seam: reparse so an external
+    // change (e.g. the Virtual Desktops page) is picked up while this page
+    // is open. A missing key is the KDE default (off), never unknown.
+    const KSharedConfig::Ptr config = KSharedConfig::openConfig(QStringLiteral("kwinrc"));
+    config->reparseConfiguration();
+    const KConfigGroup group(config, QStringLiteral("Windows"));
+    if (known != nullptr) {
+        *known = true;
+    }
+    return group.readEntry(QStringLiteral("PerOutputVirtualDesktops"), false);
+}
+
+void UnifiedSettingsModule::setVirtualDesktopsLauncherHandler(std::function<void(const QString &)> handler)
+{
+    m_virtualDesktopsLauncher = std::move(handler);
+}
+
+QString UnifiedSettingsModule::virtualDesktopWarningText() const
+{
+    return i18n("Separate workspaces need KWin's per-screen desktops (off). Open Virtual Desktops to turn "
+                "on 'Switch desktops independently for each screen'.");
+}
+
+void UnifiedSettingsModule::refreshVirtualDesktopWarning()
+{
+    // Presentation only (row visibility and label text): never marks the
+    // page dirty, so load()/updateScriptState() refreshes stay clean.
+    const QString mode = m_ui.workspaceModeCombo != nullptr ? m_ui.workspaceModeCombo->currentData().toString()
+                                                            : QString();
+    bool known = false;
+    const bool enabled = readPerOutputVirtualDesktops(&known);
+    if (m_ui.virtualDesktopsWarningRow != nullptr) {
+        m_ui.virtualDesktopsWarningRow->setVisible(needsVirtualDesktopWarning(mode, known, enabled));
+    }
+    if (m_ui.virtualDesktopsWarningLabel != nullptr) {
+        m_ui.virtualDesktopsWarningLabel->setText(virtualDesktopWarningText());
+    }
+}
+
+void UnifiedSettingsModule::requestOpenVirtualDesktops()
+{
+    const QString id = virtualDesktopsModuleId();
+    if (m_virtualDesktopsLauncher) {
+        m_virtualDesktopsLauncher(id);
+        // The opened page may have changed the host setting (the user's
+        // own action, never our write): re-read on return.
+        refreshVirtualDesktopWarning();
+        return;
+    }
+    // Safe open only: the fixed Virtual Desktops page in a modal dialog.
+    // Never writes the host setting and never shells out.
+    const KPluginMetaData metaData =
+        KPluginMetaData::findPluginById(QStringLiteral("plasma/kcms/systemsettings"), id);
+    if (!metaData.isValid()) {
+        return;
+    }
+    KCMultiDialog dialog(widget());
+    dialog.addModule(metaData);
+    dialog.exec();
+    refreshVirtualDesktopWarning();
 }
 
 } // namespace KWin

@@ -48,12 +48,11 @@ describe("production bundle compatibility", () => {
         assert.match(schema, /<entry name="innerGap" type="Int">[\s\S]*?<default>8<\/default>[\s\S]*?<min>0<\/min>[\s\S]*?<max>64<\/max>/);
         assert.match(schema, /<entry name="outerGap" type="Int">[\s\S]*?<default>8<\/default>[\s\S]*?<min>0<\/min>[\s\S]*?<max>64<\/max>/);
         assert.doesNotMatch(schema, /engineAuthorityMode/);
-        // Aligned KDE offers per-output-local and shared only: no
-        // global-unique choice (core keeps it for other platforms).
-        for (const mode of ["per-output-local", "shared"]) {
+        // Aligned KDE offers all three scope modes: both separate modes
+        // plus shared.
+        for (const mode of ["per-output-local", "global-unique", "shared"]) {
             assert.match(schema, new RegExp(`<choice name="${mode}" value="${mode}"\\/>`));
         }
-        assert.doesNotMatch(schema, /<choice name="global-unique" value="global-unique"\/>/);
         for (const profile of ["cosmic", "hyprland", "bspwm"]) {
             assert.match(schema, new RegExp(`<choice name="${profile}" value="${profile}"\\/>`));
         }

@@ -3632,6 +3632,163 @@ fn preview_survives_rejected_captures_but_fallback_clears_it() {
     );
 }
 
+const UUID_C: &str = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+const UUID_D: &str = "6ba7b812-9dad-11d1-80b4-00c04fd430c8";
+
+/// Two-output producer-shaped inner report for the all-mode Stage 7 probe:
+/// DP-1 plus DP-2, host-owned, equal count on, the same global 4-native
+/// order on both outputs with a shared current, and the caller-retained
+/// window riding DP-2's fourth native (B/ws4 occupied, B1-3 empty).
+fn two_output_all_mode_inner(mode: &str, window: &str) -> String {
+    format!(
+        "{{\"v\":2,\"mode\":\"{mode}\",\
+          \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+          \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}},\
+          {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\
+          \"work\":[1920,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":false}}],\
+          \"windows\":[{window}],\
+          \"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}},{{\"out\":\"DP-2\",\"view\":\"\"}}],\"closed\":[],\
+          \"hostOwned\":true,\"equalCount\":true,\
+          \"native\":[{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
+          \"current\":\"{UUID_A}\"}},\
+          {{\"out\":\"DP-2\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
+          \"current\":\"{UUID_A}\"}}],\
+          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
+          \"defaultTiled\":true,\"focused\":\"\",\
+          \"complete\":true,\"gesture\":false,\"switchTarget\":\"cursor-output\",\
+          \"freshPlacement\":\"cursor-output-last-focused\",\
+          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"actionOutputs\":[\"DP-1\",\"DP-2\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
+          \"presentation\":{}}}",
+        disabled_presentation()
+    )
+}
+
+#[test]
+fn all_modes_two_output_native_rings_through_service() {
+    // Stage 7 all-mode REAL broker/native outcomes through WorldService: the
+    // same producer-shaped raw report (2 outputs, one global 4-native list,
+    // equalCount on, retained win-b on DP-2's fourth native) under each
+    // workspace mode. Separate modes keep disjoint per-output logical rings
+    // with distinct current receipts; shared links one ring and one view.
+    // Equal host counts pad to equal length but never link: equal count is
+    // not linked mode. Local vs global-unique share one public shape here
+    // (the swap discriminator lives at engine-command level, not in this
+    // reply); shared is the observed distinction.
+    let window = window_json("win-b", "[1920,0,960,1040]", Some(UUID_D))
+        .replace("\"out\":\"DP-1\"", "\"out\":\"DP-2\"");
+    for mode in ["per-output-local", "global-unique", "shared"] {
+        let (service, generation) = discovered_service();
+        let reply = parse(
+            &service
+                .evaluate_capture(&capture(
+                    ADAPTER,
+                    &generation,
+                    1,
+                    1,
+                    &two_output_all_mode_inner(mode, &window),
+                ))
+                .expect("accepted"),
+        );
+        assert_eq!(reply["ready"], true, "{mode}");
+        assert_eq!(reply["rev"], "1", "{mode}");
+        let workspaces = reply["workspaces"].as_array().expect("workspaces");
+        let ring = |out: &str| {
+            workspaces
+                .iter()
+                .filter(|w| w["out"] == out)
+                .map(|w| w["id"].as_str().expect("id").to_owned())
+                .collect::<Vec<_>>()
+        };
+        let bind_of = |out: &str, native: &str| {
+            workspaces
+                .iter()
+                .find(|w| w["out"] == out && w["bind"] == native)
+                .unwrap_or_else(|| panic!("{mode}: {out} binds {native}: {workspaces:?}"))["id"]
+                .as_str()
+                .expect("id")
+                .to_owned()
+        };
+        let view_of = |out: &str| {
+            reply["outputs"]
+                .as_array()
+                .expect("outputs")
+                .iter()
+                .find(|o| o["out"] == out)
+                .unwrap_or_else(|| panic!("{mode}: output {out}"))["view"]
+                .as_str()
+                .expect("view")
+                .to_owned()
+        };
+        let ring_a = ring("DP-1");
+        let ring_b = ring("DP-2");
+        let view_a = view_of("DP-1");
+        let view_b = view_of("DP-2");
+        // Equal host counts pad to equal length on every mode.
+        assert_eq!(
+            ring_a.len(),
+            ring_b.len(),
+            "{mode}: parity {ring_a:?} {ring_b:?}"
+        );
+        // Current receipts map per output onto the first-native logical.
+        assert_eq!(view_a, bind_of("DP-1", UUID_A), "{mode}: DP-1 receipt");
+        assert_eq!(view_b, bind_of("DP-2", UUID_A), "{mode}: DP-2 receipt");
+        // The retained window truths DP-2's fourth native; B1-3 stay empty
+        // and DP-1 stays fully empty (padded, never fabricated).
+        let home = reply_row(&reply, "win-b")["ws"]
+            .as_str()
+            .expect("ws")
+            .to_owned();
+        assert_eq!(home, bind_of("DP-2", UUID_D), "{mode}: B/ws4 occupied");
+        assert!(
+            !bind_of("DP-2", UUID_D).is_empty(),
+            "{mode}: truthful backing"
+        );
+        for native in [UUID_A, UUID_B, UUID_C] {
+            assert_ne!(home, bind_of("DP-2", native), "{mode}: B1-3 empty");
+        }
+        assert!(
+            reply["windows"]
+                .as_array()
+                .expect("windows")
+                .iter()
+                .all(|w| w["out"] == "DP-2"),
+            "{mode}: DP-1 holds no window row"
+        );
+        // Truthful per-output backing: every observed native binds exactly
+        // once per output, in observed order (both outputs observed the
+        // same global list, so both bind all four, including shared).
+        let binds = |out: &str| {
+            workspaces
+                .iter()
+                .filter(|w| w["out"] == out && !w["bind"].as_str().unwrap_or("").is_empty())
+                .map(|w| w["bind"].as_str().expect("bind").to_owned())
+                .collect::<Vec<_>>()
+        };
+        let global = vec![
+            UUID_A.to_owned(),
+            UUID_B.to_owned(),
+            UUID_C.to_owned(),
+            UUID_D.to_owned(),
+        ];
+        assert_eq!(binds("DP-1"), global, "{mode}: DP-1 backing");
+        assert_eq!(binds("DP-2"), global, "{mode}: DP-2 backing");
+        if mode == "shared" {
+            assert_eq!(ring_a, ring_b, "shared: one linked set");
+            assert_eq!(view_a, view_b, "shared: one linked view");
+        } else {
+            assert!(
+                !ring_a.contains(&home),
+                "{mode}: separate DP-1 ring holds no member id"
+            );
+            assert!(
+                ring_a.iter().all(|id| !ring_b.contains(id)),
+                "{mode}: separate rings stay disjoint despite equal counts"
+            );
+            assert_ne!(view_a, view_b, "{mode}: distinct current receipts");
+        }
+    }
+}
 #[test]
 fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
     // Generation fencing and reconnect seeding: rotation drops the cached

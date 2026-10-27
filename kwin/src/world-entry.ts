@@ -113,6 +113,7 @@ import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { readNativeAlias } from "./native-alias";
 import { createWorldCloseTracker } from "./world-close-tracker";
+import { isSeparateWorkspaceMode, readPerOutputVirtualDesktopsFlag } from "./workspace-native";
 import { createWorldCommandContext } from "./world-command-context";
 import { createWorldSettingsLive } from "./world-settings-live";
 import { normalizeScopeClassList, readBakedScopeClass, windowMatchesScopeClass } from "./scope-class";
@@ -417,7 +418,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let undecidedClientCmd: string | null = null;
     // Adapter-owned logical<->native mapping snapshot for report bindings,
     // converged from accepted replies (Planner-owned) plus pending tokens.
-    // Keyed per (output, native): the aligned shared grid carries a
+    // Keyed per (output, native): the separate grid carries a
     // distinct logical identity per output cell, so one native id maps to
     // one logical per output. Only the logical id and output converge here;
     // pin/disp/managed are derived per report in pinRetained below (never
@@ -429,28 +430,55 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // event-gated difference (see world-close-tracker). The removal payload
     // is never read; core treats bare absence as minimize, never close.
     const closeTracker = createWorldCloseTracker();
-    // Tentative (user review pending): a persisted `global-unique`
-    // workspaceMode falls back to `per-output-local` on the world route
-    // with one bounded logged reason. KDE cannot present globally unique
-    // numbers (desktop positions/names are global); the core keeps
-    // `global-unique` for other platforms and legacy plan callers keep
-    // their own mode reads untouched.
-    let modeFallbackLogged = false;
-    const readModeAligned = (): unknown => {
-        let raw: unknown = "per-output-local";
+    // Startup-consumed workspace mode passes through verbatim: all three
+    // catalog tokens (per-output-local, global-unique, shared) ride the
+    // world route; the observer validates, and 6.6 hosts degrade
+    // per-output modes to shared predictably.
+    const readModePassthrough = (): unknown => {
         try {
-            raw = settings.readMode();
+            return settings.readMode();
+        } catch (error) {
+            void error;
+            return "per-output-local";
+        }
+    };
+    // Change-gated separate-mode host warning (no polling): when a
+    // separate mode is requested but KWin's per-output desktops are off,
+    // log once per transition. Unknown (unreadable flag, e.g. 6.6) and
+    // shared stay silent.
+    let lastPerOutputWarnKey = "";
+    const maybeLogPerOutputWarning = (): void => {
+        let requested: unknown = "per-output-local";
+        try {
+            requested = readModePassthrough();
         } catch (error) {
             void error;
         }
-        if (raw === "global-unique") {
-            if (!modeFallbackLogged) {
-                modeFallbackLogged = true;
-                log("omnitiler:world:workspace-mode-fallback from=global-unique to=per-output-local reason=kde-aligned-per-output");
-            }
-            return "per-output-local";
+        if (!isSeparateWorkspaceMode(requested)) {
+            lastPerOutputWarnKey = `shared|${String(requested)}`;
+            return;
         }
-        return raw;
+        let flag: boolean | null = null;
+        try {
+            const source: unknown = overrides.options !== undefined ? overrides.options : (() => {
+                try {
+                    const candidate: unknown = options;
+                    return typeof candidate === "object" && candidate !== null ? candidate : null;
+                } catch (error) {
+                    void error;
+                    return null;
+                }
+            })();
+            flag = readPerOutputVirtualDesktopsFlag(source);
+        } catch (error) {
+            void error;
+            flag = null;
+        }
+        const key = `${String(requested)}|${flag === null ? "unknown" : flag ? "on" : "off"}`;
+        if (flag === false && key !== lastPerOutputWarnKey) {
+            log(`omnitiler:world:per-output-unavailable mode=${token(String(requested))} reason=kwin-per-output-off`);
+        }
+        lastPerOutputWarnKey = key;
     };
     // Adapter-owned intentional-float membership (observation input only):
     // converged from accepted Planner exception rows, pruned to live ids.
@@ -599,13 +627,18 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // here; terminal snapshots freeze the native finish cursor upstream.
     const capture = (): WorldObservation | null => {
         try {
+            maybeLogPerOutputWarning();
+        } catch (error) {
+            void error;
+        }
+        try {
             closeTracker.syncLive(surface);
         } catch (error) {
             void error;
         }
         const observation = captureWorldObservation({
         workspace: surface,
-        readMode: readModeAligned,
+        readMode: readModePassthrough,
         readGap: () => settings.readGapLive(),
         readOuterGap: () => settings.readOuterGapLive(),
         gestureActive,
@@ -636,12 +669,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 pin: route.pinRetained(nativeId), disp: false, managed: true,
             };
         },
-        // Binding replication follows the effective workspace mode: the
-        // aligned per-output-local grid binds one native once per output
-        // with a distinct logical each, while shared (unchanged) keeps one
-        // row per native and the nonaligned core would collapse replicates
-        // through a generic native->logical map.
-        replicateBindingsPerOutput: readModeAligned() === "per-output-local",
+        // Binding replication follows the requested workspace mode: both
+        // separate modes (per-output-local, global-unique) bind one
+        // native once per output with a distinct logical each, while
+        // shared (unchanged) keeps one row per native. Any other value
+        // (unreadable or invalid) stays single-row; the observer validates
+        // the effective mode separately (6.6 degrades to shared).
+        replicateBindingsPerOutput: (() => {
+            try {
+                return isSeparateWorkspaceMode(readModePassthrough());
+            } catch (error) {
+                void error;
+                return false;
+            }
+        })(),
         isFloating: (win) => floatingIds.has(win),
         isTileOverride: (win) => tileIds.has(win),
         // Latest native-effect facts snapshot for this generation (a

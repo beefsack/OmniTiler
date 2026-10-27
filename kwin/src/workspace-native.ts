@@ -528,6 +528,14 @@ export function writeDesktopForOutput(surface: unknown, desktop: object, output:
     }
 }
 
+// Separate workspace modes replicate one native binding per output with a
+// distinct logical each; shared (and any invalid value) keeps one row per
+// native. The observer validates the effective mode separately (6.6 hosts
+// degrade per-output requests to shared).
+export function isSeparateWorkspaceMode(mode: unknown): boolean {
+    return mode === "per-output-local" || mode === "global-unique";
+}
+
 // Effective workspace mode for a requested mode on a live surface: a saved
 // or requested per-output mode degrades predictably to shared where the
 // per-output API is unavailable. Shared passes through unchanged.
