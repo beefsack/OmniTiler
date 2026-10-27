@@ -64,6 +64,9 @@ grant authorization beyond [Current Decisions](decisions.md#live-kwinplasma-boun
   `snapshot-shortcuts`, and `snapshot-kglobalaccel` are read-only; `stop`
   unloads only the exact project script. `reconcile-shortcuts --apply` is a
   shortcut mutation and always needs explicit authorization.
+- `just dev` is not a status command: it builds and starts the live stack,
+  unscoped by default. Use read-only `just dev-status` for dev-stack status;
+  a timeout does not prove that startup or mutation did not occur.
 - A load/introspection/run receipt plus `isScriptLoaded=true` does not bind
   the named plugin to the object at the returned numeric path. KWin allocates
   IDs from its current script count without renumbering surviving objects;
@@ -177,6 +180,17 @@ startup:
 - Enable correlated complete request/reply capture before each leg and prove
   capture with a positive marker. At the first unexpected refusal or baseline
   mismatch, stop the leg, retain its gating evidence and restore before retrying.
+- An interface-only `dbus-monitor` filter omits method returns, which lack the
+  call's interface header. Capture calls destined for the planner and returns
+  from its exact unique sender, correlating reply serials; interface-filtered
+  calls alone are not complete request/reply evidence.
+- `ReadWorldPresentation` strips operation lanes and native write tokens; it
+  cannot prove no pending operations. Use full correlated `Describe` replies
+  for that checkpoint, with independent native state joins.
+- Wayland fixture `visible:null` is unknown, and KWin `hidden=false` alone does
+  not prove a window is shown on the current desktop/activity. Membership
+  exclusion is not independent compositor hide/reveal evidence; retain that
+  outcome as TBD without a shown observer.
 - Prefer existing desktops. Use disposable kwrite, kcalc or kolourpaint clients;
   use a genuine fixed-size Qt client when fixed-size behavior is required.
   Fixture choice grants no additional mutation authorization.

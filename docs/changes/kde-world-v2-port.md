@@ -52,7 +52,7 @@
 | 5. Pure presentation and coordinates | Renderer freshness and preview continuity accepted offline; borders/underlays stay exact-current. Physical static member-move/focus return, output-local fullscreen suspension and improved preview continuity pass. No KDE pager renderer. Rapid A/B, fullscreen shortcuts and fixture teardown/restoration pending | Service 317, core/protocol 1,460, Windows Linux 725, JS 750, host effect build/CTest 36, Nix CTest 37, acceptance 6/6 and source guards pass. Physical scope and remaining gaps below; no full stage acceptance |
 | 6. Host integration | Complete offline: fresh cursorPos/windowAt on relevant event/command/gesture captures, correct QList head decoding, no polling or pure-motion captures; warp unsupported, never reported applied; independent active-border override/default system accent; native Plasma pager, no core pager-focused-window color | Pinned declarations/source, producer-shaped capture and unexpected-warp tests, native border theme/override/alpha tests and styling-independence source checks; native checks remain separate |
 | 7. Workspace modes and investigations | Complete offline: per-output-local default, global-unique separate, shared linked; equal_workspace_count stays a host limit; separate-mode warning opens Virtual Desktops without writing host config | All-mode producer/broker cases, exact labels "Displays have separate workspaces" / "Workspaces span displays", native warning/launcher tests pass. Native all-mode checks TBD; Activities/multi-desktop and configure remain deferred investigations, no core changes |
-| 8. Native acceptance and ownership audit | Fixture-first integrated journeys and deletion audit; no logical-receipt-only success claims | Independent native hide/reveal checkpoints, frame/visibility/foreground joins, both-output cases, exact restoration, no stale v1 or policy route |
+| 8. Native acceptance and ownership audit | Partial: bounded ownership audit and fixture-scoped two-window admission/tiling; select-away/back membership exclusion and frame/foreground return observed | Native frames match allocations; independent compositor hide/reveal, renderer coverage, focus/send/both-output/close and full ownership closure remain TBD. Unscoped-start incident left one non-fixture position unrestored; exact restoration not accepted |
 
 ### Physical checkpoint (2026-10-27)
 
@@ -1191,14 +1191,16 @@
   and `chooseDisplacedDestination` copies and their TS policy-only cases;
   `workspace-output-relocation.test.ts` is removed. Existing Rust refill,
   trailing, displacement and same-axis tests cover those policies; config
-  carriage tests remain. This is not deletion of the still-active born policy.
-- Explicitly retained: `world-born-maximized.ts` lifetime/clear policy;
-  `world-observe.ts` local fixed-size derivation feeding that deferred path;
-  `scope-class.ts` fixture-only safety filter; oracle/gesture verdict routing;
-  shortcut float/native-toggle and tiling-toggle preselection; remaining
-  workspace/command-context/state policy audit. Native identity/recovery seams
-  are unchanged. No core/protocol/Windows/effect source or dependency-toolchain
-  change; the service adds only an existing workspace core-crate dependency.
+  carriage tests remain. At this checkpoint the born policy was still active;
+  N6 subsequently deleted `world-born-maximized.ts` and its lifetime/clear
+  decision path in `a51fa266`, leaving raw evidence and configuration carriage.
+- Historical retention boundary, superseded by later outcomes below: local
+  fixed-size derivation, oracle/gesture verdict routing and shortcut preselection
+  were not removed by this first capture slice. Do not treat that inventory as
+  current code ownership. `scope-class.ts` remains the fixture-only safety
+  filter, not a policy owner. Native identity/recovery seams were unchanged by
+  this slice. It changed no core/protocol/Windows/effect source or dependency
+  toolchain; the service added only an existing workspace core-crate dependency.
 - Integration tests use `raw_world_eval`, which includes the actual Rust
   normalizer before strict decode/engine evaluation. The initially added TS
   classifier mirror was deleted, not accepted as another oracle. Rust's
@@ -2982,3 +2984,35 @@
   do not enable it by adding motion captures here.
 - **Exact next action for Stage 6: none offline.** Perform the listed physical
   checks separately; this record stays active for the unfinished port stages.
+
+## Stage 8 partial outcome (2026-10-28)
+
+- Bounded ownership audit confirms strict v2 sequence vocabulary in
+  `kwin/src/world-seq.ts`, non-v2 discovery rejection in
+  `crates/omnitiler/src/world_service.rs`, and exact fixture-class filtering in
+  `kwin/src/scope-class.ts`. `git show --stat a51fa266` confirms deletion of
+  `world-born-maximized.ts` (391 lines); the historical Stage 4 retention wording
+  above is corrected. This is not blanket ownership closure: remaining role and
+  local-fixed consumers and the whole-source audit are not independently closed.
+- Accepted bounded live evidence: fixture-scoped two-window admission and tiling,
+  with evaluated controller readiness, correlated complete calls/returns and
+  fixture/native identity joins. Native KWin frames match core allocations.
+  Full `Describe` replies show controlled scopes, no holds or pending operation
+  lanes at the recorded checkpoints; presentation-only reads are not that proof.
+- Select-away/back checkpoints show native membership/current-desktop exclusion
+  on away and restored frame/foreground on return. Native compositor hide/reveal
+  remains **TBD**: there was no independent shown observer; Wayland fixture
+  `visible:null` and KWin `hidden=false` do not prove shown state. Pinned KWin
+  `v6.7.4` exposes `EffectWindow.visible` (`src/effect/effectwindow.h:241`,
+  `.cpp:193-199`) as a possible observer, not evidence collected in this leg.
+  Renderer coverage is **TBD**: the effect was absent and coverage fields null.
+- Focus/send/both-output/close acceptance remains **TBD**. The leg continued
+  after its first unexpected refusal, so subsequent results were rejected;
+  earlier core foreground state lacked an independent native focus checkpoint.
+- Live-procedure incident: an unscoped dev start during a leg moved one
+  non-fixture window's position, with size unchanged. It was stopped and the
+  incident recorded; restoration remains pending user action. Exact restoration
+  is not accepted, and earlier leg comparisons do not close this final gap.
+- Stage 8 and the whole port remain partial. Further acceptance requires the
+  restoration gap resolved, fresh bounded legs with the first-refusal stop rule,
+  independent shown/renderer evidence and the remaining native/physical checks.

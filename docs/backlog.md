@@ -249,7 +249,7 @@ decisions of 2026-09-24 are under
   Deferred investigations: Activities/multi-desktop, async configure. Four
   minimal port discriminator rows keep untested native outcomes TBD; Activities
   defaults tentative pending KDE evidence. v1 KDE rows below keep their
-  historical evidence; replacement belongs to this port. Status (2026-10-27):
+  historical evidence; replacement belongs to this port. Status (2026-10-28):
   Stages 0-3 complete offline. Stage 4: raw capture, shortcuts and N6 (neutral
   workspace-tiling toggle, core-owned birth clear, raw deleted/unmanaged
   mapping) landed; native gesture transport (decision B Esc fence, native
@@ -266,8 +266,14 @@ decisions of 2026-09-24 are under
   coverage. Native styling/input checks remain unverified. Stage 7 workspace
   modes is complete offline: all three tokens and exact labels, separate-mode
   warning and navigation-only Virtual Desktops action, producer/broker/native
-  settings regressions. Native all-mode acceptance remains TBD; Stage 8 not
-  started. Activities/multi-desktop and async configure stay deferred investigations.
+  settings regressions. Native all-mode acceptance remains TBD. Stage 8 is
+  partial: bounded ownership audit, fixture-scoped two-window admission/tiling
+  and select-away/back membership/frame/foreground checkpoints; independent
+  compositor hide/reveal, renderer coverage, focus/send/both-output/close and
+  full ownership closure remain TBD. An unscoped-start incident moved one
+  non-fixture window's position (size unchanged); stopped and recorded,
+  restoration pending user action, not accepted. Activities/multi-desktop and
+  async configure stay deferred investigations.
   - **DONE offline | Moving-border comparison (2026-10-28):** reproducible
     test-only real-core comparison: Core-live absolute replay trails motion
     (max/mean position error 160/129.14 coordinate units); Core-anchored tracks
