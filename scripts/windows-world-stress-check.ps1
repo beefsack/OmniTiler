@@ -59,11 +59,12 @@ foreach ($fn in @(
     "Get-StressBootstrapLayoutState", "Get-StressBootstrapFixMove",
     "Invoke-StressBootstrapLayout", "Test-StressBootstrapProofRow",
     "Find-StressBootstrapNewer", "Read-StressBootstrapProof",
-    "Invoke-Mock", "Invoke-LiveJourney", "Get-StressPubSummary"
+    "Invoke-Mock", "Invoke-LiveJourney", "Get-StressPubSummary",
+    "Get-StressShortcutCoverage", "Invoke-KeyboardCoverage"
   )) {
   if ($src -notmatch ("function " + $fn)) { throw "missing function $fn" }
 }
-Write-Output "required functions present=65"
+Write-Output "required functions present=67"
 
 # Required seams are matched against comment-stripped code: real call-site
 # literals, not prose. Freshness uses accepted/command-consumed (duplicate
@@ -102,6 +103,11 @@ foreach ($must in @("scope-exe tiler-live-fixture.exe", '"workspace", "--select"
     "owner_launch_intended", "already gone", "exit 1",
     "owner identity query failed", "ready query failed",
     "DelayMs must be 0..60000", "OwnerSeconds must be 60..600",
+    "KeyboardCoverage conflicts with -Live/-Stop/-Mock",
+    "takes no -RunDir", "takes no timing args",
+    "normal-product-injected-filter", "injection_accepted",
+    "workspace-select-", "stay-workspace-", "Win+Ctrl+Tab",
+    "Win+Ctrl+H", "Win+Ctrl+J",
     ".process_creation", "GetForegroundWindow", "GetWindowThreadProcessId",
     "OmniTilerTestWindow:") ) {
   if ($code -notmatch [regex]::Escape($must)) { throw "missing required seam $must" }
@@ -128,7 +134,8 @@ foreach ($fn in @("Get-StressCliArgs", "Convert-StressTiles",
     "Test-StressBootstrapLayoutKind", "Get-StressBootstrapLayoutState",
     "Get-StressBootstrapFixMove", "Invoke-StressBootstrapLayout",
     "Test-StressBootstrapProofRow", "Find-StressBootstrapNewer",
-    "Read-StressBootstrapProof")) {
+    "Read-StressBootstrapProof", "Get-StressShortcutCoverage",
+    "Invoke-KeyboardCoverage")) {
   if ($null -eq (Get-Command $fn -ErrorAction SilentlyContinue)) {
     throw "dot-sourced command missing: $fn"
   }
@@ -142,4 +149,8 @@ $dGate = $code.IndexOf("DelayMs must be 0..60000")
 $dBuild = $code.IndexOf("cargo build")
 if ($dGate -lt 0 -or $dBuild -lt 0 -or $dGate -gt $dBuild) { throw "range gate not pre-effect" }
 Write-Output "range gate pre-effect"
+$gConf = $code.IndexOf("conflicts with -Live/-Stop/-Mock")
+$gMock = $code.IndexOf('if ($Mock)')
+if ($gConf -lt 0 -or $gMock -lt 0 -or $gConf -gt $gMock) { throw "coverage conflict guard not pre-effect" }
+Write-Output "coverage guard pre-effect"
 Write-Output "WORLD-STRESS-CHECK-OK"

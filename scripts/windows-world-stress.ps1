@@ -2,6 +2,7 @@ param(
   [switch]$Mock,
   [switch]$Live,
   [switch]$Stop,
+  [switch]$KeyboardCoverage,
   [string]$RunDir = "",
   [string]$Case = "",
   [int]$DelayMs = 0,
@@ -22,6 +23,7 @@ $Repo = Split-Path -Parent $PSScriptRoot
 #   pwsh -NoProfile -File scripts/windows-world-stress.ps1 -Mock
 #   pwsh -NoProfile -File scripts/windows-world-stress.ps1 -Live [-Case <path>] [-DelayMs N]
 #   pwsh -NoProfile -File scripts/windows-world-stress.ps1 -Stop -RunDir '<dir>'
+#   pwsh -NoProfile -File scripts/windows-world-stress.ps1 -KeyboardCoverage [-Case <path>]
 #
 # Safety: explicit flags mandatory. Scope is fixture-only
 # (`--scope-exe tiler-live-fixture.exe`); unrelated windows are untouched.
@@ -213,6 +215,114 @@ function Get-StressCliArgs($Action, $AliasOrd) {
     default { Fail-Ws "not a command op $($Action.op)" }
   }
   return $null
+}
+
+function Get-StressShortcutCoverage($Action, $AliasOrd) {
+  # Pure offline default-shortcut coverage for one case action. Product
+  # command ops map to their catalog row: one default letter chord per
+  # direction (never arrow variants), numbered select/send ride Win+N and
+  # Win+Shift+N, relative steps ride the single-letter history rows and
+  # previous rides the Tab toggle. select-workspace/send resolve home/away
+  # through the caller-supplied ordinals; admit/close/focus-window are
+  # fixture primitives and checkpoint is an observation. Default chords are
+  # catalog candidates, NOT active settings and NOT an injection recipe:
+  # the leg sends no keystrokes and normal product injection stays refused
+  # by the intentional injected filter.
+  switch ("$($Action.op)") {
+    "select-workspace" {
+      if ("$($Action.workspace)" -ne "home" -and "$($Action.workspace)" -ne "away") { Fail-Ws "unmapped workspace alias $($Action.workspace)" }
+      $idx = $AliasOrd["$($Action.workspace)"]
+      if ($null -eq $idx) { Fail-Ws "unmapped workspace alias $($Action.workspace)" }
+      if (($idx -isnot [int]) -and ($idx -isnot [long])) { Fail-Ws "alias ordinal not integer $idx" }
+      if ([int64]$idx -lt 1 -or [int64]$idx -gt 9) { Fail-Ws "alias ordinal out of range $idx" }
+      $n = [int][int64]$idx
+      return @{ status = "default"; binding_id = "workspace-select-$n"; default_chord = "Win+$n"; configurable = $true }
+    }
+    "select-numbered" {
+      $covIdx = $Action.index
+      if (($covIdx -isnot [int]) -and ($covIdx -isnot [long])) { Fail-Ws "select-numbered index not integer" }
+      if ([int64]$covIdx -lt 1 -or [int64]$covIdx -gt 9) { Fail-Ws "select-numbered index must be 1..9" }
+      $n = [int][int64]$covIdx
+      return @{ status = "default"; binding_id = "workspace-select-$n"; default_chord = "Win+$n"; configurable = $true }
+    }
+    "select-relative" {
+      $covDelta = $Action.delta
+      if (($covDelta -isnot [int]) -and ($covDelta -isnot [long])) { Fail-Ws "select-relative delta not integer" }
+      if ([int64]$covDelta -eq -1) {
+        return @{ status = "default"; binding_id = "workspace-prev-h"; default_chord = "Win+Ctrl+H"; configurable = $true }
+      }
+      if ([int64]$covDelta -eq 1) {
+        return @{ status = "default"; binding_id = "workspace-next-j"; default_chord = "Win+Ctrl+J"; configurable = $true }
+      }
+      Fail-Ws "select-relative delta must be -1/+1"
+    }
+    "select-previous" {
+      return @{ status = "default"; binding_id = "workspace-previous"; default_chord = "Win+Ctrl+Tab"; configurable = $true }
+    }
+    "send" {
+      if ($Action.follow -isnot [bool]) { Fail-Ws "send needs boolean follow" }
+      if ("$($Action.workspace)" -ne "home" -and "$($Action.workspace)" -ne "away") { Fail-Ws "unmapped send alias $($Action.workspace)" }
+      $idx = $AliasOrd["$($Action.workspace)"]
+      if ($null -eq $idx) { Fail-Ws "unmapped send alias $($Action.workspace)" }
+      if (($idx -isnot [int]) -and ($idx -isnot [long])) { Fail-Ws "alias ordinal not integer $idx" }
+      if ([int64]$idx -lt 1 -or [int64]$idx -gt 9) { Fail-Ws "alias ordinal out of range $idx" }
+      $n = [int][int64]$idx
+      if ($Action.follow) {
+        return @{ status = "default"; binding_id = "workspace-send-$n"; default_chord = "Win+Shift+$n"; configurable = $true }
+      }
+      return @{ status = "unbound"; binding_id = "stay-workspace-$n"; default_chord = $null; configurable = $true }
+    }
+    { $_ -in @("focus-directional", "move-directional") } {
+      if ("$($Action.direction)" -notin @("left", "right", "up", "down")) { Fail-Ws "$($Action.op) bad direction" }
+      $keys = @{ left = "H"; down = "J"; up = "K"; right = "L" }
+      $key = $keys["$($Action.direction)"]
+      if ("$($Action.op)" -eq "focus-directional") {
+        return @{ status = "default"; binding_id = "focus-$($Action.direction)"; default_chord = "Win+$key"; configurable = $true }
+      }
+      return @{ status = "default"; binding_id = "move-$($Action.direction)"; default_chord = "Win+Shift+$key"; configurable = $true }
+    }
+    "admit" { return @{ status = "fixture"; binding_id = $null; default_chord = $null; configurable = $false } }
+    "close" { return @{ status = "fixture"; binding_id = $null; default_chord = $null; configurable = $false } }
+    "focus-window" { return @{ status = "fixture"; binding_id = $null; default_chord = $null; configurable = $false } }
+    "checkpoint" { return @{ status = "observation"; binding_id = $null; default_chord = $null; configurable = $false } }
+    default { Fail-Ws "unknown op $($Action.op)" }
+  }
+  return $null
+}
+
+function Invoke-KeyboardCoverage {
+  # Pure offline shortcut-default report over the shared JSON definitions
+  # 1:1 (no forked oracle): -Case selects one case file, otherwise both
+  # fixture cases. Alias home/away ride the authored assumption home=1 and
+  # away=2. No owner, fixture, settings, or window effect.
+  $paths = [System.Collections.ArrayList]@()
+  if ($Case -ne "") { $null = $paths.Add($Case) } else {
+    $null = $paths.Add((Join-Path $Repo "test-fixtures\world-stress-home-away.json"))
+    $null = $paths.Add((Join-Path $Repo "test-fixtures\world-stress-trio-churn.json"))
+  }
+  $aliasOrd = @{ home = 1; away = 2 }
+  $cases = [System.Collections.ArrayList]@()
+  foreach ($p in $paths) {
+    $case = Get-StressCase $p
+    $cmdTotal = Validate-StressCase $case
+    $rows = [System.Collections.ArrayList]@()
+    $unbound = 0
+    foreach ($a in @($case.actions)) {
+      $cov = Get-StressShortcutCoverage $a $aliasOrd
+      if ("$($cov.status)" -eq "unbound") { $unbound++ }
+      $row = @{ op = "$($a.op)"; status = "$($cov.status)"; binding_id = $cov.binding_id; default_chord = $cov.default_chord; configurable = $cov.configurable }
+      if ($null -ne $a.seq) { $row.seq = [int]$a.seq }
+      $null = $rows.Add($row)
+    }
+    $null = $cases.Add(@{ name = "$($case.name)"; commands = $cmdTotal; actions = @($case.actions).Count; unbound = $unbound; rows = @($rows) })
+  }
+  $report = @{
+    status = "pass"; stage = "WorldStressKeyboardCoverage";
+    alias_assumption = "home=1/away=2 authored assumption; default chords are catalog candidates, not active settings or an injection recipe";
+    injection_accepted = $false; blocked_reason = "normal-product-injected-filter";
+    cases = @($cases)
+  }
+  $report | ConvertTo-Json -Depth 8 | Write-Output
 }
 
 function Convert-StressTiles($Tiles, $AuthoredWork, $DiscoveredWork) {
@@ -2682,6 +2792,10 @@ function Invoke-LiveJourney {
   }
 }
 
+if ($KeyboardCoverage -and ($Live -or $Stop -or $Mock)) { Fail-Ws "refuse: -KeyboardCoverage conflicts with -Live/-Stop/-Mock" }
+if ($KeyboardCoverage -and $RunDir -ne "") { Fail-Ws "refuse: -KeyboardCoverage takes no -RunDir" }
+if ($KeyboardCoverage -and ($DelayMs -ne 0 -or $OwnerSeconds -ne 600)) { Fail-Ws "refuse: -KeyboardCoverage takes no timing args" }
+if ($KeyboardCoverage) { Invoke-KeyboardCoverage; exit 0 }
 if ($Mock) { Invoke-Mock; exit 0 }
 if ($Stop) {
   if ($RunDir -eq "") { Fail-Ws "Stop requires -RunDir" }

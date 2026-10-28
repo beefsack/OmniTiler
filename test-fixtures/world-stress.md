@@ -137,3 +137,70 @@ pacing.
 Shared APIs for the native runner: `load_stress_case`, `run_stress`,
 `StressSchedule::{Ordered,Batched,Reordered}`, `StressCase::name`,
 `normalize_tiles_to_work`.
+
+## Keyboard coverage (Windows, offline only)
+
+```powershell
+pwsh -NoProfile -File scripts/windows-world-stress.ps1 -KeyboardCoverage
+# Optional: -Case test-fixtures/world-stress-home-away.json
+pwsh -NoProfile -File scripts/windows-world-stress-check.ps1
+pwsh -NoProfile -File scripts/windows-world-stress.mock.ps1
+```
+
+The coverage report reads the same cases and validates every action. It starts
+no owner or fixture, changes no settings and sends no input. JSON contains one
+row per action, catalog binding ids, default chord candidates and per-case
+command/unbound counts. `status: pass` means coverage analysis succeeded, not
+that keyboard execution or a final-world oracle passed. Home=1/away=2 is an
+authored coverage assumption, not live ring resolution or active settings.
+Actual aliases must follow the observed ring; shortcuts are configurable.
+
+| Action | Default candidate / route | Commands per case |
+| --- | --- | --- |
+| `focus-directional` | Win+H/J/K/L for left/down/up/right | 48 |
+| `move-directional` | Win+Shift+H/J/K/L | 2 |
+| `select-workspace` | Win+N after dynamic alias resolution | 14 |
+| `select-numbered` | Win+N | 12 |
+| `select-relative` | Win+Ctrl+H previous, Win+Ctrl+J next | 12 |
+| `select-previous` | Win+Ctrl+Tab | 10 |
+| `send`, follow | Win+Shift+N after dynamic alias resolution | 2 |
+| `send`, stay | `stay-workspace-N`, configurable but unbound by default | 2 |
+| `admit` / `close` / `focus-window` | Fixture spawn / close / verified focus, not shortcuts | Not commands |
+| `checkpoint` | Existing shared oracle observation, not a shortcut | Not commands |
+
+Both cases have 102 commands, 100 with default bindings and two unbound stay
+sends. Home-away has 148 total actions; trio-churn has 155 including churn.
+Bindings come from `crates/tiler-windows/src/settings/catalog.rs` (focus/move,
+history, stay rows and `workspace_row`); arrow alternatives exist but the report
+chooses one letter candidate. Relative selection is not relative send.
+
+### Injected-input blocker and baseline contract
+
+The normal product hook intentionally passes injected keys through without
+dispatching shortcuts (`snapkey/sys/mod.rs`, `snapkey/classifier.rs` under
+`crates/tiler-windows/src/`); the separate shortcut-proof marker is not product
+acceptance. `tests/shortcut_proof.rs::product_never_accepts_injected` locks this
+boundary. The [live guide](../docs/live-windows-testing.md#agent-live-test-practice)
+forbids weakening the filter. OS-owned chords can still execute outside the
+tiler: do not test the refusal with injected Win chords, never send Win+D and
+never use a proof owner as a substitute stress target.
+
+Thus `injection_accepted: false` and `blocked_reason:
+normal-product-injected-filter` are source findings, not live probe results.
+No keyboard mode is executable yet. The remaining choice is a user-driven
+physical shortcut baseline or deferral until a separately reviewed route
+preserves the input boundary; a full run also needs explicit stay bindings.
+No batch-file/stdin product CLI or coalescing extension is introduced.
+
+Once unblocked, retain the same final-world oracle and fixture churn, record
+the source commit containing the staged switch, and measure publication bursts
+above the CLI baseline (about 3.4 actions/s overall, 101 ms contiguous gap).
+Use the accepted [practical BEFORE phase method](../docs/changes/windows-workspace-return-focus.md#practical-phase-measurement-decision-2026-10-28):
+command receipt, all shows issued, arrivals visible, foreground confirmed,
+departures hidden, and E2E to the last applicable phase. Report missing proof as
+unavailable and empty-arrival phases as N/A, not successes. Record observed
+intermediate worlds/superseded renders and queue depth only where traced; do
+not infer visible jank from queue acceptance. Live execution still requires
+all preflight, fixture-only scope, independent hide/restore proof, process
+provenance, foreground guards for every input batch, and recovery in the live
+guide. A pre-existing user owner blocks the live leg; do not stop it.

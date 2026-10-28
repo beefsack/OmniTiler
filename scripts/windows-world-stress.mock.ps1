@@ -2245,6 +2245,122 @@ Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $bsRoot -Recurse -Force -ErrorAction SilentlyContinue
 $script:MockReadyMode = "not-ready"
 
+# Keyboard default coverage: pure mapping over the shared JSON cases, no
+# live effect. Alias home/away ride the authored assumption home=1/away=2.
+$covOrd = @{ home = 1; away = 2 }
+function Test-Cov($Got, $Status, $Id, $Chord, $Configurable, $Tag) {
+  if ("$($Got.status)" -ne $Status) { Fail-Mock "coverage $Tag status $($Got.status)" }
+  if ("$($Got.binding_id)" -ne "$Id") { Fail-Mock "coverage $Tag id $($Got.binding_id)" }
+  if ("$($Got.default_chord)" -ne "$Chord") { Fail-Mock "coverage $Tag chord $($Got.default_chord)" }
+  if ($Got.configurable -ne $Configurable) { Fail-Mock "coverage $Tag configurable $($Got.configurable)" }
+}
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } $covOrd) "default" "workspace-select-1" "Win+1" $true "alias-home"
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "away" } $covOrd) "default" "workspace-select-2" "Win+2" $true "alias-away"
+$covSwap = @{ home = 2; away = 1 }
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } $covSwap) "default" "workspace-select-2" "Win+2" $true "alias-supplied-2"
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "away" } $covSwap) "default" "workspace-select-1" "Win+1" $true "alias-supplied-1"
+for ($n = 1; $n -le 9; $n++) {
+  Test-Cov (Get-StressShortcutCoverage @{ op = "select-numbered"; index = $n } $covOrd) "default" "workspace-select-$n" "Win+$n" $true "numbered-$n"
+}
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-relative"; delta = -1 } $covOrd) "default" "workspace-prev-h" "Win+Ctrl+H" $true "relative-prev"
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-relative"; delta = 1 } $covOrd) "default" "workspace-next-j" "Win+Ctrl+J" $true "relative-next"
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-previous" } $covOrd) "default" "workspace-previous" "Win+Ctrl+Tab" $true "previous"
+Test-Cov (Get-StressShortcutCoverage @{ op = "send"; workspace = "away"; follow = $true } $covOrd) "default" "workspace-send-2" "Win+Shift+2" $true "send-follow"
+Test-Cov (Get-StressShortcutCoverage @{ op = "send"; workspace = "home"; follow = $false } $covOrd) "unbound" "stay-workspace-1" "" $true "send-stay"
+Test-Cov (Get-StressShortcutCoverage @{ op = "focus-directional"; direction = "left" } $covOrd) "default" "focus-left" "Win+H" $true "focus-left"
+Test-Cov (Get-StressShortcutCoverage @{ op = "focus-directional"; direction = "down" } $covOrd) "default" "focus-down" "Win+J" $true "focus-down"
+Test-Cov (Get-StressShortcutCoverage @{ op = "focus-directional"; direction = "up" } $covOrd) "default" "focus-up" "Win+K" $true "focus-up"
+Test-Cov (Get-StressShortcutCoverage @{ op = "focus-directional"; direction = "right" } $covOrd) "default" "focus-right" "Win+L" $true "focus-right"
+Test-Cov (Get-StressShortcutCoverage @{ op = "move-directional"; direction = "left" } $covOrd) "default" "move-left" "Win+Shift+H" $true "move-left"
+Test-Cov (Get-StressShortcutCoverage @{ op = "move-directional"; direction = "down" } $covOrd) "default" "move-down" "Win+Shift+J" $true "move-down"
+Test-Cov (Get-StressShortcutCoverage @{ op = "move-directional"; direction = "up" } $covOrd) "default" "move-up" "Win+Shift+K" $true "move-up"
+Test-Cov (Get-StressShortcutCoverage @{ op = "move-directional"; direction = "right" } $covOrd) "default" "move-right" "Win+Shift+L" $true "move-right"
+Test-Cov (Get-StressShortcutCoverage @{ op = "admit"; window = "win-c" } $covOrd) "fixture" "" "" $false "admit"
+Test-Cov (Get-StressShortcutCoverage @{ op = "close"; window = "win-b" } $covOrd) "fixture" "" "" $false "close"
+Test-Cov (Get-StressShortcutCoverage @{ op = "focus-window"; window = "win-a" } $covOrd) "fixture" "" "" $false "focus-window"
+Test-Cov (Get-StressShortcutCoverage @{ op = "checkpoint"; name = "x" } $covOrd) "observation" "" "" $false "checkpoint"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "warp" } $covOrd } "unknown op" "cov-unknown-op"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "focus-directional"; direction = "sideways" } $covOrd } "bad direction" "cov-bad-direction"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "move-directional"; direction = "void" } $covOrd } "bad direction" "cov-bad-move-direction"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered"; index = 0 } $covOrd } "1..9" "cov-bad-index-low"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered"; index = 10 } $covOrd } "1..9" "cov-bad-index-high"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative"; delta = 0 } $covOrd } "-1/\+1" "cov-bad-delta"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative"; delta = 2 } $covOrd } "-1/\+1" "cov-bad-delta-high"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "void" } $covOrd } "unmapped" "cov-bad-alias"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } @{ home = 0; away = 2 } } "out of range" "cov-ordinal-low"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "send"; workspace = "away" } $covOrd } "boolean follow" "cov-follow-missing"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "send"; workspace = "away"; follow = "yes" } $covOrd } "boolean follow" "cov-follow-string"
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-numbered"; index = [long]5 } $covOrd) "default" "workspace-select-5" "Win+5" $true "numbered-int64"
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-relative"; delta = [long]1 } $covOrd) "default" "workspace-next-j" "Win+Ctrl+J" $true "relative-int64"
+Test-Cov (Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } @{ home = [long]1; away = [long]2 }) "default" "workspace-select-1" "Win+1" $true "alias-int64"
+Test-Cov (Get-StressShortcutCoverage ('{"op":"select-numbered","index":5}' | ConvertFrom-Json) $covOrd) "default" "workspace-select-5" "Win+5" $true "numbered-json-int"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered"; index = 1.9 } $covOrd } "not integer" "cov-bad-index-fraction"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered"; index = $true } $covOrd } "not integer" "cov-bad-index-bool"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered"; index = "2" } $covOrd } "not integer" "cov-bad-index-string"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered"; index = $null } $covOrd } "not integer" "cov-bad-index-null"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered" } $covOrd } "not integer" "cov-bad-index-missing"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-numbered"; index = [long]9999999999 } $covOrd } "1\.\.9" "cov-bad-index-biglong"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative"; delta = 0.6 } $covOrd } "not integer" "cov-bad-delta-fraction"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative"; delta = $true } $covOrd } "not integer" "cov-bad-delta-bool"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative"; delta = "1" } $covOrd } "not integer" "cov-bad-delta-string"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative"; delta = $null } $covOrd } "not integer" "cov-bad-delta-null"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative" } $covOrd } "not integer" "cov-bad-delta-missing"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-relative"; delta = [long]9999999999 } $covOrd } "-1/\+1" "cov-bad-delta-biglong"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } @{ home = 1.9; away = 2 } } "not integer" "cov-ordinal-fraction"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } @{ home = $true; away = 2 } } "not integer" "cov-ordinal-bool"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } @{ home = "1"; away = 2 } } "not integer" "cov-ordinal-string"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "away" } @{ home = 1 } } "unmapped" "cov-ordinal-missing"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "home" } @{ home = [long]9999999999; away = 2 } } "out of range" "cov-ordinal-biglong"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "send"; workspace = "home"; follow = $true } @{ home = 1.9; away = 2 } } "not integer" "cov-send-ordinal-fraction"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "select-workspace"; workspace = "void" } @{ home = 1; away = 2; void = 3 } } "unmapped" "cov-bad-alias-mapped"
+Expect-Throw { Get-StressShortcutCoverage @{ op = "send"; workspace = "void"; follow = $true } @{ home = 1; away = 2; void = 3 } } "unmapped" "cov-send-bad-alias-mapped"
+Rec-Mock "shortcut-coverage-mapping" @{ rows = 34 }
+# Both fixture cases share the definitions 1:1: 102 commands each with 2
+# unbound stay rows, 148/155 total actions respectively.
+foreach ($pair in @(@("world-stress-home-away.json", 148), @("world-stress-trio-churn.json", 155))) {
+  $covCase = Get-StressCase (Join-Path $Repo ("test-fixtures\" + $pair[0]))
+  $covCmds = Validate-StressCase $covCase
+  if ([int]$covCmds -ne 102) { Fail-Mock "coverage case $($pair[0]) commands $covCmds" }
+  if (@($covCase.actions).Count -ne [int]$pair[1]) { Fail-Mock "coverage case $($pair[0]) actions $(@($covCase.actions).Count)" }
+  $covUnbound = 0
+  foreach ($a in @($covCase.actions)) {
+    if ("$((Get-StressShortcutCoverage $a $covOrd).status)" -eq "unbound") { $covUnbound++ }
+  }
+  if ([int]$covUnbound -ne 2) { Fail-Mock "coverage case $($pair[0]) unbound $covUnbound" }
+}
+Rec-Mock "shortcut-coverage-cases" @{ commands = 102; unbound = 2 }
+# Offline entrypoint: every live/mutating effect throws, so a passing
+# coverage run proves the path is pure.
+$covSaved = @{}
+foreach ($fn in @("Invoke-LiveJourney", "Invoke-Mock", "Invoke-StressCli", "Start-StressFixture", "Start-ExplorerGui", "Set-StressCaseSettings", "Invoke-StressCleanup", "Start-StressBootstrap")) {
+  $covSaved[$fn] = (Get-Item -Path ("function:" + $fn)).ScriptBlock
+  Set-Item -Path ("function:" + $fn) -Value { throw "effect invoked during offline coverage" }
+}
+$Case = Join-Path $Repo "test-fixtures\world-stress-home-away.json"
+$covOut = Invoke-KeyboardCoverage | Out-String
+foreach ($fn in @($covSaved.Keys)) { Set-Item -Path ("function:" + $fn) -Value $covSaved[$fn] }
+$Case = ""
+$covJson = $covOut | ConvertFrom-Json
+if ("$($covJson.status)" -ne "pass") { Fail-Mock "coverage entrypoint status" }
+if ($covJson.injection_accepted -ne $false) { Fail-Mock "coverage injection flag" }
+if ("$($covJson.blocked_reason)" -ne "normal-product-injected-filter") { Fail-Mock "coverage blocked reason" }
+if (@($covJson.cases).Count -ne 1) { Fail-Mock "coverage selected case count" }
+if ([int]$covJson.cases[0].commands -ne 102 -or [int]$covJson.cases[0].unbound -ne 2) { Fail-Mock "coverage selected summary" }
+if (@($covJson.cases[0].rows).Count -ne 148) { Fail-Mock "coverage selected rows" }
+Rec-Mock "shortcut-coverage-offline" @{ ok = $true }
+# Conflicting flags refuse before any effect; the selected-case entrypoint
+# runs clean as a subprocess.
+$covLib = Join-Path $Repo "scripts\windows-world-stress.ps1"
+foreach ($argv in @(@("-KeyboardCoverage", "-Live"), @("-KeyboardCoverage", "-Mock"), @("-KeyboardCoverage", "-Stop"), @("-KeyboardCoverage", "-RunDir", "x"), @("-KeyboardCoverage", "-DelayMs", "5"), @("-KeyboardCoverage", "-OwnerSeconds", "599"))) {
+  $covErr = & pwsh -NoProfile -File $covLib @argv 2>&1
+  if ($LASTEXITCODE -eq 0) { Fail-Mock "coverage conflict accepted $($argv -join ' ')" }
+  if ("$covErr" -notmatch "refuse") { Fail-Mock "coverage conflict wrong error $($argv -join ' '): $covErr" }
+}
+Rec-Mock "shortcut-coverage-conflicts" @{ rows = 6 }
+$covOk = & pwsh -NoProfile -File $covLib -KeyboardCoverage -Case (Join-Path $Repo "test-fixtures\world-stress-home-away.json") | ConvertFrom-Json
+if ("$($covOk.status)" -ne "pass" -or [int]$covOk.cases[0].commands -ne 102 -or [int]$covOk.cases[0].unbound -ne 2) { Fail-Mock "coverage subprocess entrypoint" }
+Rec-Mock "shortcut-coverage-entrypoint" @{ ok = $true }
+
 Remove-Item -LiteralPath $mockRoot -Recurse -Force -ErrorAction SilentlyContinue
 $report = @{ status = "pass"; stage = "WorldStressMockFaults"; steps = $WSM_STEPS }
 $report | ConvertTo-Json -Depth 8 | Write-Output
