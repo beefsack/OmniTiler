@@ -445,6 +445,8 @@ Prioritise by return toward these goals
   Tentative adoption decisions and the oversized decorated-hint bound stay
   queued for cross-platform review.
   [Record](changes/kde-world-v2-port.md).
+  [Batched physical run sheet](changes/kde-physical-checklist.md) consolidates
+  pending native/physical sub-legs; desktop lifecycle and blocked-policy checks excluded.
 - P2 | KDE native pager warning and quick fix (user 2026-10-26) | KDE uses
   the native Plasma workspace pager widget; OmniTiler draws no KDE pager, so
   the core's pager-focused-window color does not apply on KDE. The settings
