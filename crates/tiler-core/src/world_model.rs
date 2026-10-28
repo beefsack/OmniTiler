@@ -873,9 +873,13 @@ impl WorldEngine {
     /// watermark, spent-before-dispatch, lost/stale drops); no persistent
     /// focus desired exists.
     ///
-    /// At most one candidate per report: the last newcomer in report order
-    /// (new birth order; the D2 fallback anchor is retained state, never a
-    /// candidate). Fresh seeds emit nothing (no retained session means
+    /// At most one candidate per report: the last newcomer in staged order
+    /// that is not withheld (new birth order; the D2 fallback anchor is
+    /// retained state, never a candidate). Automatic fixed-size floats
+    /// (retained classifier origin, D8) are skipped and spent during
+    /// selection, so a withheld newcomer never displaces an ordinary one
+    /// in the same batch; explicit tile wins stay ordinary.
+    /// Fresh seeds emit nothing (no retained session means
     /// startup, restart, or disable/enable re-adoption, where the observed
     /// native focus stays authoritative), except the first fresh map into
     /// a previously reported empty readable controlled tiled domain: the
@@ -1005,6 +1009,21 @@ impl WorldEngine {
                     continue;
                 }
                 if converged.is_some_and(|known| known.contains(id)) {
+                    // Automatic fixed-size floats never take admission
+                    // focus (D8): the retained classifier origin decides,
+                    // never raw hints, so hint loss still withholds and
+                    // born-fullscreen bypasses stay ordinary. An explicit
+                    // tile win (D3) is ordinary admission and keeps its
+                    // intent. Each withheld newcomer spends here so it
+                    // never replays, while selection continues to the last
+                    // non-withheld newcomer, preserving ordinary selection.
+                    if let Some(session) = self.engine.session(&domain.key)
+                        && session.is_automatic_fixed_float(&window.window)
+                        && !session.has_fixed_tile_override(&window.window)
+                    {
+                        self.admission_focus_spent.insert(window.window.0.clone());
+                        continue;
+                    }
                     newcomer = Some((window.window.clone(), domain.key.clone()));
                 }
             }

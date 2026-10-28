@@ -1753,11 +1753,12 @@ describe("world admission focus on settled floats", () => {
         assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
             });
 
-    it("refuses automatic fixed-size float admission with zero focus writes", () => {
-        // Producer-shaped: the live Qt newcomer is an automatic fixed-size
-        // float (fixedAuto, observed floating) and the Engine-shaped reply
-        // carries a floating row plus the af- admission intent. Automatic
-        // floats never take admission activation.
+    it("stays mechanical on a fabricated automatic fixed-size float admission", () => {
+        // The core withholds and spends automatic fixed-size admission, so
+        // a fabricated af- with fixedAuto is unreachable in production.
+        // The adapter stays mechanical here and would activate the
+        // still-plain ordinary float; the real no-activation proof lives
+        // on the retained-Engine route.
         const setup = admissionSetup(
             "af-win-b",
             { floating: true, fullscreen: false, maximized: false, sticky: false },
@@ -1774,11 +1775,11 @@ describe("world admission focus on settled floats", () => {
             switchView: () => { setters += 1; return true; },
         };
         const result = applyWorldReply(counting);
-        assert.deepEqual(setup.focused, [], "automatic fixed float takes no focus write");
-        assert.equal(result.effects, 0);
-        assert.equal(setters, 0, "no geometry/membership/view writes around a refused admission");
+        assert.deepEqual(setup.focused, ["win-b"], "mechanical adapter activates the fabricated intent");
+        assert.equal(result.effects, 1);
+        assert.equal(setters, 0, "admission focus writes no geometry/membership/view");
         assert.equal(setup.state.isDispatched("af-win-b"), false, "effects never dispatch-record; at-most-once comes from the spent set");
-                assert.ok(!setup.logs.some((l) => l.includes("automatic-focus-attempt")), "refused admission attempts no setter");
+                assert.ok(setup.logs.some((l) => l.includes("automatic-focus-attempt")), "mechanical admission attempts the setter");
     });
 
     it("keeps suppressed-tile admission focus with no geometry writes", () => {

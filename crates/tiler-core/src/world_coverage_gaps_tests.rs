@@ -10,7 +10,7 @@ use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
-use crate::world_engine::{WorldEngine, WorldOutcome};
+use crate::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use crate::world_report::{
     CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, TransferKind,
     WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
@@ -433,6 +433,859 @@ fn normalized_ordinary_float_newcomer_focuses_once() {
         ),
     );
     assert!(echo.effects.is_empty(), "no replay: {:?}", echo.effects);
+}
+
+fn fixed_hints() -> WindowSizeHints {
+    WindowSizeHints {
+        min_w: Some(400),
+        min_h: Some(300),
+        max_w: Some(400),
+        max_h: Some(300),
+    }
+}
+
+fn fixed_fact(window: &str, output: &str, x: i32) -> WindowFact {
+    WindowFact {
+        hints: fixed_hints(),
+        ..fact(window, output, x)
+    }
+}
+
+#[test]
+fn automatic_fixed_size_newcomer_takes_no_admission_focus() {
+    // A tiled-first fixed-size arrival floats automatic (D1/D8) and never
+    // takes admission focus; the spend holds across re-observation.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrival.effects.is_empty(),
+        "automatic withholds: {:?}",
+        arrival.effects
+    );
+    assert!(row_of(&arrival, "wf").floating, "fixed floats automatic");
+    let mut wf = float_fact("wf", "out-a", 200);
+    wf.hints = fixed_hints();
+    let echo = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wf],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        echo.effects.is_empty(),
+        "spent, never replays: {:?}",
+        echo.effects
+    );
+}
+
+#[test]
+fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
+    // A newcomer arriving already floating with the adapter-asserted
+    // automatic origin (D6) withholds exactly like a classified arrival.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let mut wa = float_fact("wa", "out-a", 200);
+    wa.fixed_auto = true;
+    wa.hints = fixed_hints();
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wa],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrival.effects.is_empty(),
+        "asserted automatic withholds: {:?}",
+        arrival.effects
+    );
+    assert!(row_of(&arrival, "wa").floating, "stays floated");
+    let mut wa_echo = float_fact("wa", "out-a", 200);
+    wa_echo.fixed_auto = true;
+    wa_echo.hints = fixed_hints();
+    let echo = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wa_echo],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        echo.effects.is_empty(),
+        "spent, never replays: {:?}",
+        echo.effects
+    );
+}
+
+#[test]
+fn fixed_tile_override_newcomer_still_mints_once() {
+    // D3: an explicit user tile win is ordinary admission and keeps its
+    // one-shot intent.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let mut wt = fixed_fact("wt", "out-a", 200);
+    wt.fixed_suppress = true;
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wt],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        arrival.effects.len(),
+        1,
+        "override keeps intent: {:?}",
+        arrival.effects
+    );
+    assert_eq!(arrival.effects[0].target.0, "wt");
+    assert_eq!(arrival.effects[0].id, "af-wt");
+    assert!(
+        !row_of(&arrival, "wt").floating,
+        "override tiles: {:?}",
+        row_of(&arrival, "wt")
+    );
+    let mut wt_echo = fixed_fact("wt", "out-a", 200);
+    wt_echo.fixed_suppress = true;
+    let echo = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wt_echo],
+            "wt",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(echo.effects.is_empty(), "no replay: {:?}", echo.effects);
+}
+
+#[test]
+fn explicit_focus_of_automatic_float_after_withhold_stays_quiet() {
+    // Native focus landing on a withheld automatic float converges (the
+    // float-origin lane) without minting and without wedging.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrival.effects.is_empty(),
+        "automatic withholds: {:?}",
+        arrival.effects
+    );
+    let mut wf = float_fact("wf", "out-a", 200);
+    wf.hints = fixed_hints();
+    let explicit = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wf],
+            "wf",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        explicit.effects.is_empty(),
+        "explicit focus mints nothing: {:?}",
+        explicit.effects
+    );
+    assert!(row_of(&explicit, "wf").floating, "still floated");
+}
+
+#[test]
+fn automatic_fixed_float_keeps_withholding_across_hint_loss() {
+    // Hint loss never reclassifies (D2): the retained automatic origin
+    // keeps the float floated and focus-free.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrival.effects.is_empty(),
+        "automatic withholds: {:?}",
+        arrival.effects
+    );
+    let lost = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                float_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        lost.effects.is_empty(),
+        "hint loss mints nothing: {:?}",
+        lost.effects
+    );
+    assert!(row_of(&lost, "wf").floating, "hint loss stays floated");
+}
+
+#[test]
+fn closed_automatic_lifetime_reused_as_ordinary_mints_again() {
+    // Close drops the lifetime (spent set, automatic marker); reusing the
+    // id as an ordinary window is a fresh admission with its own intent.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrival.effects.is_empty(),
+        "automatic withholds: {:?}",
+        arrival.effects
+    );
+    let closed = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            vec!["wf"],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        closed.effects.is_empty(),
+        "close mints nothing: {:?}",
+        closed.effects
+    );
+    let readmit = accepted(
+        &mut engine,
+        &report(
+            4,
+            screens,
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        readmit.effects.len(),
+        1,
+        "reuse mints fresh: {:?}",
+        readmit.effects
+    );
+    assert_eq!(readmit.effects[0].target.0, "wf");
+    assert_eq!(readmit.effects[0].id, "af-wf");
+}
+
+#[test]
+fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
+    // Batch invariance: [ordinary, fixed] in one report mints exactly
+    // what sequential arrivals mint (ordinary focus once, fixed
+    // withheld), regardless of the fixed newcomer arriving last.
+    let screens = vec![roomy("out-a", 0, true)];
+    let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
+    // Sequential reference: ordinary arrives first, fixed second.
+    let mut sequential = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut sequential,
+        &report(1, screens.clone(), seed.clone(), "", vec![], None, None),
+    );
+    let seq_ordinary = accepted(
+        &mut sequential,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fact("wa", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        seq_ordinary.effects.len(),
+        1,
+        "sequential ordinary mints: {:?}",
+        seq_ordinary.effects
+    );
+    assert_eq!(seq_ordinary.effects[0].target.0, "wa");
+    assert_eq!(seq_ordinary.effects[0].id, "af-wa");
+    // Sequential fixed arrival is tiled-first (the classifier path);
+    // the batched echo below observes the already-floated result.
+    let seq_fixed = accepted(
+        &mut sequential,
+        &report(
+            3,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fact("wa", "out-a", 200),
+                fixed_fact("wz", "out-a", 300),
+            ],
+            "wa",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        seq_fixed.effects.is_empty(),
+        "sequential fixed withholds: {:?}",
+        seq_fixed.effects
+    );
+    // Batched: both arrive together with the fixed newcomer last in
+    // selection (id) order.
+    let mut batched = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut batched,
+        &report(1, screens.clone(), seed, "", vec![], None, None),
+    );
+    let arrival = accepted(
+        &mut batched,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fact("wa", "out-a", 200),
+                fixed_fact("wz", "out-a", 300),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        arrival.effects, seq_ordinary.effects,
+        "batch matches sequential: {:?}",
+        arrival.effects
+    );
+    // Report order within the batch changes nothing: the same members
+    // listed fixed-first select identically.
+    let mut reordered = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut reordered,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let reordered_arrival = accepted(
+        &mut reordered,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wz", "out-a", 300),
+                fact("wa", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        reordered_arrival.effects, seq_ordinary.effects,
+        "reordered batch matches: {:?}",
+        reordered_arrival.effects
+    );
+    let mut wz_echo = float_fact("wz", "out-a", 300);
+    wz_echo.hints = fixed_hints();
+    let echo = accepted(
+        &mut batched,
+        &report(
+            3,
+            screens,
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fact("wa", "out-a", 200),
+                wz_echo,
+            ],
+            "wa",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        echo.effects, seq_fixed.effects,
+        "echo matches sequential: {:?}",
+        echo.effects
+    );
+}
+
+#[test]
+fn mixed_batch_fixed_first_mints_ordinary() {
+    // Batch invariance, other order: [fixed, ordinary] still mints the
+    // ordinary newcomer once and withholds (spends) the fixed one.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+                fact("wo", "out-a", 300),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        arrival.effects.len(),
+        1,
+        "ordinary mints: {:?}",
+        arrival.effects
+    );
+    assert_eq!(arrival.effects[0].target.0, "wo");
+    assert_eq!(arrival.effects[0].id, "af-wo");
+    assert!(
+        row_of(&arrival, "wf").floating,
+        "fixed still floats automatic"
+    );
+    let mut wf = float_fact("wf", "out-a", 200);
+    wf.hints = fixed_hints();
+    let echo = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                wf,
+                fact("wo", "out-a", 300),
+            ],
+            "wo",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        echo.effects.is_empty(),
+        "spent, never replays: {:?}",
+        echo.effects
+    );
+}
+
+#[test]
+fn two_automatic_fixed_newcomers_take_no_focus() {
+    // [fixed, fixed]: every automatic newcomer spends, none mints.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+                fixed_fact("wg", "out-a", 300),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrival.effects.is_empty(),
+        "both withhold: {:?}",
+        arrival.effects
+    );
+    assert!(row_of(&arrival, "wf").floating, "wf floats automatic");
+    assert!(row_of(&arrival, "wg").floating, "wg floats automatic");
+    let mut wf = float_fact("wf", "out-a", 200);
+    wf.hints = fixed_hints();
+    let mut wg = float_fact("wg", "out-a", 300);
+    wg.hints = fixed_hints();
+    let echo = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wf, wg],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        echo.effects.is_empty(),
+        "spent, never replays: {:?}",
+        echo.effects
+    );
+}
+
+#[test]
+fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
+    // Windows-carrier authorization only: the exact Windows engine profile
+    // from `world_sequencer.rs` (`fixed_send_admission: true`,
+    // `maximized_focus_fence: false`) withholds an adapter-asserted
+    // automatic fixed float (D6/D8 retained-origin shape) while an ordinary
+    // newcomer still mints admission focus. This proves core authorization
+    // under the Windows profile; it does NOT prove adapter actuation or
+    // native behavior.
+    let config = WorldEngineConfig {
+        fixed_send_admission: true,
+        maximized_focus_fence: false,
+    };
+    for case in ["automatic-fixed", "intentional-fixed", "ordinary"] {
+        let mut engine = WorldEngine::new_with_config("gen-1", config).expect("generation");
+        let screens = vec![roomy("out-a", 0, true)];
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let newcomer = match case {
+            "automatic-fixed" => {
+                let mut wa = float_fact("wn", "out-a", 200);
+                wa.fixed_auto = true;
+                wa.hints = fixed_hints();
+                wa
+            }
+            "intentional-fixed" => {
+                let mut wa = float_fact("wn", "out-a", 200);
+                wa.hints = fixed_hints();
+                wa
+            }
+            _ => fact("wn", "out-a", 200),
+        };
+        let arrival = accepted(
+            &mut engine,
+            &report(
+                2,
+                screens,
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), newcomer],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        if case == "automatic-fixed" {
+            assert!(
+                arrival.effects.is_empty(),
+                "windows profile withholds automatic fixed: {:?}",
+                arrival.effects
+            );
+            assert!(
+                row_of(&arrival, "wn").floating,
+                "automatic fixed floats under windows profile"
+            );
+        } else {
+            assert_eq!(
+                arrival.effects.len(),
+                1,
+                "windows profile still mints {case}: {:?}",
+                arrival.effects
+            );
+            assert_eq!(arrival.effects[0].target.0, "wn");
+            assert!(
+                arrival.effects[0].id.starts_with("af-"),
+                "admission intent id: {:?}",
+                arrival.effects[0].id
+            );
+        }
+    }
+}
+
+#[test]
+fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
+    // Explicit user focus rides the Focus command, never admission: after
+    // a withheld automatic-fixed arrival, the command emits its own
+    // correlated effect with no `af-` token.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    let arrival = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![
+                fact("w0", "out-a", 0),
+                fact("w1", "out-a", 100),
+                fixed_fact("wf", "out-a", 200),
+            ],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrival.effects.is_empty(),
+        "automatic withholds: {:?}",
+        arrival.effects
+    );
+    let mut wf = float_fact("wf", "out-a", 200);
+    wf.hints = fixed_hints();
+    let commanded = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens,
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100), wf],
+            "w0",
+            vec![],
+            Some(10),
+            Some(WorldCommand::Focus {
+                window: WindowId("wf".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(
+        commanded.effects.len(),
+        1,
+        "explicit focus emits: {:?}",
+        commanded.effects
+    );
+    assert!(
+        commanded.effects[0].is_explicit_focus_for(10),
+        "correlated explicit effect: {:?}",
+        commanded.effects
+    );
+    assert_eq!(commanded.effects[0].target.0, "wf");
+    assert!(
+        commanded.effects.iter().all(|e| !e.id.starts_with("af-")),
+        "no admission token: {:?}",
+        commanded.effects
+    );
 }
 
 #[test]

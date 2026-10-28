@@ -2303,17 +2303,16 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // ordinary is the core's reply classification (a floating reply
         // row, user or capacity alike), never observed floating alone: a
         // game/excluded float the core never classified stays refused.
-        // Automatic fixed-size floats (observed fixedAuto without
-        // fixedSuppress) never take admission activation: zero
-        // geometry/focus writes by construction. Suppressed tiles stay on
-        // the tiled path below. Fullscreen (game), maximized, and sticky
-        // overlays refuse even there.
+        // Automatic fixed-size floats never arrive as admission focus:
+        // the core withholds and spends the intent, so the adapter stays
+        // mechanical here. Suppressed tiles stay on the tiled path below.
+        // Fullscreen (game), maximized, and sticky overlays refuse even
+        // there.
         const replyRow = reply.windows.find((w) => w.win === fx.target);
         const admissionFloatTarget =
             fx.id.startsWith("af-") &&
             observed.floating === true &&
-            replyRow?.floating === true &&
-            !(observed.fixedAuto === true && observed.fixedSuppress !== true);
+            replyRow?.floating === true;
         if (admissionFloatTarget) {
             if (observed.fullscreen || observed.maximized || observed.sticky) {
                 result.held += 1;

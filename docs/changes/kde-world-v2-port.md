@@ -1209,20 +1209,40 @@
 
 ### Fixed-size admission consumer inventory and proposed core shape (2026-10-29)
 
-- **Inventory only; implementation parked.** The ownership decision is
+- **Focus half delivered (tentative, pending user review).** The ownership decision is
   [User 2026-10-28](../decisions.md#fixed-size-admission): core withholds
   automatic fixed-size admission activation and publishes a neutral opt-in
   keep-above-tiles desire; KDE's local consumers go away. The concrete shape
-  below is a recommendation, not an approved API or a new product decision.
-  No product code, protocol or recorded decision changes in this inventory.
-- Evidence is current source inspection, plus reference source at the existing
+  below remains a recommendation for keep-above, not an approved API. Only the
+  focus half is implemented; keep-above ownership/recovery remains parked.
+  No protocol or recorded decision changes.
+- Core `take_admission_focus` skips and spends each retained automatic-fixed
+  newcomer before selecting the last non-withheld candidate. Tentative
+  batch-invariance rationale: sequential ordinary admission focuses O, then
+  automatic-fixed F is withheld, leaving O focused; batching must not erase O's
+  intent. Both mixed orders choose O; fixed-only batches emit no focus. Existing
+  selection fences remain; explicit focus commands and tile overrides stay
+  separate. Hint loss preserves origin; close/reuse resets the lifetime.
+- KDE's local admission veto is deleted. `isFixedSizeWindow`, automatic
+  keep-above and the focused-float newcomer fence remain unchanged. Real KDE
+  producer/broker/WorldEngine regression proves no automatic-fixed activation,
+  ordinary activation, and focused-float fencing. Core regressions cover the
+  four batch cases, intentional floats, tile override, explicit Focus command,
+  hint loss and close/reuse, including a Windows-profile WorldEngine control.
+- Failing-first: five automatic-origin cases emitted unwanted `af-` effects;
+  the initial post-selection veto then failed mixed ordinary/fixed batching
+  (`[]` instead of `af-wa`). In-loop skip/spend fixes both. All 11 new core
+  regressions pass. Offline gates pass: scoped core/Windows/protocol tests,
+  workspace strict clippy excluding macOS, workspace fmt, `just check-portable`,
+  KDE tests (856 passed), KDE typecheck and whitespace. No live tests.
+- Evidence includes source inspection, plus reference source at the existing
   pins below. No live acceptance follows. The priority remains Tier 1
   compatibility and a correct pre-0.1 core/protocol, not adapter workarounds
   (`docs/backlog.md:16-25`).
 
-#### Ownership and current consumers
+#### Ownership and consumers at inventory time (focus cutover above)
 
-| Consumer / decision | Owner today and exact behavior | Source evidence |
+| Consumer / decision | Owner at inventory and exact behavior | Source evidence |
 | --- | --- | --- |
 | KDE local fixed predicate | TypeScript copy consumes declared client min/max and validated predicate; accepts integer bounds 0..16384, rejects missing/full-zero, requires nonzero equality on both axes by default or either axis. Local observation ORs fresh equality with optional recorded origin, carries suppress/tile override, and derives local floating eligibility. This is not the wire classifier. | `kwin/src/world-observe.ts:19-51,1072-1109,1123-1139` |
 | KDE admission activation veto | `af-` effects are spent before dispatch. The float exception permits ordinary/capacity floats only when observation AND reply say floating, excluding `fixedAuto && !fixedSuppress`; automatic fixed targets consequently receive no admission activation. The separate focused-float guard prevents automatic newcomers activating over an already focused float/sticky window (`automatic-active` is only its fixed-origin diagnostic). Explicit `fx-*` commands are separate. Fullscreen/maximized sibling fencing also remains. | `kwin/src/world-apply.ts:2256-2269,2275-2360` |
@@ -1261,7 +1281,13 @@
   (`crates/tiler-windows/src/tiling/float.rs:172-178`;
   `crates/tiler-windows/src/tiling_sys/float_toggle.rs:319-343,382-408`;
   `crates/tiler-windows/src/tiling_sys/run_loop.rs:1461-1501`).
-- **Source/contract conflict, not a native result:** the current Windows world
+- **Windows gap update:** core now omits automatic-fixed admission focus, and a
+  real WorldEngine regression under the exact Windows profile proves no focus
+  effect with an ordinary positive control. No Windows adapter changes. This
+  closes the core authorization gap, not Windows native acceptance: the Windows
+  adapter-route harness is platform-gated and was not executable on Linux.
+  Adapter dispatch/native no-write confirmation remains unverified.
+- **Original source/contract conflict, not a native result:** the Windows world
   loop iterates reply effects, passes focus through `SetterKind::Membership`
   (which does not veto floats), then spends and dispatches focus. It has no
   automatic-fixed or automatic-admission identity veto
@@ -1269,12 +1295,13 @@
   `:2190-2194`). The explicit-only check at `:378-402` governs the staged
   selection-arrival exception, not ordinary dispatch; other effects retain
   ordinary native safety gates (`world_native.rs:2137-2155`). Combined with
-  core `take_admission_focus`, a safe ordinary automatic-fixed newcomer can
-  reach focus dispatch. This conflicts with the recorded Windows D8 no-focus
+  the pre-cutover core `take_admission_focus`, a safe ordinary automatic-fixed
+  newcomer could reach focus dispatch. This conflicted with the Windows D8 no-focus
   contract and the observed-focus warning in
   `crates/tiler-core/src/world_report.rs:222-245`. Do not report the old fixed
   admission fixtures or the generic frame guard as proof of world-route
-  no-focus. A discriminating world-route regression is needed before delivery.
+  no-focus. The portable Windows-profile regression proves effect omission;
+  Windows adapter-route/native verification is still needed.
 - **macOS:** carries hints for core admission (`crates/tiler-macos/src/classifier.rs:244-245`);
   automatic fixed-float focus/keep-above handling is unknown in this inventory.
 
@@ -1340,9 +1367,10 @@
   [ownership blocker](kde-automatic-float-stacking.md#blocker-and-exact-next-action)).
 - **Windows impact:** share the desire's codec and mechanical ownership contract,
   but leave automatic-fixed stacking opt-out under the existing Windows D8
-  decision. Fixing core admission-focus authorization would also close the
-  Windows source/contract gap above. Routing intentional Windows floats through
-  the same desire is preferable to a permanent adapter policy duplicate, but
+  decision. Core admission-focus authorization now omits the effect; Windows
+  adapter-route/native verification remains open above. Routing intentional
+  Windows floats through the same desire is preferable to a permanent adapter
+  policy duplicate, but
   requires separately agreed origin coverage and Topmost/preimage semantics;
   enabling above for automatic fixed floats would change a recorded decision.
 - Alternative 1: a neutral `normal | above-tiles` layer enum plus independent

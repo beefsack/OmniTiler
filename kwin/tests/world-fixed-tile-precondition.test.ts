@@ -28,6 +28,9 @@ import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 const WIN_O = "11111111-1111-1111-1111-111111111111";
 const WIN_F = "44444444-4444-4444-4444-444444444444";
+const WIN_AF_NEW = "66666666-6666-6666-6666-666666666666";
+const WIN_ORD_NEW = "77777777-7777-7777-7777-777777777777";
+const WIN_ORD_FENCED = "88888888-8888-8888-8888-888888888888";
 const OUT = "out-1";
 const WS_NATIVE = "ws-a";
 
@@ -210,6 +213,7 @@ interface Harness {
     readonly geometryWrites: string[];
     readonly membershipWrites: string[];
     readonly viewSwitches: string[];
+    readonly focused: string[];
     readonly handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
     readonly signals: Record<string, FakeSignal>;
     readonly live: Map<string, LiveSpec>;
@@ -254,6 +258,7 @@ async function makeHarness(): Promise<Harness> {
     const geometryWrites: string[] = [];
     const membershipWrites: string[] = [];
     const viewSwitches: string[] = [];
+    const focused: string[] = [];
     const storeWrites: string[] = [];
     const sigNames = [
         "windowAdded",
@@ -283,6 +288,7 @@ async function makeHarness(): Promise<Harness> {
         geometryWrites,
         membershipWrites,
         viewSwitches,
+        focused,
         handle: null as unknown as NonNullable<ReturnType<typeof startWorldAdapterEntry>>,
         signals,
         live,
@@ -407,6 +413,17 @@ async function makeHarness(): Promise<Harness> {
         activeScreen: { name: OUT },
         get activeWindow() {
             return activeBraced === null ? null : { internalId: activeBraced };
+        },
+        set activeWindow(ref: unknown) {
+            if (ref === null || ref === undefined) {
+                activeBraced = null;
+                return;
+            }
+            const id = (ref as { internalId?: unknown }).internalId;
+            if (typeof id === "string") {
+                activeBraced = id;
+                focused.push(id);
+            }
         },
         currentDesktop: { id: WS_NATIVE },
         currentDesktopForScreen: (_screen: unknown) => ({ id: WS_NATIVE }),
@@ -764,6 +781,73 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             emitTrace(t, h, "held-incomplete leg complete");
         } catch (error) {
             emitTrace(t, h, "held-incomplete leg failed");
+            throw error;
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("withholds automatic fixed-size admission with zero activation, keeps ordinary admission and the focused-float fence", { timeout: 120000 }, async (t) => {
+        const h = await makeHarness();
+        try {
+            await discover(h);
+            h.runTimers();
+            await h.flushAll();
+            await enableWorkspace(h, t);
+            // Settle the enable followup so each newcomer below queues
+            // exactly one DescribeWorld.
+            h.runTimers();
+            await h.flushAll();
+            const focusedBefore = h.focused.length;
+            assert.equal(focusedBefore, 0, "enable takes no focus writes");
+
+            // Automatic fixed-size newcomer: producer carries finite
+            // equal min/max, the real Engine floats it automatic and
+            // withholds the af- intent.
+            h.live.set(`{${WIN_AF_NEW}}`, termSpec(WIN_AF_NEW, { x: 200, y: 0, width: 480, height: 320 }, {
+                minSize: { ...FIXED_HINT },
+                maxSize: { ...FIXED_HINT },
+            }));
+            h.setActive(`{${WIN_O}}`);
+            h.fire("windowAdded");
+            h.runTimers();
+            const fixedRound = await h.flushOne();
+            await h.flushAll();
+            const fixedEffects = (fixedRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
+            assert.ok(!fixedEffects.some((fx) => fx["target"] === WIN_AF_NEW && String(fx["id"]).startsWith("af-")), `automatic fixed newcomer takes no admission intent, got ${JSON.stringify(fixedEffects)}`);
+            assert.equal(h.focused.length, focusedBefore, "automatic fixed admission writes no focus");
+            const fixedWins = (fixedRound.parsed["windows"] as Array<Record<string, unknown>>) ?? [];
+            const fixedRow = fixedWins.find((w) => w["win"] === WIN_AF_NEW);
+            assert.ok(fixedRow !== undefined && fixedRow["floating"] === true, `core floats the fixed newcomer automatic: ${JSON.stringify(fixedRow)}`);
+
+            // Ordinary newcomer: Qt zero/unbounded hints, the real Engine
+            // mints the af- admission intent and the adapter activates once.
+            h.live.set(`{${WIN_ORD_NEW}}`, termSpec(WIN_ORD_NEW, { x: 400, y: 0, width: 400, height: 600 }));
+            h.fire("windowAdded");
+            h.runTimers();
+            const ordRound = await h.flushOne();
+            await h.flushAll();
+            const ordEffects = (ordRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
+            assert.ok(ordEffects.some((fx) => fx["target"] === WIN_ORD_NEW && String(fx["id"]) === `af-${WIN_ORD_NEW}`), `ordinary newcomer takes admission intent, got ${JSON.stringify(ordEffects)}`);
+            assert.ok(h.focused.includes(`{${WIN_ORD_NEW}}`), `ordinary admission activates natively, got ${JSON.stringify(h.focused)}`);
+
+            // Focused-float fence: with native focus on the automatic
+            // float, a further ordinary newcomer still mints af- in the
+            // core but the adapter holds it with the automatic-active
+            // diagnostic and zero activation writes.
+            h.setActive(`{${WIN_F}}`);
+            h.live.set(`{${WIN_ORD_FENCED}}`, termSpec(WIN_ORD_FENCED, { x: 500, y: 0, width: 400, height: 600 }));
+            h.fire("windowAdded");
+            h.runTimers();
+            const fencedRound = await h.flushOne();
+            await h.flushAll();
+            const fencedEffects = (fencedRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
+            assert.ok(fencedEffects.some((fx) => fx["target"] === WIN_ORD_FENCED && String(fx["id"]) === `af-${WIN_ORD_FENCED}`), `fenced newcomer still mints admission intent, got ${JSON.stringify(fencedEffects)}`);
+            assert.ok(!h.focused.includes(`{${WIN_ORD_FENCED}}`), `focused float holds the newcomer activation, got ${JSON.stringify(h.focused)}`);
+            assert.ok(h.logs.some((l) => l.includes("focus-skipped") && l.includes("reason=automatic-active") && l.includes(`target=${WIN_ORD_FENCED}`)), "focused automatic float fence logged");
+            emitTrace(t, h, "admission-focus leg complete");
+        } catch (error) {
+            emitTrace(t, h, "admission-focus leg failed");
             throw error;
         } finally {
             await h.stop();

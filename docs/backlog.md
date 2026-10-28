@@ -391,14 +391,15 @@ Prioritise by return toward these goals
     Tentative recommendation: carry anchored presentation into review, not
     production. Shipping behavior unchanged; final shared API waits for the
     cross-platform core review after macOS drag evidence.
-  - Local fixed-size consumers: `world-observe.ts::isFixedSizeWindow` still
-    feeds the admission-focus gate (`world-apply.ts`) and automatic keep-above
-    (`world-native.ts`). User 2026-10-28: move both to core ownership (core
-    withholds admission activation; neutral opt-in keep-above-tiles desire that
-    KDE applies mechanically) and delete the local consumers. Inventory and
+  - Local fixed-size consumers: focus half delivered offline, tentative pending
+    user review. Core skips/spends automatic-fixed admission focus; KDE's local
+    admission veto is deleted. Batch invariance keeps the ordinary focus intent
+    in either mixed arrival order. `world-observe.ts::isFixedSizeWindow` and
+    automatic keep-above (`world-native.ts`) remain unchanged. Inventory and
     [proposed core shape](changes/kde-world-v2-port.md#fixed-size-admission-consumer-inventory-and-proposed-core-shape-2026-10-29)
-    recorded; Windows world-focus contract gap noted. Shape/ownership choices
-    await user approval before implementation; no product code changed.
+    recorded; Windows-profile WorldEngine effect omission passes, but Windows
+    adapter-route/native verification remains open. Neutral opt-in keep-above
+    shape/ownership choices remain parked for user review.
   - N5 membership/eligibility split implemented offline; native role/hidden
     checks and Activities remain unverified. Windows/macOS behavior unchanged.
   - Execution-time float toggle: approved, not started; blocked on the open
