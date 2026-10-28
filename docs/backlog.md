@@ -26,25 +26,12 @@ Prioritise by return toward these goals
 
 ## Open work
 
-- Windows order (user 2026-10-28): (1) visibility protocol design comparison;
-  (2) cross-output directional focus edge-nearest; (3) Windows shared
-  window-policy adoption; (4) keyboard stress runner; (5) batched physical
-  checks session, including pending Xbox shortcut and launcher geometry
-  acceptance; (6) Windows-host test flakes; (7) staged switch prototype and
-  intermittent incomplete hide, after the comparison and coordinated
-  protocol bump; (8) sticky-rehome sampling and pager event coverage (P2).
-- P1 | Visibility protocol design comparison (user 2026-10-28) | Read-only,
-  before the coordinated protocol bump. Compare the approved core-owned
-  per-window visibility work (desires, attempt outcomes, core-derived
-  confirmed/refused/ambiguous) with a platform-reconciles model: the platform
-  converges to the latest desired world and reports plain classified facts
-  (visible, hidden, foreground and its cause, unknown) that the core applies
-  policy to, including a failed hide. Judge against the
-  [Layering principle](principles.md#layering) (policy in core, platforms
-  classify facts only they can know), protocol size and churn, switch latency,
-  safety fences, retries/timers (previously rejected), the KDE ownership answer
-  and tab visibility needs. Outcome returns to the user before implementation
-  ([visibility design](changes/windows-workspace-return-focus.md)).
+- Windows order (user 2026-10-28): (1) cross-output directional focus
+  edge-nearest; (2) Windows shared window-policy adoption; (3) keyboard stress
+  runner; (4) batched physical checks session, including pending Xbox shortcut
+  and launcher geometry acceptance; (5) Windows-host test flakes; (6) staged
+  switch prototype and intermittent incomplete hide, with the coordinated
+  protocol bump; (7) sticky-rehome sampling and pager event coverage (P2).
 - P1 | Windows staged workspace switch prototype | Approved 2026-10-28
   ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
   arrival shows, prove visible, one-shot focus, prove foreground, then hide
@@ -57,9 +44,12 @@ Prioritise by return toward these goals
   the terminal partial-hide contract: user 2026-10-28 chose a finished switch
   with a failed hide, and core-owned per-window visibility work with a
   protocol version bump. Remaining decisions are recorded and KDE answered
-  (below). Implementation waits for the visibility protocol design comparison
-  above, then core, protocol and Windows land together, coordinated with the
-  KDE and macOS ports.
+  (below). User 2026-10-28 kept that model after comparing a
+  platform-reconciles alternative; platforms own execution scheduling, and the
+  bump must define concrete core and platform responsibilities
+  ([decision](decisions.md#windows-decisions-2026-10-28)). Core, protocol and
+  Windows land together, coordinated with the KDE and macOS ports, after the
+  tabs investigation below.
   [Record](changes/windows-workspace-return-focus.md).
 - P1 | KDE: workspace ownership through unreadable desktop facts | DECIDED
   2026-10-28, option (a): KDE always reports native ownership, unreadable

@@ -362,6 +362,15 @@ New decisions:
   only with fresh lifetime/visibility proof and Controlled home and shown scopes
   on the same output; native homing and foreground vetoes stay authoritative.
   [Outcome](changes/archive/windows-floating-return-focus.md).
+- **Visibility protocol model (2026-10-28):** keep the approved core-owned
+  per-window visibility work (Model A) for the coordinated protocol bump,
+  rather than a platform-reconciles model reporting plain facts. Platforms own
+  execution scheduling (order, batching, skipping superseded unissued work)
+  within core's rules; core owns visibility policy, completion and its
+  meaning. Anything a platform owns must be intentional and explicit: the
+  protocol change defines concrete core and platform responsibilities, so the
+  two never compete for the same decision or leave it ambiguous
+  ([comparison basis](changes/windows-workspace-return-focus.md)).
 
 ## Active-drag preview continuity (2026-10-27)
 
