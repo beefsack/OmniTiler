@@ -13,6 +13,17 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## KDE shared window-policy adoption (closed 2026-10-29)
+
+- P1 | KDE shared window-policy adoption | Runtime adoption was already
+  delivered by the KDE v2 port: raw script-host facts reach shared Rust retained
+  membership and fixed-size predicates; core owns birth/admission gates.
+  Native acquisition/actuation and documented host exceptions stay local.
+  Source audit confirms no further in-scope rewiring; the separately parked
+  fixed-size admission-focus/keep-above migration remains open. No behavior
+  change; offline JS tests and typecheck pass
+  ([record](changes/archive/kde-shared-window-policy-adoption.md)).
+
 ## Windows shared window-policy adoption (closed 2026-10-28)
 
 - P1 | Windows shared window-policy adoption | Runtime adoption was already

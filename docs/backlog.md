@@ -121,7 +121,8 @@ Prioritise by return toward these goals
   below); (3) KDE Settings core-catalog
   migration (delivered offline); (4) best-effort admission core+KDE (delivered
   offline; live re-check below); (5) KDE dual-output live
-  testing and fixes; (6) KDE shared window-policy adoption; (7) 0.1 triage live
+  testing and fixes; (6) KDE shared window-policy adoption (closed by
+  [audit](changes/archive/kde-shared-window-policy-adoption.md)); (7) 0.1 triage live
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
   route (2026-10-17) need repeating where that route changed the path.
@@ -1597,9 +1598,6 @@ Prioritise by return toward these goals
    exact Tier 1/native outcomes before proposing any shared slot change
   ([discriminator](spec/reference-outcomes.md#macos-classification-discriminators),
    [record](changes/macos-window-classification.md)).
-- P1 | KDE shared window-policy adoption | Adopt the approved
-   `tiler_core::window_policy` predicates in the KDE work stream,
-   preserving script-host acquisition and documented host-specific exceptions.
 - P2 | macOS classification dogfooding discriminators | Investigate AX-size-
    settability-only admission, actionable accessory documents, elevated-level
    standard windows, app-specific nonstandard documents and sheet identity.
