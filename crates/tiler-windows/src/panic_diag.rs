@@ -139,16 +139,27 @@ fn append_panic_line(log_path: &Path, info: &std::panic::PanicHookInfo<'_>) {
     append_json_line(log_path, &event);
 }
 
-/// Lock-free best-effort JSON line append using the existing owner-writer
-/// shape (create/append, single row). Ignores all errors.
+/// Serialize before writing so concurrent panic callbacks cannot interleave
+/// `Display` fragments from `writeln!`. IO remains lock-free and best-effort;
+/// `write_all` may still need multiple writes if the sink accepts only part.
+fn write_json_line(writer: &mut impl std::io::Write, value: &serde_json::Value) {
+    let mut line = match serde_json::to_string(value) {
+        Ok(line) => line,
+        Err(_) => return,
+    };
+    line.push('\n');
+    let _ = writer.write_all(line.as_bytes());
+}
+
+/// Lock-free best-effort JSON line append (create/append, single row).
+/// Ignores all errors.
 fn append_json_line(path: &Path, value: &serde_json::Value) {
-    use std::io::Write;
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
     {
-        let _ = writeln!(file, "{value}");
+        write_json_line(&mut file, value);
     }
 }
 
@@ -297,6 +308,80 @@ mod tests {
             !text.contains("unwind-with-guard-live"),
             "payload message never logged: {text}"
         );
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn json_line_writes_one_complete_buffer() {
+        // A full-accept sink must receive the whole row in one write,
+        // rather than streaming interleavable `Display` fragments.
+        struct CountingWrite {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl std::io::Write for CountingWrite {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let event = panic_event("other", "core_tests.rs", Some(602), Some(13), "str");
+        let mut sink = CountingWrite {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        write_json_line(&mut sink, &event);
+        assert_eq!(sink.writes, 1, "one row is one write");
+        let expected = format!(
+            "{}\n",
+            serde_json::to_string(&event).expect("event serializes")
+        );
+        assert_eq!(
+            sink.bytes,
+            expected.as_bytes(),
+            "full row, newline-terminated"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(std::str::from_utf8(&sink.bytes).expect("row is utf-8"))
+                .expect("row parses as one record");
+        assert_eq!(parsed, event, "row carries the whole record");
+    }
+
+    #[test]
+    fn concurrent_appends_keep_every_line_intact() {
+        // A probe panic racing a foreign thread panic through the same
+        // installed hook interleaved `Display` fragments into one garbled
+        // line (no intact `"event":"panic"` substring). Appends now pass
+        // one complete buffer instead of streaming `Display` fragments.
+        let dir = std::env::temp_dir().join(format!("omnitiler-panic-race-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("panic-race.log");
+        let _ = std::fs::remove_file(&log_path);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..100 {
+                        let event =
+                            panic_event("other", "core_tests.rs", Some(602), Some(13), "str");
+                        append_json_line(&log_path, &event);
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 800, "every append lands one line");
+        for line in &lines {
+            assert!(line.contains("\"event\":\"panic\""), "garbled line: {line}");
+            let parsed: serde_json::Value =
+                serde_json::from_str(line).expect("line parses as one record");
+            assert_eq!(parsed["event"], "panic");
+            assert_eq!(parsed["file"], "core_tests.rs");
+        }
         let _ = std::fs::remove_file(&log_path);
     }
 }

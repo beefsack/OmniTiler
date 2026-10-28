@@ -4,9 +4,9 @@
 
 - Investigate the two failures in the Windows-host test-flakes backlog item,
   without weakening assertions or running live desktop tests.
-- Delivered unit: fix the proven `scripted full row` cause and retain a
-  deterministic regression. The panic-diagnostic failure remains unresolved;
-  this is not completion of the entire backlog item.
+- Both causes are now fixed with failing-first regressions: the early
+  `scripted full row` timeout below and the concurrent panic-diagnostic JSON
+  append defect established in the follow-up. The backlog item is closed.
 
 ## Scripted-row cause and fix
 
@@ -29,7 +29,7 @@
   executions passed. After the final seam: 32/32 each passed for wrong-SID,
   multiple-wrong, no-event, and deterministic early-timeout regression tests.
 
-## Panic-diagnostic investigation: unresolved
+## Panic-diagnostic investigation: historical findings
 
 - The proposed concurrent-foreign-panic explanation was disproved. Rust holds
   the hook read lock through callback execution; restoring with `set_hook`
@@ -76,7 +76,43 @@ hook logged: {{""columncolumn":":1313,,""component"component:""owner:""owner,"",
   changed. This follow-up records retained evidence only; cause remains
   unresolved and no further diagnosis was performed.
 
-## Verification
+## Panic-diagnostic follow-up (2026-10-29)
+
+- Goal: remove the proven concurrent-append race without weakening the hook
+  tests, changing panic policy, adding hook locks, or running live tests.
+- The captured interleaving names `panic_diag.rs:284` and
+  `input_pump/native/core_tests.rs:602`: a probe panic and the deliberately
+  panicking input-pump test thread can execute the installed hook together.
+  `writeln!(file, "{value}")` streams JSON fragments through separate appends.
+  A malformed row fails the unwind-hook assertion, poisoning `HOOK_TEST_LOCK`
+  and cascading into the scoped-guard test. This is distinct from the
+  disproved append-after-restore hypothesis above.
+- Fix: serialize the complete newline-terminated record into one buffer before
+  writing, retaining lock-free, best-effort diagnostic behavior. Scope is
+  `tiler-windows` only; all existing assertions remain unchanged. No hook
+  serialization, IO retries, sleeps, or ignored tests were added.
+- The private writer seam provides deterministic failing-first coverage:
+  `json_line_writes_one_complete_buffer` fails against the old `writeln!`
+  implementation (54 writes instead of one), then passes with complete-buffer
+  serialization. It also checks exact newline-terminated bytes and JSON
+  round-trip equality. The concurrent 8-thread/800-row append test reproduced
+  the old garbling on its first run; the fixed test passed 10/10 targeted runs.
+  This concurrency check supplements, not replaces, the deterministic test.
+- IO remains best-effort: a partial OS write can still split a buffer;
+  `write_all` is not a transactional-record guarantee. The fix removes the
+  many streaming-format writes that produced the captured normal-IO race.
+- Passed: all eight panic-diagnostic tests; 10/10 consecutive exact combined
+  `mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-windows`
+  invocations, each with 57 passing suites, plus a separate final passing run.
+  Core library: 1021 passed; Windows library: 1209 passed, zero failed, one
+  pre-existing ignored test. No live testing was performed.
+- Passed: `mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol
+  -p tiler-windows --all-targets -- -D warnings`,
+  `mise exec -- cargo fmt --all -- --check`, and `git diff --check`.
+- Independent review accepted the fix after the deterministic writer
+  regression replaced timing-only evidence as the acceptance gate.
+
+## Earlier verification
 
 - Passed: `mise exec -- cargo test --locked -p tiler-core -p tiler-protocol
   -p tiler-windows` (57 suites, zero failures; Windows library 1207 passed,
