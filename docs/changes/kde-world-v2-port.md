@@ -3279,3 +3279,29 @@
 - The two-output staging gap of the native-only attribution dry run no longer
   blocks anything. `kwin/tests/baseline-check/` and
   `kwin/tests/fixture-attribution/` remain available test-only tools.
+
+### User physical checks (2026-10-28)
+
+Two outputs, ordinary tiled windows.
+
+- Pass: directional focus moves to the local neighbour first and crosses
+  outputs at the edge, repeatedly, with no window moving. Send/follow and
+  send-without-follow work in both directions with source reflow. Close
+  reflows and focuses a neighbour on each output. Rapid A/B drags leave no
+  stale border, underlay or preview; final placement is correct and preview
+  delay is acceptable. Stage 6: no cursor warp, border follows accent then an
+  explicit override, underlay/preview colours independent, native pager
+  styling kept. Stage 7: the Virtual Desktops action opens the right page and
+  the warning clears after the setting is fixed.
+- Fullscreen window: Meta+F11 again returns it to tiling. Directional focus
+  away from it focuses the local neighbour (raised above the fullscreen
+  window, which stays fullscreen) or crosses outputs at the edge; the user
+  found both sensible. Focusing back toward the fullscreen window does not
+  select it. Meta+G and Meta+M appear dropped: after either, leaving
+  fullscreen restores tiling. Borders behaved normally.
+- Drag: the active border still hides while dragging (shipping strict
+  coverage; see the moving-border comparison above).
+- Stage 7 findings: both "Displays have separate workspaces" entries show
+  identical text, so the user cannot tell them apart. Workspaces are created
+  on demand by Meta+number/Meta+0 at the next missing index, but empty ones
+  are never removed. Per-mode independent/linked switching was not reported.

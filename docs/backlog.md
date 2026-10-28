@@ -364,11 +364,14 @@ decisions of 2026-09-24 are under
     Execution-time implicit output targeting is closed by `a68036b3`.
   - Deferred: investigate operation-pair outer-gap bookkeeping outside the drag
     path, following the gesture-local `world_gesture.rs` fix.
-  - Physical checks pending: fullscreen-window shortcuts, rapid A/B drags after
-    `c0435a3c`, directional focus (local then cross-output), send/follow in both
-    directions, close/reflow on each output, fixture-only teardown/restoration
-    for stage acceptance. Static
-    checks do not prove adversarial in-flight old-paint rejection.
+  - User physical checks 2026-10-28 pass: directional focus (local then
+    cross-output), send/follow both directions, close/reflow on each output,
+    rapid A/B drags (no stale paint, correct drop), Stage 6 cursor/border/
+    colours/pager, Virtual Desktops quick fix. Open findings, to triage:
+    Meta+G and Meta+M are dropped on a fullscreen window; the two separate-mode
+    labels are identical; KDE workspaces are created on demand but never
+    removed; border still hides during drag (strict coverage, known).
+    [Results](changes/kde-world-v2-port.md#user-physical-checks-2026-10-28).
   - Ghostty cross-output height/width shortfall is external client/toolkit
     sizing; no OmniTiler retry or artificial resize workaround. Draft upstream
     report pending filing ([decision](decisions.md#cross-output-gesture-release-placement-2026-10-27)).
