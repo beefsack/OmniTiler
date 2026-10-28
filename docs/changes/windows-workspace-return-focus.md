@@ -1474,8 +1474,8 @@ The proven blocker is foreground safety, not target classification or core targe
 ### Trace-only SWITCH capture (2026-10-29)
 
 - Goal/acceptance: unblock the S1 physical evidence capture, not the deferred
-  unknown-foreground A/B decision. **Tentative implementation choice:**
-  diagnostic-only, off by default, enabled solely by existing `--trace`.
+  unknown-foreground A/B decision. **Implementation choice (user-accepted
+  2026-10-29):** diagnostic-only, off by default, enabled solely by existing `--trace`.
   No intent-detector contract, core/protocol, focus-memory or attribution change.
 - Approach: the existing out-of-context WinEvent feed adds the contiguous
   SWITCHSTART/END range only with trace. A trace-selected `JourneyEventSink`
@@ -2680,7 +2680,7 @@ investigation at `328c1469`; no code changed.
   to avoid it. Tab-close survivor provisionally defaults to positional-next,
   clamped at the end; confirm against Tier 1 source when tab work starts.
 
-- TENTATIVE technical choices for schema review: next version 3, required
+- Technical choices for schema review (user-accepted 2026-10-29): next version 3, required
   independent boolean capability, core-minted work/group ids, separate typed
   lifecycle rows and native known-state flags. These spellings/layouts can be
   simplified before freeze while preserving the exclusive ownership table;
@@ -2747,7 +2747,7 @@ investigation at `328c1469`; no code changed.
   contrast before production fixes. Expanded probes also failed on history,
   missing-row/shared-screen desire publication, and persisted known-receipt
   homing before their causal fixes. Final targeted result: 23 passed.
-- TENTATIVE implementation choices: reuse existing completeness/unknown-hold
+- Implementation choices (user-accepted 2026-10-29): reuse existing completeness/unknown-hold
   paths rather than add protocol flags; inventory readability is host-owned-only
   to preserve existing native-free birth/close behavior. A test-oracle repair
   uses the commanded view while a flight is pending: `outputs.logical_view`

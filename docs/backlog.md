@@ -169,6 +169,15 @@ Prioritise by return toward these goals
   Related to cursor-first
   targeting above and the 2026-10-26 no-focus decisions
   ([decisions](decisions.md#workspaces)).
+- P1 | Cross-output focus between fullscreen/maximized windows (user
+  2026-10-29) | Each output shows a fullscreen window (and separately a
+  maximized one); directional focus from one toward the other. User
+  expectation: focus moves to the destination's fullscreen/maximized window.
+  Accepted D4 ranks fullscreen/maximized destination members by retained tiled
+  allocation ([decision](decisions.md#windows-decisions-2026-10-28)). Check
+  existing outcome rows first; if not covered, add a minimal action-sequence
+  row to [reference outcomes](spec/reference-outcomes.md) and the functional
+  matrix, leaving unsupported Tier 1 outcomes TBD.
 - P1 | No-focus navigation remaining proof | Implementation complete
   ([record](changes/archive/directional-focus-without-window.md)). User-owned
   physical no-focus shortcut/output-crossing proof and COSMIC runtime outcome

@@ -279,6 +279,26 @@ pending.
   (read-only per-output-desktop detection, navigation-only Virtual Desktops
   opener, shared labels distinguished by tooltips).
 
+## Accepted reviews of tentative decisions (2026-10-29)
+
+User-accepted on review; the matching tentative clauses elsewhere are no longer
+pending:
+
+- **Cross-output edge focus D3-D5:** as recorded under
+  [cross-output directional focus](#windows-decisions-2026-10-28).
+- **Coordinated protocol bump shape:** exact `v:3` cutover with no shim or dual
+  decoder, a required independent per-window suppression capability, core-minted
+  work/group ids, separate typed lifecycle rows and native known-state flags.
+  Names and spellings may still be simplified before the shape freezes
+  ([design](changes/windows-workspace-return-focus.md)).
+- **Phase 1 completeness fences:** reuse existing completeness/unknown-hold
+  paths without new protocol flags; inventory readability gates host-owned
+  domains only, preserving native-free birth/close; the test oracle uses the
+  commanded view while a switch is in flight.
+- **Alt-Tab SWITCH capture:** diagnostic-only, off by default, enabled only by
+  the existing `--trace`; it never feeds focus, memory or attribution
+  ([record](changes/windows-workspace-return-focus.md#trace-only-switch-capture-2026-10-29)).
+
 ## Windows decisions (2026-10-28)
 
 Accepted reviews of tentative decisions; the matching tentative clauses
@@ -396,16 +416,16 @@ New decisions:
     Admission/convergence already seed this stack; absent history is a fallback,
     not a reset of existing admission recency. The world workspace-return
     lifetime slot for tiled/floating/sticky windows is unchanged.
-  - **D3 tentative, user review pending:** no-focus origins use the same
+  - **D3 (user-accepted 2026-10-29):** no-focus origins use the same
     selector with source output usable-area span for overlap. Preserve all
     four crossing directions and never recover a local target. Focused tiled
     crossing remains horizontal-only.
-  - **D4 tentative, user review pending:** fullscreen/maximized destination
+  - **D4 (user-accepted 2026-10-29):** fullscreen/maximized destination
     members rank by retained tiled allocation; eligibility and safety fences
     remain unchanged. Float-origin focus stays local-only. Empty/ineligible
     destinations no-op without clearing state. The internal float-crossing
     proposal retains its remembered-target behavior; it is not newly enabled.
-  - **D5 tentative, user review pending:** macOS hotkey integration is out of
+  - **D5 (user-accepted 2026-10-29):** macOS hotkey integration is out of
     scope. Production `FocusStep` still sends `cross_output_transfer:false`
     (`crates/tiler-macos/src/world_command_map.rs`), so those hotkeys cannot
     cross regardless of this target policy. See the
@@ -4696,7 +4716,7 @@ platform API behavior.
   from COSMIC's configured workspace-axis then output navigation. A float-only
   source can cross. Local tiles are never floating-search targets. The
   remembered cross-output target in this historical bullet is superseded for
-  tiled-origin crossing by D1/D2 2026-10-28. Tentative D4 leaves World
+  tiled-origin crossing by D1/D2 2026-10-28. D4 (accepted 2026-10-29) leaves World
   float-origin focus local-only and the internal float-cross proposal unchanged.
 - User decision D1 2026-10-28 (sides with Hyprland+sway) supersedes the
   remembered cross-output target above and the Engine proposal in R-OUT-03
@@ -5232,7 +5252,7 @@ platform API behavior.
   selection are unchanged. This supersedes only the focus target: R4
   movement behavior above is unaffected (whole-target wrap stays). D2's
   entry-edge/history/overlap/DFS selector is delivered offline; D3-D5 extensions
-  are tentative pending user review, with macOS hotkey integration deferred.
+  are user-accepted 2026-10-29, with macOS hotkey integration deferred.
   [Policy](#cross-output-focus-edge-policy),
   [discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator).
 - The public portable per-domain ownership/session-query API is removed

@@ -15,12 +15,12 @@
 
 - D1/D2 selected 2026-10-28: edge candidates, history first, overlap and layout
   order fallback; use canonical allocations, not observed frames.
-- Tentative D3: no-focus origins use the same selector with source usable-area
+- D3 (accepted 2026-10-29): no-focus origins use the same selector with source usable-area
   span, retaining four-direction crossing and no local recovery.
-- Tentative D4: fullscreen/maximized members rank by retained tiled allocation;
+- D4 (accepted 2026-10-29): fullscreen/maximized members rank by retained tiled allocation;
   existing eligibility fences remain; floats stay local-only and empty or
   ineligible destinations retain state.
-- Tentative D5: macOS hotkeys with crossing disabled remain out of scope.
+- D5 (accepted 2026-10-29): macOS hotkeys with crossing disabled remain out of scope.
 
 ## Units and acceptance
 
@@ -65,5 +65,5 @@ unchanged float-origin behavior.
 - No live leg performed; native/physical acceptance remains pending. No
   adapter implementation changed. Shared adapter guide and macOS port notes
   identify the policy change and disabled macOS hotkey crossing.
-- D3-D5 remain tentative pending user review. No further product question
-  blocks this bounded core change.
+- D3-D5 user-accepted 2026-10-29. No further product question blocks this
+  bounded core change.
