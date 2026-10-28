@@ -49,8 +49,8 @@ Prioritise by return toward these goals
   bump must define concrete core and platform responsibilities
   ([decision](decisions.md#windows-decisions-2026-10-28)). Core, protocol and
   Windows land together, coordinated with the KDE and macOS ports. Tabs
-  investigation done (below): the bump should be visibility-ready, pending the
-  user's tabs decisions.
+  investigation done (below): User 2026-10-29 approved the visibility-ready bump;
+  full tabs stay after 0.1.
   [Record](changes/windows-workspace-return-focus.md).
   [Coordinated bump design](changes/windows-workspace-return-focus.md#coordinated-visibility-contract-design-2026-10-30):
   exclusive responsibility table, tentative v3 messages/capabilities, phased
@@ -67,31 +67,18 @@ Prioritise by return toward these goals
   stayed stable in fixtures. KDE producer work still lands with the bump;
   no ownership flag or wire change yet.
   [Answer](changes/windows-workspace-return-focus.md#kde-answer-option-a-stable-native-ownership-2026-10-28).
-- P1 | Tabbed stacks core/protocol investigation (user 2026-10-28) |
-  Read-only, before the coordinated protocol bump lands. Map the tab matrix
-  rows (R-INS-02, R-GRP-01..03, R-DRAG-01, R-COL-06) to the core and protocol
-  additions tabs would need: tabbed container and tab focus/close rules,
-  hidden inactive tabs on every platform, tab strip shape and labels (window
-  titles are user content), tab-click input. Check whether the planned
-  core-owned per-window visibility work can carry hidden tabs. The protocol
-  has no tabbed/stacked concept today. Outcome returns to the user to decide
-  whether the core/protocol part of tabs moves into 0.1; tab UI stays after
-  0.1 (see the P3 Tabbed stacks item).
-  Investigation done 2026-10-29. Findings: the planned per-window visibility
-  work can carry hidden tabs if the bump is "visibility-ready": per-window
+- P1 | Visibility-ready protocol bump (tabs investigation complete) |
+  **User 2026-10-29:** full tab core/protocol stays after 0.1 (P3 Tabbed stacks
+  below); coordinated v3 includes the visibility-ready slice: per-window
   suppression authority and correlation independent of workspace ownership,
-  its own capability flag, core-composed workspace vs inactive-tab
-  suppression, and truthful hidden observations (a small slice of the bump).
-  Typed tab reservations that avoid any later tab bump would be a medium
-  contract project; codecs reject unknown keys, so a flag alone cannot avoid
-  it. KDE per-window hide is unproven (hidden/minimized are read-only in the
+  its own capability flag, core-composed workspace vs inactive-tab suppression,
+  and truthful hidden observations. No requirement to avoid a later tab protocol
+  bump; one is accepted, expected around 0.2. No speculative tab reservations.
+  Tab-close survivor provisionally defaults to positional-next, clamped at the
+  end; confirm against Tier 1 source when tab work starts.
+  KDE per-window hide is unproven (hidden/minimized are read-only in the
   bindings); macOS has no approved per-window hide route. Hyprland tab claims
   were not verified at the pin (pin object unavailable locally).
-  Parked user decisions, one at a time: (1) full tab core/protocol into 0.1?
-  Recommendation: no, keep it after 0.1. (2) require zero later tab bump?
-  Recommendation: no; make the bump visibility-ready and accept a later tab
-  bump. Later: tab-close survivor rule (recommendation: positional-next,
-  clamped at the end, vs MRU).
 - P1 | Windows batched physical checks | One user session, not waiting on the
   staged switch prototype. [Ordered run sheet](changes/windows-physical-checklist.md#batched-physical-run-sheet-2026-10-29)
   (capture availability and setup prerequisites explicit): Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
@@ -391,15 +378,24 @@ Prioritise by return toward these goals
     Tentative recommendation: carry anchored presentation into review, not
     production. Shipping behavior unchanged; final shared API waits for the
     cross-platform core review after macOS drag evidence.
-  - Local fixed-size consumers: focus half delivered offline, tentative pending
-    user review. Core skips/spends automatic-fixed admission focus; KDE's local
+  - Local fixed-size consumers: focus half delivered offline, approved by
+    **User 2026-10-29**. Core selects the last non-withheld newcomer, skipping/
+    spending automatic-fixed arrivals; all withheld means no focus. KDE's local
     admission veto is deleted. Batch invariance keeps the ordinary focus intent
     in either mixed arrival order. `world-observe.ts::isFixedSizeWindow` and
     automatic keep-above (`world-native.ts`) remain unchanged. Inventory and
-    [proposed core shape](changes/kde-world-v2-port.md#fixed-size-admission-consumer-inventory-and-proposed-core-shape-2026-10-29)
+    [approved core shape](changes/kde-world-v2-port.md#fixed-size-admission-consumer-inventory-and-proposed-core-shape-2026-10-29)
     recorded; Windows-profile WorldEngine effect omission passes, but Windows
-    adapter-route/native verification remains open. Neutral opt-in keep-above
-    shape/ownership choices remain parked for user review.
+    adapter-route/native verification remains open. **Implementation | User
+    2026-10-29:** approved neutral `keepAboveTiles: null | false | true`
+    (no authority / release project-owned above / request above-tiles without
+    activation or geometry); never clear user above, force below or own
+    pre-existing above. Core decides; adapters report above/below/ownership facts
+    and apply mechanically, then delete KDE's local predicate consumer. Preserve
+    below/external-clear no-reacquire and focused-fullscreen safety. Join v3 if
+    ready, otherwise a separate exact-version bump; Windows shares the codec but
+    automatic-fixed stacking stays opt-out (D8). Unload/restart ownership safety
+    remains a separate open blocker ([record](changes/kde-automatic-float-stacking.md)).
   - N5 membership/eligibility split implemented offline; native role/hidden
     checks and Activities remain unverified. Windows/macOS behavior unchanged.
   - Execution-time float toggle: approved, not started; blocked on the open
@@ -409,7 +405,7 @@ Prioritise by return toward these goals
     operation drag preview/drop gap fields; directional and send routes pinned.
     Explicit-operation output-send dispatch also **DONE (2026-10-29)**:
     output builder preserves target workspace/follow and existing fences;
-    tentative, pending user review. Offline regressions and gates pass.
+    approved by **User 2026-10-29**. Offline regressions and gates pass.
     [Outcome](changes/kde-world-v2-port.md#operation-pair-outer-gap-bookkeeping-2026-10-29).
   - User physical checks 2026-10-28 pass: directional focus (local then
     cross-output), send/follow both directions, close/reflow on each output,
@@ -417,15 +413,24 @@ Prioritise by return toward these goals
     colours/pager, Virtual Desktops quick fix. Open findings, to triage:
     Meta+G and Meta+M are dropped on a fullscreen window; the two separate-mode
     labels are identical; border still hides during drag (strict coverage,
-    known). Workspace non-removal is deliberate v2 native-bound retention, not
-    a missing KDE actuator; mode(s) unspecified. **Parked decision:** restore
-    core-directed retirement of eligible managed native desktops, including
-    adopted desktops? Recommend the existing Tier 1 cleanup target with global
-    native-occupancy/view/trailing/protection checks, readable facts, required
-    equal-count padding and the minimum-two floor; unmapped desktops stay outside
-    management. No policy/code change selected.
-    [Investigation](changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29).
+    known). Workspace non-removal is current v2 native-bound retention, not
+    a missing KDE actuator; mode(s) unspecified. Selected replacement below.
     [Results](changes/kde-world-v2-port.md#user-physical-checks-2026-10-28).
+  - **Implementation | User 2026-10-29:** restore core-directed removal of
+    eligible managed KDE native desktops, including adopted desktops, matching
+    Tier 1 empty non-viewed cleanup. Preserve global native-occupancy/view/
+    trailing/protection checks, readable facts only, required equal-count padding
+    and the minimum-two floor; unmapped desktops stay outside management.
+    [Investigation](changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29).
+  - **Check | User 2026-10-29:** dogfooding suggested the empty trailing
+    workspace was not created on KDE. Investigate trailing workspace creation
+    first, using upstream `e422f59f`'s explicit trailing designation; no native
+    creation failure or remedy is established yet.
+  - **Implementation | User 2026-10-29 (R-MAX-02):** core directional focus
+    from fullscreen skips same-output siblings, continues to an adjacent output
+    in that direction, otherwise stays. Wire through all adapters; explicit click,
+    focus-by-window and workspace switch unchanged. Tier 1 majority: Hyprland,
+    i3, sway ([reference row](spec/reference-outcomes/maximize-fullscreen.md#r-max-02-fullscreen-focus-and-exit)).
   - Fullscreen float/maximize (user 2026-10-28, from
     [R-MAX-10/11](spec/reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen)):
     float toggle on a fullscreen window follows the Tier 1 majority: the
@@ -436,9 +441,11 @@ Prioritise by return toward these goals
     refusals; explicit commands only, no automatic fullscreen writes (D5).
     Float delivered offline in shared Session plus KDE: single/double toggle,
     sibling reflow, no fullscreen-subject writes and both exit states covered.
-    Maximize also delivered offline in shared Session plus KDE: core-owned
-    ordinary/fullscreen toggle, retained tiled/floating base, clear-before-max
-    native order and no-command safety covered. Native/physical acceptance
+    Maximize also delivered offline in shared Session plus KDE: **User 2026-10-29**
+    approves the core command/result route over adapter policy, explicit D5 writes,
+    both-flags -> maximized, retained tiled/floating base and Windows legacy
+    float-refusal helper until integration. Clear-before-max native order and
+    no-command safety covered. Native/physical acceptance
     pending, user-owned. Additive command/result needs coordinated protocol
     bump review; no version bump in this delivery.
     Windows/macOS adapters follow in their own items.
@@ -488,11 +495,10 @@ Prioritise by return toward these goals
   the live fixture. [Tier 1 source audit and current path](spec/reference-outcomes.md#client-driven-tiled-geometry)
   recorded: X11 rejects tiled size requests promptly; Wayland commit paths
   do not share an immediate resend policy. D2 already requires reacting to
-  self-resize. Parked user decision before repair: recommend prompt frame-drift
-  observation and retained-tile reconciliation under existing safety/clamp
-  suppression (avoids persistent gaps, no unbounded fight); alternative defer
-  until another subscribed event (fewer reactive writes, gaps may persist;
-  needs explicit D2 qualification). Exact native buffer/ack outcomes remain TBD.
+  self-resize. **Implementation | User 2026-10-29:** prompt frame-drift observation
+  and reconciliation to retained tile geometry under existing safety, clamp and
+  write-suppression rules; no write loop against a persistently resizing client.
+  Consistent with D2. Exact native buffer/ack outcomes remain TBD.
   [Record](changes/archive/kde-dev-scope-fixture-integration.md).
   [Research](research/live-test-window.md),
   [record](changes/archive/controllable-live-test-window.md).
@@ -1799,6 +1805,10 @@ Prioritise by return toward these goals
   and activates the next tab, 4/4 references), R-DRAG-01, R-COL-06. Risk:
   mouse interaction with tabs across Linux, Windows and macOS may be
   complex; scope keyboard-first if so.
+  **User 2026-10-29:** full tab core/protocol remains here after 0.1; a later
+  protocol bump is accepted, expected around 0.2. Tab-close survivor provisionally
+  defaults to positional-next (clamped at the end), to confirm against Tier 1
+  source when tab work starts; coordinated v3 is visibility-ready, not tab-complete.
 
 ## Future
 

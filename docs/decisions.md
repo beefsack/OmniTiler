@@ -52,7 +52,7 @@ Tentative index (user review pending; not approved product rules):
   ([below](#shortcuts-conflicts-and-presets))
 - Aligned migration D5 source refill and empty-cell spare rules
   ([below](#workspaces))
-- Later KDE keep-below handling and unload-restoration question
+- KDE unload/restart ownership-restoration question
   ([below](#fixed-size-admission))
 - KDE world placement traces ([below](#observability))
 - Activities defaults ([below](#port-deferred-investigations-2026-10-24))
@@ -2191,6 +2191,10 @@ platform API behavior.
 
 ## Move, Layout and Output Commands
 
+- **User 2026-10-29:** approve explicit `Operation(SendToOutput)` dispatch
+  through the output-send builder, not workspace-send, preserving the explicit
+  target workspace, follow/stay and existing fences. Delivered offline in
+  `58f91a44` ([record](changes/kde-world-v2-port.md#operation-pair-outer-gap-bookkeeping-2026-10-29)).
 - User 2026-10-14 approved as delivered: Windows movement and send commands
   repeat while their modifiers remain held, including Win+Shift+arrow and
   explicit output sends. Toggle commands retain one action per press in their
@@ -2334,8 +2338,23 @@ platform API behavior.
   activation and keep-above-tiles move to core ownership (core withholds
   admission activation; a neutral opt-in keep-above-tiles desire that KDE
   applies mechanically); the KDE adapter's local consumers are deleted.
-  Inventory existing core decisions and Windows handling first; any core shape
-  returns to the user for approval before implementation.
+  Inventory completed; the core shape is approved below.
+- **User 2026-10-29:** approve admission-focus batch invariance (`4bf4ea40`):
+  core selects the last newcomer not withheld, skipping and spending automatic
+  fixed newcomers; all withheld means no admission focus. Delivered offline;
+  Windows adapter-route/native confirmation remains open.
+- **User 2026-10-29:** approve per-window neutral desire
+  `keepAboveTiles: null | false | true`: null grants no write authority; false
+  releases only project-owned above; true requests above-tiles without activation
+  or geometry. Never clear user above, force below or own pre-existing above.
+  Core owns eligibility and suspension; adapters report neutral above/below/
+  ownership facts and apply mechanically, then KDE's local fixed-size predicate
+  consumer is deleted. Preserve below/external-clear no-reacquire and never
+  cover a focused fullscreen window. Include in coordinated v3 if ready in
+  time, otherwise a separate exact-version bump. Windows shares the codec but
+  automatic-fixed stacking stays opt-out (D8). Implementation pending; the
+  [unload/restart ownership safety blocker](changes/kde-automatic-float-stacking.md)
+  remains separate and open. [Approved shape](changes/kde-world-v2-port.md#recommended-core-shape-alternatives-and-cutover).
 - User decisions 2026-10-08 and 2026-10-10 (fixed-size admission R-SPC-04
   D1-D8; D1 per-axis zero and D5/D6/D7 delivered offline,
   native checks pending):
@@ -2366,6 +2385,11 @@ platform API behavior.
   - D2 hint changes: admission-only in both directions as delivered;
     keep reacting to windows resizing themselves to avoid
     gaps/overlaps. No new hint-signal work requested.
+    **User 2026-10-29 (F1):** promptly observe tiled frame drift and reconcile
+    back to retained tile geometry under existing safety, clamp and
+    write-suppression rules; no write loop against a client that keeps resizing.
+    Consistent with D2; implementation pending
+    ([discriminator](spec/reference-outcomes.md#client-driven-tiled-geometry)).
     User-approved correction 2026-10-25: a known automatic float keeps floating
     across fixed-hint loss, including native `floating=false`, unless an
     observed suppress signal, retained fixed tile override or explicit
@@ -2422,7 +2446,7 @@ platform API behavior.
   - KDE option A (User 2026-10-18): pre-existing user/app keep-below gets
     zero stacking writes and stays below; pre-existing keep-above remains
     untouched. Meta+G keep-below clearing/restoration is unchanged.
-  - Tentative (user review pending), 2026-10-19: later user/app keep-below
+  - **User 2026-10-29:** approve the rule: later user/app keep-below
     or clearing project-owned above wins without reassertion for that live
     window. Suspend owned above in the focused fullscreen client's scope,
     reacquire after exit; restore on loss of automatic classification or
@@ -3917,6 +3941,13 @@ platform API behavior.
   tabs with own evidence when designed. No tab or stack carrier, controls,
   or bindings are selected. (User decision 2026-10-09: Custom Tile
   stability-proof precondition removed; first item after 0.1 unchanged.)
+- **User 2026-10-29:** full tab core/protocol stays after 0.1. Coordinated v3
+  is visibility-ready: per-window suppression authority/correlation independent
+  of workspace ownership, its own capability flag, core-composed workspace vs
+  inactive-tab suppression, and truthful hidden observations. A later tab
+  protocol bump is accepted, expected around 0.2; no zero-later-bump requirement.
+  Tab-close survivor defaults provisionally to positional-next, clamped at the
+  end; confirm against Tier 1 source when tab work starts.
 
 ## Pointer, Drag and Drop
 
@@ -4032,6 +4063,10 @@ platform API behavior.
 
 ## KDE Support Floor
 
+- **User 2026-10-29:** new KDE source evidence uses KWin `v6.8.1`, matching
+  live tests; existing `v6.7.4` citations stay revision-bound. Also verify relied-on
+  APIs at the KWin 6.6 floor. Keep testing on the latest stable KDE Plasma release
+  to catch upgrade breakage ([source policy](porting/kde-port-notes.md)).
 - User decision 2026-10-11: KDE 0.1 supports KWin 6.6+, including tiling,
   Settings and the native effect, so stock Ubuntu 26.04 LTS is supported.
   Plasma 5, Debian 13 (KWin 6.3.6), and KWin 6.4/6.5 remain unsupported.
@@ -4745,13 +4780,13 @@ platform API behavior.
   on `Meta+M`; registration preserves that record and emits the shadowed-
   delivery diagnostic until the user applies the exact reversible KCM override.
 - R-MAX-11 delivered offline in shared core/KDE; native acceptance pending.
-  Tentative integration choice pending user review: ordinary and fullscreen
-  maximize toggles both use `WorldCommand::ToggleMaximize`, a Session-owned
-  decision, and a command-only `Maximize` result. KDE no longer chooses the
-  toggle locally. The additive command/result shape needs coordinated protocol
+  **User 2026-10-29:** approve option 1, core route over adapter policy: ordinary
+  and fullscreen maximize toggles use `WorldCommand::ToggleMaximize`, a
+  Session-owned decision and command-only `CommandResult::Maximize`. KDE no longer
+  chooses the toggle locally. The additive command/result needs coordinated protocol
   bump review with unreadable-desktop workspace ownership and Windows staged
   switches; no version bump here.
-  Tentative behavior details pending user review: an explicit Meta+M targets
+  **User 2026-10-29:** approve behavior details: an explicit Meta+M targets
   that fullscreen window, permitting only the native state writes needed to
   replace fullscreen with maximize under D5/REQ-MAX-09 explicit-command policy.
   No automatic or unsolicited fullscreen writes are authorized. Tiled base
@@ -4765,6 +4800,16 @@ platform API behavior.
   unconfirmed; later observations remain authoritative. Windows/macOS runtime
   adoption remains separate; Windows has only two compile-only diagnostic
   match arms. [Record](changes/archive/fullscreen-maximize-toggle.md).
+- **User 2026-10-29:** retain the shared legacy `float_toggle_refusal` helper's
+  fullscreen refusal for Windows legacy native routes until Windows integration;
+  the core fullscreen-float route does not authorize unsafe legacy writes
+  ([record](changes/archive/fullscreen-float-toggle.md)).
+- **User 2026-10-29 (R-MAX-02):** adopt the Tier 1 majority (Hyprland, i3,
+  sway): while the focused window is fullscreen, directional focus skips all
+  same-output siblings and continues to an adjacent output in that direction;
+  without one, focus stays. Explicit click, focus-by-window and workspace switch
+  are unaffected. Core policy on all platforms; implementation pending
+  ([reference row](spec/reference-outcomes/maximize-fullscreen.md#r-max-02-fullscreen-focus-and-exit)).
 - KDE toggle activation (user 2026-10-05, delivered offline): each explicit
   maximize/sticky activation makes at most one native toggle attempt; no
   persistent attempted-state map or automatic retry. Exact-reference echo
@@ -5232,7 +5277,7 @@ User-approved 2026-10-24 (final confirmations):
   Native all-mode acceptance remains TBD. Opening settings never automatically
   toggles the host option; no Activities/multi-desktop or configure decision changes.
 
-User-approved refinement 2026-10-28 (tentative; may be refined later):
+User-approved refinement 2026-10-28; **User 2026-10-29** confirms approval:
 
 - Differentiate the two separate-view modes with short qualifiers, using a
   plain ASCII hyphen with spaces:
@@ -5495,11 +5540,19 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   native desktop already bound to another logical workspace is not reused.
   Dormant return binding was the earlier behavior; the released-source decision
   below supersedes it in core.
-  Native-bound empties retain identity and ordinary occupancy-driven trailing
-  spares remain unbound until needed. These are existing core outcomes, not a
-  new native reuse/deletion policy. Eligible-unbound reuse remains parked;
+  Native-bound empty retention describes the existing implementation, superseded
+  as policy by User 2026-10-29 below; ordinary occupancy-driven trailing spares
+  remain unbound until needed. Eligible-unbound reuse remains parked;
   [source-view supersession B2](changes/kde-world-v2-port.md#b2-source-view-rewind-during-migration)
   is delivered offline in core and KDE; native acceptance remains separate.
+- **User 2026-10-29:** restore core-directed removal of eligible managed KDE
+  native desktops, including adopted desktops, matching Tier 1 cleanup of empty
+  non-viewed workspaces. Preserve global native occupancy (including unmanaged
+  occupants), every output's view/trailing/protection checks, readable facts only,
+  required equal-count padding and the minimum-two floor. Unmapped desktops
+  remain outside management; KDE applies core eligibility mechanically. This
+  supersedes blanket native-bound retention as policy; implementation pending
+  ([investigation](changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29)).
 - **Tentative native attempt settlement (option 1), user-selected 2026-10-25;
   review after KDE and macOS land:** optional capability-gated native
   before/after/baseline ids extend `MemberAttempt`/`ViewAttempt`. Non-null

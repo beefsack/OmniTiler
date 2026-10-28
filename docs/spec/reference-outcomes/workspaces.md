@@ -640,14 +640,18 @@ verb inventory); selected intent and doc assertions are never evidence.
 - Then paneru: retained at shipped defaults (`reap_empty_workspaces`
   defaults off and index 0 is never reaped; enabling it despawns empty
   non-active rows). `S(S-pan-ws)`.
-- Then Ours KDE: current v2 core deliberately retains native-bound empties
+- Then Ours KDE: **User 2026-10-29: decided, implementation pending.** Restore
+  core-directed removal of eligible managed native desktops, including adopted
+  desktops, matching Tier 1 empty non-viewed cleanup. Preserve global native
+  occupancy/view/trailing/protection checks, readable facts only, required
+  equal-count padding and minimum-two floor; unmapped desktops outside management.
+  Current v2 core retains native-bound empties
   (`crates/tiler-core/src/world_native.rs:77-81`,
   `world_model.rs:98-112,172-192`) and publishes only existence=true
   (`world_publish.rs:1050-1099`); KDE's guarded native removal actuator therefore
-  receives no eligibility. The older selected managed-empty cleanup target is
-  not current v2 behavior. Reconciliation with tentative native-adoption
-  retention is [parked](../../changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29),
-  not a new permanent-retention decision. User physical 2026-10-28 reports no
+  receives no eligibility; this is not the newly selected policy
+  ([investigation](../../changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29)).
+  User physical 2026-10-28 reports no
   removals on two outputs, mode(s) unspecified; this exact send-then-select
   native sequence remains TBD. The historical
   [partial two-output pass](../../changes/kde-dual-output-live.md) observed

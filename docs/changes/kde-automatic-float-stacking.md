@@ -7,7 +7,7 @@
 - User decision 2026-10-18: an automatic float with keep-below already set
   receives no stacking writes. Pre-existing keep-above remains untouched.
   Manual Meta+G keep-below clearing/restoration remains unchanged.
-- Tentative: user/app keep-below set after admission wins; release only
+- User 2026-10-29 approves: user/app keep-below set after admission wins; release only
   project-owned keep-above. Game safety wins on conflict.
 - No Windows/macOS code or shared-core behavior changes are intended.
 
@@ -54,11 +54,11 @@
   themselves refuse admission activation, including a real-shaped floating
   reply row. Correlated attempt/result diagnostics separate setter acceptance
   from native active readback.
-- Tentative (user review pending): later below or external above-clear wins for
+- User 2026-10-29 approves: later below or external above-clear wins for
   the live window; loss of automatic classification restores owned above once.
   Same-scope focused fullscreen suspends owned above and exit reacquires it;
   live overlay targets receive no stacking writes, including restoration.
-- Tentative (user review pending): explicit `handle.stop()` best-effort restores
+- User 2026-10-29 approves: explicit `handle.stop()` best-effort restores
   safe owned above, retaining refused ownership for another explicit call. This
   is not actual KWin unload restoration.
 - Source checked locally at KWin `v6.7.5`: `src/window.h` exposes writable,
@@ -117,6 +117,8 @@
 
 ## Blocker and exact next action
 
+- User 2026-10-29 approves the [core shape](kde-world-v2-port.md#recommended-core-shape-alternatives-and-cutover);
+  the unload/restart ownership blocker below remains separate and open.
 - Matching existing world-route unload behavior is **clearly unsafe**, not an
   accepted tentative policy: unloading with a surviving owned float leaves
   keep-above behind; restart treats it as pre-existing above and cannot suspend

@@ -46,8 +46,8 @@
 - Independent review caught an unsafe integration in the initial helper
   change: Windows' legacy native float route consumes `float_toggle_refusal`
   before geometry/topmost writes. Retained that helper's original refusal
-  behavior rather than opening the native route prematurely. Tentative
-  compatibility choice pending review; Windows/macOS integration is tracked
+  behavior rather than opening the native route prematurely. User 2026-10-29
+  approves retaining this legacy helper until Windows integration, tracked
   separately in the backlog. No adapter implementation for either changed.
 - Corrected initial coverage gaps: real Engine regressions now exercise both
   exits, exact fallback and durable placement, and actual sibling expansion;

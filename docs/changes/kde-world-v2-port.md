@@ -1209,16 +1209,16 @@
 
 ### Fixed-size admission consumer inventory and proposed core shape (2026-10-29)
 
-- **Focus half delivered (tentative, pending user review).** The ownership decision is
+- **Focus half delivered; User 2026-10-29 approves batch invariance.** Ownership is
   [User 2026-10-28](../decisions.md#fixed-size-admission): core withholds
   automatic fixed-size admission activation and publishes a neutral opt-in
   keep-above-tiles desire; KDE's local consumers go away. The concrete shape
-  below remains a recommendation for keep-above, not an approved API. Only the
-  focus half is implemented; keep-above ownership/recovery remains parked.
-  No protocol or recorded decision changes.
+  below is approved by User 2026-10-29, implementation pending. Only the focus
+  half is implemented; unload/restart ownership safety remains separately open.
+  No protocol change in the focus delivery.
 - Core `take_admission_focus` skips and spends each retained automatic-fixed
-  newcomer before selecting the last non-withheld candidate. Tentative
-  batch-invariance rationale: sequential ordinary admission focuses O, then
+  newcomer before selecting the last non-withheld candidate. User 2026-10-29
+  approves batch invariance: sequential ordinary admission focuses O, then
   automatic-fixed F is withheld, leaving O focused; batching must not erase O's
   intent. Both mixed orders choose O; fixed-only batches emit no focus. Existing
   selection fences remain; explicit focus commands and tile overrides stay
@@ -1334,21 +1334,21 @@
   fixed no-focus policy; retain the explicit game-safety decision, do not
   silently replace it with reference defaults (`docs/decisions.md:2380-2385,2414-2421`).
 
-#### Recommended core shape, alternatives and cutover (all tentative)
+#### Recommended core shape, alternatives and cutover
 
-- **Recommend a small persistent property, not a generic z-order engine.** Reuse
+- **User 2026-10-29 approves this shape; implementation pending.** A small
+  persistent property, not a generic z-order engine. Reuse
   core's retained automatic origin and D3/D5/D8 precedence; withhold and spend
   automatic-fixed admission focus in `take_admission_focus` itself. Keep
   explicit user focus separate and preserve focused-float newcomer fencing
   without consulting a TypeScript size predicate. No new focus wire token is
   required just to omit an unauthorized `af-` effect.
-- Add a neutral opt-in policy input and per-window above-tiles desire, tentatively
-  `keepAboveTiles: null | false | true`: null grants no new write authority,
+- Add a neutral opt-in policy input and per-window above-tiles desire,
+  `keepAboveTiles: null | false | true`: null grants no write authority,
   false releases only project-owned above, true requests the above-tiles layer
   without activation/geometry. It must never mean clear user above, force below,
   or take ownership of pre-existing above. Default opt-out preserves other
-  adapters. Field names, null/hold semantics and exact authority representation
-  require review; this is not an existing API.
+  adapters. This is an approved design, not an existing API.
 - Core decides eligibility, scope suspension, classification-loss release and
   whether an external override forbids reacquisition. Adapters report neutral
   native above/below/ownership facts (unknown explicitly), identity-bound setter
@@ -1360,10 +1360,9 @@
 - Preserve zero writes to fullscreen subjects, including attempted restoration;
   retain an owned restoration obligation until safe. Do not cover a focused
   fullscreen game with project-owned above. Pre-existing below/above remain
-  untouched. Later below/external-clear no-reacquire, stop restoration and actual
-  unload/restart ownership must be explicit in the reviewed contract: the former
-  behaviors are currently tentative and the last is a parked safety problem,
-  not solved by publishing a desire (`docs/decisions.md:2414-2437`;
+  untouched. Later below/external-clear no-reacquire and safe stop restoration
+  are approved; actual unload/restart ownership remains a separate open safety
+  blocker, not solved by publishing a desire (`docs/decisions.md:2414-2437`;
   [ownership blocker](kde-automatic-float-stacking.md#blocker-and-exact-next-action)).
 - **Windows impact:** share the desire's codec and mechanical ownership contract,
   but leave automatic-fixed stacking opt-out under the existing Windows D8
@@ -1388,14 +1387,14 @@
   Coordinate with `520b81dd`'s
   [visibility design](windows-workspace-return-focus.md#coordinated-visibility-contract-design-2026-10-30),
   which proposes tentative v3 and a coordinated core/protocol/Windows cutover
-  with KDE/macOS adoption (`:2352-2383,2424-2435,2534-2551`). Prefer including this
-  reviewed property in that not-yet-shipped cutover only if its ownership/recovery
-  decisions are settled in time; doing so explicitly widens its schema, codecs,
-  sizing/digest/replay and adapter acceptance set. Otherwise use a separate next
+  with KDE/macOS adoption (`:2352-2383,2424-2435,2534-2551`). User 2026-10-29:
+  include this approved property in that cutover if ready in time; doing so
+  explicitly widens its schema, codecs, sizing/digest/replay and adapter acceptance
+  set. Otherwise use a separate next
   exact-version bump; never assume visibility authority authorizes stacking or
-  block visibility delivery on an unapproved stacking design.
-- **Next decision and acceptance:** return the shape, Windows coverage and
-  ownership/recovery choices for user review before implementation. Future
+  block visibility delivery on stacking readiness.
+- **Next implementation and acceptance:** implement the approved shape and
+  Windows opt-out; resolve the separate unload/restart safety blocker. Future
   regressions must use the real broker/WorldEngine path: automatic vs intentional
   float admission, fixed-hint loss, tile override, explicit focus, below/above
   preimages, later clear/below, fullscreen target/sibling, close/reuse and
@@ -1875,7 +1874,7 @@
 - **DONE (2026-10-29):** explicit-operation output-send dispatch repaired.
   `execute_operation` now routes `CoreCommand::SendToOutput` through
   `start_output_send` / `execute_output_send`, not the workspace-send builder.
-  Decision is tentative, pending user review: match the existing R-OUT-04
+  User 2026-10-29 approves: match the existing R-OUT-04
   output-transfer route, carrying the explicit target workspace unchanged
   and honoring follow/stay; no protocol, wire or command-shape change.
   Two failing-first regressions reproduced `cross-domain-mismatch` before
@@ -3542,16 +3541,15 @@ Two outputs, ordinary tiled windows.
   identical text, so the user cannot tell them apart. Workspaces are created
   on demand by Meta+number/Meta+0 at the next missing index, but empty ones
   are never removed. Per-mode independent/linked switching was not reported.
-- Label finding resolved: KDE now uses the tentative user-approved own-set/swap qualifiers ([2026-10-28 refinement](../decisions.md#workspace-vocabulary-2026-10-24)); exporter tests 14/14 and generated-artifact freshness check pass; no workspace behavior changes.
+- Label finding resolved: KDE uses the own-set/swap qualifiers (User 2026-10-29 confirms approval of the [2026-10-28 refinement](../decisions.md#workspace-vocabulary-2026-10-24)); exporter tests 14/14 and generated-artifact freshness check pass; no workspace behavior changes.
 
 ### Empty native workspace lifecycle investigation (2026-10-29)
 
-- Classification **(b): deliberate recorded v2 behavior**, not a missing KDE
-  removal call. The [tentative adoption record](../decisions.md#native-adoption-2026-10-24)
-  states that native-bound empties retain identity and explicitly selects no new
-  native deletion policy. Thus the reported absence of removal is expected from
-  this implementation, not acceptance of permanent retention as product intent.
-  The user did not identify the affected mode(s).
+- Current implementation classification **(b): recorded v2 retention**, not a
+  missing KDE removal call. User 2026-10-29 below supersedes retention as policy;
+  the [adoption record](../decisions.md#native-adoption-2026-10-24) described the
+  existing implementation, not permanent product intent. The user did not
+  identify the affected mode(s).
 - Source: `world_native.rs:77-81` defines native bindings as retained even when
   empty. `world_model.rs:98-112,172-192` passes that retention to
   `workspace.rs:35-65`, which otherwise removes eligible invisible empties while
@@ -3568,26 +3566,30 @@ Two outputs, ordinary tiled windows.
   when needed (`world_native.rs:350-390`), explaining on-demand creation without
   eager native spare creation. Numbered selection can target an existing logical
   spare without implying arbitrary missing-number creation.
-- Contract tension remains: the older [workspace rules](../decisions.md#workspaces)
+- Contract tension at investigation time: the older [workspace rules](../decisions.md#workspaces)
   select managed-empty cleanup with global emptiness, no trailing/view/protection
   claim and the two-workspace floor. [R-WS-10](../spec/reference-outcomes/workspaces.md#r-ws-10-send-b-away-empty-middle-retained-vs-removed)
-  records removal in COSMIC, Hyprland, i3 and sway; REQ-WS-10 remains OPEN.
+  records removal in COSMIC, Hyprland, i3 and sway; REQ-WS-10 was OPEN.
   The 2026-10-24 vocabulary decision expects equal-count empty padding and says
   not to overspecify lifecycle beyond existing rules. Neither padding nor the
   tentative adoption record settles the adopted/user-created desktop deletion
   authority conflict. Desktops with non-managed occupants must not be treated
   as empty.
-- **Parked decision:** should v2 restore core-directed retirement of eligible
-  managed native desktops, including adopted desktops, instead of retaining all
-  native bindings? **Recommendation:** restore the existing Tier 1-aligned
+- **User 2026-10-29:** restore core-directed retirement of eligible managed
+  native desktops, including adopted desktops, instead of retaining all native
+  bindings. Restore the existing Tier 1-aligned
   cleanup target, preserving required equal-count padding and protecting every
   desktop with any native occupant (including non-managed windows), any output's
   view/trailing/protection claim, unknown facts, or the minimum-two floor;
   unmapped desktops remain outside management. Core owns eligibility and KDE
-  applies mechanically. This is a recommendation, not a new selected policy.
-- Documentation only: corrected stale current-behavior claims and added the
+  applies mechanically. Decided, implementation pending; supersedes blanket
+  native-bound retention as policy, not the source evidence above.
+- **User 2026-10-29:** dogfooding suggested KDE's empty trailing workspace did
+  not get created. Investigate creation first against upstream `e422f59f`'s
+  explicit trailing designation; no creation failure or remedy is established.
+- Original documentation-only investigation corrected stale behavior claims and added the
   [minimal discriminator](../spec/reference-outcomes.md#native-empty-workspace-retirement).
-  No code or tentative product decision added. Source inspection and
+  No code changed; the later user decision above selects policy. Source inspection and
   `git diff --check` pass; executable gates were not run for this documentation-only
   change. This is not a new regression or mode-specific physical result. Native
   desktop add/remove acceptance remains user-owned; no live test performed.

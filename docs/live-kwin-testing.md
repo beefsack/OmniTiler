@@ -4,6 +4,8 @@ Read this guide before planning or running live KWin/Plasma work. It is the
 authoritative safety and operational contract for this repository; it does not
 grant authorization beyond [Current Decisions](decisions.md#live-kwinplasma-boundary).
 
+- User 2026-10-29: keep testing on latest-stable KDE Plasma to catch upgrade breakage.
+
 ## Safety Boundary
 
 - Preserve real windows, desktops, outputs, Krohnkite state, and unrelated

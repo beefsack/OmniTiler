@@ -103,8 +103,8 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   exit and `SpaceDestroyed` reinserts B at the marker index with a reshuffle, despawning the
   fullscreen strip; the exit issues no focus write, so focus stays B.
   `S(S-pan-model)` + `S(S-pan-fsfocus)`.
-- Then Ours KDE: Retained slot overlay; focus may enter/leave; `D(D-dec-ww)` KDE + `D(D-fs)` Windows scoped proof; physical focus sequence pending
-- Then Ours Windows: Retained slot overlay; focus may enter/leave; `D(D-dec-ww)` KDE + `D(D-fs)` Windows scoped proof. Physically user-accepted 2026-10-12, scoped single-output Notepad/Paint, base `e506350` plus directional/retile/B9 and fullscreen-exit regression changes before automatic retirement: Win+F11 owned fullscreen on tiled Notepad then exit returned it to its slot; stop/relaunch with Notepad still fullscreen then exit tiled it. Each Win+F11 also raised the known Xbox full screen experience prompt (containment parked). Exact focus-away/back/app-native, fixed/game/DPI/multi-output and later stale-retirement behavior TBD; [record](../../changes/archive/windows-fullscreen-exit-acceptance.md).
+- Then Ours KDE: Retained slot overlay. User 2026-10-29: directional focus from focused fullscreen skips same-output siblings, continues to an adjacent output in that direction, otherwise stays; explicit click/focus-by-window/workspace switch unaffected. Tier 1 majority Hyprland/i3/sway, core policy on all platforms; decided, implementation pending. Existing `D(D-dec-ww)` slot proof and physical focus-away behavior are not acceptance of this new rule.
+- Then Ours Windows: Same User 2026-10-29 directional-focus rule, core policy on all platforms; decided, implementation pending; explicit focus unaffected. Retained slot overlay; `D(D-dec-ww)` KDE + `D(D-fs)` Windows scoped proof. Physically user-accepted 2026-10-12, scoped single-output Notepad/Paint, base `e506350` plus directional/retile/B9 and fullscreen-exit regression changes before automatic retirement: Win+F11 owned fullscreen on tiled Notepad then exit returned it to its slot; stop/relaunch with Notepad still fullscreen then exit tiled it. Each Win+F11 also raised the known Xbox full screen experience prompt (containment parked). Exact focus-away/back/app-native, fixed/game/DPI/multi-output and later stale-retirement behavior TBD; [record](../../changes/archive/windows-fullscreen-exit-acceptance.md).
 - Variant hook: V-FS-SLOT.
 
 <a id="r-max-03-backfill-workspace-floating-toggle-over-a-slotless-maximum-scrolling"></a>
@@ -755,7 +755,7 @@ rectangles where geometry is load-bearing.
 - Then Ours KDE: User 2026-10-28 selects Hyprland: explicit Meta+M replaces
   fullscreen with maximized. Delivered offline: Session decides; KDE clears
   fullscreen then calls `setMaximize(true, true)` with no geometry/focus/stack
-  writes. Tentative pending review: retain tiled slot/share and sibling
+  writes. User 2026-10-29 approves: retain tiled slot/share and sibling
   allocations or floating base; next Meta+M restores base; both flags also
   become maximized. Real Engine command coverage plus adapter/native fixtures
   prove the offline legs, not native acceptance (user-owned, pending).
@@ -769,5 +769,5 @@ rectangles where geometry is load-bearing.
 - Variant hook: V-FS-SLOT; REQ-MAX-11 NORMATIVE, User 2026-10-28. Minimal
   variants: repeat Meta+M -> base; start floating+fullscreen -> maximized float;
   start with both fullscreen/maximized flags -> maximized, not fullscreen.
-  These base/both-flags details remain tentative pending review; reference
+  User 2026-10-29 approves these base/both-flags details; reference
   outcomes for variants not established above remain TBD.

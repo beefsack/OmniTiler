@@ -40,8 +40,8 @@ uncooperative client's pixels or native frame fill it.
 
 | Minimal action sequence | i3 | sway | Hyprland | COSMIC | Ours KDE |
 | --- | --- | --- | --- | --- | --- |
-| Tile A/B; A sends X11 ConfigureRequest for a different size without activation/homing; observe before any other event; admit C | Ignore requested tiled size; immediately send synthetic ConfigureNotify describing current tile, not an adopting resize (`SR-I`) | Xwayland immediately configures current container content box, ignoring requested size (`SR-S`) | Xwayland immediately forces tile-size configure (`sendWindowSize(true)`); no adoption (`SR-H`) | Xwayland rejects mapped workspace-tiled resize with `configure(None)` (source comment: "ack and force old state"); no adoption (`SR-C`) | Recorded F1: native frame drifts, no world dispatch in bounded capture; C's admission reconciles. No ordinary frame subscription. Current source path below |
-| Tile A/B; Wayland A commits different logical window geometry/buffer size after initial map, without activation/homing; observe; admit C. Separately omit ack for a pending tile configure | N/A: X11 only | Keep container allocation; copy committed surface geometry and clip to current tile content box, no corrective configure in tiled commit handler. Pending transaction accepts matching serial regardless of size; missing ack progresses on timeout (`SR-S`) | Managed tiled commit does not resize layout target or resend configure. Later ordinary configure dedups against last requested size, not ack. Wrong-size rendering and full no-ack settlement TBD (`SR-H`) | No corrective configure in inspected mapped-toplevel commit chain; layout recompute owns tile-size requests. Pending blockers expire (ready 300ms / processed 500ms), not a resend loop. Wrong-size rendering and full no-ack settlement TBD (`SR-C`) | Recorded F1 Wayland frame drift/no dispatch and later admission correction; exact buffer/ack discriminator TBD, not inferred from fixture resize acceptance |
+| Tile A/B; A sends X11 ConfigureRequest for a different size without activation/homing; observe before any other event; admit C | Ignore requested tiled size; immediately send synthetic ConfigureNotify describing current tile, not an adopting resize (`SR-I`) | Xwayland immediately configures current container content box, ignoring requested size (`SR-S`) | Xwayland immediately forces tile-size configure (`sendWindowSize(true)`); no adoption (`SR-H`) | Xwayland rejects mapped workspace-tiled resize with `configure(None)` (source comment: "ack and force old state"); no adoption (`SR-C`) | User 2026-10-29: prompt frame-drift observation and retained-tile reconciliation under existing safety/clamp/write-suppression rules, no resize fight; decided, implementation pending. Recorded F1 still drifts until C's admission |
+| Tile A/B; Wayland A commits different logical window geometry/buffer size after initial map, without activation/homing; observe; admit C. Separately omit ack for a pending tile configure | N/A: X11 only | Keep container allocation; copy committed surface geometry and clip to current tile content box, no corrective configure in tiled commit handler. Pending transaction accepts matching serial regardless of size; missing ack progresses on timeout (`SR-S`) | Managed tiled commit does not resize layout target or resend configure. Later ordinary configure dedups against last requested size, not ack. Wrong-size rendering and full no-ack settlement TBD (`SR-H`) | No corrective configure in inspected mapped-toplevel commit chain; layout recompute owns tile-size requests. Pending blockers expire (ready 300ms / processed 500ms), not a resend loop. Wrong-size rendering and full no-ack settlement TBD (`SR-C`) | User 2026-10-29: same prompt drift reconciliation, no write loop; decided, implementation pending. Recorded F1 still drifts until later admission; exact buffer/ack outcome TBD, not inferred from fixture resize acceptance |
 
 Existing coverage and decision boundary:
 
@@ -55,15 +55,12 @@ Existing coverage and decision boundary:
   hint gain/loss and classification. [R-MIN-01 through R-MIN-03](reference-outcomes/minimum-size.md)
   cover admission/area changes and minimum projection, not an isolated
   client-size change. Their native settlement TBDs do not answer this row.
-- Recommendation, pending user decision: promptly observe ordinary tiled
+- User 2026-10-29: promptly observe ordinary tiled
   frame drift and reconcile the retained allocation through existing
   gesture/safety/clamp/suppression rules; do not adopt client size as new
   sibling shares or create an unbounded configure fight. This follows D2's
-  anti-gap intent, not a four-WM Wayland immediate-resend consensus.
-- Alternative: retain today's correction only on the next independently
-  subscribed event. Fewer reactive writes, but gaps/overlaps can persist
-  indefinitely; this would need an explicit qualification of D2. No new
-  product policy is selected here.
+  anti-gap intent, not a four-WM Wayland immediate-resend consensus. Decided,
+  implementation pending; correction only on an unrelated event is not selected.
 
 Pinned local-source citation keys (handler behavior, not runtime proof):
 
@@ -136,6 +133,12 @@ Current OmniTiler source (2026-10-29):
   [F1](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits).
   The archived [production resize reconciliation](../changes/archive/production-resize-reconciliation.md)
   describes the earlier DescribePlan route, not today's world-v2 subscriptions.
+
+### Directional focus from fullscreen (R-MAX-02)
+
+| Minimal action sequence | Ours decided outcome | Unsupported outcomes |
+| --- | --- | --- |
+| On L tile A/B, fullscreen and focus B; focus left with A in that direction. Repeat with an adjacent output there; separately explicitly focus A | User 2026-10-29: skip same-output A; continue to the adjacent output, otherwise stay on B. Explicit focus is unaffected. Core policy, all platforms; implementation pending | Native results TBD; Tier 1 majority Hyprland/i3/sway in [R-MAX-02](reference-outcomes/maximize-fullscreen.md#r-max-02-fullscreen-focus-and-exit) |
 
 <a id="hidden-frame-stress-discriminator"></a>
 ### Hidden frame versus logical allocation
@@ -531,9 +534,9 @@ Selected D8 amendment and option A (User 2026-10-17/18); Windows unchanged.
 | Variant | Minimal action sequence | Selected / offline outcome | Native or unsupported outcome |
 | --- | --- | --- | --- |
 | Automatic float versus tiled focus | Open fixed-size F over tile A; focus disposable terminal T; refocus F; reconcile | F above tiles, no F frame/focus/below writes; automatic survivor-focus intent cannot activate A over focused F; explicit command focus unchanged | Initial native F had one admission-focus write, corrected offline; corrected native repeat/physical Alt+Tab and Steam TBD |
-| Mixed ordinary/fixed admission batch | Focus tile A; admit ordinary O then automatic-fixed F, sequentially and in one report; repeat F then O, F only, and F/F | Tentative, pending user review: batch invariance keeps O's admission focus in either mixed order; each automatic-fixed intent is skipped and spent, fixed-only batches emit none. Real WorldEngine regressions pass; explicit Focus command can still target F | Native batching and reference outcomes TBD; no stacking claim ([focus-half record](../changes/kde-world-v2-port.md#fixed-size-admission-consumer-inventory-and-proposed-core-shape-2026-10-29)) |
-| Existing and later native flags | Admit F with keep-below, then separately pre-existing keep-above; separately set below after project admission | Existing below: zero stacking writes through tile/stop; existing above: untouched. Tentative (user review pending): later below wins without reassertion | Native flag matrix TBD |
-| Fullscreen conflict and exit | Admit F above tiles; focus fullscreen G in the same scope; exit fullscreen | Tentative (user review pending): release owned above once, reacquire on exit; G receives no writes | Only isolated focused-fullscreen stand-in sampled; concurrent F/G coverage and actual game TBD |
+| Mixed ordinary/fixed admission batch | Focus tile A; admit ordinary O then automatic-fixed F, sequentially and in one report; repeat F then O, F only, and F/F | User 2026-10-29 approves: batch invariance keeps O's admission focus in either mixed order; each automatic-fixed intent is skipped and spent, fixed-only batches emit none. Real WorldEngine regressions pass; explicit Focus command can still target F | Native batching and reference outcomes TBD; no stacking claim ([focus-half record](../changes/kde-world-v2-port.md#fixed-size-admission-consumer-inventory-and-proposed-core-shape-2026-10-29)) |
+| Existing and later native flags | Admit F with keep-below, then separately pre-existing keep-above; separately set below after project admission | Existing below: zero stacking writes through tile/stop; existing above: untouched. User 2026-10-29 approves: later below wins without reassertion | Native flag matrix TBD |
+| Fullscreen conflict and exit | Admit F above tiles; focus fullscreen G in the same scope; exit fullscreen | User 2026-10-29 approves: release owned above once, reacquire on exit; G receives no writes | Only isolated focused-fullscreen stand-in sampled; concurrent F/G coverage and actual game TBD |
 | Unload with surviving float | Admit F; unload/reload script without closing F; focus fullscreen G | Actual unload has no JavaScript stop callback; former project above becomes indistinguishable from pre-existing above and is not owned for suspension | Unresolved safety blocker, no selected recovery ownership; native journey TBD |
 | Modal sibling | Open fixed-size window-modal F; focus T on same workspace; refocus F; reconcile | Keep modal relationship and native frame/focus; project adds only eligible above | Modal flag/above and API focus cycle sampled, zero switch-time controller actuations; physical interaction and corrected-build repeat TBD |
 
@@ -6275,12 +6278,12 @@ acceptance pending. Windows/macOS runtime adoption is separate.
 | Leg | Minimal action sequence | Tier 1 split | Tier-rule read / status |
 | --- | --- | --- | --- |
 | [R-MAX-10](reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen) float toggle on fullscreen | Tile `H[A,B*]`; project-fullscreen B; toggle float; observe; exit monitor fullscreen only if still active; observe slot/state/focus | Hyprland/i3/sway apply floating while preserving fullscreen; COSMIC refuses | User 2026-10-28 selects apply-under-fullscreen, no subject writes (D5); REQ-MAX-10 NORMATIVE; shared/KDE delivered offline |
-| [R-MAX-11](reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen) maximize toggle on fullscreen | Reset `H[A,B*]`; project-fullscreen B; toggle maximize; observe; exit monitor fullscreen only if still active; observe slot/state/focus | COSMIC ignores; Hyprland replaces fullscreen with MAXIMIZED; i3/sway have no counterpart (non-voting, never no-op votes) | User 2026-10-28 selects Hyprland; REQ-MAX-11 NORMATIVE; shared/KDE delivered offline; explicit-command D5 exception tentative pending review |
+| [R-MAX-11](reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen) maximize toggle on fullscreen | Reset `H[A,B*]`; project-fullscreen B; toggle maximize; observe; exit monitor fullscreen only if still active; observe slot/state/focus | COSMIC ignores; Hyprland replaces fullscreen with MAXIMIZED; i3/sway have no counterpart (non-voting, never no-op votes) | User 2026-10-28 selects Hyprland; REQ-MAX-11 NORMATIVE; shared/KDE delivered offline; User 2026-10-29 approves explicit-command D5 exception |
 
 Game safety tension: Hyprland's transient fullscreen clear/reapply and native
 floating/configure changes during fullscreen are not proven safe for games;
 D5 still forbids unsolicited writes; only R-MAX-11's explicit target command
-permits the required native state transition (tentative pending review).
+permits the required native state transition (approved, User 2026-10-29).
 Settled final geometry/focus visuals are TBD
 (source-only) in every leg. Keys `S(S-cos-fullscreen-toggles)`,
 `S(S-hyp-fullscreen-toggles)`, `S(S-i3-fullscreen-float)`,
@@ -6400,7 +6403,7 @@ commits; PaperWM.spoon stays corroboration only, never a separate profile.
 
 | Minimal action sequence | Current evidence | Decision / unsupported outcomes |
 | --- | --- | --- |
-| Repeat [R-WS-10](reference-outcomes/workspaces.md#r-ws-10-send-b-away-empty-middle-retained-vs-removed) in each workspace mode on two outputs: send the sole member of middle WS2 to WS1, then select WS3; keep WS2 empty and unshown on both outputs, above the two-workspace floor and without trailing/pin claims | Tier 1 source outcomes in R-WS-10 remove the emptied middle. Current v2 core retains native-bound rows and emits no removal eligibility; user physical 2026-10-28 reports no removals, but mode and exact sequence were not specified | Reconcile older managed-native cleanup with tentative native-bound retention before changing code. Exact per-mode native outcome, adopted-desktop deletion authority and non-managed-occupant/padding cases remain TBD. [Investigation and single parked decision](../changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29) |
+| Repeat [R-WS-10](reference-outcomes/workspaces.md#r-ws-10-send-b-away-empty-middle-retained-vs-removed) in each workspace mode on two outputs: send the sole member of middle WS2 to WS1, then select WS3; keep WS2 empty and unshown on both outputs, above the two-workspace floor and without trailing/pin claims | Tier 1 source outcomes remove the emptied middle. Current v2 retains native-bound rows and emits no removal eligibility; physical 2026-10-28 reports no removals, mode/sequence unspecified | User 2026-10-29: core-directed removal of eligible managed native desktops including adopted ones, with global native-occupancy/view/trailing/protection checks, readable facts, required equal-count padding and minimum-two floor; unmapped desktops outside management. Ours decided, implementation pending; exact per-mode native and occupant/padding outcomes TBD. [Investigation](../changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29) |
 
 ## 2026-10-24 port discriminator stubs
 

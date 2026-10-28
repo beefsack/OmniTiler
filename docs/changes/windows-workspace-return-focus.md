@@ -2423,7 +2423,8 @@ investigation at `328c1469`; no code changed.
   [tabs investigation](../backlog.md): independent suppression capability,
   per-window authority/correlation, core composition and truthful hidden
   observations. No tab containers, reservations, tab wire tokens, UI or
-  promises of avoiding a later tab bump. Full tabs remain a user decision.
+  promises of avoiding a later tab bump. User 2026-10-29: full tab core/protocol
+  stays after 0.1; a later tab bump is accepted, expected around 0.2.
 - Windows implements the new visibility path first. KDE/macOS adopt the
   contract and retain native selectors, not Windows choreography. No live
   testing is part of this design change.
@@ -2670,8 +2671,14 @@ investigation at `328c1469`; no code changed.
 | Open decision | Recommendation (not selected by this design) |
 | --- | --- |
 | Focus refused or remains unproven after arrivals are ready: exact terminal group outcome and departure fallback accounting | Finish with explicit failed/unproven focus and individually accounted visibility results, never staged success. No departure write under staged authority without foreground proof; use only the already authorized fallback under fresh existing gates, otherwise explicitly block those entries. No retry or indefinite wait. Pin this minimal sequence before implementation; do not decide the separate unknown-foreground A/B policy |
-| Move full tab core/protocol into 0.1? | No. Deliver the visibility-ready slice only; keep full tabs after 0.1. This repeats the parked investigation question, not a new scheduling decision |
-| Require this bump to avoid every later tab protocol bump? | No. Accept a later tab bump; do not add speculative tab reservations, enums or hidden-window substitutes now |
+
+- User 2026-10-29 resolves the tab questions: full tab core/protocol stays
+  after 0.1; coordinated v3 is visibility-ready with per-window suppression
+  authority/correlation independent of workspace ownership, its own capability,
+  core-composed workspace vs inactive-tab suppression and truthful hidden facts.
+  A later tab bump is accepted, expected around 0.2; no speculative reservations
+  to avoid it. Tab-close survivor provisionally defaults to positional-next,
+  clamped at the end; confirm against Tier 1 source when tab work starts.
 
 - TENTATIVE technical choices for schema review: next version 3, required
   independent boolean capability, core-minted work/group ids, separate typed

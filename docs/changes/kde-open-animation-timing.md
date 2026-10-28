@@ -24,7 +24,7 @@
 - Per-adapter pending ids, source snapshots and requested-frame listeners are
   bounded to 16 entries. Windows joining an armed debounce do not fabricate a
   new start; arrivals after a send do not inherit that flight's reply.
-- Tentative trace-only clock choice: each line carries `Date.now()` wall-clock
+- Trace-only clock choice: each line carries `Date.now()` wall-clock
   milliseconds. Journal `short-monotonic` receipt timestamps cross-check one
   capture; rerun negative/implausible intervals after a clock step. Neither is
   compositor presentation proof. No native monotonic-now API is exposed by

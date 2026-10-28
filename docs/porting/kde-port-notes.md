@@ -16,9 +16,10 @@ submit commands only; the native float-navigation policy is deleted. Stage 5
 renderer derivation removal and causal freshness are accepted offline. Native acceptance remains
 outstanding; no logical receipt or offline test is native arrival proof.
 
-KWin source is read from the local sibling clone at the documented
-`v6.7.4` pin; port work must not web-fetch KWin sources. Mechanical
-API checks use `git show <pin>:<path>` and `git grep <pattern>
+User 2026-10-29: new KDE source evidence uses KWin `v6.8.1`, matching live
+tests; existing `v6.7.4` citations stay revision-bound. Also check relied-on APIs
+at the KWin 6.6 floor. Read the local sibling clone, never web-fetch KWin source.
+Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
 <pin>` inside that clone.
 
 ## Recommended topology

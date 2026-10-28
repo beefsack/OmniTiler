@@ -81,7 +81,7 @@ run '{"v":1,"request_id":"get-s0","op":"get","ids":["a","b"]}'
 - S4 maximize replaces focused fullscreen (R-MAX-11).
   - Setup: fresh `H[A,B*]`; repeat from intentional floating B if S2 stayed clean.
   - Keys: `Meta+F11`, then `Meta+M` once; observe native fullscreen cleared and maximize set; `Meta+M` again to restore base.
-  - Expected: Hyprland-selected replacement, clear fullscreen then maximize, no intervening confirmation gate/retry; no geometry/focus/stack writes from that transition. Tiled slot/share or floating base and later restoration are tentative recorded details: compare them and report separately, do not silently promote them to a new decision.
+  - Expected: Hyprland-selected replacement, clear fullscreen then maximize, no intervening confirmation gate/retry; no geometry/focus/stack writes from that transition. User 2026-10-29 approves retaining tiled slot/share or floating base and later restoration; compare them and report separately from native replacement.
   - Result: UNRUN - PASS/FAIL for replacement/diagnostics + tiled/float-base observation, both flags and sibling allocations. Stop on dropped input, false refusal or flag corruption.
   - Closes: same backlog fullscreen item; [maximize delivery](archive/fullscreen-maximize-toggle.md), [R-MAX-11](../spec/reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen), [settlement remainder](kde-live-acceptance.md#native-diagnostics-repeat-signals-and-drag-limits); partial Stage 4/5 fullscreen-window shortcut proof. Does not settle R-MAX-02 directional focus.
 

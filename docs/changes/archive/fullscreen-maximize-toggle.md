@@ -5,7 +5,7 @@
 - User 2026-10-28 selects Hyprland R-MAX-11: explicit maximize toggle
   replaces fullscreen with maximized. Shared core policy and KDE mechanism
   only; Windows/macOS adapter integration remains separate.
-- Tentative pending review: explicit target commands authorize the necessary
+- User 2026-10-29 approves: explicit target commands authorize the necessary
   native state writes under D5; retain tiled/floating base membership;
   both fullscreen+maximized flags become maximized, not fullscreen.
 - Acceptance: retained tile slot and unchanged sibling allocations, second
@@ -14,8 +14,8 @@
 
 ## Approach and decisions
 
-- Unlike float, maximize lacked a core command. Tentative integration choice
-  pending user review: both ordinary and fullscreen Meta+M now submit
+- Unlike float, maximize lacked a core command. User 2026-10-29 approves
+  option 1, core route over adapter policy: ordinary and fullscreen Meta+M submit
   `WorldCommand::ToggleMaximize`; Session decides the target and a command-only
   `CommandResult::Maximize` authorizes KDE's native setters. No lifecycle,
   topology or retained-operation changes. Production delta is a few hundred
@@ -41,9 +41,9 @@
 - Required compatibility edits: exactly two compile-only diagnostic-label
   match arms in Windows `tiling_sys/world_tick.rs`, not runtime integration.
   macOS needs no exhaustive-match edit and its adapter remains unchanged.
-- Tentative behavior details remain pending review, not parked implementation
-  blockers: explicit-target D5 exception, retained tiled/floating base and
-  both-flags -> maximized. Reference variant outcomes not source-established
+- User 2026-10-29 approves the behavior details: explicit-target D5 exception,
+  retained tiled/floating base and both-flags -> maximized.
+  Reference variant outcomes not source-established
   remain TBD. No automatic fullscreen write permission added.
 
 ## Verification and outcome
