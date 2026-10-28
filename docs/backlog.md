@@ -374,6 +374,16 @@ decisions of 2026-09-24 are under
     labels are identical; KDE workspaces are created on demand but never
     removed; border still hides during drag (strict coverage, known).
     [Results](changes/kde-world-v2-port.md#user-physical-checks-2026-10-28).
+  - Fullscreen float/maximize (user 2026-10-28, from
+    [R-MAX-10/11](spec/reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen)):
+    float toggle on a fullscreen window follows the Tier 1 majority: the
+    window becomes floating but stays fullscreen, and leaving fullscreen
+    shows it floating; toggling again while fullscreen re-tiles it, invisibly
+    until exit. Maximize toggle on a fullscreen window follows Hyprland:
+    fullscreen is replaced by maximized. Both supersede the recorded
+    refusals; explicit commands only, no automatic fullscreen writes (D5).
+    Shared core plus KDE first; Windows/macOS adapters follow in their own
+    items. Not started.
   - Ghostty cross-output height/width shortfall is external client/toolkit
     sizing; no OmniTiler retry or artificial resize workaround. Draft upstream
     report pending filing ([decision](decisions.md#cross-output-gesture-release-placement-2026-10-27)).
