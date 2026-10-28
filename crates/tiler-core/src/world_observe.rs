@@ -346,8 +346,12 @@ impl WorldEngine {
                         WindowId(String::new())
                     }
                 };
-                let readable = complete && work_area.is_some() && unreadable.is_empty();
-                let hold = if !complete {
+                // Host-owned domains need a complete inventory to read.
+                let inventory_readable =
+                    !report.host_owned_workspace_domains || report.inventory_complete;
+                let readable =
+                    complete && inventory_readable && work_area.is_some() && unreadable.is_empty();
+                let hold = if !complete || !inventory_readable {
                     Some(HoldReason::IncompleteInventory)
                 } else if !unreadable.is_empty() {
                     Some(HoldReason::Unreadable)

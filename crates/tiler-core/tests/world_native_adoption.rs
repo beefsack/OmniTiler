@@ -616,8 +616,8 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         2,
         "partial creates nothing"
     );
-    // Partial reports fence nothing spuriously: all evidence known, so
-    // scopes stay controlled and no flight starts.
+    // Partial reports hold every host-owned domain: the inventory gap
+    // is unreadable even when the staged evidence is known.
     let partial_bound: std::collections::BTreeMap<String, String> = bound_ids(&partial, "out-a")
         .into_iter()
         .map(|(id, n)| (n, id))
@@ -625,8 +625,8 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
     for native in [N1, N2] {
         assert_eq!(
             scope_authority(&partial, "out-a", &partial_bound[native]),
-            Some(ScopeAuthority::Controlled),
-            "partial with known evidence fences nothing"
+            Some(ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
+            "partial inventory gap holds known scopes"
         );
     }
     assert!(partial.transfers.is_empty());

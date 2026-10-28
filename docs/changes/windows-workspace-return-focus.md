@@ -2353,10 +2353,10 @@ investigation at `328c1469`; no code changed.
 
 ### Status, authority and non-goals
 
-- Design only; no product implementation, behavioral red/green, native
-  acceptance or latency claim follows from this section. This is the current
-  design entry point; the older arrival-transaction and defer/reconcile
-  proposals above remain superseded.
+- The new visibility contract remains design only; the separately recorded
+  phase-1 core gap foundations are complete offline. No native acceptance or
+  latency claim follows. This is the current design entry point; the older
+  arrival-transaction and defer/reconcile proposals above remain superseded.
 - Binding inputs: [Windows decisions](../decisions.md#windows-decisions-2026-10-28),
   [terminal partial hide](#terminal-partial-hide-decision-and-evidence-boundary-2026-10-28),
   the outcomes explicitly labelled "User decisions (2026-10-28)"
@@ -2577,7 +2577,7 @@ investigation at `328c1469`; no code changed.
 | Phase | Scope and failing-first evidence | Gate / dependencies |
 | --- | --- | --- |
 | 0. Freeze the boundary | Resolve the open focus-failure outcome below; retain existing partial-hide discriminator in `docs/spec/reference-outcomes.md` and add a minimal focus-unproven action sequence if that behavior is selected. Pin known failed-show, empty/minimized-only, sticky/float and independent suppression expectations; unknown outcomes remain TBD | Review exact shapes, no-call accounting and all consumers; preserve accepted BEFORE measurements and outstanding prototype blockers. No product behavior chosen from mocks |
-| 1. Core ownership/gap foundations | Producer-shaped KDE desktop list/current unreadability and recovery tests fail on current native echo confirmation, domain readability, equal-count padding and shared native creation/desire leaks. Add known non-ordered-current versus unreadable-current cases | All listed fences pass with old ownership still stable in tests; no new creation, inferred close/homing/view/history during gaps. This prerequisite precedes changing KDE's ownership producer |
+| 1. Core ownership/gap foundations | **Complete offline** (outcome below): producer-shaped KDE desktop list/current unreadability and recovery tests failed first on native echo confirmation, domain readability, equal-count padding and shared native creation/desire leaks; known non-ordered-current versus unreadable-current cases included | All listed fences pass with old ownership still stable in tests; no new creation, inferred close/homing/view/history during gaps. This prerequisite precedes changing KDE's ownership producer |
 | 2. Core visibility lifecycle | Frozen per-window roster/authority/OR composition, unique work, exact evidence retention, logical-view/history decoupling, terminal failed hide/show and gap-time retirement. Red current pending-hide characterization against selected completion. Cover every standalone/follow/migration-target/refill leg and every enumerated execution branch, including veto/unknown/no-call outcomes | Core tests prove failed member retains departure home, ambiguity stays unknown, no replay after duplicate/ack/gap/reset/ABA, close/supersession accounted, empty known roster terminates, and latest intents do not lose ordered commands. No unenumerated adapter branch or member/backing shortcut; native selector/member/clear ambiguity semantics remain unchanged |
 | 3. Protocol and adapter schema cutover | v2 rejection, removed/unknown fields, required capability tuples, null/known native facts, duplicate/forged rows, canonical byte equality, digest changes, max-size refusal and exact ack retention. Simulators actually execute/report visibility work; do not disable their settlement coverage | Core/protocol plus Windows typed consumers and KDE/macOS schema producers/builders move to v3 together. Keep this integration private until all constructors/codecs compile and contract gates pass; do not deploy mixed versions or flip KDE ownership before phase 1 |
 | 4. Windows native execution | Behavioral red tests for true prepared-show batching (no per-member wait/readback between posts), second-arrival lifetime/cloak/tag loss, asynchronous focus landing across owner passes, grant expiry, final foreground race before hide, partial issued hide, explicit show failures, and no-call blocked dependencies. Plumb existing product-hide pre/post facts on errors, independent of trace | Core work is sole visibility authority. Preserve existing recovery ledger, native identity, game/fullscreen/desktop gates and spent-before-write fences. No grant-less legacy fallthrough, new query for refusal classification, retry or R2 without its measured trigger. Full offline gates and independent safety/contract review pass before live work |
@@ -2638,9 +2638,9 @@ investigation at `328c1469`; no code changed.
   cross-pass ownership, final native foreground bracket and reveal accounting
   are still unaccepted implementation work. KDE/macOS cannot promise future
   tabs merely because the wire is visibility-ready.
-- Next product action: settle the focus-failure row above, then phase 1
-  producer-shaped failing-first completeness fences and phase 2 lifecycle
-  tests, with the v3 shapes reviewed before adapter cutover.
+- Phase 1 is complete offline (outcome below), independently of the parked
+  focus-failure decision. Next product action: settle that decision before
+  phase 2 lifecycle work; review the v3 shapes before adapter cutover.
 
 ### Design review and evidence boundary
 
@@ -2649,7 +2649,67 @@ investigation at `328c1469`; no code changed.
   The first review identified incomplete readiness evidence and unnamed
   fallback authority; explicit lifetime/homing/frame brackets and the existing
   hide-only fallback citation close both findings. No design blocker remains.
-- Verification is source/record inspection and documentation diff checks only.
-  No production/test code changed, no product tests or live legs ran, and no
-  staged-switch correctness, historical incomplete-hide fix or speed acceptance
-  is claimed. The separately listed product decisions remain open.
+- At design completion, verification was source/record inspection and
+  documentation diff checks only: no production/test code changed and no
+  product tests or live legs ran. No staged-switch correctness, historical
+  incomplete-hide fix or speed acceptance was claimed. The separately listed
+  product decisions remain open; phase-1 implementation evidence follows.
+
+### Phase 1 outcome: core ownership/gap foundations (2026-10-29)
+
+- Delivered core-only completeness fences and 23 producer-shaped regressions
+  in `crates/tiler-core/tests/world_host_owned_gap_holds.rs`. Every fixture
+  retains `host_owned_workspace_domains: true` under the existing v2 contract;
+  inventory/screen completeness and native rows express gaps. No producer,
+  ownership flag, wire shape or version changed. Phases 0 and 2 remain unstarted.
+- Fences and evidence:
+  - Native echo confirmation now requires complete inventory and the relevant
+    screen, covering both intake and settlement through `native_echo_for`.
+    Retained view flights survive gaps; changed native currents cannot poison
+    view/history, and complete recovery settles without duplicate workspaces.
+  - Host-owned domain readability now requires complete inventory, publishing
+    `Hold(IncompleteInventory)` even with individually known facts. The older
+    partial-report adoption test now pins this hold instead of Controlled.
+    Omitted windows retain their home and recover without inferred close.
+  - Native-derived member receipts require the same completeness. Tests with a
+    conflicting *known mapped* desktop exposed persisted rehoming hidden by the
+    held reply; neutral recovery now proves retained homing for inventory,
+    screen and minimized cases. Unknown receipts never supply arrival proof.
+  - Equal-count padding waits for complete inventory/screens and, when
+    host-owned, a non-empty native order on each live output. Empty `native[]`
+    cannot pad; healthy equal-count reports still pad and screen recovery resumes.
+  - Shared creation minting requires complete inventory/screens and a usable
+    target order. Outstanding desires withhold across inventory, target-screen,
+    other shared-screen and missing/empty-target-row gaps, then republish the
+    same operation ID. Omitted/conflicting occupants also preserve that ID;
+    retained-flight need already prevents pruning, so no prune change was needed.
+  - Complete `current_native: None` keeps its existing known non-ordered-surface
+    meaning and remains Controlled; unreadable current under incomplete facts
+    holds. Healthy/native-free behavior remains covered by the existing suites.
+- Failing-first evidence: the initial targeted command
+  `mise exec -- cargo test --locked -p tiler-core --test world_host_owned_gap_holds`
+  compiled and produced eight assertion failures and one passing healthy-null
+  contrast before production fixes. Expanded probes also failed on history,
+  missing-row/shared-screen desire publication, and persisted known-receipt
+  homing before their causal fixes. Final targeted result: 23 passed.
+- TENTATIVE implementation choices: reuse existing completeness/unknown-hold
+  paths rather than add protocol flags; inventory readability is host-owned-only
+  to preserve existing native-free birth/close behavior. A test-oracle repair
+  uses the commanded view while a flight is pending: `outputs.logical_view`
+  already publishes the pending target, not the settled source.
+- Offline verification after the final source change:
+  - `mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-windows`
+    passed, including all core/protocol integrations and Windows tests. The first
+    combined run hit the separately tracked `panic_diag` parallel-test flake
+    (two hook/poison failures); its isolated tests passed and the unchanged full
+    command then passed. No `panic_diag` code was changed.
+  - `mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-windows --all-targets -- -D warnings`
+    passed; `mise exec -- cargo fmt --all -- --check` and `git diff --check` passed.
+  - Independent review inspected the final diff and accepted the gap fences,
+    recovery oracles and scope. No public core API changed.
+- Boundary: offline core evidence only, no live legs or native KDE acceptance.
+  KDE's producer switch and explicit-known wire fields still belong to phase 3;
+  existing v2 completeness cannot independently encode every native read's
+  certainty. No staged-switch, visibility-lifecycle, incomplete-hide fix or
+  latency claim follows. The focus-failure outcome remains parked and was not
+  needed for phase 1.

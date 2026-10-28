@@ -54,14 +54,18 @@ Prioritise by return toward these goals
   [Record](changes/windows-workspace-return-focus.md).
   [Coordinated bump design](changes/windows-workspace-return-focus.md#coordinated-visibility-contract-design-2026-10-30):
   exclusive responsibility table, tentative v3 messages/capabilities, phased
-  failing-first plan and separate open decisions; design only.
+  failing-first plan and separate open decisions. Phase 1 core gap foundations
+  are complete offline (23 regressions); no producer/wire cutover or staged
+  switch implementation. Focus-failure outcome remains parked before phase 2.
 - P1 | KDE: workspace ownership through unreadable desktop facts | DECIDED
   2026-10-28, option (a): KDE always reports native ownership, unreadable
   desktop/current facts are explicit unknowns, and the logical-view fallback
   is removed in the coordinated protocol bump. Prerequisite for that bump:
-  core completeness fences (view echo confirmation, equal-count padding,
-  shared native creation/desires) with producer-shaped gap/recovery tests
-  before the ownership flag changes. KDE work lands with the bump.
+  core completeness fences are complete offline (view/member receipts, domain
+  readability, equal-count padding including empty `native[]`, shared native
+  creation/desires; 23 producer-shaped gap/recovery regressions). Ownership
+  stayed stable in fixtures. KDE producer work still lands with the bump;
+  no ownership flag or wire change yet.
   [Answer](changes/windows-workspace-return-focus.md#kde-answer-option-a-stable-native-ownership-2026-10-28).
 - P1 | Tabbed stacks core/protocol investigation (user 2026-10-28) |
   Read-only, before the coordinated protocol bump lands. Map the tab matrix

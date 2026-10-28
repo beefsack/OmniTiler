@@ -215,7 +215,26 @@ impl WorldEngine {
         }
         // Equal-count parity: pad shorter rings to the longest (never
         // remove for parity; per-screen lifecycle already cleaned).
-        if report.equal_workspace_count {
+        // Host-owned padding needs readable inventories, screens, and
+        // native orders: an incomplete list or a missing/empty native row
+        // proves no count, so padding waits for a complete re-read.
+        let inventories_readable = report.inventory_complete
+            && live.iter().all(|output| {
+                report
+                    .screens
+                    .iter()
+                    .find(|screen| screen.output.0 == *output)
+                    .is_some_and(|screen| screen.complete)
+            });
+        let native_orders_known = !report.host_owned_workspace_domains
+            || live.iter().all(|output| {
+                report
+                    .native
+                    .iter()
+                    .find(|entry| entry.output.0 == *output)
+                    .is_some_and(|entry| !entry.native_order.is_empty())
+            });
+        if report.equal_workspace_count && inventories_readable && native_orders_known {
             let max_len = live
                 .iter()
                 .filter_map(|output| self.mapping.get(output).map(Vec::len))

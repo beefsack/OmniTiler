@@ -99,7 +99,12 @@ impl WorldEngine {
     ///
     /// Host-owned rules (native-only; unknown/unmapped holds, never invent
     /// or collapse):
-    /// - `native_workspace: Some(nid)` mapped to `L` yields `Some(L)`.
+    /// - `native_workspace: Some(nid)` mapped to `L` yields `Some(L)`, but
+    ///   only when the output's native list reads complete (complete screen
+    ///   plus complete inventory). During inventory or per-screen gaps the
+    ///   mapping may be stale, so even a mapped id yields `None`: callers
+    ///   keep retained homing; write authority for that scope is fenced at
+    ///   publish, it is not held by returning `None` here.
     /// - `None` or unmapped native yields `None`: unknown membership never
     ///   collapses into the current view and never proves arrival. Callers
     ///   keep retained homing; write authority for that scope is fenced at
@@ -113,6 +118,9 @@ impl WorldEngine {
     ) -> Option<String> {
         if !report.host_owned_workspace_domains {
             return fact.observed_workspace.clone();
+        }
+        if !self.native_list_complete(report, &fact.output.0) {
+            return None;
         }
         let native = fact.native_workspace.as_deref()?;
         self.native_logical(&fact.output, native)
@@ -144,6 +152,9 @@ impl WorldEngine {
         output: &OutputId,
     ) -> Option<String> {
         if !report.host_owned_workspace_domains {
+            return None;
+        }
+        if !self.native_list_complete(report, &output.0) {
             return None;
         }
         let native = report.native.iter().find(|entry| entry.output == *output)?;
@@ -1279,6 +1290,19 @@ impl WorldEngine {
         if !report.host_owned_workspace_domains || ordered.is_empty() {
             return;
         }
+        if !report.inventory_complete {
+            return;
+        }
+        let all_complete = ordered.iter().all(|output| {
+            report
+                .screens
+                .iter()
+                .find(|screen| screen.output.0 == *output)
+                .is_some_and(|screen| screen.complete)
+        });
+        if !all_complete {
+            return;
+        }
         let first = ordered
             .iter()
             .find(|output| report.native.iter().any(|entry| entry.output.0 == **output))
@@ -1286,6 +1310,14 @@ impl WorldEngine {
         let Some(first) = first else {
             return;
         };
+        let order_non_empty = report
+            .native
+            .iter()
+            .find(|entry| entry.output.0 == *first)
+            .is_some_and(|entry| !entry.native_order.is_empty());
+        if !order_non_empty {
+            return;
+        }
         let ring: Vec<String> = self.mapping.get(first).cloned().unwrap_or_default();
         for logical in ring {
             if self.is_native_bound(&logical) {
@@ -1358,9 +1390,31 @@ impl WorldEngine {
         if !report.host_owned_workspace_domains {
             return Vec::new();
         }
+        if !report.inventory_complete {
+            return Vec::new();
+        }
+        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared
+            && !report.screens.iter().all(|screen| screen.complete)
+        {
+            return Vec::new();
+        }
         self.retained_creations
             .iter()
             .filter(|retained| retained.pending.is_none() && !retained.ambiguous)
+            .filter(|retained| {
+                report
+                    .screens
+                    .iter()
+                    .find(|screen| screen.output == retained.target_output)
+                    .is_some_and(|screen| screen.complete)
+            })
+            .filter(|retained| {
+                report
+                    .native
+                    .iter()
+                    .find(|entry| entry.output == retained.target_output)
+                    .is_some_and(|entry| !entry.native_order.is_empty())
+            })
             .map(|retained| crate::world_report::NativeCreationDesire {
                 operation_id: retained.operation_id.clone(),
                 logical_workspace: retained.logical_workspace.clone(),
