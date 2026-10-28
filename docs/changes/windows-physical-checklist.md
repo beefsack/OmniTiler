@@ -10,6 +10,136 @@
 - Limitation note (not a test row): the Authentic Win+G/Win+F11 exact-chord containment gap is carried as a listed limitation under D4; Compatible chords are still fully checked (see Games).
 - Newest rule: the 2026-10-17 proof-only conflict rule (warn only on provably present conflict) supersedes older unknown-state warning plans (see WSK-08, WDS-03).
 
+## Batched physical run sheet 2026-10-29
+
+- Use this section for the [batched backlog item](../backlog.md#open-work); the tables below remain the wider acceptance inventory, not extra mandatory steps. All checks below are UNRUN; documentation verification is not physical acceptance.
+- Follow the [live Windows guide preflight/recovery](../live-windows-testing.md#required-preflight): retain source/artifact identity, original tiler settings, display/work-area/scale baseline and the tested stop/restore route outside the repository. Ordinary medium integrity only. Keep mouse/Task Manager access available; stop on unexpected effects or uncertain restoration.
+- Order: S1-S4 share two fixture windows and one output; S5 changes presets; S6 alone needs real apps; D1 and the optional D2 legs share two outputs. Stop/restore before changing scope or display setup.
+- Never press Win+D, Win+T, bare Win+G or bare Win+F11 anywhere below. S5 uses only the Compatible Ctrl+Win+G / Ctrl+Win+F11 alternates plus Authentic inspection without bare-chord presses. No registry/policy writes, games, downloads, elevated apps, secure-desktop or forced-loss probes. Preserve unrelated windows.
+- Report each check as PASS/FAIL plus its requested observation; use BLOCKED (with condition) or NOT RUN instead of guessing. Send the run-log filenames and ordered result lines back; no titles, app content or raw keystroke logs.
+
+### Session setup (once, three terminals, repo root)
+
+- T1 fixture server: `mise exec -- cargo run --locked -p tiler-live-fixture -- serve`; keep the single announcement JSON line (pipe name + nonce). No `--dir` needed on Windows; the pipe is kernel-namespace, nothing to delete (see [fixture README](../../crates/tiler-live-fixture/README.md#windows-powershell-start)). `shutdown` exits the server, so Block D re-runs this line for a fresh announcement.
+- T2 fixture client, ready to paste:
+```powershell
+$ann = (Read-Host 'Paste announcement JSON') | ConvertFrom-Json
+function Send-Fixture([string]$Json) { mise exec -- cargo run --locked -p tiler-live-fixture -- send --socket $ann.socket --nonce $ann.nonce $Json }
+Send-Fixture '{"v":1,"request_id":"spawn1","op":"spawn","windows":[{"id":"a"},{"id":"b"}]}'
+Send-Fixture '{"v":1,"request_id":"get-s0","op":"get","ids":["a","b"]}'
+```
+`--nonce` is auto-injected into payloads that omit it; every `request_id` must be unique per call, so change the suffix each time. Read back only with `get`/`list` (observed predicates, never setter echoes; `list` returns ids only).
+- T3 tiler with trace capture: `mise exec -- just dev trace --scope-exe tiler-live-fixture.exe` (`dev` adds `--user-start`/`--trace`). Logs and provenance sidecars land under `%LOCALAPPDATA%\omnitiler\session-1\`; retain each block's pair.
+- Tray Settings > Shortcuts: apply Authentic, then rebind `toggle-float` to `Ctrl+Win+G` and `toggle-fullscreen` to `Ctrl+Win+F11`, Apply. Call this the **working binding setup**. Do not press the bare Xbox chords. Compatible alone is NOT suitable for S1-S4/D: it disables Win+digits, arrows and Win+O. Verify keyboard takeover on, workspace scope local, workspace tiling on, switch target cursor, focus-follows-cursor off and cursor-warp off; preserve/restore the originals.
+- Stage WS1 with only A/B tiled and WS2 empty (pager plus trace member/view rows). If admission put A/B elsewhere, click each and press Win+Shift+1 (numbered send-follow to WS1), then Win+1. Fixture `get` has no workspace/output field. Stop if this layout cannot be established; do not involve other applications.
+- Focus-sensitive steps: run the entire key sequence without returning to a terminal. Confirm focus visually and from the trace's foreground/target rows BEFORE any terminal click. `get` after clicking T2 can check geometry/visibility, but cannot prove the preceding foreground. Re-click the specified fixture before the next sequence.
+- Teardown per block: T2 `Send-Fixture '{"v":1,"request_id":"bye1","op":"shutdown"}'`, T3 `mise exec -- just stop`, verify restored baseline and clean ledger.
+
+### Block S (one active output; working binding setup)
+
+- S1 Alt-Tab x10 among fixture windows plus non-Alt-Tab controls (see [return-focus record](windows-workspace-return-focus.md#attribution-evidence-existing-versus-available-mechanisms)).
+  - Setup: WS1 A/B tiled. Click B, then A so the most recent two windows are fixtures.
+  - Keys: press Alt+Tab and release both keys, 10 times. If the switcher would select a foreign window, keep Alt held and use Tab to select A/B before releasing; do not activate unrelated apps. Controls: Win+1 workspace reselect, Win+Right then Win+Left, click the other fixture once.
+  - Expected: each completed switch lands on the selected fixture; controls remain distinguishable from Alt-Tab in the user's ordered notes.
+  - Capture BLOCKED: `EVENT_SYSTEM_SWITCHEND` is not subscribed. No current command enables it, and ordinary Alt-Tab has no raw-key trace. Existing foreground rows are supplementary only, not SWITCHEND capture or causal proof. The 10 physical switches can still be recorded, but cannot close the requested capture check.
+  - Capture available: keep the normal trace log from T3, identifying S1 and the three controls in the report.
+  - Result: UNRUN - record PASS/FAIL + the per-release landing list, naming any non-fixture landing.
+- S2 wake-attribution same-tick during spam (per-pass `wake-attribution` carries the tick; the same tick's `world-apply` row carries the consumed command kind).
+  - Setup: WS1 A/B; WS2 empty; click A.
+  - Keys: alternate Win+2 / Win+1 rapidly for 10 roundtrips at physical rate, no deliberate waits.
+  - Expected: remembered focus returns; join wake cause sets to same-tick commands only where both rows are present. Suppressed detail rows and quiet passes with no rows are expected logging behavior, not failure.
+  - Capture: trace-log `wake-attribution` plus `world-apply` rows.
+  - Result: UNRUN - record PASS/FAIL + same-tick join YES (paired passes matched) / NO (mismatch at tick T) / NOT OBSERVED (no paired rows in this run).
+- S3 empty-workspace return WS1 -> empty WS2 -> WS1, with desktop-foreground leg (see [return-focus record](windows-workspace-return-focus.md); decided stay-on-empty focus is not yet implemented, so record actual behavior).
+  - Setup: WS1 A/B tiled, WS2 empty; click B.
+  - Keys: Win+2, wait until both fixture windows disappear, Win+1; repeat 3 times slowly, without clicking a terminal between keys.
+  - Expected: departure hides A+B; return restores remembered B with an accepted setter and foreground proof. If a Progman/desktop-foreground veto refuses instead, record the refusal branch; do not force or retry into it.
+  - Exact-desktop leg: after Win+2, click visible blank desktop space (never Win+D), then Win+1. Clicking is an attempt, not exact-shell identity proof. Success requires `desktop_exception:true`, an accepted setter AND B visibly/trace-proven focused before any terminal click. A successful ordinary return without that marker does not exercise the desktop path. If no blank desktop is exposed, leave real windows untouched and mark this leg BLOCKED.
+  - Capture: T3 trace's `world-apply` focus dispatch/foreground rows. On failure preserve `refusal_gate`, `fg_veto_kind` and available gate facts; do not force/retry around the veto.
+  - Result: UNRUN - record PASS/FAIL + desktop marker/setter/focus outcome (or blocker/veto branch); separately state whether the three ordinary returns restored B.
+- S4 floating-window workspace roundtrip (D19/R-FLT-13: float hides while away, frame retained, remembered focus restored).
+  - Setup: working binding setup; WS1 A/B; click B and note its current frame.
+  - Keys: Ctrl+Win+G (float B), Win+2, Win+1.
+  - Expected: B floats with unchanged frame, hides on WS2, returns to the same float frame on WS1 with remembered focus.
+  - Capture: T3 trace focus/visibility/frame rows; optional post-sequence geometry snapshot: `Send-Fixture '{"v":1,"request_id":"get-s4","op":"get","ids":["a","b"]}'`. Click B and Ctrl+Win+G once to retile it afterwards.
+  - Result: UNRUN - record PASS/FAIL + actual focused window after return. Frame retention/hide failure also makes this check FAIL.
+- S5 pending Xbox shortcut conflicts (backlog P1 Xbox item; plan [gaming coexistence](windows-gaming-coexistence.md#physical-acceptance-plan-pending); covers WSK-07/WSK-08).
+  - Setup: Settings > Shortcuts > Compatible, Apply; close Settings and click tiled A. For each trial restore A to ordinary tiled/windowed state with the same safe toggle before continuing.
+  - Keys: Ctrl+Win+G tap, release; tap again to undo. Repeat with Ctrl+Win+F11. For each chord separately: hold 2 s then release; repeat releasing Ctrl before the action key; repeat releasing Win before the action key; repeat with Win pressed before Ctrl. Release all keys between trials. Plain Win should open Start; dismiss by clicking the fixture.
+  - Expected: one toggle per discrete press; no Game Bar/Xbox surface; no stuck keys or late activation.
+  - Authentic leg: select Authentic, Apply; inspect tray/conflict rows for float and fullscreen. Warnings only for positively present Game Bar package / configured GamingHomeApp conflict; absent/unknown/failed probes show ordinary no-known-conflict text. Use available Xbox-mode Settings and Game Bar Settings actions: check the intended page/app identity; missing/redirected pages must leave the conflict unresolved. Do not change OS settings or package state; Recheck must not treat navigation alone as remediation. Disable each binding and Apply, then rebind both back to the working setup and Apply: the corresponding active conflict clears. Never test old bare chords physically. Actual-state inspection does not prove all absent/failed probe branches.
+  - Capture: T3 log plus the actual package/configuration evidence shown in Settings; restore the working setup for subsequent blocks (original settings at final teardown).
+  - Result: UNRUN - record PASS/FAIL + the single worst deviation (repeat toggle, stuck key, prompt, or unexpected warning state).
+- S6 launcher geometry (WSA-01; plan [launcher fighting](windows-launcher-geometry-fighting.md#physical-check-plan-pending); backlog P1 launcher item. Fixture cannot substitute; needs real apps and inventory-verified scope).
+  - Setup: perform the fixture teardown above. Before starting any new owner, open only the disposable Notepad/Paint documents and the four named launchers for identity discovery; no games/downloads/settings changes. Resolve exact visible top-level exe basenames with the read-only inventory (no titles). Use `children` only if inventory identifies a shared host; replace `<HWND>` with that verified window's numeric handle:
+```powershell
+mise exec -- cargo run --locked -p tiler-windows -- inventory
+mise exec -- cargo run --locked -p tiler-windows -- children --hwnd <HWND>
+```
+Fill the four launcher basenames from inventory, never guesses. Close only these newly opened test windows before the timed journey. Replace every placeholder below before running:
+```powershell
+mise exec -- just dev trace --scope-exe <LauncherA.exe> --scope-exe <LauncherB.exe> --scope-exe <LauncherC.exe> --scope-exe <LauncherD.exe> --scope-exe notepad.exe --scope-exe mspaint.exe
+```
+S6 is BLOCKED until all names are verified and no unrelated windows share their scope. A shared host also requires a verified `--scope-host-child HOST=CHILD` restriction per the live guide; do not broadly admit that host. If identity cannot be isolated, park this check. Never run bare `just dev trace` (empty scope manages everything).
+  - Keys/steps (working bindings): cursor on the sole output, Win+1; open Notepad then Paint with disposable documents, click Paint, settle 10 s, physically drag a split through Paint's feasible minimum and back. Win+2; open Steam, Battle.net, Epic Games Launcher, Xbox in that order, 10 s apart, with the last opened launcher focused. Drag one split smaller/back; idle 10 s; Win+1 then Win+2. Close only one test launcher window, inspect the remaining three; Win+1 and repeat the control resize. If fighting begins, capture at most 10 polling ticks, then `mise exec -- just stop`.
+  - Expected: no unsolicited repeated writes; minimum redistribution correct; quiet idle; genuine hint changes applied; `window-diag` batches (normal level) show correlated plan/effective/readback.
+  - Capture: T3 trace, including normal-level `window-diag` sampled batches and trace `min-hints-detail` / `plan` / `write` / `readback-detail`. Keep `omitted`/`coalesced` counts; sampled rows are not every-poll proof. Stop/restore, close only test-owned windows, verify baseline before Block D.
+  - Result: UNRUN - record PASS/FAIL + whether any unsolicited repeated-write burst occurred.
+
+### Block D (two outputs; one re-layout)
+
+- D0 setup: with the prior owner stopped/restored, enable two horizontally adjacent outputs O1 (left), O2 (right), with overlapping vertical spans. Keep the display baseline for restoration. No third output required. Restart T1 with the same `serve` command; in T2 re-run `$ann = ...` with its NEW announcement. Restart T3 with `mise exec -- just dev trace --scope-exe tiler-live-fixture.exe` and restore the working binding setup, local workspaces, cursor switch target, FFC/warp off.
+- Put the terminals/cursor on O1, select Win+1, then T2 `Send-Fixture '{"v":1,"request_id":"spawn-d1","op":"spawn","windows":[{"id":"w1"},{"id":"w2"},{"id":"w3"}]}'`. Verify all three admitted on O1 (otherwise use native title-bar moves on these fixtures only to stage them there). Click w2, press Win+Ctrl+Alt+Right; click w3 on O1, press Win+Ctrl+Alt+Right. w1 stays O1; w2/w3 follow onto O2's current workspace.
+- On O2, if w2/w3 stack vertically, click w2 and press Win+O ONCE to make a left/right split. If w3 is leftmost, click w3 and press Win+Shift+Right once to put it right of w2. Required end state: `O1=w1`, `O2=H[w2 w3]` (w2 left, w3 right), ordinary tiles, no overlays. Confirm visually and in trace member/view/allocation rows before D1; do not treat fixture snapshots as workspace membership proof.
+- D1 cross-output edge focus (spec [edge discriminator](../spec/reference-outcomes.md#cross-output-focus-edge-discriminator); offline D1/D2 in [edge focus](archive/cross-output-edge-focus.md); user case O1=W1 O2=H[W2 W3], W3 last focused).
+  - Setup: click w3 and verify active focus, then directly click w1 and verify active focus (O2 last focused w3). Keep the pointer still; no terminal clicks during this sequence.
+  - Keys: Win+Right once from w1.
+  - Expected: focus selects w2 (edge-nearest per D1/D2), not destination-MRU w3.
+  - Capture: T3 directional/focus outcome plus foreground rows, including w3 -> w1 setup and the crossing; confirm w2 visibly focused before touching a terminal.
+  - Result: UNRUN - record PASS/FAIL + which window (w2 or w3) actually received focus.
+- D2 is **optional**, not a complete P0 dual-output matrix. Run in order below if convenient; omit sleep/wake, hotplug, Explorer restart, owner loss, scope-mode permutations and third-output discrimination from this short session.
+- D2a cursor-first placement recheck (backlog P0 dual-output remainder).
+  - Setup: after D1, leave w1 focused on O1 by clicking it; use T2 on O2 to prepare the command below, leave the cursor on O2 while w1 remains the last focused managed window. New-window placement must be COSMIC cursor-output/last-focused mode.
+  - Keys: T2 `Send-Fixture '{"v":1,"request_id":"spawn-d2","op":"spawn","windows":[{"id":"w4"}]}'`; wait for admission.
+  - Expected: newcomer w4 admits on O2 (cursor-first default).
+  - Capture: T3 admission rows plus visible placement; afterwards close only w4 with `Send-Fixture '{"v":1,"request_id":"close-d2","op":"close","ids":["w4"]}'` to restore the D1 layout.
+  - Result: UNRUN - record PASS/FAIL + the output w4 actually admitted on.
+- D2b physical pager selection (W2M-13 selection remainder only).
+  - Setup: D1 layout restored, pager enabled on each output, local workspace scope.
+  - Keys: click O1 pager's empty-workspace cell, then its occupied cell to return; repeat on O2. Do not press a send while the empty view has no managed focus.
+  - Expected: each pair hides/reveals only that output's fixtures and leaves the other output's selected view unchanged. This does not prove the still-unimplemented stay-on-empty focus policy.
+  - Capture: visual switch; trace workspace rows.
+  - Result: UNRUN - record PASS/FAIL + switched-only-own-output YES/NO per pager.
+- D2c no-focus navigation (backlog P1 remaining proof; [delivered behavior](archive/directional-focus-without-window.md), tentative D3 span policy).
+  - Setup: D1 layout restored. Cursor O1, Win+2 to its empty view. Click visible blank desktop on O1 so no managed window is focused; if unavailable, BLOCKED without disturbing real windows. Trace must establish no managed foreground before the tested key; otherwise this is not the no-focus path.
+  - Keys (i): Win+Left (no output to O1's left). Expected: no-op, no local recovery or forced focus. (ii) From the same no-focus O1 origin, Win+Right toward O2. Expected: crossing selects edge tile w2, not w3. Cursor O1, Win+1 restores w1's view afterwards.
+  - Capture: T3 no-subject directional dispatch and resulting foreground rows; verify target before any terminal click.
+  - Result: UNRUN - record PASS/FAIL per leg + actual outcome (no-op confirmed / arrival target).
+- D2d empty-singleton/reverse-DPI native drag (W2M-06 remainder).
+  - Setup: D1 layout restored. Cursor O2, Win+2 selects an empty destination; click singleton w1 on O1.
+  - Keys: drag w1 by its native title bar into empty O2 and drop (no Win modifier). Then drag w1 back from O2 into empty O1; if scales differ this is the reverse-DPI-start leg, otherwise mark that subleg NOT RUN. Start another cross-output title-bar drag and press Esc before dropping.
+  - Expected: singleton drops occupy the empty destination with matching preview/drop and source emptied; reverse start stays a move, not an erroneous resize; Esc snaps back without membership change.
+  - Capture: T3 drag dispatch/START-probe and member/frame rows; no synthetic-input driver.
+  - Result: UNRUN - record PASS/FAIL per subleg + preview/drop agreement or erroneous resize (cancel: snap-back YES/NO).
+- Final teardown: T2 `Send-Fixture '{"v":1,"request_id":"bye-d","op":"shutdown"}'`; `mise exec -- just stop`; restore original tiler/display settings, confirm no owner/hooks/overlays, all test-hidden windows revealed and clean recovery ledger. Preserve failures/residue; no broad cleanup.
+
+### Command/binding/expectation provenance
+
+- Fixture `serve` + PowerShell `send` helper and `get`/`list`/`shutdown` ops: [fixture README](../../crates/tiler-live-fixture/README.md#windows-powershell-start) and its command reference/protocol sections.
+- Dev/stop recipes: [windows.just](../../just/windows.just), [argument assembly](../../scripts/windows-dev.ps1); scope and inventory/children grammar: [CLI](../../crates/tiler-windows/src/main.rs), [scope parser](../../crates/tiler-windows/src/tiling/cli.rs), [title-free inventory](../../crates/tiler-windows/src/tiling_sys/commands.rs).
+- Same-tick attribution, cause sets and filtered-detail suppression: [run_loop_wait.rs](../../crates/tiler-windows/src/tiling_sys/run_loop_wait.rs). Quiet/suppressed rows are not failed commands; no inference of one unique waker.
+- Win+arrows/Shift-move/Ctrl+Alt-send: [snapkey routing](../../crates/tiler-windows/src/snapkey/mod.rs); Win+digits and Shift+digits: [binding catalog](../../crates/tiler-windows/src/settings/catalog.rs). Win+O retains child order: [orientation record](archive/windows-parent-orientation-toggle.md). Compatible disables navigation/digits/orientation and rebinds float/fullscreen: [presets.rs](../../crates/tiler-windows/src/settings/presets.rs).
+- Missing SWITCHEND subscription: [run_loop.rs](../../crates/tiler-windows/src/tiling_sys/run_loop.rs), [wake filter](../../crates/tiler-windows/src/tiling_sys/observe.rs), [attribution limits](windows-workspace-return-focus.md#attribution-evidence-existing-versus-available-mechanisms). Desktop marker is gate proof, not landing: [implementation/acceptance](windows-workspace-return-focus.md#implementation-and-accepted-evidence).
+- Compatible Ctrl+Win+G / Ctrl+Win+F11 hold/release-order plus Authentic navigation/refresh steps: [gaming coexistence](windows-gaming-coexistence.md#physical-acceptance-plan-pending). Launcher control/four-app steps: [launcher fighting](windows-launcher-geometry-fighting.md#physical-check-plan-pending).
+- Edge-nearest w2: [spec discriminator](../spec/reference-outcomes.md#cross-output-focus-edge-discriminator); float hide/return: [D19 inventory](../backlog.md#open-work), [REQ-FLT-13](../spec/functional-spec.md). Optional placement/drag/pager legs: [dual-output remainder](windows-dual-output-live.md#remaining-units); these do not close entire W2M rows.
+
+### Limitations (explicit, not proven here)
+
+- SWITCHEND capture is blocked on an unimplemented subscription; S1 keeps foreground rows as supplementary evidence only.
+- Fixture-only scope proves nothing about real launchers; S6 stays BLOCKED until inventory-verified basenames fill the scope.
+- The S3 desktop-forced leg is BLOCKED wherever covering windows hide the desktop; nothing is moved or hidden to expose it.
+- The decided stay-on-empty focus behavior is not yet implemented; S2/S3 record actual behavior against the decision without claiming it.
+
 ## Single-monitor keyboard/shortcuts
 
 | ID | Action | Pass criterion | Gate IDs | Source |

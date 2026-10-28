@@ -93,7 +93,8 @@ Prioritise by return toward these goals
   bump. Later: tab-close survivor rule (recommendation: positional-next,
   clamped at the end, vs MRU).
 - P1 | Windows batched physical checks | One user session, not waiting on the
-  staged switch prototype: Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
+  staged switch prototype. [Ordered run sheet](changes/windows-physical-checklist.md#batched-physical-run-sheet-2026-10-29)
+  (capture availability and setup prerequisites explicit): Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
   fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls);
   wake-attribution same-tick confirmation during spam; exact-desktop WS1 ->
   empty WS2 -> WS1 return; floating-window focus across a workspace round trip;
