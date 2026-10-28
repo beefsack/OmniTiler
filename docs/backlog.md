@@ -163,7 +163,8 @@ decisions of 2026-09-24 are under
   setup and departure cursor repair pass live. Windows delivery is complete:
   after repairing directional CLI origin freshness, both cases pass all 102
   commands at 0/10/50ms with strict joins and clean recovery. Remaining native
-  runners are KDE/macOS using these same definitions/oracles; physical burst
+  runners are KDE/macOS using these same definitions/oracles (macOS runner
+  shelved 2026-10-28 pending redogfood); physical burst
   ingress remains the separate keyboard item below
   ([Windows outcome](changes/archive/platform-neutral-stress-acceptance.md)).
 - P1 | Keyboard stress runner | Raised from P2 2026-10-28: first deliver the
@@ -399,7 +400,8 @@ decisions of 2026-09-24 are under
   socket/native geometry, focus, close/reflow and teardown
   ([evidence](changes/archive/macos-fixture-tiler-integration.md)).
   macOS remaining: product focus/move chords and managed select/send/trailing
-  need physical fixture checks or a fixture-aware guarded diagnostic driver;
+  need physical fixture checks or a fixture-aware guarded diagnostic driver
+  (driver shelved 2026-10-28 ROI review; physical checks instead);
   existing owned controls/stay/trailing injections remain legacy-helper/TextEdit
   only ([checklist](live-macos-testing.md#fixture-first-live-tests)).
   [Reference](../crates/tiler-live-fixture/README.md).
@@ -1441,13 +1443,24 @@ decisions of 2026-09-24 are under
   disposition before any live leg
   ([decisions](decisions.md#macos-follow-up-review-decisions-2026-10-28));
   (b) delivered offline 2026-10-28: every user command reaches core FIFO, T3
-  supersession retained (`3d64b5c5`);
-  (c) macOS native stress runner against the shared spec (shared oracles stay
-  Windows-owned per the [stress record](changes/platform-neutral-stress-acceptance.md));
-  (d) pager core-trailing-workspace check;
-  (e) fullscreen logical-membership design;
-  (f) dynamic corner radius;
-  (g) targeted live acceptance and redogfood.
+  supersession retained (`3d64b5c5`).
+  **ROI review (user 2026-10-28) - macOS order:** (1) propose 0.1 gate
+  exceptions (P0 item below); (2) small fixes: focus-walk test fence, pager
+  core-trailing-workspace check, first-float placement decision, `just dev`
+  log-follower leak, `just launch` exit code; (3) targeted redogfood, including
+  trailing send-follow (3a) and direct-wake feel; (4) fullscreen
+  logical-membership design plus one bounded probe; (5) best-effort admission
+  adoption; (6) gate reliability/game-safety work (item 8); (7) `ffi.rs` unsafe
+  review, decoupled from item 5; (8) drag/drop overlays; (9) file-size splits,
+  shortcut-override check, MC Ctrl+Up/Down, two-display checks, distribution.
+  **Shelved (high effort, questionable value now):** macOS native stress
+  runner against the shared spec (revisit after redogfood); fixture-driven
+  live input harness (3.0 and the live-fixture remainder; physical dogfood
+  checks instead); selection/send route settings (3c); dynamic per-window
+  corner radius (version-derived default stays). **Deferred:** SkyLight
+  underlay/below-target border experiment (5) to post-0.1; MC AX fallback (3b)
+  until a macOS release refuses Dock-swipe; macOS 15 floor check; indicator
+  icons.
   **Pending physical acceptance (dogfooding):** workspace selects, send-follow,
   send-stay and trailing Space, plus the user-approved 2026-10-19 decisions
   ([dogfood checklist](changes/macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19));
