@@ -26,12 +26,12 @@ Prioritise by return toward these goals
 
 ## Open work
 
-- Windows order (user 2026-10-28): (1) Windows shared window-policy adoption;
-  (2) keyboard stress runner; (3) batched physical checks session, including
-  pending Xbox shortcut, launcher geometry and cross-output edge focus
-  acceptance; (4) Windows-host test flakes; (5) staged switch prototype and
-  intermittent incomplete hide, with the coordinated protocol bump;
-  (6) sticky-rehome sampling and pager event coverage (P2).
+- Windows order (user 2026-10-28): (1) keyboard stress runner; (2) batched
+  physical checks session, including pending Xbox shortcut, launcher geometry
+  and cross-output edge focus acceptance; (3) Windows-host test flakes;
+  (4) staged switch prototype and intermittent incomplete hide, with the
+  coordinated protocol bump; (5) sticky-rehome sampling and pager event
+  coverage (P2).
 - P1 | Windows staged workspace switch prototype | Approved 2026-10-28
   ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
   arrival shows, prove visible, one-shot focus, prove foreground, then hide
@@ -1528,9 +1528,6 @@ Prioritise by return toward these goals
    exact Tier 1/native outcomes before proposing any shared slot change
   ([discriminator](spec/reference-outcomes.md#macos-classification-discriminators),
    [record](changes/macos-window-classification.md)).
-- P1 | Windows shared window-policy adoption | Adopt the approved
-   `tiler_core::window_policy` predicates in the Windows work stream,
-   preserving adapter acquisition/actuation and current conformance vectors.
 - P1 | KDE shared window-policy adoption | Adopt the approved
    `tiler_core::window_policy` predicates in the KDE work stream,
    preserving script-host acquisition and documented host-specific exceptions.

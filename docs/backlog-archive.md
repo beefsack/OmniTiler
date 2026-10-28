@@ -13,6 +13,15 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## Windows shared window-policy adoption (closed 2026-10-28)
+
+- P1 | Windows shared window-policy adoption | Runtime adoption was already
+  delivered by the world-model migration: classification, overlay/toggle
+  refusals and maximize/fullscreen gates use core predicates; Windows keeps
+  native fact acquisition and mechanics. `8fae9e18` adds exhaustive
+  equivalence coverage and adapter guidance; no behavior change, independent
+  review clean ([record](changes/archive/windows-shared-window-policy-adoption.md)).
+
 ## Cross-output edge focus (closed 2026-10-28)
 
 - P1 | Cross-output directional focus picks the window nearest the crossed edge |
