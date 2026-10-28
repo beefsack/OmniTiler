@@ -516,8 +516,14 @@ complete checklist row is closed by these bounded legs.
 - User dogfood 2026-10-20 reports cross-output window moves working well.
   Cross-output focus instead chose W3 from `O1=W1`, `O2=H[W2 W3]` on Win+Right;
   the user expected edge-nearest W2, not destination MRU. Record this as the
-  [separate focus discriminator](../spec/reference-outcomes.md#cross-output-focus-edge-discriminator),
-  not a passed focus policy or approved shared-core change.
+  [separate focus discriminator](../spec/reference-outcomes.md#cross-output-focus-edge-discriminator);
+  the 2026-10-20 "not an approved shared-core change" wording is historical.
+  User decision D1 2026-10-28 selects edge-nearest (shared-core policy, no
+  setting); implementation pending with D2-D5 details unresolved. Trace
+  verdict: no instrumented per-window trace is retained in-repo proving W3
+  was O2's MRU, so bug versus working-as-designed is unproven; external raw
+  logs were not inspected and the Tier 1 source audit is not a retroactive
+  diagnosis.
 - User 2026-10-20 accepted: secondary bars without a notification area
   may anchor at bar-right minus the existing gap only for the observed narrow
   HWND hierarchy: readable descendants, positive visible left app-button

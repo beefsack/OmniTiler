@@ -267,15 +267,95 @@ no-focus path. Physical shortcuts remain unverified. [Record](../changes/archive
 <a id="cross-output-focus-edge-discriminator"></a>
 ### Cross-output focus: edge-nearest versus destination MRU
 
-User direction 2026-10-20: last-focused selection applies only to switching
-workspaces on one output; crossing an output boundary should select the window
-nearest the crossed edge. This conflicts with the current Engine last-focused
-tiled-leaf proposal in [R-OUT-03](reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs),
-whose single destination tile does not distinguish these rules.
+User decision D1 2026-10-28 (sides with Hyprland+sway;
+[policy](../decisions.md#cross-output-focus-edge-policy)): crossing an output
+boundary selects the window nearest the crossed edge, not the destination
+output's MRU. Workspace-return MRU, local navigation and output selection are
+unchanged; no setting for now. Existing
+[R-OUT-03](reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs)
+has a sole destination tile and cannot discriminate these rules.
+D2 (candidate ranking, equal-distance ties, perpendicular overlap, nesting),
+D3 (no-focus origins), D4 (exception,
+fullscreen, maximized, floating and empty destinations) and D5 (macOS
+integration) remain open; no implementation started.
 
-| Variant | Minimal action sequence | User direction / discriminator | Unsupported outcome / next evidence |
-| --- | --- | --- | --- |
-| Cross right with destination MRU away from edge | Equal aligned outputs: `O1=W1`, `O2=H[W2 W3]`, W2 nearest O2's left edge. Focus W3, then W1 without changing O2's MRU; press Win+Right once | Edge-nearest chooses W2; destination MRU chooses W3. Keep layouts, membership and current workspaces unchanged | User dogfood trace 2026-10-20 selected W3, expected W2; W3's MRU identity remains unverified. Next: confirm this row and Tier 1 functional-matrix cells (COSMIC, Hyprland, i3, sway outcomes all TBD), then inspect the trace to distinguish MRU behavior from a bug. Likely shared core behavior; any core change needs user approval |
+| Minimal action sequence | Discriminator |
+| --- | --- |
+| Equal aligned touching outputs: `O1=W1`, `O2=H[W2 W3]`; ordinary tiles, same workspaces/layouts. Focus W3, then directly W1; verify O2 MRU is W3; prevent hover changes; press focus-right once (Omni `Win+Right`; COSMIC `Focus(Right)`, Hyprland `movefocus r`, i3/sway `focus right`) | Edge-nearest selects W2; destination MRU selects W3 |
+
+| Compositor | Target for this sequence shape | Basis |
+| --- | --- | --- |
+| COSMIC | W3 | Source-derived; exact runtime TBD (`NF-X-cos`) |
+| Hyprland | W2 | Source-derived; exact runtime TBD (`NF-X-hyp`) |
+| i3 | W3 | Source-derived; exact runtime TBD (`NF-X-i3`) |
+| sway | W2 | Source-derived; exact runtime TBD (`NF-X-sway`) |
+| OmniTiler (selected D1 2026-10-28) | W2 | Selected, not implemented; exact runtime TBD; no universal edge-nearest consensus (refs split 2:2 on the fixture shape) |
+
+Relevant knobs and defaults: COSMIC workspace layout Vertical default
+(Horizontal changes Right to `NextWorkspace`), `OutputBound` default;
+Hyprland `binds:window_direction_monitor_fallback=true` and
+`binds:focus_preferred_method=0` defaults; i3 `focus_wrapping=on` default;
+sway user-facing `focus_wrapping=yes` default.
+
+Hyprland fallback and gap notes: `binds:window_direction_monitor_fallback=false`
+disables the cross-monitor/direct-candidate path, so no crossing occurs; with
+the default `true`, the direct query runs first and both method 0 (history
+among qualifiers) and method 1 (shared overlap) select W2 here. The default
+`gaps_out=20` does not break this adjacency: the work area includes gaps and
+the ideal query box expands back to monitor bounds at work-area edges, so only
+direct W2 qualifies and W3 is nonadjacent; do not read gaps as forcing MRU.
+
+Local-source citation keys (paths and line ranges at the stated pins):
+
+- COSMIC pin `3d55cba06c9cf6f27609cdefb520f7857dba20af`:
+  - `NF-X-cos`: `src/input/actions.rs:535-582,745-801` @`3d55cba0`
+    (local exhaustion -> `SwitchOutput` -> `focus_stack.last`).
+  - Layout/mode: `cosmic-comp-config/src/workspace.rs:33-44` @`3d55cba0`
+    (Vertical default; Horizontal changes Right to `NextWorkspace`;
+    `OutputBound` default).
+- Hyprland pin `19fb395d45314960e6f79f17994a84094f1cd4f6`:
+  - `NF-X-hyp`: `src/desktop/state/WindowQuery.cpp:67-195` @`19fb395d`
+    (edge adjacency + perpendicular overlap > 1; method 0 history among
+    qualifiers, method 1 shared overlap).
+  - Direct query before monitor fallback:
+    `src/config/shared/actions/ConfigActions.cpp:440-477` @`19fb395d`;
+    fallback focus candidate:
+    `src/config/shared/actions/ConfigActions.cpp:104-138` @`19fb395d`.
+  - Destination candidate fallback:
+    `src/workspace/HLWorkspace.cpp:134-144` @`19fb395d` (MRU else
+    top-left/first).
+  - Defaults: `src/config/values/ConfigValues.cpp:621-627` @`19fb395d`
+    (`binds:window_direction_monitor_fallback=true`,
+    `binds:focus_preferred_method=0`).
+  - Gap adjacency: `src/config/values/ConfigValues.cpp:169-170`
+    @`19fb395d` (`gaps_out=20` default);
+    `src/layout/space/Space.cpp:85-110`,
+    `src/desktop/reserved/ReservedArea.cpp:19-36` and
+    `src/desktop/view/window/Window.cpp:305-353` @`19fb395d`.
+- i3 pin `903bcd518df32b0e055b17f5da3f988a0187fd3d`:
+  - `NF-X-i3`: `src/tree.c:469-494,593-615` @`903bcd51` (workspace cross +
+    MRU tiling descent); `src/con.c:1709-1727` @`903bcd51`.
+  - Wrapping: `src/config.c:229` @`903bcd51` (`focus_wrapping=on`
+    default); `src/tree.c:548-586` @`903bcd51` (workspace prevents
+    crossing; force wraps only eligible multichild sources, sole W1 still
+    crosses).
+- sway pin `1652c54b73f67df17b7b4ab0b0f7048204aa8104`:
+  - `NF-X-sway`: `sway/commands/focus.c:81-136` @`1652c54b` (horizontal
+    right entry: first child W2, then nested MRU via
+    `sway/input/seat.c:219-232` @`1652c54b`); nonmatching layout uses MRU.
+  - Wrapping: `sway/config.c:274` @`1652c54b` (user-facing
+    `focus_wrapping=yes` default);
+    `sway/commands/focus.c:177-213` @`1652c54b` (workspace blocks; force
+    needs multichild wrap).
+
+For OmniTiler, exact nesting, tie, perpendicular-overlap and non-focus-origin
+behavior is still pending (D2-D4); this qualifies only the OmniTiler
+selection, not the reference source facts above. No new outcomes inferred.
+
+Trace verdict: no retained in-repo per-window trace proves W3 was O2's MRU
+in the 2026-10-20 dogfood run, so bug versus working-as-designed is
+unproven; external raw logs were not inspected. The source audit above is
+not a retroactive diagnosis.
 
 ### Admission and geometric capacity (source audit 2026-10-16)
 

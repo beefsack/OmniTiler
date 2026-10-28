@@ -371,6 +371,25 @@ New decisions:
   protocol change defines concrete core and platform responsibilities, so the
   two never compete for the same decision or leave it ambiguous
   ([comparison basis](changes/windows-workspace-return-focus.md)).
+- <a id="cross-output-focus-edge-policy"></a> **Cross-output directional focus
+  selects by crossed edge (D1 selected 2026-10-28):** crossing an
+  output boundary focuses the destination window nearest the crossed edge,
+  not the destination output's MRU; this sides with Hyprland+sway on the
+  ordinary-tile fixture. Shared-core policy: applies to all adapters, no
+  setting for now. Workspace-return MRU, local navigation and output
+  selection are unchanged. The ordinary-tile fixture demonstrates the rule;
+  float eligibility is not decided here. Open details, implementation not
+  started: D2 candidate ranking, equal-distance ties, perpendicular overlap
+  and nesting; D3 no-focus origins; D4 candidate eligibility for exception,
+  fullscreen, maximized, floating and empty destinations; D5 macOS
+  integration. Separate gap: macOS production
+  hotkeys send `FocusStep` with `cross_output_transfer:false`, which the
+  core routes to a local event
+  (`crates/tiler-macos/src/world_command_map.rs:234-242`,
+  `crates/tiler-core/src/world_operations.rs:93-123,1375-1387`,
+  `crates/tiler-core/src/engine.rs:4307-4312`), so macOS hotkeys cannot
+  cross outputs yet regardless of target policy.
+  [Discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator).
 
 ## Active-drag preview continuity (2026-10-27)
 
@@ -4599,17 +4618,21 @@ platform API behavior.
   Up/Down retain focus; Left/Right try reciprocal horizontal adjacent output
   remembered eligible tiled focus, otherwise retain. This deliberately differs
   from COSMIC's configured workspace-axis then output navigation. A float-only
-  source can cross. Local tiles are never floating-search targets.
-- User direction 2026-10-20 conflicts with the remembered cross-output target
-  above and the Engine proposal in R-OUT-03: crossing an output boundary should
-  focus the window nearest the crossed edge; last-focused selection applies
-  only to workspace switching on a single output. User dogfood trace 2026-10-20:
+  source can cross. Local tiles are never floating-search targets. The
+  remembered cross-output target in this bullet is superseded for directional
+  crossing by D1 2026-10-28 (destination window nearest the crossed edge
+  wins); float-eligibility details pending D4; implementation unchanged.
+- User decision D1 2026-10-28 (sides with Hyprland+sway) supersedes the
+  remembered cross-output target above and the Engine proposal in R-OUT-03
+  for directional crossing: crossing an output boundary focuses the window
+  nearest the crossed edge; last-focused selection applies only to workspace
+  switching on a single output. User dogfood trace 2026-10-20:
   `O1=W1`, `O2=H[W2 W3]`; Win+Right from W1 selected W3, expected W2.
-  Next: confirm the [minimal discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator)
-  and Tier 1 cells with destination MRU not edge-nearest, then inspect the trace
-  to distinguish W3-as-MRU from a bug. Likely shared core behavior; any core
-  change needs user approval. No implementation change or reference consensus
-  is inferred.
+  No retained in-repo per-window trace proves W3 was O2's MRU, so bug versus
+  working-as-designed is unproven; external raw logs were not inspected.
+  [Discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator),
+  [policy](#cross-output-focus-edge-policy). No implementation change or
+  reference consensus is inferred.
 - Local selection and explicit native half-snaps stay host-synchronous in the
   KWin adapter. Rust keeps remembered cross-output focus authority through the
   minimal internal `focus.float_subject` flag, leafless `from_leaf: null`, and
@@ -5091,6 +5114,16 @@ platform API behavior.
   exact target placement. Tier 1 COSMIC, Hyprland, i3 and sway all cross to the
   adjacent output with the mover followed/focused; this delivers that cleanly
   rather than through recovery. [Evidence](changes/kde-dual-output-live.md#rightward-r4-defect-correction-and-re-verification).
+- Directional cross-output focus target (D1 selected 2026-10-28): the
+  exhausted horizontal focus transfer selects the destination window nearest
+  the crossed edge, not destination MRU, superseding the former
+  adjacent-output remembered/last-focused target; shared-core policy, no
+  setting for now. Workspace-return MRU, local navigation and output
+  selection are unchanged. This supersedes only the focus target: R4
+  movement behavior above is unaffected (whole-target wrap stays). Open
+  D2-D5 details; implementation not started.
+  [Policy](#cross-output-focus-edge-policy),
+  [discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator).
 - The public portable per-domain ownership/session-query API is removed
   (Windows adoption complete 2026-10-24; historical wording in
   [archive](decisions-archive.md#1c-portable-per-domain-sessions-ownership-moved-2026-10-24)).

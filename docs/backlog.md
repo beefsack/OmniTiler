@@ -206,15 +206,19 @@ Prioritise by return toward these goals
   setting's per-preset value from Tier 1 evidence; leave missing evidence TBD.
   Hyprland warp stays off pending its own verb-dependent evidence row.
 - P1 | Cross-output directional focus picks the window nearest the crossed edge |
-  User dogfood trace 2026-10-20: `O1=W1`, `O2=H[W2 W3]`; Win+Right from W1
-  selected W3, expected W2. User direction: last-focused only for switching
-  workspaces on one output; output crossing chooses edge-nearest. Conflicts with
-  current Engine adjacent-output last-focused tiled leaf ([decision](decisions.md#engine-operations-and-policy),
+  User decision D1 2026-10-28 (sides with Hyprland+sway): output crossing
+  chooses edge-nearest, no setting; last-focused stays for workspace switching
+  on one output. [Minimal sequence](spec/reference-outcomes.md#cross-output-focus-edge-discriminator)
+  and Tier 1 source cells recorded (COSMIC W3, Hyprland W2, i3 W3, sway W2;
+  exact runtimes TBD). Trace verdict: no retained in-repo per-window trace
+  proves W3 was O2's MRU in the 2026-10-20 run (`O1=W1`, `O2=H[W2 W3]`,
+  Win+Right from W1 selected W3, expected W2), so MRU behavior versus bug is
+  unproven. Open: D2 candidate ranking/ties/overlap/nesting, D3 no-focus
+  origins, D4 exception/fullscreen/maximized/floating and empty destinations,
+  D5 macOS integration. Policy selected; implementation not started.
+  Supersedes the Engine adjacent-output last-focused tiled leaf for
+  directional crossing ([decision](decisions.md#engine-operations-and-policy),
   [R-OUT-03](spec/reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs)).
-  Next: confirm [minimal sequence](spec/reference-outcomes.md#cross-output-focus-edge-discriminator)
-  and Tier 1 cells (destination >=2 tiles, MRU not edge-nearest), then inspect
-  the trace to confirm W3 was O2's MRU versus a bug. Likely shared core behavior;
-  any core change needs user approval.
 - P1 | Dogfood permanent maximize-clear refusals | User 2026-10-20 accepted
   Windows pre-clear diagnostic priority with fullscreen veto, and B9
   `float-maximize-clear` diagnostics with fullscreen veto. Core-owned

@@ -192,8 +192,18 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
   via `actuate_focus`. Foundation delivered offline; selector audit `fda618f`,
   2026-10-14 ([record](../../changes/archive/windows-position-based-output-selection.md));
   physical journey pending. `S(S-ours-focus)` + `S(S-ours-out)`.
-- Variant hook: provisional/TBD (no suitable existing hook; V-R4-DIR
-  covers moves, not focus).
+- Target-policy note: the last-focused rule above describes the historical
+  and current implementation (the Engine cross-output proposal selects the
+  adjacent output domain's last-focused tiled leaf). For directional
+  crossing it is superseded by user decision D1 2026-10-28 (cross-output
+  directional focus selects edge-nearest, no setting). Sole X is the same
+  window under both rules, so this fixture cannot discriminate them;
+  multi-tile destinations discriminate via the
+  [cross-output focus edge discriminator](../reference-outcomes.md#cross-output-focus-edge-discriminator).
+  The implementation itself is unchanged.
+- Variant hook: the
+  [cross-output focus edge discriminator](../reference-outcomes.md#cross-output-focus-edge-discriminator)
+  (multi-tile destinations; sole X here cannot discriminate).
 
 ### R-OUT-04: explicitly send a window to the other output
 
