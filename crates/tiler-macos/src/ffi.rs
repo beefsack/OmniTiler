@@ -651,10 +651,40 @@ impl SpaceSelectLatch {
     }
 
     /// Wait until the generation moves past `from`, cancellation arrives,
-    /// or `timeout` elapses. One condvar wait per call (the settlement
-    /// loop re-waits only on genuine events, never a periodic poll);
-    /// spurious wakeups re-wait within the remaining slice.
+    /// or `timeout` elapses. The call may sleep several times within the
+    /// slice; spurious or early timeout reports re-wait the remainder, so
+    /// `TimedOut` always means the full slice elapsed with no event.
     pub fn wait(&self, from: u64, timeout: std::time::Duration) -> LatchWait {
+        let deadline = std::time::Instant::now() + timeout;
+        self.wait_until(
+            from,
+            deadline,
+            |cvar, guard, dur| {
+                let (guard, res) = cvar.wait_timeout(guard, dur).unwrap_or_else(|e| {
+                    let (guard, result) = e.into_inner();
+                    (guard, result)
+                });
+                (guard, res.timed_out())
+            },
+            std::time::Instant::now,
+        )
+    }
+
+    fn wait_until<S, C>(
+        &self,
+        from: u64,
+        deadline: std::time::Instant,
+        mut sleep: S,
+        mut clock: C,
+    ) -> LatchWait
+    where
+        S: for<'x> FnMut(
+            &'x std::sync::Condvar,
+            std::sync::MutexGuard<'x, LatchState>,
+            std::time::Duration,
+        ) -> (std::sync::MutexGuard<'x, LatchState>, bool),
+        C: FnMut() -> std::time::Instant,
+    {
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.cancelled {
             return LatchWait::Cancelled;
@@ -662,28 +692,25 @@ impl SpaceSelectLatch {
         if state.generation != from {
             return LatchWait::Advanced(state.generation);
         }
-        let deadline = std::time::Instant::now() + timeout;
         loop {
-            let now = std::time::Instant::now();
+            let now = clock();
             if now >= deadline {
                 return LatchWait::TimedOut;
             }
-            let (guard, res) = self
-                .inner
-                .cvar
-                .wait_timeout(state, deadline - now)
-                .unwrap_or_else(|e| {
-                    let (guard, result) = e.into_inner();
-                    (guard, result)
-                });
-            state = guard;
+            let timed_out;
+            (state, timed_out) = sleep(&self.inner.cvar, state, deadline - now);
             if state.cancelled {
                 return LatchWait::Cancelled;
             }
             if state.generation != from {
                 return LatchWait::Advanced(state.generation);
             }
-            if res.timed_out() {
+            // An early timeout report is not the bound (condvar wakes can
+            // land short of the slice): re-wait the remainder so one call
+            // spans the full slice. Settlers trust `TimedOut` as
+            // bound-reached; an early return would spend an extra proof
+            // read with no event behind it.
+            if timed_out && clock() >= deadline {
                 return LatchWait::TimedOut;
             }
         }
@@ -11148,6 +11175,35 @@ mod tests {
             first.wait(1, std::time::Duration::from_millis(10)),
             LatchWait::Advanced(2)
         );
+    }
+
+    #[test]
+    fn select_latch_early_timeout_report_rewaits_remainder() {
+        // Fully scripted clock and sleep: the first sleep reports
+        // timed-out while the fake clock is still before the deadline,
+        // so only the guarded re-wait reaches the bound. No real
+        // sleeping, no elapsed-time assertion.
+        let latch = SpaceSelectLatch::detached();
+        let from = latch.generation();
+        let t0 = std::time::Instant::now();
+        let deadline = t0 + std::time::Duration::from_millis(100);
+        let mut sleeps = 0;
+        let mut ticks = 0;
+        let outcome = latch.wait_until(
+            from,
+            deadline,
+            |_cvar, guard, _dur| {
+                sleeps += 1;
+                (guard, true)
+            },
+            || {
+                ticks += 1;
+                if ticks >= 4 { deadline } else { t0 }
+            },
+        );
+        assert_eq!(outcome, LatchWait::TimedOut);
+        assert_eq!(sleeps, 2, "early report must re-wait exactly once");
+        assert_eq!(ticks, 4, "clock must reach the bound on the second check");
     }
 
     #[test]
