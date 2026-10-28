@@ -292,18 +292,49 @@ decisions of 2026-09-24 are under
   warning and navigation-only Virtual Desktops action, producer/broker/native
   settings regressions. Native all-mode acceptance remains TBD. Stage 8 is
   partial: bounded ownership audit, fixture-scoped two-window admission/tiling
-  and select-away/back membership/frame/foreground checkpoints; independent
-  compositor hide/reveal, renderer coverage, focus/send/both-output/close and
-  full ownership closure remain TBD. An unscoped-start incident moved one
-  non-fixture window's position (size unchanged); stopped and recorded; the
-  window was later closed by the user, so frame restoration is moot, but the
-  post-incident shortcut/effect inventory comparison is still owed. User
-  2026-10-28: prove compositor hide/reveal with a test-only scripted KWin
-  effect (never shipped) loaded only during live legs, reading
-  `EffectWindow.visible` for fixture windows, unloaded afterwards with
-  effect-inventory restoration proof; promote to a native-effect diagnostic only
-  if the KDE stress runner later needs it. Then rerun hide/reveal and a fresh
-  focus/send/both-output/close leg under the stop-at-first-refusal rule.
+  and select-away/back membership/frame/foreground checkpoints; tiled-mode
+  compositor hide/reveal on one output now passes independent review.
+  Renderer coverage, other-mode acceptance, focus/send/both-output/close and
+  full ownership closure remain TBD. The unscoped-start incident's surviving
+  affected window was restored to its exact baseline after fresh identity
+  verification and independent review; a different user-closed window is
+  excluded. Protected records, full shortcut tuples, effects, config/store
+  bytes/modes and desktop/view state match; pointer drift was user activity.
+  A test-only observer (25 offline checks), now preserved in
+  `kwin/tests/visibility-probe/` and excluded from runtime packages/product
+  loading (source archive inclusion only), witnessed compositor
+  visibility true/false/true across select-away/back. The first attempt was
+  rejected for broad return capture and a missing native-away checkpoint;
+  a fresh corrected leg passes with exact-sender complete replies, full
+  Describe/native pre/away/back joins and restored inventories. Effect/link
+  and owned processes were removed. A subsequent four-window focus/send-follow
+  in both directions/close-reflow collection was rejected for helper calls not
+  bound to load receipts; no native acceptance advances. Independent restoration
+  checks match protected/workspace records, all 20 shortcut component bodies,
+  effects and configuration/store content/modes; known owned processes are gone.
+   The fresh redo adds no native acceptance: effect preflight and fixture/native
+   attribution were incomplete; no focus/send/close journey checkpoint ran.
+   Fresh post-teardown comparisons match full protected/workspace records,
+   all 20 shortcut bodies and captured config/store content/modes; full
+   restoration proof remains incomplete without effect preimages and a complete
+   project-config manifest. Stack down, probe unloaded, owned processes gone.
+   Baseline checker accepted: 28/28 offline checks, two complete matching
+   captures, exact helper absence and unchanged effects/scripting; rejected draft
+    removed. Unit 2 is now native-only: 544 lines, 11/11 hermetic checks and
+    independent source review pass. Fresh baseline, both exact sentinel/PID-to-
+    UUID/frame joins, fixture/process teardown and full restoration comparison
+    pass (48 matches, zero mismatches). Both fixture frames landed on one output;
+    no reposition/retry followed, so one-per-output dry-run coverage remains open.
+    User 2026-10-28 dropped the probe from attribution, removing compositor-XDG
+    access as a dependency; existing hide/reveal proof stands. User 2026-10-28
+    then dropped the automated focus/send/both-output/close legs (even split,
+    each needed about 100 live commands): these behaviors are covered by
+    offline tests plus the physical checks below; the staging gap is moot.
+    For hide/reveal, use a test-only scripted KWin effect (never shipped)
+    loaded only during the relevant live legs, reading `EffectWindow.visible`
+    for fixture windows, unloaded afterwards with effect-inventory restoration
+    proof; promote to a native-effect diagnostic only if the KDE stress runner
+    later needs it.
   Activities/multi-desktop and async configure stay deferred investigations
   until Stage 8 and the KDE physical checks complete (user 2026-10-28), then
   run evidence-only: pinned KWin source plus fixture-only legs filling
@@ -334,7 +365,9 @@ decisions of 2026-09-24 are under
   - Deferred: investigate operation-pair outer-gap bookkeeping outside the drag
     path, following the gesture-local `world_gesture.rs` fix.
   - Physical checks pending: fullscreen-window shortcuts, rapid A/B drags after
-    `c0435a3c`, fixture-only teardown/restoration for stage acceptance. Static
+    `c0435a3c`, directional focus (local then cross-output), send/follow in both
+    directions, close/reflow on each output, fixture-only teardown/restoration
+    for stage acceptance. Static
     checks do not prove adversarial in-flight old-paint rejection.
   - Ghostty cross-output height/width shortfall is external client/toolkit
     sizing; no OmniTiler retry or artificial resize workaround. Draft upstream

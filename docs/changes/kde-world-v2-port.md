@@ -52,7 +52,7 @@
 | 5. Pure presentation and coordinates | Renderer freshness and preview continuity accepted offline; borders/underlays stay exact-current. Physical static member-move/focus return, output-local fullscreen suspension and improved preview continuity pass. No KDE pager renderer. Rapid A/B, fullscreen shortcuts and fixture teardown/restoration pending | Service 317, core/protocol 1,460, Windows Linux 725, JS 750, host effect build/CTest 36, Nix CTest 37, acceptance 6/6 and source guards pass. Physical scope and remaining gaps below; no full stage acceptance |
 | 6. Host integration | Complete offline: fresh cursorPos/windowAt on relevant event/command/gesture captures, correct QList head decoding, no polling or pure-motion captures; warp unsupported, never reported applied; independent active-border override/default system accent; native Plasma pager, no core pager-focused-window color | Pinned declarations/source, producer-shaped capture and unexpected-warp tests, native border theme/override/alpha tests and styling-independence source checks; native checks remain separate |
 | 7. Workspace modes and investigations | Complete offline: per-output-local default, global-unique separate, shared linked; equal_workspace_count stays a host limit; separate-mode warning opens Virtual Desktops without writing host config | All-mode producer/broker cases, exact labels "Displays have separate workspaces" / "Workspaces span displays", native warning/launcher tests pass. Native all-mode checks TBD; Activities/multi-desktop and configure remain deferred investigations, no core changes |
-| 8. Native acceptance and ownership audit | Partial: bounded ownership audit and fixture-scoped two-window admission/tiling; select-away/back membership exclusion and frame/foreground return observed | Native frames match allocations; independent compositor hide/reveal, renderer coverage, focus/send/both-output/close and full ownership closure remain TBD. Unscoped-start incident left one non-fixture position unrestored; exact restoration not accepted |
+| 8. Native acceptance and ownership audit | Partial: bounded ownership audit, fixture-scoped admission/tiling and tiled-mode compositor hide/reveal on one output | Corrected hide/reveal leg and incident restoration independently reviewed; observer preserved as test-only source. Fresh focus/send/both-output/close collection rejected for unbound helper lifecycle calls; renderer coverage, other modes and full ownership closure remain TBD |
 
 ### Physical checkpoint (2026-10-27)
 
@@ -3001,7 +3001,7 @@
   lanes at the recorded checkpoints; presentation-only reads are not that proof.
 - Select-away/back checkpoints show native membership/current-desktop exclusion
   on away and restored frame/foreground on return. Native compositor hide/reveal
-  remains **TBD**: there was no independent shown observer; Wayland fixture
+  was **TBD in the original leg**: there was no independent shown observer; Wayland fixture
   `visible:null` and KWin `hidden=false` do not prove shown state. Pinned KWin
   `v6.7.4` exposes `EffectWindow.visible` (`src/effect/effectwindow.h:241`,
   `.cpp:193-199`) as a possible observer, not evidence collected in this leg.
@@ -3011,8 +3011,271 @@
   earlier core foreground state lacked an independent native focus checkpoint.
 - Live-procedure incident: an unscoped dev start during a leg moved one
   non-fixture window's position, with size unchanged. It was stopped and the
-  incident recorded; restoration remains pending user action. Exact restoration
-  is not accepted, and earlier leg comparisons do not close this final gap.
+  incident recorded. The surviving affected window was subsequently restored
+  to its exact pre-incident frame after fresh identity verification; an
+  independent read-only snapshot and review confirm restoration. A different
+  baseline window was closed by the user and is excluded from comparison.
+  All surviving protected-window records, shortcut component tuples, loaded
+  and active effects, configuration/store bytes and modes, and desktop/view
+  state match. Pointer movement was user activity and was not restored.
+- A test-only scripted visibility observer was built outside shipping roots,
+  with 25 offline checks. It reads `EffectWindow.visible` and numeric geometry
+  for fixture windows only, with no rendering or window writes. Script-visible
+  effect windows do not expose the native UUID; readbacks join to full native
+  identity records only through unambiguous fixture PID/frame/active tuples.
+  A temporary user-local package link was removed after effect unload; loaded
+  and active effect inventories match their fresh baseline.
+- The observer and its 25 mocked checks are now preserved in
+  [`kwin/tests/visibility-probe`](../../kwin/tests/visibility-probe/README.md).
+  The offline runner passes 25/25. Existing KPackage, distro install lists and
+  Nix filesets exclude it from runtime packages and product loading; release
+  source archives include it as test source, matching existing tests. No live
+  state is changed by the offline checks.
+- A fresh fixture-scoped two-window leg independently observed compositor
+  visibility true before select-away, false away and true on return. Full
+  correlated `Describe` bodies and native pre/return frames were retained and
+  independently reviewed. This is **not an accepted integrated hide/reveal
+  pass**: the capture collected unrelated method returns before filtering,
+  and the native-away snapshot was missing. The complete final shortcut
+  component comparison was collected subsequently and matches the fresh
+  baseline. Owned test processes were stopped and protected records match.
+  Repeat with exact-planner-sender return capture and all native checkpoints;
+  do not reuse the deficient collection method or promote membership alone.
+- The corrected fresh two-window leg is **accepted for tiled-mode compositor
+  hide/reveal on one output**, after independent raw-evidence review. Returns
+  were captured only from the exact planner sender, with positive markers
+  before controller startup, evaluated readiness and complete correlated
+  calls/replies. Native fixture PID/UUID/caller/frame records exist before,
+  away and after return; unambiguous PID/frame/active joins match fresh
+  compositor `visible` true/false/true observations. The pre-checkpoint uses
+  the observer's pre-load cursor and fresh load readbacks, not the later
+  idempotent-selection cursor; no visibility-relevant mutation intervened.
+  Full `Describe` revisions 10/13/16 have empty output holds, transfers,
+  native creations, operation-settlement and effect lanes. Protected records,
+  configuration/store bytes and modes, desktop/view state, loaded/active
+  effects and all 20 shortcut component inventories match after teardown;
+  the final component inventory and helper-object absence were independently
+  collected during review. The observer/link and all owned live processes
+  are gone. This does not establish renderer coverage, other workspace modes,
+  both-output journeys or physical input delivery.
 - Stage 8 and the whole port remain partial. Further acceptance requires the
-  restoration gap resolved, fresh bounded legs with the first-refusal stop rule,
-  independent shown/renderer evidence and the remaining native/physical checks.
+  fresh focus/send/both-output/close leg with
+  independent native focus checkpoints and the first-refusal stop rule.
+  Renderer coverage and the remaining native/physical checks remain TBD.
+- A subsequent four-window collection exercised focus changes, directional
+  send with follow in both directions and nontrivial close/reflow on both
+  outputs, but is **not accepted**. Some helper calls addressed numeric script
+  objects without binding them to their load receipts; failed calls and later
+  correction do not satisfy the required lifecycle procedure. Independent
+  review rejects the collection; its native checkpoints do not advance Stage 8.
+  No command refusal was observed, and no product defect is established.
+- Post-collection restoration evidence was independently rechecked: all six
+  protected-window records and the complete workspace snapshot (including
+  active window and pointer) match; desktop inventories, configuration/store
+  hashes and modes, all 20 shortcut component bodies, and loaded/active effects
+  match. Store bytes are unchanged despite a rewritten modification time.
+  The observer is unloaded, its expected user-local link is absent, known
+  fixture/planner/client/capture processes are gone and the stack is down.
+  The exact staging-link parent was not retained in the collection receipt;
+  link-absence proof is limited to the canonical user-local location. A new
+  leg needs fresh baselines and exclusively receipt-bound helper calls.
+- The fresh redo does **not advance native acceptance**. Required loaded/active
+  effect baselines were not captured successfully, so the leg did not satisfy
+  preflight. Four fixtures were admitted and then closed without any directional
+  focus/send or close/reflow journey checkpoint. Correlated world replies exist,
+  but caller-to-native identity attribution and compositor joins were not
+  established; no observed product mismatch or defect is established.
+- Independent post-teardown inventories, directly rechecked, match all six full
+  protected-window records, the complete workspace snapshot (including active
+  window and pointer), all 20 full shortcut component bodies, and captured
+  compositor configuration/store content and modes. Restoration remains
+  **partial evidence**, not a full pass: loaded/active effect preimages and a
+  complete project-configuration manifest are missing. The probe is unloaded,
+  receipt-bound helper objects are gone, known owned processes are absent and
+  the stack is down; an empty owned fixture directory remains. Observer offline
+  checks pass 25/25. Further live work requires a fresh complete preflight and
+  prevalidated caller/native/compositor checkpoint collection; no retry follows
+  this stopped redo.
+
+### Baseline capture/compare accepted (2026-10-28)
+
+- Unit 1 is complete: the explicitly invoked test-only checker at
+  `kwin/tests/baseline-check/` supports exactly `capture DIR` and
+  `compare BASE FRESH`. Compare validates both complete manifests, schemas and
+  body hashes before reporting per-item differences; it never repairs state.
+  A later leg must not start without a fresh complete passing capture.
+- Captures include protected-window/workspace inventories, active-window and
+  pointer state, per-output views, configuration/store bytes and modes, all
+  20 shortcut component bodies, and loaded/active effects through `Properties.Get`.
+  The corrected shortcut destination is `org.kde.kglobalaccel`, distinct from
+  root interface `org.kde.KGlobalAccel`; enumerated component paths use
+  `org.kde.kglobalaccel.Component`.
+- One nonce-named read-only script supplies otherwise unavailable inventory.
+  Public object introspection alone is not ownership proof: pre-load child
+  absence, post-load returned-child presence and loaded-name checks bind the
+  collision-checked run. Lifecycle calls target the original KWin unique owner;
+  teardown unloads the name once and requires name-false, returned-object
+  absence and unchanged process lifetime. Global scripting startup is never used.
+- Earlier cleanup, XML, identity and exception-evidence defects were corrected
+  and independently reviewed. Direct final hermetic rerun passes **28/28**;
+  whitespace checks pass. Cases cover collision refusal, stale/foreign output,
+  command/parsing/schema failures, single-shot cleanup and final identity/object
+  checks. External calls and process/config reads are stubbed. Failed captures
+  retain raw receipts and a failure record, never a complete manifest.
+- Fresh dry run: first capture **exit 0**, second capture **exit 0**, comparison
+  **exit 0**, **zero mismatches**. Each capture contains six protected-window
+  records and all 20 shortcut bodies. All 41 recorded commands per capture
+  returned zero, including one load, one run and one named unload. Both complete
+  manifests, raw commands, journal records, helper source and lifecycle receipts
+  are retained outside the checkout.
+- Direct final original-owner queries return false for both nonce plugin names;
+  scripting introspection has no script children, including either returned
+  object. Full before/after loaded and active effect replies and `/Scripting`
+  introspection are byte-identical. KWin owner and process lifetime match across
+  both captures. No fixture, effect, controller, planner or Stage 8 journey ran.
+- The rejected `kwin/tests/live-audit/` draft was inspected and removed; direct
+  absence, unchanged tracked diff and preserved checker/visibility-probe hashes
+  confirm only that directory was removed before these record updates. Runtime
+  packaging exclusion and product loading remain unchanged.
+- Next: unit 2 fresh one-to-one fixture/native/compositor attribution, then the
+  Stage 8 focus/send/both-output/close leg. Attribution and native journey
+  acceptance remain TBD; baseline acceptance does not establish either.
+
+### Fixture attribution remains blocked (2026-10-28)
+
+- The test-only draft at `kwin/tests/fixture-attribution/` replaces its earlier
+  unreviewed draft, but is **not accepted for live use**. It joins fixture
+  sentinel/PID records to native UUID/frames and then unique compositor
+  PID/frame observations, rejecting full-roster collisions, stale/foreign
+  nonces, reused or surplus samples and unexpected probe events.
+- Direct final offline rerun passes **11/11** with external calls and live
+  reads stubbed. Tests cover uncertain-load cleanup, unload failure without
+  retry, staged-source divergence and helper-write ordering. Static helper
+  source is a test input. KWin's pinned effect interface confirms that
+  `unloadEffect` returns void, unlike the boolean `loadEffect` reply.
+- Initial independent review rejected cleanup, discarded-observation and
+  source-binding gaps. Those directed findings were corrected, including
+  subsequent helper-write ordering and void-unload regressions. Final review
+  still rejects the unchecked relationship between the supplied install link
+  and KWin's actual effect discovery location, plus silently ignored unmarked
+  script-engine errors. Size remains outside the requested small-tooling
+  target: 703 lines across implementation, helper and tests.
+- Existing runtime packaging and product loading are unchanged: KPackage and
+  Arch/Debian/RPM install only explicit shipping files; the Nix script fileset
+  excludes this tree and the npm test glob does not invoke its offline runner.
+- **No live dry run occurred**: no baseline capture for this unit, fixture,
+  probe load/link installation, planner, controller or Stage 8 journey. There
+  is no native join, freshness or restoration acceptance from these tests.
+- Next: reduce the draft and close the two review gaps before independent
+  acceptance, then perform the fresh baseline/fixture-attribution/teardown/
+  post-capture comparison dry run. The Stage 8 focus/send/both-output/close leg
+  remains a later, separate action.
+
+### Fixture attribution repaired offline; live preflight blocked (2026-10-28)
+
+- The two prior review gaps are repaired in the test-only attribution tool.
+  Its link must occupy the compositor's highest-priority user
+  `kwin-wayland/effects` discovery slot, derived from its process environment,
+  not the caller's. Pinned `v6.7.4` `ScriptedEffectLoader::findEffect` and
+  `ScriptedEffect::create` search that namespace before `kwin/effects`.
+  Existing paths are refused before any load; cleanup freshly checks link
+  type/target, refuses replacements, removes only the owned link and verifies
+  absence, including post-create and unload-error paths.
+- Unmarked engine errors fail closed in both collection windows and a final
+  full-run journal scan covering intervening work and teardown. Checks include
+  scripting category fields and pinned message signatures; failures retain
+  raw command bodies and never write a completion marker. The tool still
+  requires exact sentinel/PID/native UUID/frame and unique single-use,
+  nonce-bound compositor observation joins; no controller or planner is needed.
+- Fresh independent read-only review accepts these offline repairs; direct
+  final rerun passes **16/16**, syntax and whitespace checks pass. Hermetic
+  negatives cover wrong discovery roots/namespace, pre-existing paths, caller
+  environment decoys, cleanup failures/replacements and final-window-only
+  unmarked diagnostics with retained failure receipts. Size reduction was not
+  achieved: 552 implementation + 49 helper + 335 test lines = **936**.
+  Existing runtime/package exclusions are unchanged.
+- The fresh live dry run **stopped at preflight**, not an attribution attempt.
+  Baseline capture exits **0**, with six protected records, all 20 shortcut
+  bodies and 41 zero-status commands. Its returned helper object was run,
+  unloaded by name once, and verified absent with an empty final child roster.
+  A direct canonical-probe loaded query returns **false**. The next read of
+  the compositor process environment exits **1**, `EACCES`; the run stops
+  immediately without a fallback or retry. Raw baseline artifacts and the
+  stopped-preflight receipt are retained outside the checkout.
+- No fixtures were started, no attribution helper or probe was loaded, and
+  no effect link was created. Fixture joins, fresh/unique observations,
+  fixture close, probe unload/link removal, second capture and full comparison
+  are **not run**. No attribution live acceptance, full restoration comparison
+  or Stage 8 advance is claimed; the baseline helper's own teardown passed.
+- Next: establish a non-privileged authoritative compositor-XDG binding source
+  without trusting caller values; review any resulting repair, then run a fresh
+  complete baseline/attribution/teardown/capture/compare dry run. Only after
+  that passes is the Stage 8 focus/send/both-output/close leg next, using both
+  accepted tools. The wider port record remains active.
+
+### Native-only fixture attribution; two-output staging gap (2026-10-28)
+
+- User decision supersedes the preceding attribution plan: drop the compositor
+  visibility probe from unit 2 and the upcoming Stage 8 focus/send/both-output/
+  close leg. Attribution means only each exact fixture sentinel plus PID joined
+  one-to-one to its native KWin UUID/frame. Existing accepted hide/reveal
+  compositor proof stands, and `kwin/tests/visibility-probe/` stays unchanged
+  for later hide/reveal-type work.
+- Removed effect, link, staging and compositor-environment code/options/tests
+  from `kwin/tests/fixture-attribution/`. No effect is installed, linked or
+  loaded. The earlier environment-access blocker is no longer a dependency.
+  Baseline validation and introspection parsing are imported from the accepted
+  checker; the helper follows its nonce-name, exact returned-object collision
+  checks and single named-unload lifecycle. Full-roster duplicate UUIDs,
+  duplicate fixture captions, missing/PID-mismatched or surplus joins refuse;
+  no size-based identity inference is used. Receipts and completion-last
+  semantics remain.
+- Size: **303 implementation + 49 unchanged helper + 192 tests = 544 lines**,
+  down from 936. Direct declared-environment offline rerun passes **11/11**
+  with external calls/reads stubbed. Fresh independent read-only review accepts
+  the offline tool; direct source inspection confirms the lifecycle/join gates.
+  The relied-on lifecycle bodies and property signatures are unchanged between
+  the local KWin 6.7.4 pin and the 6.8.1 release source.
+- Live dry run: baseline capture **exit 0**, six protected records and all 20
+  shortcut bodies; attribution **exit 0**, both fixture caller IDs joined to
+  distinct UUIDs and native frames from an eight-window roster. The attribution
+  log has 19 zero-status commands, one helper load, one returned-object run and
+  one named unload; loaded-name replies are false/true/false and the returned
+  child is absent/present/absent. Raw fixture and native bodies are retained
+  outside the checkout.
+- **Two-output coverage is incomplete:** documented X11 fixture position
+  requests were accepted, but the independent native frames place both windows
+  on the first output. No reposition or retry followed. This establishes a
+  staging/coverage gap, not an attribution defect or a compositor API failure.
+  Full unit acceptance is not claimed.
+- Teardown and restoration pass: both close replies succeed, fixture list is
+  empty, graceful shutdown succeeds, and the announced process and socket are
+  gone. Restoration capture **exit 0**; full comparison **exit 0**, all **48**
+  rows match with zero mismatches, including protected windows, focus, pointer,
+  workspace/views, all shortcut bodies, effects and configuration/store bytes
+  and modes. No controller, planner or Stage 8 journey ran.
+- Next: resolve the two-output staging coverage before a new complete dry run;
+  then the fresh Stage 8 focus/send/both-output/close leg uses both tools with
+  receipt-bound helpers, without per-checkpoint compositor visibility. The wider
+  port remains active; no native journey acceptance advances here.
+
+### Automated focus/send/close legs dropped (2026-10-28)
+
+- Offline source-verified planning sized the combined leg at 15-17 checkpoints
+  and roughly 150-200 live commands. A split into focus/send (three fixtures,
+  10-11 checkpoints, about 100 commands) and close/reflow (four fixtures,
+  11 checkpoints, about 99 commands) still could not be executed and verified
+  start to finish within one bounded live run. No accepted procedure exists
+  for restoring mutated focus/pointer/view state mid-leg.
+- User decision: drop the automated Stage 8 focus/send/both-output/close legs.
+  Directional focus (local then cross-output), directional send/follow in both
+  directions and close/reflow on each output are covered by offline tests plus
+  the KDE physical checks. No native journey acceptance is claimed.
+- Newly verified in source during planning: local `propose_focus` runs first
+  and cross-output focus is attempted only after a local `Unchanged` refusal on
+  Left/Right; post-follow remembered source focus refreshes on the next complete
+  per-domain sweep; quiescent explicit close removes tree/minimize-slot,
+  membership, frame and retained-operation state.
+- The two-output staging gap of the native-only attribution dry run no longer
+  blocks anything. `kwin/tests/baseline-check/` and
+  `kwin/tests/fixture-attribution/` remain available test-only tools.
