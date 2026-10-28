@@ -175,7 +175,11 @@ do not broaden cleanup or repeatedly restart the experiment.
   `--fullscreen`, select/send), tray callbacks or injected mouse input;
   keyboard shortcut journeys remain physical and user-owned. Keyboard-resize
   and OS-owned chords such as Win+M stay physical for the same reason;
-  synthetic input cannot drive them. Never weaken the filter for tests.
+  synthetic input cannot drive them. Never weaken window-scope filters for
+  tests; scope to fixture windows instead. User 2026-10-29: that rule concerns
+  window filters, not the injected-input filter; synthetic keypresses are
+  acceptable in principle, but a stray key (especially Esc) reaching an agent
+  terminal can disrupt or cancel the agent session, as has happened before.
 - User 2026-10-20 accepted: `directional (--move|--focus) --direction
   (left|right|up|down)` queues one exact-owner request on the normal owner,
   resolves the live foreground and invokes the production directional handler

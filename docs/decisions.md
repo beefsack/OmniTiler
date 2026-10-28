@@ -299,6 +299,30 @@ pending:
   the existing `--trace`; it never feeds focus, memory or attribution
   ([record](changes/windows-workspace-return-focus.md#trace-only-switch-capture-2026-10-29)).
 
+## Windows decisions (2026-10-29)
+
+- **Staged switch focus refused or unproven after arrivals are ready:** finish
+  the switch with an explicit failed/unproven focus outcome, never staged
+  success, with each window's visibility result accounted individually. No
+  departure hide under staged authority without foreground proof; only the
+  already approved fallback hide runs, under fresh existing gates, reported as
+  fallback; otherwise those entries stay visible and are reported blocked. No
+  retry or wait. The unknown-foreground A/B policy stays separate
+  ([design](changes/windows-workspace-return-focus.md)).
+- **Sticky-off rehome target:** option (A). Core owns a "sticky off, rehome to
+  current" intent and resolves the output's current workspace at execution;
+  adapters stop sampling current and sending an explicit `Send`. The explicit
+  `Send` contract stays unchanged. Check KDE and macOS for the same pattern so
+  one shared intent serves all; if the intent crosses the wire, it joins the
+  coordinated v3 bump
+  ([audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
+- **Synthetic shortcuts for testing:** an opt-in startup flag lets the normal
+  owner accept injected shortcuts with fixture scope; default unchanged. No
+  injected key may reach a non-fixture window, especially an agent terminal.
+  A user-driven physical burst baseline also runs after the staged switch.
+- **0.1 scope:** tabbed stacks (0.2) should be the only major Tier 1 feature
+  deferred out of 0.1; keep post-0.1 protocol churn minimal.
+
 ## Windows decisions (2026-10-28)
 
 Accepted reviews of tentative decisions; the matching tentative clauses

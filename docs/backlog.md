@@ -23,6 +23,9 @@ Prioritise by return toward these goals
 - Before 0.1, core and its protocol are as correct and sensible as possible,
   with no workarounds or hacks directly or indirectly related to either.
   Both get harder to change once releases ship.
+- User 2026-10-29: tabbed stacks (deferred to 0.2) should be the only major
+  Tier 1 feature deferred out of 0.1. Be mindful of protocol churn: keep
+  post-0.1 protocol bumps few and deliberate.
 
 ## Open work
 
@@ -30,8 +33,9 @@ Prioritise by return toward these goals
   including pending Xbox shortcut, launcher geometry and cross-output edge
   focus acceptance; (2) staged switch prototype and intermittent incomplete
   hide, with the coordinated protocol bump; (3) sticky-rehome sampling and
-  pager event coverage (P2). Keyboard stress
-  runner is blocked on a parked user question (item below).
+  pager event coverage (P2). Keyboard stress runner: the opt-in synthetic
+  shortcut flag is unblocked (user 2026-10-29); the physical burst baseline
+  follows the staged switch (item below).
 - P1 | Windows staged workspace switch prototype | Approved 2026-10-28
   ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
   arrival shows, prove visible, one-shot focus, prove foreground, then hide
@@ -56,7 +60,8 @@ Prioritise by return toward these goals
   exclusive responsibility table, tentative v3 messages/capabilities, phased
   failing-first plan and separate open decisions. Phase 1 core gap foundations
   are complete offline (23 regressions); no producer/wire cutover or staged
-  switch implementation. Focus-failure outcome remains parked before phase 2.
+  switch implementation. Focus-failure outcome decided 2026-10-29
+  ([decision](decisions.md#windows-decisions-2026-10-29)); phase 2 is unblocked.
 - P1 | KDE: workspace ownership through unreadable desktop facts | DECIDED
   2026-10-28, option (a): KDE always reports native ownership, unreadable
   desktop/current facts are explicit unknowns, and the logical-view fallback
@@ -208,10 +213,17 @@ Prioritise by return toward these goals
 - P1 | Keyboard stress runner | Offline `-KeyboardCoverage` map delivered
   (`6c850ae0`, [outcome](changes/archive/windows-keyboard-stress.md)): 100 of
   102 commands per case are default-bound; the two stay-sends are unbound by
-  default. Burst baseline BLOCKED: the product hook intentionally rejects
-  injected shortcuts (filter unchanged). Parked user question: run a
-  user-driven physical shortcut burst baseline, or defer until a separately
-  reviewed route preserves the injection boundary.
+  default. The product hook rejects injected shortcuts. User 2026-10-29:
+  (a) run a user-driven physical shortcut burst baseline after the staged
+  switch lands, with trace and a short run sheet; and (b) add an opt-in startup
+  flag so the normal owner accepts synthetic shortcuts for testing. Default
+  behavior unchanged; flag only with fixture scope, logged in trace. Key safety
+  requirement: no injected key may reach a non-fixture window, especially an
+  agent terminal (a stray Esc can cancel agent sessions). The driver injects
+  only bound chords the owner swallows, verifies a fixture foreground and an
+  active accepting hook immediately before each injection, never injects Esc or
+  unbound keys, and stops on any foreground change. Independent input-safety
+  review before live use.
   Raised from P2 2026-10-28: first deliver the
   current-order keyboard-burst baseline, which supplies the data for wider
   coalescing. User 2026-10-27: share definitions and oracles
@@ -1417,12 +1429,13 @@ Prioritise by return toward these goals
   source analysis: FancyWM core submodules and niri/sway/river/awesome/dwm
   (distinct from the completed bounded matrix source-fill passes).
   [Evidence](changes/archive/prior-art-catalogue.md).
-- P2 | Windows: sticky-rehome explicit-send current sampling (open decision) |
-  Windows sticky-rehome sends an explicit `Send` with a sampled current
-  workspace. Recommendation: evaluate a separately approved execution-time
-  current-view intent rather than an optional-output change to the explicit
-  `Send` contract ([audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
-  For a Windows session.
+- P2 | Sticky-off rehome to current: core intent (decided 2026-10-29) |
+  Windows sticky-rehome sends an explicit `Send` with an adapter-sampled
+  current workspace. User chose option (A): a core "sticky off, rehome to
+  current" intent resolved at execution; explicit `Send` unchanged
+  ([decision](decisions.md#windows-decisions-2026-10-29),
+  [audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
+  Check KDE/macOS for the same pattern; if wire-visible, land with v3.
 - P1 | macOS: first-float placement under execution-time float toggle
   (decided 2026-10-29; implementation pending) | User adopts option A for macOS
   with no exception ([decision](decisions.md#kde-port-and-race-decisions-2026-10-26)):

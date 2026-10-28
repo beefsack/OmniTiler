@@ -2670,7 +2670,7 @@ investigation at `328c1469`; no code changed.
 
 | Open decision | Recommendation (not selected by this design) |
 | --- | --- |
-| Focus refused or remains unproven after arrivals are ready: exact terminal group outcome and departure fallback accounting | Finish with explicit failed/unproven focus and individually accounted visibility results, never staged success. No departure write under staged authority without foreground proof; use only the already authorized fallback under fresh existing gates, otherwise explicitly block those entries. No retry or indefinite wait. Pin this minimal sequence before implementation; do not decide the separate unknown-foreground A/B policy |
+| Focus refused or remains unproven after arrivals are ready: exact terminal group outcome and departure fallback accounting | **User-accepted 2026-10-29** ([decision](../decisions.md#windows-decisions-2026-10-29)). Finish with explicit failed/unproven focus and individually accounted visibility results, never staged success. No departure write under staged authority without foreground proof; use only the already authorized fallback under fresh existing gates, otherwise explicitly block those entries. No retry or indefinite wait. Pin this minimal sequence before implementation; do not decide the separate unknown-foreground A/B policy |
 
 - User 2026-10-29 resolves the tab questions: full tab core/protocol stays
   after 0.1; coordinated v3 is visibility-ready with per-window suppression
