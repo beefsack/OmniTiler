@@ -31,8 +31,8 @@ function arrivalReply(): WorldReply {
         // here, matching the fake natives): adapter-side resolution never
         // falls back to native string equality.
         workspaces: [
-            { id: "wa1", out: "out-a", bind: "wa1", scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "" },
-            { id: "wb1", out: "out-b", bind: "wb1", scope: "out-b", order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "wa1", out: "out-a", bind: "wa1", scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+            { id: "wb1", out: "out-b", bind: "wb1", scope: "out-b", order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
         ],
         outputs: [],
         windows: [

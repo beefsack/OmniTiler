@@ -289,7 +289,7 @@ describe("world migration apply", () => {
         }
         reply.workspaces.push({
             id: "wa0", out: "out-a", bind: "wa0",
-            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "",
+            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
         });
         const world: FakeWorld = {
             homing: new Map([
@@ -408,7 +408,7 @@ describe("world migration apply", () => {
         reply.transfers = [];
         reply.windows = [];
         reply.workspaces = [
-            { id: "ws-gone", out: "out-a", bind: "ws-gone", scope: "out-a", order: 9, mode: "tiled", exist: false, hold: "" },
+            { id: "ws-gone", out: "out-a", bind: "ws-gone", scope: "out-a", order: 9, mode: "tiled", exist: false, hold: "", trailing: false },
         ];
         const world: FakeWorld = {
             homing: new Map(),
@@ -450,7 +450,7 @@ describe("world migration refill gating", () => {
         }
         reply.workspaces.push({
             id: "wa0", out: "out-a", bind: "wa0",
-            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "",
+            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
         });
         return reply;
     }

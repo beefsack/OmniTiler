@@ -32,7 +32,7 @@ function loadReply(): WorldReply {
 function loadAlignedReply(): WorldReply {
     const reply = loadReply();
     const wsRow = (logical: string, out: string, bind: string, order: number) => ({
-        id: logical, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "",
+        id: logical, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "", trailing: false,
     });
     reply.workspaces = [
         wsRow("al-1", "out-a", "ws-1", 0),

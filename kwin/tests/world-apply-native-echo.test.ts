@@ -241,9 +241,9 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
 // matching the fake native ids): adapter-side resolution never falls
 // back to native string equality.
 const fusedRows = (): WorldReply["workspaces"] => ([
-    { id: D6, out: HDMI, bind: D6, scope: HDMI, order: 0, mode: "tiled", exist: true, hold: "" },
-    { id: D3, out: DP, bind: D3, scope: DP, order: 0, mode: "tiled", exist: true, hold: "" },
-    { id: DY, out: HDMI, bind: DY, scope: HDMI, order: 1, mode: "tiled", exist: true, hold: "" },
+    { id: D6, out: HDMI, bind: D6, scope: HDMI, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+    { id: D3, out: DP, bind: D3, scope: DP, order: 0, mode: "tiled", exist: true, hold: "", trailing: false },
+    { id: DY, out: HDMI, bind: DY, scope: HDMI, order: 1, mode: "tiled", exist: true, hold: "", trailing: false },
 ]);
 
 function migrationReply(): WorldReply {

@@ -232,7 +232,7 @@ function conversionCreationReply(): WorldReply {
         workspaces: [
             {
                 id: TOKEN, out: OUT_2, bind: "",
-                scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "",
+                scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
             },
         ],
         outputs: [],
@@ -276,7 +276,7 @@ function conversionMoveReply(): WorldReply {
         workspaces: [
             {
                 id: TOKEN, out: OUT_2, bind: WS_NEW,
-                scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "",
+                scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
             },
         ],
         outputs: [],
