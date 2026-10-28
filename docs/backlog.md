@@ -26,12 +26,12 @@ Prioritise by return toward these goals
 
 ## Open work
 
-- Windows order (user 2026-10-28): (1) cross-output directional focus
-  edge-nearest; (2) Windows shared window-policy adoption; (3) keyboard stress
-  runner; (4) batched physical checks session, including pending Xbox shortcut
-  and launcher geometry acceptance; (5) Windows-host test flakes; (6) staged
-  switch prototype and intermittent incomplete hide, with the coordinated
-  protocol bump; (7) sticky-rehome sampling and pager event coverage (P2).
+- Windows order (user 2026-10-28): (1) Windows shared window-policy adoption;
+  (2) keyboard stress runner; (3) batched physical checks session, including
+  pending Xbox shortcut, launcher geometry and cross-output edge focus
+  acceptance; (4) Windows-host test flakes; (5) staged switch prototype and
+  intermittent incomplete hide, with the coordinated protocol bump;
+  (6) sticky-rehome sampling and pager event coverage (P2).
 - P1 | Windows staged workspace switch prototype | Approved 2026-10-28
   ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
   arrival shows, prove visible, one-shot focus, prove foreground, then hide
@@ -75,8 +75,10 @@ Prioritise by return toward these goals
   wake-attribution same-tick confirmation during spam; exact-desktop WS1 ->
   empty WS2 -> WS1 return; floating-window focus across a workspace round trip;
   pending physical acceptance for Xbox shortcut conflicts and launcher geometry
-  (items below). Only the unknown-foreground A vs B decision waits on the
-  prototype.
+  (items below); two-monitor cross-output edge focus (`O1=W1`,
+  `O2=H[W2 W3]`, W3 last focused, Win+Right from W1 selects W2;
+  [outcome](changes/archive/cross-output-edge-focus.md)). Only the
+  unknown-foreground A vs B decision waits on the prototype.
   Exact-desktop arrival focus (approved 2026-10-27) is delivered offline and
   fixture-verified; fixture scope cannot prove the desktop path
   ([record](changes/windows-workspace-return-focus.md)).
@@ -205,20 +207,6 @@ Prioritise by return toward these goals
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every
   setting's per-preset value from Tier 1 evidence; leave missing evidence TBD.
   Hyprland warp stays off pending its own verb-dependent evidence row.
-- P1 | Cross-output directional focus picks the window nearest the crossed edge |
-  User decision D1 2026-10-28 (sides with Hyprland+sway): output crossing
-  chooses edge-nearest, no setting; last-focused stays for workspace switching
-  on one output. [Minimal sequence](spec/reference-outcomes.md#cross-output-focus-edge-discriminator)
-  and Tier 1 source cells recorded (COSMIC W3, Hyprland W2, i3 W3, sway W2;
-  exact runtimes TBD). Trace verdict: no retained in-repo per-window trace
-  proves W3 was O2's MRU in the 2026-10-20 run (`O1=W1`, `O2=H[W2 W3]`,
-  Win+Right from W1 selected W3, expected W2), so MRU behavior versus bug is
-  unproven. Open: D2 candidate ranking/ties/overlap/nesting, D3 no-focus
-  origins, D4 exception/fullscreen/maximized/floating and empty destinations,
-  D5 macOS integration. Policy selected; implementation not started.
-  Supersedes the Engine adjacent-output last-focused tiled leaf for
-  directional crossing ([decision](decisions.md#engine-operations-and-policy),
-  [R-OUT-03](spec/reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs)).
 - P1 | Dogfood permanent maximize-clear refusals | User 2026-10-20 accepted
   Windows pre-clear diagnostic priority with fullscreen veto, and B9
   `float-maximize-clear` diagnostics with fullscreen veto. Core-owned

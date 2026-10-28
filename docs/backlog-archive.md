@@ -13,6 +13,20 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## Cross-output edge focus (closed 2026-10-28)
+
+- P1 | Cross-output directional focus picks the window nearest the crossed edge |
+  User 2026-10-28 sided with Hyprland and sway, no setting: candidates are
+  destination tiled windows touching the entry edge; most recently focused
+  wins, then largest overlap with the source span, then layout order.
+  No-focus origins, fullscreen/maximized members and empty destinations were
+  decided tentatively (pending user review); macOS hotkey crossing deferred to
+  the macOS port. Delivered in `07e018c5` with 27 regressions, independent
+  review and offline gates. The 2026-10-20 trace could not prove whether W3
+  was the MRU. Physical acceptance moved to the batched physical checks session.
+  [Outcome](changes/archive/cross-output-edge-focus.md),
+  [minimal sequence](spec/reference-outcomes.md#cross-output-focus-edge-discriminator).
+
 ## Floating and sticky return focus (closed 2026-10-28)
 
 - P1 | Windows floating-window return focus check | Shipped behavior restored
