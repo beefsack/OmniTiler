@@ -2920,6 +2920,20 @@ mod tests {
 
     #[test]
     fn held_same_view_reply_preserves_stable_presentation_and_desired() {
+        fn unmarked_presentation(
+            presentation: &tiler_core::world_presentation::WorldPresentation,
+        ) -> tiler_core::world_presentation::WorldPresentation {
+            // The explicit trailing marker is report-dependent (incomplete
+            // inventory clears it fail-closed); every other shape is
+            // retained-state stable across the hold.
+            let mut unmarked = presentation.clone();
+            for screen in &mut unmarked.pager {
+                for workspace in &mut screen.workspaces {
+                    workspace.trailing = false;
+                }
+            }
+            unmarked
+        }
         // Offline held-presentation verification through the REAL engine
         // plus the REAL `consume_world_reply` (not a bare helper): a
         // controlled reply followed by a same-view incomplete-inventory
@@ -3097,10 +3111,13 @@ mod tests {
         // Engine characterization: a same-view hold carries identical
         // shapes (presentation is read-only over retained state), so the
         // presentation overwrite below is already a no-op and needs no
-        // cache — only the desired plan truth needs retention.
+        // cache - only the desired plan truth needs retention. The
+        // explicit trailing marker is the one report-dependent exception:
+        // incomplete inventory clears it fail-closed.
         assert_eq!(
-            held.presentation, controlled.presentation,
-            "same-view hold carries stable presentation"
+            held.presentation,
+            unmarked_presentation(&controlled.presentation),
+            "same-view hold carries stable presentation with the marker cleared"
         );
 
         let shared = focus_shared();
@@ -3154,8 +3171,8 @@ mod tests {
         );
         assert_eq!(
             lock_shared(&shared).last_presentation,
-            presentation_stable,
-            "same-view hold keeps stable presentation"
+            held.presentation,
+            "same-view hold overwrites the presentation fail-closed"
         );
 
         // Recovery refreshes once: a controlled reply for the same view
@@ -3515,6 +3532,7 @@ mod tests {
             tiling_mode: TilingMode::Tiled,
             existence: true,
             hold: None,
+            trailing: false,
         }];
         let authority = if controlled {
             ScopeAuthority::Controlled

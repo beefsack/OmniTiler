@@ -5406,6 +5406,24 @@ User-confirmed 2026-10-28; implementation pending unless noted
 
 ### macOS pager trailing-spare projection
 
+- User decision 2026-10-28: native Spaces remain the macOS default. Virtual
+  parked/hidden workspaces are parked as a possible post-0.1 opt-in investigation
+  ([workspace-model review](research/macos-port/workspace-model-review.md): M
+  prototype / L production, unquantified gain, sliver/recovery/fullscreen risks).
+- For remaining native-Spaces work, inspect the pinned existing tilers first:
+  yabai, Amethyst, glide, paneru, Hammerspoon, PaperWM.spoon, AeroSpace, rift,
+  komorebi-for-mac, FlashSpace, Defi and Silica. Reuse proven mechanisms rather
+  than inventing replacements; source claims are not native acceptance.
+- Decision 7 approved 2026-10-28: add an optional explicit trailing-workspace
+  designation to core `WorkspaceDesire` and `PagerWorkspace`. This approves only
+  the marker, not another core/protocol change.
+- Tentative technical interpretation, 2026-10-29: `trailing: bool` names the
+  existing final empty lifecycle row, independently of binding/view/retention;
+  shared rings use union occupancy, and incomplete/conflicting evidence yields no
+  positive designation. Wire `trailing:true` is optional; missing means false.
+  Both publications use one classifier. Mechanical readers accept either shape;
+  older strict readers require coordinated upgrade
+  ([implementation](changes/macos-core-trailing-pager.md)).
 - User decision 2026-10-28: the macOS pager projects core workspace rows
   directly; when core publishes an unbound trailing workspace identified by
   core's own trailing designation, the pager shows it as a separate selectable

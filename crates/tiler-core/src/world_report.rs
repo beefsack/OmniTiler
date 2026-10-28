@@ -334,6 +334,11 @@ pub struct WorkspaceDesire {
     pub tiling_mode: TilingMode,
     pub existence: bool,
     pub hold: Option<HoldReason>,
+    /// Explicit trailing-spare designation: true only for the final
+    /// parity-padded ring row when it is the empty unoccupied lifecycle
+    /// spare. The wire omits the key unless true; adapters never infer
+    /// the spare from an unbound row alone.
+    pub trailing: bool,
 }
 
 /// Desired output row: `logical_view` is the persistent core-owned view

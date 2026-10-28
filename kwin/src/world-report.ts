@@ -64,6 +64,9 @@ export interface WorldReplyWorkspace {
     mode: string;
     exist: boolean;
     hold: string;
+    // Explicit trailing-spare designation, present only when true; the
+    // parser fills false when the key is absent.
+    trailing: boolean;
 }
 export interface WorldReplyOutput {
     out: string;
@@ -304,6 +307,9 @@ export interface WorldPresentationPagerWorkspace {
     current: boolean;
     occupied: boolean;
     containsFocused: boolean;
+    // Explicit trailing-spare designation, present only when true; the
+    // parser fills false when the key is absent.
+    trailing: boolean;
     windows: WorldPresentationPagerWindow[];
 }
 export interface WorldPresentationPagerOutput {
@@ -760,12 +766,15 @@ function parseScopeRow(e: unknown): WorldReplyScope {
 
 function parseWorkspaceRow(e: unknown): WorldReplyWorkspace {
     const o = e as Record<string, unknown>;
-    // Exact v2 workspace shape: id/out/bind/scope/order/mode/exist/hold.
-    // The retired v1 `logical` field (like any unknown field) refuses.
+    // Exact v2 workspace shape: id/out/bind/scope/order/mode/exist/hold
+    // plus the optional explicit `trailing` marker (present only when
+    // true; absent means false). The retired v1 `logical` field (like
+    // any unknown field) refuses.
     if (
-        Object.keys(o).length !== 8 ||
+        (Object.keys(o).length !== 8 && Object.keys(o).length !== 9) ||
         !("id" in o && "out" in o && "bind" in o && "scope" in o &&
-            "order" in o && "mode" in o && "exist" in o && "hold" in o)
+            "order" in o && "mode" in o && "exist" in o && "hold" in o) ||
+        (Object.keys(o).length === 9 && !("trailing" in o))
     ) {
         throw new Error("ws-keys");
     }
@@ -774,7 +783,8 @@ function parseWorkspaceRow(e: unknown): WorldReplyWorkspace {
         typeof o["bind"] !== "string" ||
         typeof o["scope"] !== "string" || typeof o["order"] !== "number" ||
         !Number.isInteger(o["order"]) || typeof o["mode"] !== "string" ||
-        typeof o["exist"] !== "boolean" || typeof o["hold"] !== "string"
+        typeof o["exist"] !== "boolean" || typeof o["hold"] !== "string" ||
+        ("trailing" in o && typeof o["trailing"] !== "boolean")
     ) {
         throw new Error("ws");
     }
@@ -783,6 +793,7 @@ function parseWorkspaceRow(e: unknown): WorldReplyWorkspace {
         scope: o["scope"] as string,
         order: o["order"] as number, mode: o["mode"] as string,
         exist: o["exist"] as boolean, hold: o["hold"] as string,
+        trailing: ("trailing" in o ? o["trailing"] : false) as boolean,
     };
 }
 
@@ -1193,7 +1204,8 @@ function parsePresentation(value: unknown): WorldPresentation {
                 !Number.isInteger(r["ordinal"] as number) || (r["ordinal"] as number) < 0 ||
                 typeof r["label"] !== "string" ||
                 typeof r["current"] !== "boolean" || typeof r["occupied"] !== "boolean" ||
-                typeof r["containsFocused"] !== "boolean"
+                typeof r["containsFocused"] !== "boolean" ||
+                ("trailing" in r && typeof r["trailing"] !== "boolean")
             ) {
                 throw new Error("presentation-pager-ws-shape");
             }
@@ -1214,7 +1226,8 @@ function parsePresentation(value: unknown): WorldPresentation {
             return {
                 id: r["id"] as string, ordinal: r["ordinal"] as number, label: r["label"] as string,
                 current: r["current"] as boolean, occupied: r["occupied"] as boolean,
-                containsFocused: r["containsFocused"] as boolean, windows,
+                containsFocused: r["containsFocused"] as boolean,
+                trailing: ("trailing" in r ? r["trailing"] : false) as boolean, windows,
             };
         });
         return { out: e["out"] as string, workspaces };

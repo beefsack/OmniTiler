@@ -1942,3 +1942,71 @@ fn toggle_maximize_decodes_and_result_encodes() {
         assert!(decode_request(&with_command(&bad, "7")).is_err());
     }
 }
+
+#[test]
+fn reply_trailing_marker_encodes_on_both_writers() {
+    // The explicit trailing marker rides only when true: both writers
+    // emit `,"trailing":true` on marked plan and pager rows, omit the
+    // key otherwise, and the structural estimate bounds the exact bytes.
+    use tiler_core::directional::OutputId;
+    use tiler_core::world_report::TilingMode;
+    let mut reply = WorldEngine::new("gen-1")
+        .expect("generation")
+        .bootstrap_reply("adapter-1", "req-1");
+    for (index, trailing) in [false, true].into_iter().enumerate() {
+        reply
+            .workspaces
+            .push(tiler_core::world_report::WorkspaceDesire {
+                id: format!("ws-{}", index + 1),
+                output: OutputId("out".to_owned()),
+                native_binding: None,
+                scope: "out".to_owned(),
+                order: index,
+                tiling_mode: TilingMode::Tiled,
+                existence: true,
+                hold: None,
+                trailing,
+            });
+    }
+    reply.presentation.pager = vec![tiler_core::world_presentation::PagerScreen {
+        output: "out".to_owned(),
+        workspaces: vec![
+            tiler_core::world_presentation::PagerWorkspace {
+                id: "ws-head".to_owned(),
+                ordinal: 1,
+                label: "Workspace 1".to_owned(),
+                current: true,
+                occupied: true,
+                contains_focused: false,
+                trailing: false,
+                windows: Vec::new(),
+            },
+            tiler_core::world_presentation::PagerWorkspace {
+                id: "ws-tail".to_owned(),
+                ordinal: 2,
+                label: "Workspace 2".to_owned(),
+                current: false,
+                occupied: false,
+                contains_focused: false,
+                trailing: true,
+                windows: Vec::new(),
+            },
+        ],
+    }];
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical);
+    assert_eq!(
+        wire.matches(",\"trailing\":true").count(),
+        2,
+        "one plan plus one pager key"
+    );
+    assert!(!wire.contains("\"trailing\":false"));
+    let estimate = tiler_core::world_report::reply_estimate(&reply);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+}

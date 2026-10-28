@@ -1317,7 +1317,18 @@ fn shared_missing_native_inventory_retains_unbound_rings() {
     input.request_id = "req-2".to_owned();
     input.inventory_complete = false;
     let partial = accepted(&mut engine, &input);
-    assert_eq!(first.workspaces, partial.workspaces);
+    assert!(
+        partial.workspaces.iter().all(|row| !row.trailing),
+        "incomplete inventory clears the trailing marker"
+    );
+    let mut first_unmarked = first.workspaces.clone();
+    for row in &mut first_unmarked {
+        row.trailing = false;
+    }
+    assert_eq!(
+        first_unmarked, partial.workspaces,
+        "incomplete inventory retains rows with only the marker cleared"
+    );
 }
 
 #[test]

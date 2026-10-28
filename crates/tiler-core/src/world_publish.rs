@@ -1063,6 +1063,7 @@ impl WorldEngine {
             let Some(ring) = self.mapping.get(&output).cloned() else {
                 continue;
             };
+            let marked = self.trailing_marked_id(report, &output);
             let held = !staged
                 .screens
                 .iter()
@@ -1096,6 +1097,7 @@ impl WorldEngine {
                     tiling_mode: self.workspace_tiling_mode(&OutputId(output.clone()), id),
                     existence: true,
                     hold,
+                    trailing: marked.as_deref() == Some(id.as_str()),
                 });
             }
         }

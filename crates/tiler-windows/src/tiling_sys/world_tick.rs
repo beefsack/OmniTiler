@@ -3869,6 +3869,7 @@ mod apply_diag_tests {
                 current: true,
                 occupied: true,
                 contains_focused: true,
+                trailing: false,
                 windows: vec![PagerWindow {
                     window: WindowId("w1".to_owned()),
                     frame,
@@ -5739,6 +5740,7 @@ mod apply_diag_tests {
                 tiling_mode: TilingMode::Tiled,
                 existence: true,
                 hold: None,
+                trailing: false,
             });
             screens.push(screen_shell(
                 &format!("o{n}"),

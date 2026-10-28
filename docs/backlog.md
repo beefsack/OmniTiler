@@ -1542,8 +1542,9 @@ Prioritise by return toward these goals
   focus-walk test fence (delivered offline `812eba82`), pager
   core-trailing-workspace check (incomplete projection found: the `+` action
   disappears when the last native Space is empty; direct core projection with a
-  separate trailing segment selected 2026-10-28, blocked on an explicit
-  core-published trailing designation; lazy backing retained), first-float
+  separate trailing segment selected 2026-10-28; optional core trailing
+  designation delivered offline with publication/wire regressions; macOS
+  projection pending; lazy backing retained), first-float
   placement decision, `just dev`
   log-follower leak, `just launch` exit code; (3) targeted redogfood, including
   trailing send-follow (3a) and direct-wake feel; (4) fullscreen
@@ -1559,6 +1560,13 @@ Prioritise by return toward these goals
   underlay/below-target border experiment (5) to post-0.1; MC AX fallback (3b)
   until a macOS release refuses Dock-swipe; macOS 15 floor check; indicator
   icons.
+  **Workspace model (user 2026-10-28):** native Spaces remain the default; virtual
+  parked/hidden workspaces are parked for possible post-0.1 opt-in investigation
+  (M prototype / L production, gain unquantified, sliver/recovery/fullscreen risks;
+  [review](research/macos-port/workspace-model-review.md)). Learn from the pinned
+  existing tilers before remaining native-Spaces implementation; reuse proven
+  mechanisms. Decision 7 approves only the optional explicit core trailing marker
+  ([change](changes/macos-core-trailing-pager.md)).
   **Pending physical acceptance (dogfooding):** workspace selects, send-follow,
   send-stay and trailing Space, plus the user-approved 2026-10-19 decisions
   ([dogfood checklist](changes/macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19));

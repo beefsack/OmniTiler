@@ -843,3 +843,171 @@ fn pager_paused_report_publishes_empty_content() {
         crate::world_presentation::PresentationUnderlay::Hidden { .. }
     ));
 }
+
+fn trailing_plan_ids(reply: &WorldReply, output: &str) -> Vec<(String, bool)> {
+    reply
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == output)
+        .map(|row| (row.id.clone(), row.trailing))
+        .collect()
+}
+
+fn trailing_pager_ids(reply: &WorldReply, output: &str) -> Vec<(String, bool)> {
+    pager_of(reply)
+        .iter()
+        .find(|screen| screen.output == output)
+        .map(|screen| {
+            screen
+                .workspaces
+                .iter()
+                .map(|workspace| (workspace.id.clone(), workspace.trailing))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn trailing_marks_only_the_final_spare_in_both_streams() {
+    let (mut engine, _) = admitted_pair();
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(
+            3,
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-b", 800),
+            ],
+            "win-a",
+            true,
+            &["win-a", "win-b", "win-c"],
+        ),
+    );
+    for output in engine.logical_outputs() {
+        let ring = engine.logical_ring(&output);
+        assert!(!ring.is_empty(), "ring publishes for {output}");
+        let plan = trailing_plan_ids(&reply, &output);
+        assert_eq!(
+            plan.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            ring,
+            "plan rows follow the final ring for {output}"
+        );
+        let pager = trailing_pager_ids(&reply, &output);
+        assert_eq!(
+            pager.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            ring,
+            "pager rows follow the final ring for {output}"
+        );
+        for (index, (_, marked)) in plan.iter().enumerate() {
+            assert_eq!(
+                *marked,
+                index + 1 == plan.len(),
+                "only the final plan row marks trailing for {output}"
+            );
+        }
+        for (index, (_, marked)) in pager.iter().enumerate() {
+            assert_eq!(
+                *marked,
+                index + 1 == pager.len(),
+                "only the final pager row marks trailing for {output}"
+            );
+        }
+        assert_eq!(
+            plan.last().map(|(id, _)| id),
+            pager.last().map(|(id, _)| id),
+            "both streams agree on the spare for {output}"
+        );
+    }
+    // The wire carries the key only when marked, on writers that agree,
+    // inside the structural estimate.
+    let wire = crate::world_report::encode_reply_canonical(&reply);
+    assert_eq!(
+        wire.matches(",\"trailing\":true").count(),
+        2 * engine.logical_outputs().len(),
+        "one plan plus one pager key per output"
+    );
+    assert!(!wire.contains("\"trailing\":false"));
+    let estimate = crate::world_report::reply_estimate(&reply);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+}
+
+#[test]
+fn trailing_fails_closed_on_incomplete_inventory() {
+    let (mut engine, _) = admitted_pair();
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(
+            3,
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-b", 800),
+            ],
+            "win-a",
+            false,
+            &["win-a", "win-b", "win-c"],
+        ),
+    );
+    assert!(
+        reply.workspaces.iter().all(|row| !row.trailing),
+        "incomplete inventory marks no plan row"
+    );
+    assert!(
+        pager_of(&reply)
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .all(|workspace| !workspace.trailing),
+        "incomplete inventory marks no pager row"
+    );
+    let wire = crate::world_report::encode_reply_canonical(&reply);
+    assert!(!wire.contains("trailing"), "the wire omits the key");
+}
+
+#[test]
+fn trailing_fails_closed_per_incomplete_screen() {
+    let (mut engine, _) = admitted_pair();
+    let mut report = pager_report_ordered(
+        3,
+        3,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-b", 800),
+        ],
+        "win-a",
+        true,
+        &["win-a", "win-b", "win-c"],
+    );
+    report
+        .screens
+        .iter_mut()
+        .find(|screen| screen.output.0 == "out-b")
+        .expect("out-b screen")
+        .complete = false;
+    let reply = accepted(&mut engine, &report);
+    let complete = trailing_plan_ids(&reply, "out-a");
+    assert_eq!(
+        complete.iter().filter(|(_, marked)| *marked).count(),
+        1,
+        "the complete screen still marks its final spare"
+    );
+    assert!(
+        trailing_plan_ids(&reply, "out-b")
+            .iter()
+            .all(|(_, marked)| !marked),
+        "the incomplete screen marks no plan row"
+    );
+    assert!(
+        trailing_pager_ids(&reply, "out-b")
+            .iter()
+            .all(|(_, marked)| !marked),
+        "the incomplete screen marks no pager row"
+    );
+}

@@ -215,6 +215,51 @@ impl WorldEngine {
         occupied
     }
 
+    /// Explicit trailing-spare designation for one output's final ring
+    /// row: the trailing id when the final row is the empty unoccupied
+    /// lifecycle spare, else `None`. Shared mode unions occupancy across
+    /// all outputs (a workspace occupied anywhere survives everywhere);
+    /// per-output modes use that output's non-sticky homed facts only.
+    /// Incomplete inventory, an incomplete screen, a missing ring, or a
+    /// native-order conflict fails closed to `None`. Visibility, native
+    /// binding, and retention never disqualify: the marker names the
+    /// existing lifecycle role only. Empty means no non-sticky homed fact
+    /// for the id, mirroring the converge lifecycle facts.
+    pub(crate) fn trailing_marked_id(&self, report: &WorldReport, output: &str) -> Option<String> {
+        if !report.inventory_complete {
+            return None;
+        }
+        if !report
+            .screens
+            .iter()
+            .find(|screen| screen.output.0 == output)
+            .is_some_and(|screen| screen.complete)
+        {
+            return None;
+        }
+        if self.native_order_conflict(report) {
+            return None;
+        }
+        let ring = self.mapping.get(output)?;
+        let last = ring.last()?;
+        let occupied: BTreeSet<String> =
+            if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+                let mut union = BTreeSet::new();
+                for out in self.mapping.keys() {
+                    union.extend(self.ring_occupied(&OutputId(out.clone())));
+                }
+                union
+            } else {
+                self.ring_occupied(&OutputId(output.to_owned()))
+            };
+        let last_occupied = occupied.contains(last.as_str());
+        if crate::workspace::trailing_reusable(!last_occupied, last_occupied) {
+            Some(last.clone())
+        } else {
+            None
+        }
+    }
+
     /// Homing for an explicitly closed id: retained session homing when
     /// known (remapped off removed screens), else `None` (nothing to
     /// forget).

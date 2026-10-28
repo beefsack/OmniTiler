@@ -538,6 +538,11 @@ pub struct PagerWorkspace {
     pub current: bool,
     pub occupied: bool,
     pub contains_focused: bool,
+    /// Explicit trailing-spare designation, same rule as
+    /// [`crate::world_report::WorkspaceDesire::trailing`]: true only
+    /// for the final ring row when it is the empty unoccupied spare.
+    /// The wire omits the key unless true.
+    pub trailing: bool,
     pub windows: Vec<PagerWindow>,
 }
 
@@ -675,7 +680,12 @@ impl WorldEngine {
     /// focused-fullscreen suspension omits only the suspended output; every
     /// other output keeps its content. Never admits, never mutates.
     #[must_use]
-    fn presentation_pager(&self, paused: bool, suspended: Option<&OutputId>) -> Vec<PagerScreen> {
+    fn presentation_pager(
+        &self,
+        report: &WorldReport,
+        paused: bool,
+        suspended: Option<&OutputId>,
+    ) -> Vec<PagerScreen> {
         if paused {
             return Vec::new();
         }
@@ -691,6 +701,7 @@ impl WorldEngine {
                 continue;
             }
             let ring = self.logical_ring(&output);
+            let marked = self.trailing_marked_id(report, &output);
             let view = self.logical_view(&output);
             // Effective current workspace: the retained view when it names a
             // live ring member, else the ring head. This preserves the
@@ -724,12 +735,14 @@ impl WorldEngine {
                 }
                 let ordinal = index as u32 + 1;
                 let current = current_id.as_deref() == Some(id.as_str());
+                let trailing = marked.as_deref() == Some(id.as_str());
                 workspaces.push(PagerWorkspace {
                     id: id.clone(),
                     ordinal,
                     label: pager_workspace_label(ordinal),
                     current,
                     occupied,
+                    trailing,
                     // Same-report focus/view epoch: the retained focus names
                     // the pre-command foreground, but the views above already
                     // moved. Only the current workspace may carry the mark;
@@ -792,7 +805,7 @@ impl WorldEngine {
             suspended_output: suspended.clone(),
             border: self.presentation_border(ingress, suspended.as_ref()),
             underlay: self.presentation_underlay(ingress, suspended.as_ref()),
-            pager: self.presentation_pager(ingress.paused, suspended.as_ref()),
+            pager: self.presentation_pager(report, ingress.paused, suspended.as_ref()),
         }
     }
 }

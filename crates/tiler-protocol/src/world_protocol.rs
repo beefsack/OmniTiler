@@ -1967,6 +1967,9 @@ pub fn encode_reply(reply: &WorldReply) -> String {
         out.push_str(if workspace.existence { "true" } else { "false" });
         out.push_str(",\"hold\":");
         push_json_string(&mut out, workspace.hold.map_or("", HoldReason::as_str));
+        if workspace.trailing {
+            out.push_str(",\"trailing\":true");
+        }
         out.push('}');
     }
     out.push_str("],\"outputs\":[");

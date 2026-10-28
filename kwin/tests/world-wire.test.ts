@@ -645,6 +645,43 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(parsed !== null && isCoreWorldReply(parsed), "canonical broker bytes parse");
     });
 
+    it("trailing marker parses absent-false, true, and refuses non-boolean", () => {
+        const golden = JSON.parse(readFileSync(join("..", "test-fixtures", "world-wire", "reply-golden.json"), "utf8")) as Record<string, unknown>;
+        const clone = (): Record<string, unknown> => JSON.parse(JSON.stringify(golden)) as Record<string, unknown>;
+        // Legacy rows carry no key on either lane: absent means false.
+        const legacy = parseWorldReply(JSON.stringify(golden));
+        assert.ok(legacy !== null && isCoreWorldReply(legacy));
+        if (!isCoreWorldReply(legacy)) {
+            return;
+        }
+        assert.ok(legacy.workspaces.length > 0);
+        assert.ok(legacy.workspaces.every((w) => w.trailing === false));
+        assert.ok(legacy.presentation.pager.length > 0);
+        assert.ok(legacy.presentation.pager.every((s) => s.workspaces.every((w) => w.trailing === false)));
+        // Explicit true marks on both lanes.
+        const marked = clone();
+        ((marked["workspaces"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["trailing"] = true;
+        const markedPager = ((marked["presentation"] as Record<string, unknown>)["pager"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
+        ((markedPager["workspaces"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["trailing"] = true;
+        const parsedMarked = parseWorldReply(JSON.stringify(marked));
+        assert.ok(parsedMarked !== null && isCoreWorldReply(parsedMarked));
+        if (!isCoreWorldReply(parsedMarked)) {
+            return;
+        }
+        assert.equal(parsedMarked.workspaces[0]?.trailing, true);
+        assert.equal(parsedMarked.presentation.pager[0]?.workspaces[0]?.trailing, true);
+        // Non-boolean markers refuse on either lane.
+        for (const bad of ["yes", 1]) {
+            const badWs = clone();
+            ((badWs["workspaces"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["trailing"] = bad;
+            assert.equal(parseWorldReply(JSON.stringify(badWs)), null, `workspace trailing refuses ${JSON.stringify(bad)}`);
+            const badPager = clone();
+            const badPagerOut = ((badPager["presentation"] as Record<string, unknown>)["pager"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
+            ((badPagerOut["workspaces"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["trailing"] = bad;
+            assert.equal(parseWorldReply(JSON.stringify(badPager)), null, `pager trailing refuses ${JSON.stringify(bad)}`);
+        }
+    });
+
     it("queue/take codecs refuse v1 and unknown fields", () => {        assert.equal(
             parseWorldReply('{"v":1,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"1","globalCmd":"1"}'),
             null,

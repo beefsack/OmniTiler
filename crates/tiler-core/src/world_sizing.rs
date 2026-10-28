@@ -193,6 +193,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     for workspace in &reply.workspaces {
         // {"id":,"out":,"bind":,"scope":,"order":,"mode":,
         // "exist":,"hold":} = 65 punctuation plus the exist bool.
+        // The optional ,"trailing":true adds 16 only when marked.
         bytes += 65
             + json_string_len(&workspace.id)
             + json_string_len(&workspace.output.0)
@@ -202,6 +203,9 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
             + json_string_len(workspace.tiling_mode.as_str())
             + bool_len(workspace.existence)
             + json_string_len(workspace.hold.map_or("", HoldReason::as_str));
+        if workspace.trailing {
+            bytes += 16;
+        }
     }
     bytes += reply.workspaces.len().saturating_sub(1);
     for output in &reply.outputs {
@@ -376,7 +380,8 @@ pub fn presentation_estimate(presentation: &crate::world_presentation::WorldPres
         for workspace in &screen.workspaces {
             // `{"id":"","ordinal":,"label":"","current":,"occupied":,
             // "containsFocused":,"windows":[]}` = 88 punctuation plus the
-            // id, ordinal digits, label, and three bools.
+            // id, ordinal digits, label, and three bools. The optional
+            // ,"trailing":true adds 16 only when marked.
             bytes += 88
                 + json_string_len(&workspace.id)
                 + usize_len(workspace.ordinal as usize)
@@ -384,6 +389,9 @@ pub fn presentation_estimate(presentation: &crate::world_presentation::WorldPres
                 + bool_len(workspace.current)
                 + bool_len(workspace.occupied)
                 + bool_len(workspace.contains_focused);
+            if workspace.trailing {
+                bytes += 16;
+            }
             for window in &workspace.windows {
                 // `{"win":"","frame":[]}` = 19 punctuation plus the id and
                 // the frame.
@@ -1249,6 +1257,9 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
         out.push_str(if workspace.existence { "true" } else { "false" });
         out.push_str(",\"hold\":");
         push_json_string(&mut out, workspace.hold.map_or("", HoldReason::as_str));
+        if workspace.trailing {
+            out.push_str(",\"trailing\":true");
+        }
         out.push('}');
     }
     out.push_str("],\"outputs\":[");
@@ -1597,6 +1608,9 @@ pub fn encode_presentation(
             } else {
                 "false"
             });
+            if workspace.trailing {
+                out.push_str(",\"trailing\":true");
+            }
             out.push_str(",\"windows\":[");
             for (k, window) in workspace.windows.iter().enumerate() {
                 if k > 0 {
@@ -1821,6 +1835,9 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 ///   max-length id/label plus ordinal/flags per workspace, 320 each, plus
 ///   16 outputs of slack) and pager windows scale with the live window
 ///   count (one max-length id plus frame and comma per window, 160 each).
+///   The optional explicit trailing marker (`,\"trailing\":true`, 16 bytes)
+///   rides at most one plan row plus one pager row per logical workspace
+///   (32 each).
 /// - gesture-settled terminal (at most one per report): 40 fixed plus a
 ///   20-digit id plus a 5-byte bool = 65 worst case, rounded to 96.
 /// - operation-settled events (at most two per window per report: one
@@ -1851,6 +1868,7 @@ pub fn reply_upper_bound(
         .saturating_add(report_windows.saturating_mul(300))
         .saturating_add(1024)
         .saturating_add(logical_workspaces.saturating_mul(320))
+        .saturating_add(logical_workspaces.saturating_mul(32))
         .saturating_add(report_windows.saturating_mul(160))
         .saturating_add(96)
         .saturating_add(report_windows.saturating_mul(131))

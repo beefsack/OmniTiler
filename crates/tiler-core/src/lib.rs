@@ -123,3 +123,5 @@ mod world_restored_routing_tests;
 mod world_sessionless_migration_tests;
 #[cfg(test)]
 mod world_toggle_tests;
+#[cfg(test)]
+mod world_trailing_marker_tests;
