@@ -118,20 +118,20 @@ pub struct KdeEnumOverride {
 
 /// Native workspace-mode presentation: labels and tips genuinely differ
 /// from the catalog (approved user vocabulary in
-/// `docs/decisions.md#workspace-vocabulary-2026-10-24`: both separate
-/// modes read "Displays have separate workspaces", shared reads
+/// `docs/decisions.md#workspace-vocabulary-2026-10-24`, refined 2026-10-28:
+/// separate modes use own-set/swap qualifiers, shared reads
 /// "Workspaces span displays"; KWin version notes vs scope notes).
 pub const KDE_ENUM_OVERRIDES: &[KdeEnumOverride] = &[
     KdeEnumOverride {
         field_id: settings_catalog::FIELD_WORKSPACE_MODE,
         token: "per-output-local",
-        label: "Displays have separate workspaces",
+        label: "Displays have separate workspaces - own set per display",
         tip: "Per-output local: each output keeps its own set. Requires KWin 6.7 or later; KWin 6.6 uses shared",
     },
     KdeEnumOverride {
         field_id: settings_catalog::FIELD_WORKSPACE_MODE,
         token: "global-unique",
-        label: "Displays have separate workspaces",
+        label: "Displays have separate workspaces - swap across displays",
         tip: "Global unique: distinct sets with cross-output swap. Requires KWin 6.7 or later; KWin 6.6 uses shared",
     },
     KdeEnumOverride {

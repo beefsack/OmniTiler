@@ -5115,6 +5115,18 @@ User-approved 2026-10-24 (final confirmations):
   Native all-mode acceptance remains TBD. Opening settings never automatically
   toggles the host option; no Activities/multi-desktop or configure decision changes.
 
+User-approved refinement 2026-10-28 (tentative; may be refined later):
+
+- Differentiate the two separate-view modes with short qualifiers, using a
+  plain ASCII hyphen with spaces:
+  - `per-output-local`: "Displays have separate workspaces - own set per display".
+  - `global-unique`: "Displays have separate workspaces - swap across displays".
+  - `shared` stays "Workspaces span displays".
+- KDE adopts these labels now. Windows should adopt the same labels if it
+  exposes both modes. Windows Settings already uses distinct "Per-output local"
+  and "Global unique" labels, so there is no duplicate-label follow-up; Windows
+  and macOS code are unchanged by this KDE refinement.
+
 ## macOS v2 implementation decisions 2026-10-25
 
 User-confirmed: atomic v2 cutover; reuse mechanical sequencing/thread proofs;

@@ -316,9 +316,10 @@ request fixtures pin the JS producer, including populated raw attempts.
 - Shared (`shared`) is linked views with the user label "Workspaces
   span displays": all displays show and switch the same workspace.
   This is COSMIC `WorkspaceMode::Global`.
-- `per-output-local` and `global-unique` are separate views with the
-  label "Displays have separate workspaces". These correspond to COSMIC
-  `WorkspaceMode::OutputBound`.
+- `per-output-local` and `global-unique` are separate views, corresponding to
+  COSMIC `WorkspaceMode::OutputBound`. The tentative 2026-10-28 vocabulary
+  refinement labels them "Displays have separate workspaces - own set per display"
+  and "Displays have separate workspaces - swap across displays", respectively.
 - `equal_workspace_count` is a host limitation ("equal workspace
   count"), never called shared: same lengths but independent current
   views. On KDE the native global list means `equal_workspace_count`

@@ -65,8 +65,8 @@ inline constexpr KdeTabDescriptor kKdeTabs[] = {
 };
 
 inline constexpr KdeEnumOptionDescriptor kOptionsForWorkspaceMode[] = {
-    {"per-output-local", kli18n("Displays have separate workspaces"), kli18n("Per-output local: each output keeps its own set. Requires KWin 6.7 or later; KWin 6.6 uses shared")},
-    {"global-unique", kli18n("Displays have separate workspaces"), kli18n("Global unique: distinct sets with cross-output swap. Requires KWin 6.7 or later; KWin 6.6 uses shared")},
+    {"per-output-local", kli18n("Displays have separate workspaces - own set per display"), kli18n("Per-output local: each output keeps its own set. Requires KWin 6.7 or later; KWin 6.6 uses shared")},
+    {"global-unique", kli18n("Displays have separate workspaces - swap across displays"), kli18n("Global unique: distinct sets with cross-output swap. Requires KWin 6.7 or later; KWin 6.6 uses shared")},
     {"shared", kli18n("Workspaces span displays"), kli18n("")},
 };
 

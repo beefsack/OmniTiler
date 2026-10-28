@@ -591,13 +591,13 @@ mod tests {
         // text does.
         assert!(header.contains("kli18n(\"Fallback border color\")"));
         assert!(header.contains("kli18n(\"Fallback border color:\")"));
-        assert!(header.contains("kli18n(\"Displays have separate workspaces\")"));
-        assert_eq!(
-            header
-                .matches("kli18n(\"Displays have separate workspaces\")")
-                .count(),
-            2
-        );
+        assert!(header.contains(
+            "{\"per-output-local\", kli18n(\"Displays have separate workspaces - own set per display\")"
+        ));
+        assert!(header.contains(
+            "{\"global-unique\", kli18n(\"Displays have separate workspaces - swap across displays\")"
+        ));
+        assert!(!header.contains("kli18n(\"Displays have separate workspaces\")"));
         assert!(header.contains("kli18n(\"Workspaces span displays\")"));
         assert!(header.contains("kli18n(\"Gap between tiled windows:\")"));
         assert!(header.contains("static_assert(kKdeExposedFieldCount == 16"));
