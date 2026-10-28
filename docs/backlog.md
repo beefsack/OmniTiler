@@ -52,6 +52,9 @@ Prioritise by return toward these goals
   investigation done (below): the bump should be visibility-ready, pending the
   user's tabs decisions.
   [Record](changes/windows-workspace-return-focus.md).
+  [Coordinated bump design](changes/windows-workspace-return-focus.md#coordinated-visibility-contract-design-2026-10-30):
+  exclusive responsibility table, tentative v3 messages/capabilities, phased
+  failing-first plan and separate open decisions; design only.
 - P1 | KDE: workspace ownership through unreadable desktop facts | DECIDED
   2026-10-28, option (a): KDE always reports native ownership, unreadable
   desktop/current facts are explicit unknowns, and the logical-view fallback

@@ -2348,3 +2348,308 @@ investigation at `328c1469`; no code changed.
   Version/schema tests: `world-wire.test.ts`, `world-raw-attempts.test.ts`,
   `tests/world_codec.rs`, `world_service_flow.rs`. Lands with the
   coordinated bump.
+
+## Coordinated visibility contract design (2026-10-30)
+
+### Status, authority and non-goals
+
+- Design only; no product implementation, behavioral red/green, native
+  acceptance or latency claim follows from this section. This is the current
+  design entry point; the older arrival-transaction and defer/reconcile
+  proposals above remain superseded.
+- Binding inputs: [Windows decisions](../decisions.md#windows-decisions-2026-10-28),
+  [terminal partial hide](#terminal-partial-hide-decision-and-evidence-boundary-2026-10-28),
+  the outcomes explicitly labelled "User decisions (2026-10-28)"
+  (failed/blocked arrivals and gap-time retirement) in the
+  [KDE proposal](#proposal-to-kde-stable-workspace-ownership-through-unreadable-desktop-facts-2026-10-28),
+  and [KDE option (a)](#kde-answer-option-a-stable-native-ownership-2026-10-28).
+  Model A is selected; the platform-reconciles alternative is not reopened.
+- Those explicit outcome decisions supersede the earlier recommendations in
+  the per-write design check. The KDE proposal's "not a user decision" status
+  concerns its then-unanswered ownership options, not its enumerated user
+  inputs; option (a) subsequently resolves that ownership question.
+- Core owns per-window visibility policy, authorized work, verdicts and
+  completion meaning. Platforms own mechanical scheduling within that
+  authority. [Layering](../principles.md#layering) governs both.
+- Include the visibility-ready slice identified by the
+  [tabs investigation](../backlog.md): independent suppression capability,
+  per-window authority/correlation, core composition and truthful hidden
+  observations. No tab containers, reservations, tab wire tokens, UI or
+  promises of avoiding a later tab bump. Full tabs remain a user decision.
+- Windows implements the new visibility path first. KDE/macOS adopt the
+  contract and retain native selectors, not Windows choreography. No live
+  testing is part of this design change.
+- All new type/field names and wire spellings below are **TENTATIVE** design
+  names, not existing APIs or approval of the open product choices below.
+
+### Exclusive responsibility table
+
+| Piece | Core decides / retains | Platform executes / reports | Retry, retirement and prohibited behavior |
+| --- | --- | --- | --- |
+| Version and capabilities | Validate the exact contract and stable capability tuple before publishing authority | Advertise truthful abilities; reject unsupported versions; reset/rebootstrap if abilities genuinely change | Neither side silently downgrades or changes workspace ownership on a read gap |
+| Logical selection and history | Select logical view immediately and preserve effective-view history; native observations retain their native-only meaning | Report real native selectors where present; Windows may retain aggregate visibility diagnostics | A failed Windows hide neither reverts selection nor fabricates a successful applied-view echo; no arrival transaction or rollback |
+| Suppression policy and composition | Compute one target per window: suppress if ANY applicable core reason requires it; releasing workspace suppression cannot release another reason | Apply that target only, without interpreting reason priority | No adapter workspace/tab policy, no independent local reconcile loop; a mismatch alone does not mint another attempt |
+| Eligibility and property authority | Specify suppression authority separately from frame/membership authority; respect sticky, minimized, floating, protected and held members | Prove current native control, lifetime, scope and safety; report veto/unknown narrowly | Suppression release is not unminimize, activate, app-hide, membership change or frame authority; held/untouched rows authorize no write |
+| Roster and identities | Freeze required per-window entries and readiness set, parent/phase dependencies and supersession scope | Bind core window lifetimes to native identity/tags; echo exact keys | Adapter cannot infer or enlarge the roster from its current enumeration; missing rows never count as finished |
+| Scheduling and batching | Declare allowed dependency order, staging eligibility and fallback conditions, not native call order or batch size | Prepare all eligible nonactivating arrivals, batch posts, service event-driven bounded slices, skip obsolete unissued work, preserve barriers | No core scheduling loop or per-member roundtrip gate; no platform policy bypass, settle wait, polling timer or retry as proof |
+| Arrival readiness | Define the required eligible arrivals and mechanical readiness predicate | Prove every required arrival's current lifetime/tag, homing, framed non-iconic uncloaked visibility in a fresh bracket; report exact set and uncertainty | A show post, setter acceptance, count alone or terminal status never proves readiness; failed/blocked arrivals receive no focus |
+| Focus intent and grant | Choose target/effect; allow arrival-ready authority only for explicit selection, with at most one attempt per intent | Claim before prime/dispatch; recheck current target and foreground/game/fullscreen/desktop safety at native boundaries; report real attempt and foreground proof | No observation-origin focus, copied grant, automatic fallback target or replay; conditional R2 only under its already approved trigger and stop conditions |
+| Departure release | Specify staged hides after arrival readiness plus intended foreground proof, or separately authorized existing fallback; preserve member-before-follow barriers | Reprove foreground at the final hide-write boundary; identify staged versus fallback execution and withheld entries | A later grant-less observation cannot fall through to a different combined switch; fallback is never successful staged handoff |
+| Native dispatch and spent fence | Keep exact work identity and consume evidence idempotently | Mark entry claimed/spent before any possibly executing native write; preserve crash-recovery hide obligations and issued side effects | Supersession cancels only unissued work. No reminted id, repeated diff, missing ack or unchanged readback rearms issued work |
+| Facts and uncertainty | Keep factual visibility distinct from desired suppression, logical membership and policy consequences | Report raw setter disposition, identity-bound pre/post samples, explicit no-call reasons, later native facts and provenance when known | No guessed causality from timing or foreground edges; no trace-only/truncated settlement lane, forged echo or hidden-as-minimized projection |
+| Per-entry verdict | Derive confirmed, proven refusal or ambiguous; distinguish no-call blocked, already satisfied, close and supersession | Report mechanical classifications only, never core settlement verdicts | Accepted does not mean confirmed; refusal requires readable unchanged preimage; ambiguous stays actual-state-unknown |
+| Failed show / blocked arrival | Finish the switch with explicit not-shown/blocked accounting; grant no focus to failed arrivals; permit departure hiding only under existing safety authority | Report each failed/blocked arrival and every skipped dependency; execute only permitted fallback | No automatic retry, rollback of arrivals, synthetic successful handoff or implicit terminal treatment of unrelated member/clear operations |
+| Failed departure hide | Terminalize refused or issued-unproven hide as failed visibility work; finish when every roster entry is accounted; retain departure membership | Preserve spent identity and real partial native result, including a still-visible member | Neither side retries automatically. Later facts can refine actual state, not erase failure or resurrect the old group |
+| Follow, migration and refill | Replace only emulated view legs with visibility-group termination; retain distinct parent/target/refill and member-arrival conditions | Execute in that dependency order; continue independent native member/selector receipt lanes | Visibility success/failure cannot prove cross-output homing, member refusal or backing release; host-only backing-release fences stay |
+| Gaps and recovery | Retire already-accounted terminal visibility work even in a later unrelated gap; hold new authority and factual inference where incomplete | Keep pending exact evidence until incorporation ack; report closes explicitly; wait for real input/host events when idle | Gaps do not imply close, view, membership or unknown member completion. A blocked old attempt is not retried on recovery; fresh independent intent may authorize new work |
+| Supersession, late writes and reset | Retire/invalidate intersecting entries explicitly; preserve unrelated scopes; separate new intent from old terminal work | Stop unissued obsolete writes; report old issued completions truthfully, retaining native recovery ownership across reset | A late old hide/show cannot complete a new ABA group, recreate focus authority or become a new policy decision; no compensating rollback |
+| Reporting and acceptance | Publish correlated per-entry/group lifecycle results and distinguish completion from successful handoff | Log native causes and per-phase/end-to-end measurements without altering behavior | Neither success-only aggregates nor a quiet trace close failed work; speed regression fails acceptance |
+
+### Proposed message and capability delta
+
+- Current source anchors (paths, not proposed symbols):
+  - `crates/tiler-core/src/world_report.rs`: `WORLD_CONTRACT_VERSION = 2`,
+    `WorldReport`, `WorldReply`, `WindowFact`, `WindowDesire`, `OutputDesire`,
+    `TransferTarget`, `ViewAttempt`, `MemberAttempt`, `FrameSetter`,
+    `ScreenView`, `NativeObservation`, `OneShotEffect`, `OperationEvent`.
+  - `crates/tiler-protocol/src/world_protocol.rs`: version aliases the core;
+    strict unknown-field/value rejection, decimal-string counters, request
+    `hostOwned`, `views`, `viewAttempts`, and canonical reply encoding.
+  - `crates/tiler-core/src/world_tiling_views.rs`: `retain_view_inner`
+    currently retains a view without a window roster and changes logical
+    selection immediately. `world_native.rs::view_echo_for` and
+    `world_settle.rs::settle_views_pre` still couple emulated completion to
+    logical echoes. Adding a result vector alone cannot remove that coupling.
+
+| Direction / location | Proposed shape | Meaning and validation |
+| --- | --- | --- |
+| Both envelopes | Contract `v:3` (TENTATIVE next integer), same generation/incarnation/request/observation/revision fences | Exact-version cutover from 2, no shim or dual decoder. Discovery remains non-actuating until ready; unsupported version rejects before policy mutation |
+| Adapter -> core, report capabilities | Keep `hostOwned`; add required `windowSuppression: bool`; reply echoes accepted tuple as `capabilities` | Ownership is stable, not readability. Suppression capability is independent: `(true,false)` is native workspaces without per-window hide; `(true,true)` can later suppress tabs; `(false,true)` supports emulated workspaces. Core rejects an operational `(false,false)` report before mutation with proposed `unsupported-capability`; discovery stays `ready:false` and authorizes nothing |
+| Adapter -> core, native observations | Retain `native[{out,order,current}]`; add `orderKnown: bool` and `currentKnown: bool` | Distinguish unreadable current (`currentKnown:false,current:null`) from a known non-ordered surface (`true,null`, existing fullscreen-Space meaning). Unknown order must be empty and cannot create/delete bindings. Known empty order remains distinct. Screen/report completeness still gates native authority; known flags do not override a gap |
+| Core -> adapter, per-window desire | Add `visibilityAuthority` beside existing frame/membership authorities on `WindowDesire` | Controlled authorizes only explicitly keyed visibility work below, not continuous reconciliation. Hold/untouched plus missing work authorizes no write. Workspace home remains provenance/validation, not the suppression capability gate |
+| Core -> adapter, `visibilityGroups[]` | `{group,parent,phase,outputs,workspace,mode,entries,requiredArrivals,focus,fallback}` | Frozen exact entry-key roster and scope dependency set. Parent is transfer/view op or null for independent suppression; phase distinguishes standalone/follow/target/refill/independent. Mode is `staged-selection` or `visibility-only`; required arrivals freeze `{work,out,ws,frame}` proof targets. Focus is null or exact command/effect/target/revision reference; fallback is `authorized-hide-only` or `none`, with the limits below. No native handles or scheduling budget |
+| Core -> adapter, `visibilityWork[]` | `{work,group,win,suppressed,role}` | Core-minted unique work id, lifetime, composed boolean target; role `arrival`, `departure` or `independent`. Arrival/departure are dependency roles, not workspace ownership. Reuse same id across publications, never across a different target/lifetime. At most one current write authority per lifetime; group references exact work keys |
+| Adapter -> core, `visibilityResults[]` | `{work,group,win,suppressed,disposition,reason,setter,pre,post,attemptMs}` | Disposition `issued`, `already-satisfied`, `blocked`, `superseded-unissued` or `closed`. Setter is accepted/refused/threw only for issued, otherwise null. Pre/post are nullable identity-bound samples below. Blocked requires a bounded mechanical reason (safety, unreadable, authority/gap, dependency or identity); other rows carry null unless a mechanical cause applies. Never pretend a skipped call was accepted. Core validates exact retained target and roster, not just window id |
+| Adapter -> core, `selectionProofs[]` | `{group,arrivals,focus,departurePath}` | Correlated mechanical stage evidence, not a completion certificate. Each arrival is `{work,evidence}` using the bracket defined below, not a readiness boolean. Focus is null or `{effect,target,claimed,primitiveCalled,setter,foregroundProven,attemptMs}` with unknown permitted and original dispatch identity retained. Departure path is staged/fallback/none. Every positive proof needs fresh lifetime/native brackets; tagging an old event at drain time is not proof |
+| Adapter -> core, each window fact and result sample | `visibility:{visible:bool|null,suppressionOwned:bool|null}` | `visible` is native per-window shown state, not unobscured pixels or current-workspace membership; native off-desktop/cloak/minimized facts still apply separately. Ownership means a lifetime-matched product suppression claim, NOT proof of invisibility. `true,true` is valid drift/failed-hide evidence. Null is unknown. Facts remain present while product-suppressed; do not project them as closed or minimized |
+| Core -> adapter, `visibilitySettled[]` | Tagged rows: `{kind:entry,work,group,win,result}` or `{kind:group,group,result,handoff}` | Core-derived terminal outcomes distinguish confirmed/refused/ambiguous/blocked/closed/superseded; group termination is complete or superseded, with explicit failed entries. `handoff` distinguishes proven staged success, fallback, failed and not-applicable. Extend neither `OperationEvent`'s clear/float meanings nor `AttemptOutcome`'s member ambiguity rules implicitly |
+
+- Evidence shapes: a result sample is
+  `{obs,lifetimeMatched,visibility}`; each field is stamped at that read.
+  `lifetimeMatched:bool|null` reports the adapter-only proof that the full
+  native lifetime AND stored tag still match the work's source-bound baseline,
+  never raw HWND equality. False or unknown cannot confirm a write. The
+  arrival bracket is `{obs,before,home,frame,after}`, where before/after are
+  samples additionally carrying `minimized:bool|null` and `cloaked:bool|null`,
+  home is a live `{out,ws}` receipt or null, and frame is the live rectangle
+  or null. Home/frame reads occur BETWEEN the two lifetime/visibility reads;
+  both samples must match the same work lifetime/baseline and source
+  observation watermark, with no intervening invalidation. Core compares
+  home/frame to the frozen required-arrival target (null desired frame means
+  no exact-frame equality requirement, not permission for frameless readiness).
+  Native membership proof still follows the separate core-translated native
+  lane. A later `WindowFact`, report clock or watermark alone cannot replace
+  this bracket; native identity/tag values remain adapter-local evidence.
+- Capability/completeness rules: known-state flags describe individual native
+  reads, not a second completeness authority. Unknown order/current forces
+  the corresponding output/report completeness hold; no known flag overrides
+  `ScreenReport.complete` or `WorldReport.inventory_complete`. Known empty
+  order and unknown empty order get distinct codec/recovery tests.
+- Property conflict rules: frame, membership and visibility authority are
+  independent, so `frame:untouched` with `visibility:controlled` is valid for
+  an eligible floating/game member under an explicit workspace action.
+  Visibility hold/untouched forbids any active work row for that lifetime;
+  Controlled with no work still permits no write. A held output/domain or
+  unknown required membership blocks homing-dependent arrival work even if a
+  stale property row said Controlled; it never supplies membership authority.
+  Minimized rows never authorize restore/unminimize, and sticky membership
+  alone never creates departure suppression. Invalid combinations reject;
+  fresh native drift after valid publication reports a no-call block instead.
+
+- Suppression target semantics: `true` acquires/maintains product suppression;
+  `false` releases only that suppression. It does not promise user visibility
+  if the host/user minimized or hid the window for another reason. A release
+  with proof of no owned claim can be already satisfied without a setter, but
+  cannot satisfy arrival readiness unless the separate visibility, lifetime,
+  homing, cloak and frame predicates hold. Suppress confirmation needs both
+  valid ownership and independently proven invisibility; a claim alone fails.
+- Reasons stay core-internal, not a new closed tab vocabulary on the wire.
+  Today core composes workspace suppression with any applicable current
+  policy; later inactive-tab suppression contributes another OR term. Leaving
+  a workspace or selecting a tab must never let two work owners compete for
+  one native suppression property. A native selector still owns workspace
+  exposure on native domains; generic suppression never emulates its view.
+- Result identity is the envelope namespace plus group/work/window/target;
+  clocks diagnose/idempotently identify a write, never authorize it. Evidence
+  is independent of tracing and retained before gap holds or incorporation ack.
+  Already-satisfied proof and no-call terminal dispositions require explicit
+  rows. Omission is pending, not failed or complete; an empty *known* roster
+  needs no synthetic view proof. Receipt updates for a possibly issued write
+  must preserve its original claim, setter and write stamp, not overwrite it
+  with an unrelated fresh attempt.
+- Core freezes roster and dependencies before publication; a newly admitted
+  window receives distinct newly authorized work, not silent inclusion in an
+  in-flight roster. Close/new membership/supersession explicitly retires old
+  entries. A later fact after failed/ambiguous terminal work updates actual
+  state only. No automatically reminted work merely because old suppression
+  remains unsatisfied, or because a previously hidden window self-reveals.
+- `selectionProofs` permits local event-driven continuation without a core
+  roundtrip between shows, readiness, focus and hides. Core has specified the
+  predicates and permitted branches; the adapter evaluates native evidence and
+  reports it. Readiness cannot be `true` for a prefix/changed roster, foreground
+  proof cannot transfer between effects/groups, and a proof row cannot mint or
+  extend one-shot authority. R2 is not automatically included: if measured
+  revision crossing triggers it, its atomic never-claimed proof needs its own
+  failing-first unit before use. Unclaimed/unknown is not proof of never used.
+- Exhaustive execution branches for phase-2 tests: (1) empty/minimized-only
+  arrival has no staged focus grant, only separately authorized safe
+  visibility work; (2) complete nonempty arrival bracket plus a still-valid
+  explicit-selection effect permits one focus attempt; (3) failed/blocked
+  arrival withholds focus and uses only the allowed hide-only fallback;
+  (4) proven intended foreground permits staged departure work after its final
+  native safety bracket; (5) stale/superseded unissued work does nothing and
+  reports its disposition; (6) refused/unproven focus follows the parked
+  outcome below, not an adapter-selected branch; (7) native-selector and
+  independent-suppression groups are visibility-only, without staged focus
+  privilege. Any safety/gap/dependency veto before a write is explicit no-call
+  accounting; any possibly issued write remains spent. No unspecified branch
+  may fall through to legacy combined view actuation.
+- `authorized-hide-only` means only the current-authority departure hiding
+  described in [bounded repairs](#bounded-repairs-and-partial-hide-contract-blocker-2026-10-28):
+  "The approved fallback permits current authorized hiding, reported as
+  fallback rather than successful staged handoff." It adds no focus setter,
+  reveal replay, combined-switch restart or weakened gate. Failed/blocked
+  arrivals can use this under the explicitly recorded failed-arrival decision;
+  focus-unproven fallback/outcome remains the separate open question below.
+  A core group for an undecided branch must carry fallback `none`; adapters
+  cannot infer permission from this enum's presence.
+- Failed/blocked arrivals and terminal departure failures count as accounted
+  failures, not successful writes. Terminal group status is NOT final full-view
+  proof; successful handoff still requires all required arrival/foreground and
+  departure postconditions, without a formal full-view oracle. If an upstream
+  prerequisite prevents issuing a dependent row, report explicit no-call
+  accounting, never omit that row or send an invented setter result. The
+  focus-failure branch requiring product clarification is parked below.
+
+### Removal, bounds and acknowledgement work that must not be missed
+
+- Remove `WorldReport.views`/`ScreenView` applied-view ingress and
+  `ViewAttempt.pre/post/baseline` (wire `pre/post/base`). Retain native-only
+  view attempts (`nativePre/nativePost/nativeBase`) for native selectors;
+  non-host-owned view attempts reject. Windows stops producing reconstructed
+  view attempts rather than reporting its logical target as fact.
+- Retain `MemberAttempt` and `WindowFact.observed_workspace` logical homing
+  receipts. They prove a different property, not aggregate view or visibility;
+  audit `world_native_receipts.rs`, `world_native.rs`, `world_tick.rs` and
+  `world_capture.rs` so removing `read_view` coupling cannot grant membership.
+  Host-only source-backing release remains native-list/member-arrival gated.
+- Update validation, report digest/duplicate equality, replay caches, canonical
+  codec and `crates/tiler-core/src/world_sizing.rs`. Keep existing 4 MiB
+  request/reply budgets. Bound roster/work/results/proofs/lifecycle rows and
+  reject duplicate keys, conflicting per-window authority, forged work/phase,
+  capability violations and unknown fields/tokens before mutation. Prove
+  worst-case bounds and budget refusal with existing maximum inventories before
+  freezing numeric section caps; no silent truncation or drop-oldest evidence.
+- Extend Windows `world_sequencer.rs` flight/pending/ack/reset bookkeeping by
+  exact group/work result equality, not latest-window-only replacement.
+  Incorporation ack prunes only the delivered version; newer evidence and old
+  issued results survive. Core stages acknowledged evidence before a later gap
+  can lose it. A stale desired reply can acknowledge incorporation without
+  authorizing native work. Reset invalidates authority, not recovery-ledger
+  duties or proof that old native calls may still land.
+  Existing incorporation-versus-application precedent is
+  `world_sequencer.rs::AckOutcome::Stale`; existing spent/grant and recovery
+  obligations remain authoritative, not new reset-driven actuation permission.
+- Update every typed constructor, raw KWin normalizer, TS DTO/encoder/exact ack,
+  macOS builder/runtime, stress/acceptance simulator and version fixture.
+  `visibilityResults` without capability rejects; truthful visibility samples
+  are allowed with capability false. Use required v3 fields, not optional v2
+  backfills. Stable capability changes require a fresh incarnation/bootstrap;
+  core never guesses suppression support from `hostOwned:false`.
+
+### Phased implementation plan and gates
+
+- These are implementation units, not authorization to start product changes.
+  Behavioral failing-first means the intended assertion fails under current
+  behavior (or a bounded old-behavior seam), not merely that new APIs fail to
+  compile. Accept evidence seams before native execution depends on them.
+
+| Phase | Scope and failing-first evidence | Gate / dependencies |
+| --- | --- | --- |
+| 0. Freeze the boundary | Resolve the open focus-failure outcome below; retain existing partial-hide discriminator in `docs/spec/reference-outcomes.md` and add a minimal focus-unproven action sequence if that behavior is selected. Pin known failed-show, empty/minimized-only, sticky/float and independent suppression expectations; unknown outcomes remain TBD | Review exact shapes, no-call accounting and all consumers; preserve accepted BEFORE measurements and outstanding prototype blockers. No product behavior chosen from mocks |
+| 1. Core ownership/gap foundations | Producer-shaped KDE desktop list/current unreadability and recovery tests fail on current native echo confirmation, domain readability, equal-count padding and shared native creation/desire leaks. Add known non-ordered-current versus unreadable-current cases | All listed fences pass with old ownership still stable in tests; no new creation, inferred close/homing/view/history during gaps. This prerequisite precedes changing KDE's ownership producer |
+| 2. Core visibility lifecycle | Frozen per-window roster/authority/OR composition, unique work, exact evidence retention, logical-view/history decoupling, terminal failed hide/show and gap-time retirement. Red current pending-hide characterization against selected completion. Cover every standalone/follow/migration-target/refill leg and every enumerated execution branch, including veto/unknown/no-call outcomes | Core tests prove failed member retains departure home, ambiguity stays unknown, no replay after duplicate/ack/gap/reset/ABA, close/supersession accounted, empty known roster terminates, and latest intents do not lose ordered commands. No unenumerated adapter branch or member/backing shortcut; native selector/member/clear ambiguity semantics remain unchanged |
+| 3. Protocol and adapter schema cutover | v2 rejection, removed/unknown fields, required capability tuples, null/known native facts, duplicate/forged rows, canonical byte equality, digest changes, max-size refusal and exact ack retention. Simulators actually execute/report visibility work; do not disable their settlement coverage | Core/protocol plus Windows typed consumers and KDE/macOS schema producers/builders move to v3 together. Keep this integration private until all constructors/codecs compile and contract gates pass; do not deploy mixed versions or flip KDE ownership before phase 1 |
+| 4. Windows native execution | Behavioral red tests for true prepared-show batching (no per-member wait/readback between posts), second-arrival lifetime/cloak/tag loss, asynchronous focus landing across owner passes, grant expiry, final foreground race before hide, partial issued hide, explicit show failures, and no-call blocked dependencies. Plumb existing product-hide pre/post facts on errors, independent of trace | Core work is sole visibility authority. Preserve existing recovery ledger, native identity, game/fullscreen/desktop gates and spent-before-write fences. No grant-less legacy fallthrough, new query for refusal classification, retry or R2 without its measured trigger. Full offline gates and independent safety/contract review pass before live work |
+| 5. Coordinated acceptance | Future fixture-only Windows AFTER matrix matches accepted BEFORE method: 0 ms home-away/trio-churn, occupied-to-occupied handoff, paired incomplete-hide discriminators, partial failure and rapid supersession. Tests assert truthful failures as well as normal successful phase ordering | End-to-end and per-phase speed have no regression. No speed claim from fewer calls or unit counts. Native failure evidence remains; a synthetic fix is not proof the historical intermittent hide is fixed. Physical-only safety/unknown-foreground questions remain with their existing acceptance items |
+
+- Must land together at cutover: core types/validation/sizing/authority and all
+  emulated view-leg consumers; protocol version/codec/fixtures/simulators;
+  Windows desire/result/spent/ack/capture paths; KDE stable ownership,
+  explicit-unknown normalization and removal of fallback; macOS native-only
+  DTO/builders/attempts. Phases may be developed separately, but no release
+  may contain half the new contract. Native per-window hide support on
+  KDE/macOS is NOT a cutover dependency when capability is false.
+- Offline gates for implementation: locked core/protocol/Windows build and
+  full tests, strict all-target clippy, workspace formatting, codec/canonical
+  and stress definition/fault/mock gates, and `git diff --check`; KDE TS/raw
+  fixtures and macOS builder/runtime tests run in their supported environments.
+  Passing Windows compilation is not evidence of native KDE/macOS behavior.
+
+### KDE and macOS adoption notes
+
+- KDE: keep `hostOwned:true` even with unreadable desktop/current facts;
+  remove the binding-table logical-view fallback in `kwin/src/world-observe.ts`.
+  Fix the phase-1 core fences first, plus empty-`native[]` equal-count handling.
+  Update `kwin/src/world-report.ts`, `world-apply.ts`, `world-state.ts`,
+  `world-seq.ts`, `crates/omnitiler/src/kde_raw.rs` and producer-shaped
+  `world-wire.test.ts`/`world-raw-attempts.test.ts`/Rust service fixtures.
+  Preserve native selector settlement and pager retained content during gaps.
+- KDE per-window suppression stays false until a real approved writable route
+  is proven. `kwin/src/kwin-globals.d.ts` exposes hidden/minimized read-only;
+  neither observation proves a hide actuator. Do not substitute minimization,
+  parking desktops or ownership changes as a workaround in this bump.
+- macOS: retain native Spaces, native-only selector attempts and all existing
+  membership/follow/migration safety. Update `world_builder.rs` and
+  `world_runtime.rs` under `crates/tiler-macos/src/`, including explicit unknown
+  versus known non-ordered current Space. No approved arbitrary per-window hide
+  route exists: advertise suppression false. `ax.rs::set_minimized_owned` is
+  fixture-only control, not production authority; app hide is not per-window
+  suppression. No new minimize/app-hide route or consent flow is selected.
+
+### Open decisions, recommendations and risks
+
+| Open decision | Recommendation (not selected by this design) |
+| --- | --- |
+| Focus refused or remains unproven after arrivals are ready: exact terminal group outcome and departure fallback accounting | Finish with explicit failed/unproven focus and individually accounted visibility results, never staged success. No departure write under staged authority without foreground proof; use only the already authorized fallback under fresh existing gates, otherwise explicitly block those entries. No retry or indefinite wait. Pin this minimal sequence before implementation; do not decide the separate unknown-foreground A/B policy |
+| Move full tab core/protocol into 0.1? | No. Deliver the visibility-ready slice only; keep full tabs after 0.1. This repeats the parked investigation question, not a new scheduling decision |
+| Require this bump to avoid every later tab protocol bump? | No. Accept a later tab bump; do not add speculative tab reservations, enums or hidden-window substitutes now |
+
+- TENTATIVE technical choices for schema review: next version 3, required
+  independent boolean capability, core-minted work/group ids, separate typed
+  lifecycle rows and native known-state flags. These spellings/layouts can be
+  simplified before freeze while preserving the exclusive ownership table;
+  they are not additional selected product policy.
+- Risks: medium cross-adapter change, not a Windows branch; aggregate proof
+  dependencies can survive in homing/follow/refill paths; a local phase machine
+  can accidentally become a second policy owner; uncertain issued work and
+  superseded evidence can exceed naive latest-window buffers; extra reads or
+  roundtrips can violate the hard speed gate. Prepared batching, retained
+  cross-pass ownership, final native foreground bracket and reveal accounting
+  are still unaccepted implementation work. KDE/macOS cannot promise future
+  tabs merely because the wire is visibility-ready.
+- Next product action: settle the focus-failure row above, then phase 1
+  producer-shaped failing-first completeness fences and phase 2 lifecycle
+  tests, with the v3 shapes reviewed before adapter cutover.
+
+### Design review and evidence boundary
+
+- Independent source-backed design review accepted the responsibility split,
+  capability/removal scope, terminal-hide semantics and coordinated phases.
+  The first review identified incomplete readiness evidence and unnamed
+  fallback authority; explicit lifetime/homing/frame brackets and the existing
+  hide-only fallback citation close both findings. No design blocker remains.
+- Verification is source/record inspection and documentation diff checks only.
+  No production/test code changed, no product tests or live legs ran, and no
+  staged-switch correctness, historical incomplete-hide fix or speed acceptance
+  is claimed. The separately listed product decisions remain open.
