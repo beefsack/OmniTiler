@@ -422,11 +422,11 @@ fn view_return_select_records_linked_target_before_native_writes() {
 #[test]
 fn view_return_fallback_records_effect_target_not_remembered() {
     // Direct `retain_view` fallback: session memory names win-a, but the
-    // command index marks win-a sticky (ineligible), so the resolved
-    // effect must name win-b AND session memory must follow it before
-    // native writes. RED on the old seam: effect win-b while memory
-    // stays win-a. No sweep runs between the legs, so convergence cannot
-    // move memory first.
+    // command index marks win-a unexplained fit-excluded (ineligible), so
+    // the resolved effect must name win-b AND session memory must follow
+    // it before native writes. RED on the old seam: effect win-b while
+    // memory stays win-a. No sweep runs between the legs, so convergence
+    // cannot move memory first.
     let (mut engine, key) = bootstrap_two_tiled();
     assert_eq!(
         remembered_window(&engine, &key),
@@ -462,7 +462,7 @@ fn view_return_fallback_records_effect_target_not_remembered() {
         "view detour leaves home memory unchanged"
     );
     // Leg 2: crafted index over the SAME linked session state (untouched):
-    // win-a sticky falls through, win-b stays eligible.
+    // win-a unexplained fit-excluded falls through, win-b stays eligible.
     let owned = vec![
         EngineWindow {
             window: WindowId("win-a".to_owned()),
@@ -470,10 +470,10 @@ fn view_return_fallback_records_effect_target_not_remembered() {
             workspace: key.workspace.clone(),
             rect: rect(0, 0, 40, 90),
             floating: false,
-            fit_excluded: false,
+            fit_excluded: true,
             fullscreen: false,
             maximized: false,
-            sticky: true,
+            sticky: false,
             fixed_auto: false,
             fixed_suppress: false,
             hints: WindowSizeHints::none(),
@@ -1642,5 +1642,1784 @@ fn send_directional_stay_records_survivor_in_source() {
         remembered_window(&engine, &source_key),
         Some(WindowId("win-b".to_owned())),
         "directional stay records the survivor before native writes"
+    );
+}
+
+#[test]
+fn observed_float_away_back_returns_float() {
+    // Mouse path: ordinary float observed focused alongside a tile, then
+    // leave and return. Before the fix, leaf-only return named the tile
+    // instead of the observed float.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_f = fact("win-f", "out-a", 200);
+    float_f.floating = true;
+    let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    // Mouse observation: native focus lands on the float, no command.
+    let _ = accepted(
+        &mut engine,
+        &report(2, two_screens(), windows(), "win-f", None, None),
+    );
+    // Leave to the spare while the float is still natively focused.
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-f",
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    // Return: approved behavior re-emits the observed float.
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-f".to_owned())],
+        "observed float survives away/back"
+    );
+}
+
+#[test]
+fn keyboard_float_lane_leave_before_observe_returns_float() {
+    // Keyboard path (`float_lane_focus_leaves_memory_unchanged` setup):
+    // float-lane effect names win-f2, leave BEFORE native observes win-f2,
+    // return must still name win-f2. Before the fix, leaf-only return
+    // named the tile instead.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_b = fact("win-f1", "out-a", 0);
+    float_b.floating = true;
+    let mut float_c = fact("win-f2", "out-a", 200);
+    float_c.floating = true;
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 400),
+            float_b.clone(),
+            float_c.clone(),
+        ]
+    };
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-f1",
+            Some(11),
+            Some(WorldCommand::FocusDirectional {
+                window: WindowId("win-f1".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&reply),
+        vec![WindowId("win-f2".to_owned())],
+        "float lane names win-f2"
+    );
+    // Leave before the target is ever natively observed (focus still win-f1).
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-f1",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-f2".to_owned())],
+        "unlanded keyboard float survives away/back"
+    );
+}
+
+#[test]
+fn float_only_workspace_returns_float() {
+    // Tiled-mode workspace whose only resident is a float: send the tile
+    // away without follow, leave, return. Before the fix, leaf-only
+    // candidates found no tiled member and emitted no focus.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_f = fact("win-f", "out-a", 200);
+    float_f.floating = true;
+    let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    // Move the only tile away without follow: home keeps the float.
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: other.clone(),
+                follow: false,
+            }),
+        ),
+    );
+    // Leave the now float-only home for the spare.
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-f",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-f".to_owned())],
+        "float-only tiled workspace returns the float"
+    );
+}
+
+#[test]
+fn sticky_shown_away_from_home_returns_sticky() {
+    // Sticky homed on the bootstrap workspace but command-focused while
+    // the spare is shown (effective domain != home via `effective_domain`).
+    // Return to the spare must name the sticky; before the fix, return
+    // filtered sticky rows and stayed quiet (spare has no tile). Avoid
+    // `observed_workspace` on the sticky fact so ingestion never rehomes
+    // the sticky native home; shown-vs-home split comes only from the
+    // retained logical view.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    // Show the spare (no tile there yet).
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    // Command-focus the sticky while the spare is shown: effective domain
+    // is the spare, actual home stays the bootstrap workspace.
+    let focused = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(12),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert!(
+        !focus_targets(&focused).is_empty()
+            && focus_targets(&focused)
+                .iter()
+                .all(|t| *t == WindowId("win-s".to_owned())),
+        "sticky focuses from the shown spare: {:?}",
+        focused.effects
+    );
+    // Detour to home, then return to the spare: sticky must come back.
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "win-s",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-s".to_owned())],
+        "sticky shown away from home survives away/back"
+    );
+}
+
+#[test]
+fn later_tile_outranks_stale_home_sticky_on_return() {
+    // A sticky with a truthful native receipt stays linked at home while
+    // shown away, so focusing it away records home[spare]=win-s. A tile
+    // admitted and focused on the spare afterwards must win the later
+    // return: live owner memory shadows the older foreign sticky
+    // identity instead of letting it outrank the latest target tile.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), sticky_s.clone()],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    // Pin the sticky home with a truthful receipt from here on: the link
+    // never migrates, only the shown view moves.
+    let mut sticky_home = sticky_s.clone();
+    sticky_home.observed_workspace = Some(home.workspace.0.clone());
+    let windows = || vec![fact("win-a", "out-a", 0), sticky_home.clone()];
+    // Show the spare (no tile there yet).
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    // Focus the sticky while the spare is shown: the home session records
+    // the effective spare domain without moving the link.
+    let focused = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(12),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert!(
+        !focus_targets(&focused).is_empty()
+            && focus_targets(&focused)
+                .iter()
+                .all(|t| *t == WindowId("win-s".to_owned())),
+        "sticky focuses from the shown spare: {:?}",
+        focused.effects
+    );
+    assert_eq!(
+        home_of(&engine, &WindowId("win-s".to_owned())),
+        Some(home.clone()),
+        "receipt-pinned sticky stays linked at home"
+    );
+    // Detour home, then return: the foreign home memory answers while the
+    // spare owns nothing.
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "win-s",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-s".to_owned())],
+        "foreign home sticky answers a tile-less spare"
+    );
+    // Admit a tile on the spare and focus it there.
+    let tiled = || {
+        let mut rows = windows();
+        rows.push(fact("win-t", "out-a", 400));
+        rows
+    };
+    let _ = accepted(
+        &mut engine,
+        &report(6, two_screens(), tiled(), "win-a", None, None),
+    );
+    let tile_focused = accepted(
+        &mut engine,
+        &report(
+            7,
+            two_screens(),
+            tiled(),
+            "win-a",
+            Some(15),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-t".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&tile_focused),
+        vec![WindowId("win-t".to_owned())],
+        "tile focuses on the spare"
+    );
+    // Detour home, then return: the latest target-session tile outranks
+    // the stale home sticky identity.
+    let _ = accepted(
+        &mut engine,
+        &report(
+            8,
+            two_screens(),
+            tiled(),
+            "win-t",
+            Some(16),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            9,
+            two_screens(),
+            tiled(),
+            "",
+            Some(17),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-t".to_owned())],
+        "later tile outranks stale home sticky on return"
+    );
+}
+
+// Pinned last-active ordering coverage (all GREEN): per-workspace last
+// active wins regardless of kind (tile / ordinary float / sticky). The
+// S1 gap (tiled operation focus, send survivors, admission newcomers
+// never recorded) is covered by the `last_active_*_supersedes_stale_*`
+// tests below: the shared publish-time recorder backfills every accepted
+// Focus effect onto the one canonical slot, latest wins.
+// Each probe isolates one last-active ordering question against the
+// no-preference contract.
+
+#[test]
+fn last_active_sticky_after_tile_same_home_returns_sticky() {
+    // Tile focused, then sticky focused, both while home is shown.
+    // Contract: last active (sticky) wins the away/back return.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            sticky_s.clone(),
+        ]
+    };
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-b".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-b".to_owned())]);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-b",
+            Some(12),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&reply),
+        vec![WindowId("win-s".to_owned())],
+        "sticky focus emits while home is shown"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "win-s",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-s".to_owned())],
+        "sticky focused after tile at home survives away/back"
+    );
+}
+
+#[test]
+fn last_active_sticky_after_tile_on_spare_returns_sticky() {
+    // Tile admitted+focused on the spare, then the home-pinned sticky is
+    // focused while the spare is shown. Contract: the later sticky wins.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), sticky_s.clone()],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let mut sticky_home = sticky_s.clone();
+    sticky_home.observed_workspace = Some(home.workspace.0.clone());
+    let windows = || vec![fact("win-a", "out-a", 0), sticky_home.clone()];
+    let _ = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let tiled = || {
+        let mut rows = windows();
+        rows.push(fact("win-t", "out-a", 400));
+        rows
+    };
+    let _ = accepted(
+        &mut engine,
+        &report(3, two_screens(), tiled(), "win-a", None, None),
+    );
+    let tile_focused = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            tiled(),
+            "win-a",
+            Some(12),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-t".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&tile_focused),
+        vec![WindowId("win-t".to_owned())],
+        "tile focuses on the spare"
+    );
+    let sticky_focused = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            tiled(),
+            "win-t",
+            Some(13),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&sticky_focused),
+        vec![WindowId("win-s".to_owned())],
+        "sticky focuses from the shown spare"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            6,
+            two_screens(),
+            tiled(),
+            "win-s",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            7,
+            two_screens(),
+            tiled(),
+            "",
+            Some(15),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-s".to_owned())],
+        "later sticky outranks earlier spare tile on return"
+    );
+}
+
+#[test]
+fn last_active_later_tile_after_float_returns_tile() {
+    // Float recorded first, tile focused after, both at home.
+    // Contract: last active (tile) wins. Control: must pass.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_f = fact("win-f", "out-a", 200);
+    float_f.floating = true;
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            float_f.clone(),
+        ]
+    };
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-f".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-f".to_owned())]);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-f",
+            Some(12),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-b".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-b".to_owned())]);
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "win-b",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-b".to_owned())],
+        "later tile outranks earlier float on return"
+    );
+}
+
+#[test]
+fn last_active_unchanged_tile_observation_preserves_float_command() {
+    // Float command records win-f while native still reports the old tile
+    // focus (command before native actuation, native unchanged). Contract:
+    // an unchanged tile re-report carries no new information and must not
+    // clobber the recorded float.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_f = fact("win-f", "out-a", 200);
+    float_f.floating = true;
+    let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-f".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-f".to_owned())]);
+    // Native never actuated: same tile focus re-reported, no command.
+    let _ = accepted(
+        &mut engine,
+        &report(3, two_screens(), windows(), "win-a", None, None),
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(WindowId("win-f".to_owned())),
+        "unchanged tile re-report preserves the recorded float"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-f".to_owned())],
+        "unlanded float command survives away/back"
+    );
+}
+
+#[test]
+fn last_active_closed_float_prunes_memory_no_ghost() {
+    // Closing the recorded float prunes its identity; the return names the
+    // surviving tile with no ghost focus. Control: must pass.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_f = fact("win-f", "out-a", 200);
+    float_f.floating = true;
+    let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-f".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-f".to_owned())]);
+    let mut close = report(
+        3,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0)],
+        "",
+        None,
+        None,
+    );
+    close.closed = vec![WindowId("win-f".to_owned())];
+    let _ = accepted(&mut engine, &close);
+    assert!(
+        engine
+            .canonical_memory(&home)
+            .is_none_or(|w| w != WindowId("win-f".to_owned())),
+        "closed float identity is pruned"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-a".to_owned())],
+        "closed float leaves the surviving tile"
+    );
+}
+
+#[test]
+fn last_active_no_focus_report_preserves_float_memory() {
+    // An empty-focus report (unknown/lost foreground) records nothing and
+    // preserves the recorded float. Control: must pass.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_f = fact("win-f", "out-a", 200);
+    float_f.floating = true;
+    let windows = || vec![fact("win-a", "out-a", 0), float_f.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-f".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-f".to_owned())]);
+    let _ = accepted(
+        &mut engine,
+        &report(3, two_screens(), windows(), "", None, None),
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(WindowId("win-f".to_owned())),
+        "empty focus preserves the recorded float"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-f".to_owned())],
+        "float survives an empty-focus report across away/back"
+    );
+}
+
+#[test]
+fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
+    // Sticky recorded at home, then a no-focus switch to an empty spare
+    // where only the sticky is visible: the spare names no canonical
+    // target and has no tiled fallback, so the switch stays NoEffect and
+    // records nothing; home memory survives for the return.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-s".to_owned())]);
+    let away = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    assert!(
+        away.effects.is_empty(),
+        "empty spare with only a visible sticky invents no focus"
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(WindowId("win-s".to_owned())),
+        "away switch preserves home sticky memory"
+    );
+    let spare = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(other.clone()),
+    };
+    assert_eq!(
+        engine.canonical_memory(&spare),
+        None,
+        "sticky records only where it was selected, never the spare it shows on"
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            "",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-s".to_owned())],
+        "return restores the sticky recorded at home"
+    );
+}
+
+#[test]
+fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
+    // S1: sticky recorded first, then a tiled Operation Focus (local,
+    // cross_output_transfer=false) names a tile before native observation
+    // moves. The accepted tile must overwrite the sticky slot so
+    // leave/return yields the tile.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            sticky_s.clone(),
+        ]
+    };
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-s".to_owned())]);
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(WindowId("win-s".to_owned())),
+        "precondition: sticky recorded at home"
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-s",
+            Some(12),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::Focus {
+                    window: "win-s".to_owned(),
+                    direction: "left".to_owned(),
+                    cross_output_transfer: false,
+                    float_subject: false,
+                },
+            )),
+        ),
+    );
+    let targets = focus_targets(&reply);
+    assert_eq!(targets.len(), 1, "tiled operation focus emits once");
+    let tile = targets.into_iter().next().expect("tile target");
+    assert!(
+        tile != WindowId("win-s".to_owned()),
+        "operation focus names a tile, got {tile:?}"
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(tile.clone()),
+        "tiled operation focus overwrites the stale sticky"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            tile.0.as_str(),
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back).last(),
+        Some(&tile),
+        "leave/return yields the newer tile, not the stale sticky"
+    );
+}
+
+#[test]
+fn last_active_send_stay_survivor_supersedes_stale_sticky() {
+    // Stale float recorded at home, then a same-output send with stay=false
+    // names the tiled source survivor. That tile must overwrite the
+    // float slot so leave/return yields the tile.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut float_f = fact("win-f", "out-a", 200);
+    float_f.floating = true;
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            float_f.clone(),
+        ]
+    };
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-f".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-f".to_owned())]);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(12),
+            Some(WorldCommand::Send {
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: other.clone(),
+                follow: false,
+            }),
+        ),
+    );
+    let targets = focus_targets(&reply);
+    assert_eq!(targets.len(), 1, "send-stay names the source survivor");
+    let survivor = targets.into_iter().next().expect("survivor");
+    assert!(
+        survivor != WindowId("win-f".to_owned()),
+        "send-stay names a tile, got {survivor:?}"
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(survivor.clone()),
+        "send-stay survivor overwrites the stale sticky at home"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            windows(),
+            survivor.0.as_str(),
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            windows(),
+            "",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![survivor],
+        "leave/return yields the send-stay tile, not the stale sticky"
+    );
+}
+
+#[test]
+fn last_active_admission_newcomer_supersedes_stale_sticky() {
+    // Sticky recorded at home, then a fresh tiled newcomer is admitted
+    // with automatic focus. The admission tile must overwrite the sticky
+    // slot so leave/return yields the newcomer.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            sticky_s.clone(),
+        ]
+    };
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-s".to_owned())]);
+    let mut arrived = windows();
+    arrived.push(fact("win-n", "out-a", 300));
+    let reply = accepted(
+        &mut engine,
+        &report(3, two_screens(), arrived.clone(), "win-s", None, None),
+    );
+    let targets = focus_targets(&reply);
+    assert_eq!(
+        targets,
+        vec![WindowId("win-n".to_owned())],
+        "admission names the newcomer"
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(WindowId("win-n".to_owned())),
+        "admitted newcomer overwrites the stale sticky"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            4,
+            two_screens(),
+            arrived.clone(),
+            "win-n",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            arrived,
+            "",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back).last(),
+        Some(&WindowId("win-n".to_owned())),
+        "leave/return yields the admitted newcomer, not the stale sticky"
+    );
+}
+
+#[test]
+fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
+    // Sticky recorded, then a tiled Operation focus overwrites the slot.
+    // Closing that tile prunes the slot; the effect-free close/return
+    // must use the eligible tiled fallback (win-a), never the stale
+    // sticky exception.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            sticky_s.clone(),
+        ]
+    };
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "win-a", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Focus {
+                window: WindowId("win-s".to_owned()),
+                direction: "right".to_owned(),
+            }),
+        ),
+    );
+    assert_eq!(focus_targets(&reply), vec![WindowId("win-s".to_owned())]);
+    let reply = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-s",
+            Some(12),
+            Some(WorldCommand::Operation(
+                crate::boundary::CoreCommand::Focus {
+                    window: "win-s".to_owned(),
+                    direction: "left".to_owned(),
+                    cross_output_transfer: false,
+                    float_subject: false,
+                },
+            )),
+        ),
+    );
+    let tile = focus_targets(&reply)
+        .into_iter()
+        .next()
+        .expect("tile target");
+    assert!(
+        tile != WindowId("win-s".to_owned()),
+        "operation focus names a tile, got {tile:?}"
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(tile.clone()),
+        "tiled operation focus overwrites the stale sticky"
+    );
+    let mut close = report(
+        4,
+        two_screens(),
+        vec![fact("win-a", "out-a", 0), sticky_s.clone()],
+        "win-a",
+        None,
+        None,
+    );
+    close.closed = vec![tile];
+    let reply = accepted(&mut engine, &close);
+    assert!(
+        focus_targets(&reply).is_empty(),
+        "close emits no focus effect, got {:?}",
+        reply.effects
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(WindowId("win-a".to_owned())),
+        "closed tile pruned; observed tile survivor recorded, stale sticky never restored"
+    );
+    let _ = accepted(
+        &mut engine,
+        &report(
+            5,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), sticky_s.clone()],
+            "win-a",
+            Some(13),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    let back = accepted(
+        &mut engine,
+        &report(
+            6,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), sticky_s.clone()],
+            "",
+            Some(14),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back).last(),
+        Some(&WindowId("win-a".to_owned())),
+        "return after close uses the tiled fallback, not the stale exception"
+    );
+}
+
+#[test]
+fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
+    // An already-known sticky follows the current view (no members-map
+    // homing), so switching to a never-focused empty spare stages it
+    // there. That move is not a birth: with unchanged native focus and
+    // no command, the observation must mint no admission focus and
+    // record no canonical memory in the spare. A detour observation
+    // stays quiet, and the return names the remembered tile.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let mut sticky_s = fact("win-s", "out-a", 200);
+    sticky_s.sticky = true;
+    let windows = || vec![fact("win-a", "out-a", 0), sticky_s.clone()];
+    let first = accepted(
+        &mut engine,
+        &report(1, two_screens(), windows(), "", None, None),
+    );
+    let home = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    let other = ring
+        .iter()
+        .find(|id| **id != home.workspace.0)
+        .expect("second workspace")
+        .clone();
+    let spare = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: WorkspaceId(other.clone()),
+    };
+    // Settle tile focus once; the sticky is visible throughout but never
+    // intentionally focused.
+    let _ = accepted(
+        &mut engine,
+        &report(2, two_screens(), windows(), "win-a", None, None),
+    );
+    assert_eq!(
+        engine.canonical_memory(&home),
+        Some(WindowId("win-a".to_owned())),
+        "precondition: tile recorded at home"
+    );
+    // Switch to the never-focused empty spare.
+    let _ = accepted(
+        &mut engine,
+        &report(
+            3,
+            two_screens(),
+            windows(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+        ),
+    );
+    // Next observation: unchanged native focus, no command. The sticky
+    // is merely visible on the spare now.
+    let obs = accepted(
+        &mut engine,
+        &report(4, two_screens(), windows(), "win-a", None, None),
+    );
+    assert!(
+        focus_targets(&obs).is_empty(),
+        "visible sticky mints no admission focus, got {:?}",
+        obs.effects
+    );
+    assert_eq!(
+        engine.canonical_memory(&spare),
+        None,
+        "spare keeps no memory for a never-focused sticky"
+    );
+    // Detour observation stays quiet as well.
+    let obs2 = accepted(
+        &mut engine,
+        &report(5, two_screens(), windows(), "win-a", None, None),
+    );
+    assert!(
+        focus_targets(&obs2).is_empty(),
+        "detour observation stays quiet, got {:?}",
+        obs2.effects
+    );
+    assert_eq!(
+        engine.canonical_memory(&spare),
+        None,
+        "detour keeps the spare slot absent"
+    );
+    // Return home: the remembered tile answers, never the sticky.
+    let back = accepted(
+        &mut engine,
+        &report(
+            6,
+            two_screens(),
+            windows(),
+            "",
+            Some(12),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: home.workspace.0.clone(),
+            }),
+        ),
+    );
+    assert_eq!(
+        focus_targets(&back),
+        vec![WindowId("win-a".to_owned())],
+        "return names the remembered tile, never the visible sticky"
+    );
+    assert_eq!(
+        engine.canonical_memory(&spare),
+        None,
+        "return leaves the spare slot absent"
     );
 }

@@ -228,11 +228,14 @@ impl WorldEngine {
         ))
     }
 
-    /// Remembered R-WS-09 focus candidate for one view target: the first
-    /// eligible window over the target domain's view-return candidates
-    /// (remembered, else MRU recency order, else layout order). Ineligible
-    /// top candidates (sticky, floating, unexplained fit-excluded, or
-    /// unstaged rows) fall through to the next linked member. `None`
+    /// Remembered R-WS-09 focus candidate for one view target: the
+    /// canonical last-active identity first (tile/float/sticky, most
+    /// recent wins), then the tiled MRU fallback over the target domain's
+    /// view-return candidates (remembered leaf, else MRU recency, else
+    /// layout order). Canonical misses fall through when absent,
+    /// ineligible (unstaged, held, unexplained fit-excluded, or homed
+    /// away), or pruned. Tiled fallback keeps the existing ineligibility
+    /// (sticky, floating, unexplained fit-excluded, unstaged). `None`
     /// preserves every valid no-focus state and every gate (including
     /// held scopes) without inventing a fallback.
     pub(crate) fn remembered_view_focus(
@@ -250,6 +253,27 @@ impl WorldEngine {
         let staged = self.staged.domains.iter().find(|d| d.key == *target)?;
         if !staged.readable {
             return None;
+        }
+        if let Some(window) = self.last_active_window.get(target).cloned() {
+            let eligible = by_id.get(&window).is_some_and(|row| {
+                if row.fit_excluded && !row.floating && !row.fullscreen && !row.maximized {
+                    return false;
+                }
+                let Some(homing) = self.staged.homing.get(&window) else {
+                    return false;
+                };
+                if held_scopes.contains(homing) {
+                    return false;
+                }
+                if row.sticky {
+                    homing.output == target.output
+                } else {
+                    homing == target
+                }
+            });
+            if eligible {
+                return Some(window);
+            }
         }
         let session = self.engine.session(target)?;
         for leaf in session.view_return_candidates(target) {

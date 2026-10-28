@@ -139,7 +139,7 @@ Local-source citation keys (file:line at the existing matrix pins):
 | During show/hide, observe B foreground with no source proof; later re-sample the same B after apply returns; depart | Option 1 proposes truthful actual B plus persistent uncertainty; no active-memory update. A proven genuine B activation instead updates memory immediately | Unknown suppression can miss genuine clicks/app activation; attribution choice pending, exact origin may be unknowable; reference-WM outcomes TBD |
 | Core selects W on a previously empty destination; leave before its rendering lands | User-approved: record W at core decision time; unfinished rendering/departure does not overwrite it | Native/protocol implementation pending; no core arrival transaction; reference-WM outcomes TBD |
 | Remember tiled A; stage a focus plan or begin a drag; attempt command-focus recording for B before that state clears | Helper tests: existing session gates return false without changing focus or memory. Safely bindable linked choices record at command time | Normal accepted-command reachability under this residue and separate command-choice storage are TBD, as are held/invalid binding handling and reference-WM outcomes. No gate bypass, retry or new rejection. [Bounded outcome](../changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28) |
-| Remember tiled A; explicitly focus floating B; leave and return before rendering B | Existing leaf-only memory still names A; the B focus effect emits without overwriting tiled memory | Exception/non-leaf active-window storage and resulting return behavior TBD; no new model selected. Reference-WM outcomes TBD |
+| Remember tiled A; explicitly focus floating B; leave and return before rendering B | User-approved 2026-10-28: core records B before native effects and returns eligible B, without float-versus-tile preference | Unknown foreground attribution remains the same accepted residual as tiled memory. Reference source comparison below; native outcome TBD |
 | Request A focus; A is proven; intentionally activate B before remaining rendering finishes | B reports promptly and is remembered; no final-apply wait or forced refocus | General native attribution and reference-WM outcomes TBD; defer/reconcile superseded |
 | Select workspace with A pending; intentionally click B before A's native request is issued | Latest user action B wins immediately; core records B, drops unissued A, and describes B's border in the next reply; no snap-back when arrival finishes | Source-bound native click recognition TBD; tests must not treat a later A request from the older selection as newer intent |
 | Request A focus; Windows silently ignores it; no event follows; actual B remains | Report actual B and incomplete native facts truthfully; established intentional changes do not wait for proof of A | R1 release superseded; unattributed B policy and reference-WM outcomes TBD, not inferred from persistence |
@@ -147,6 +147,37 @@ Local-source citation keys (file:line at the existing matrix pins):
 | With A foreground on WS1, select empty WS2; repeat rapid WS1 <-> WS2 | No arrival target exists on WS2; hiding A can still produce native fallback. Current-order fixture census: 52 returns contain only target foreground; 53 unmatched-by-focus foreground events occur on 52 empty departures | Exact cause and foreign-target choice not established. Desktop/sink focus and the unknown-memory policy remain unselected; reference-WM outcomes TBD |
 | With a fullscreen/game foreground on WS1, select occupied WS2; reveal B before departure hides | Proposed phased arrival must retain fullscreen/unreadable foreground vetoes; no early focus over the game merely to avoid fallback | Native game acceptance and safe phased behavior TBD; no new exception or game test inferred from ordinary fixture timing |
 | Select occupied WS2 from WS1; reveal its arrivals and prove target foreground; one departure hide refuses or remains unproven while another departure hides; no newer command or host completion follows | User decision 2026-10-28: settle the switch/transfer complete with a failed hide, not pending or successful staged handoff. The stuck visible member remains in its departure workspace. Log/report the failure; no automatic retry or arrival rollback; preserve the spent-view fence. Treat issued-but-unproven hiding as failed until fresh observation proves its real state; the next command or fresh observation uses new facts | Implementation remains blocked on truthful terminal-failure evidence and settlement representation; current aggregate readback still holds the transfer. Successful hide followed by self-reveal is a separate case, not a new policy here. Reference-WM outcomes TBD. [Decision and implementation boundary](../changes/windows-workspace-return-focus.md#terminal-partial-hide-decision-and-evidence-boundary-2026-10-28) |
+
+### Floating and sticky return focus (draft discriminator, 2026-10-28)
+
+Source-only comparison at the existing matrix pins; runtime outcomes, including
+exact mouse-versus-keyboard routing, remain TBD for user testing. Single output,
+no fullscreen, stationary pointer; Hyprland control is `follow_mouse=0`.
+
+| Minimal action sequence (reset between legs) | COSMIC | Hyprland | i3 | sway | Approved OmniTiler outcome |
+| --- | --- | --- | --- | --- | --- |
+| WS1 has tile T and float F; focus T then F, select WS2 and focus C, return WS1. Repeat with only F on WS1. Repeat replacing F with sticky S | F / F / S (`FR-C`) | F / F / S (`FR-H`) | F / F / T, S remains visible (`FR-I`) | F / F / T, S remains visible (`FR-S`) | Eligible remembered F / F / S, then existing tiled fallback; sticky history only where intentionally focused, never arbitrary sticky focus on an empty workspace. Offline regressions pass; physical acceptance TBD |
+
+Local source citations (source branches, not runtime results):
+
+- `FR-C`, COSMIC `3d55cba06c9cf6f27609cdefb520f7857dba20af`:
+  `src/shell/focus/mod.rs:198-223,245-275` records floating and sticky focus
+  in the active workspace; `:700-716,771-782` validates and restores it.
+- `FR-H`, Hyprland `19fb395d45314960e6f79f17994a84094f1cd4f6`:
+  `src/output/Monitor.cpp:1393-1416` rehomes pinned windows before destination
+  recall; `src/layout/target/WindowTarget.cpp:259-278` and
+  `src/desktop/view/window/Window.cpp:448-471` update membership;
+  `src/workspace/WorkspaceWindowFocusTracker.cpp:10-24`,
+  `src/workspace/HLWorkspace.cpp:122-143` preserve and restore workspace focus.
+- `FR-I`, i3 `903bcd518df32b0e055b17f5da3f988a0187fd3d`:
+  `src/workspace.c:483-519,565-566` restores a descendant before moving sticky
+  windows; `src/con.c:1693-1699` includes floating descendants;
+  `src/output.c:87-122` moves sticky windows with ignored focus.
+- `FR-S`, sway `1652c54b73f67df17b7b4ab0b0f7048204aa8104`:
+  `sway/tree/workspace.c:731-742` recalls focus before sticky moves;
+  `sway/input/seat.c:1361-1376` includes floating history, `:1209-1221` moves
+  sticky back after selecting the tile; `sway/tree/workspace.c:961-972` changes
+  floating membership.
 
 <a id="workspace-no-focus-discriminators"></a>
 ### Workspace arrival and navigation without window focus

@@ -1613,11 +1613,11 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
 }
 
 #[test]
-fn select_remembered_sticky_skips_to_eligible_later() {
+fn select_remembered_fit_excluded_skips_to_eligible_later() {
     // Ineligible top candidate falls through: win-b is the remembered
-    // leaf on WS1, but its staged row turns sticky while WS1 is hidden.
-    // Returning must skip win-b and focus eligible win-a instead of
-    // staying quiet.
+    // leaf on WS1, but its staged row turns unexplained fit-excluded
+    // while WS1 is hidden. Returning must skip win-b and focus eligible
+    // win-a instead of staying quiet.
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -1677,15 +1677,16 @@ fn select_remembered_sticky_skips_to_eligible_later() {
         ),
     );
     assert!(away.effects.is_empty());
-    // win-b turns sticky natively while hidden; it stays a linked tiled
-    // member, so the return must skip it rather than lose focus.
-    let mut sticky_b = fact("win-b", "out-a", 100);
-    sticky_b.sticky = true;
+    // win-b turns unexplained fit-excluded natively while hidden; it
+    // stays a linked tiled member, so the return must skip it rather
+    // than lose focus.
+    let mut excluded_b = fact("win-b", "out-a", 100);
+    excluded_b.fit_excluded = true;
     let back = accepted(
         &mut engine,
         &report(
             4,
-            vec![fact("win-a", "out-a", 0), sticky_b],
+            vec![fact("win-a", "out-a", 0), excluded_b],
             vec![("out-a", other.as_str())],
             vec![],
             "",
@@ -1924,9 +1925,9 @@ fn select_held_scope_stays_quiet_despite_eligible() {
 fn select_without_native_focus_returns_recorded_leaf() {
     // Seeded memory without native focus: WS1 is bootstrapped without
     // native focus yet carries seeded memory for win-a, and the spare's
-    // unfocused admissions record newcomer memory for win-c. Returns name
-    // the recorded leaves; the MRU-vs-first discrimination lives in the
-    // session chain test (world seeds always record memory here).
+    // unfocused admissions select win-c then win-d. The canonical slot
+    // records the latest emitted focus choice even if native focus never
+    // arrives; topology leaf memory remains a fallback.
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -1974,8 +1975,8 @@ fn select_without_native_focus_returns_recorded_leaf() {
     );
     assert!(away.effects.is_empty());
     assert_eq!(view_of(&away, "out-a"), other);
-    // Two unfocused arrivals while the spare is shown; newcomer memory
-    // records the latest arrival.
+    // Two unfocused arrivals while the spare is shown; canonical memory
+    // records the latest arrival, independently of retained leaf focus.
     for seq in [3u64, 4u64] {
         let mut windows = vec![
             fact("win-a", "out-a", 0),
@@ -2007,6 +2008,14 @@ fn select_without_native_focus_returns_recorded_leaf() {
         first_leaf_window(&engine, "out-a", &other).as_deref(),
         Some("win-c"),
         "layout order starts at the first admission"
+    );
+    assert_eq!(
+        engine.canonical_memory(&crate::session::DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::directional::WorkspaceId(other.clone()),
+        }),
+        Some(crate::directional::WindowId("win-d".to_owned())),
+        "latest accepted admission focus supersedes earlier leaf memory"
     );
     // Probe: what focus memory does the never-natively-focused WS1 carry?
     // (Bootstrap seeds win-a; the return below guards the recorded leaf.)
@@ -2040,7 +2049,7 @@ fn select_without_native_focus_returns_recorded_leaf() {
     assert_eq!(back.effects.len(), 1, "{:?}", back.effects);
     assert_eq!(back.effects[0].id, "fx-12", "{:?}", back.effects);
     assert_eq!(back.effects[0].target.0, "win-a", "{:?}", back.effects);
-    // And back again: the spare return still names remembered win-c.
+    // And back again: the spare restores the latest chosen newcomer win-d.
     let back_other = accepted(
         &mut engine,
         &report(
@@ -2063,7 +2072,7 @@ fn select_without_native_focus_returns_recorded_leaf() {
     );
     assert_eq!(view_of(&back_other, "out-a"), other);
     assert_eq!(back_other.effects.len(), 1, "{:?}", back_other.effects);
-    assert_eq!(back_other.effects[0].target.0, "win-c");
+    assert_eq!(back_other.effects[0].target.0, "win-d");
     assert_eq!(back_other.effects[0].id, "fx-13");
 }
 

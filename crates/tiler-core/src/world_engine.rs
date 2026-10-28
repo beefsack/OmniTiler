@@ -706,6 +706,14 @@ pub struct WorldEngine {
     /// lifetime from the latest accepted report (`None` when none or
     /// unmanaged). Presentation-only; the content gates it on retained homing.
     pub(crate) presentation_focused: Option<WindowId>,
+    /// Canonical last-active identity per workspace (R-WS-09 memory):
+    /// one slot per effective domain across sticky/link migration.
+    /// Written by accepted command choices before native writes and by
+    /// changed native focus observations under the same fail-closed gates;
+    /// unchanged re-reports never overwrite. Read by view return before
+    /// the tiled MRU fallback. Pruned to the live inventory on finish.
+    /// Equal precedence for tile/float/sticky: most recent wins.
+    pub(crate) last_active_window: BTreeMap<DomainKey, WindowId>,
     /// Opt-in neutral focused-fullscreen presentation suspension (stage 5):
     /// when set, a focused surface that is truthfully fullscreen on its
     /// observed output suspends published border/underlay/pager shapes on
@@ -829,6 +837,7 @@ impl WorldEngine {
             presentation_tile: BTreeMap::new(),
             presentation_order: Vec::new(),
             presentation_focused: None,
+            last_active_window: BTreeMap::new(),
             focused_fullscreen_presentation_suspension: false,
         })
     }
@@ -928,6 +937,7 @@ impl WorldEngine {
         self.presentation_order.clear();
         self.presentation_focused = None;
         self.last_adapter_incarnation = Some(adapter_incarnation.to_owned());
+        self.last_active_window.clear();
     }
 
     /// Advance the consumed gesture id watermark to at least `id`.
@@ -1654,6 +1664,24 @@ impl WorldEngine {
             }
             self.sweep_domain(domain, owner, correlation, &mut held_scopes);
         }
+        // Changed native focus observation under the same fail-closed
+        // gates as command recording: a changed `focused_global` naming a
+        // live lifetime records the canonical slot through
+        // `record_canonical` (tiled ingestion gates: readable, unheld,
+        // owning-Session validation). Unchanged re-reports carry no new
+        // information and never overwrite an unlanded command choice;
+        // empty focus records nothing.
+        {
+            let prev = self
+                .last_report
+                .as_ref()
+                .map(|last| last.focused_global.clone())
+                .unwrap_or_default();
+            if !report.focused_global.is_empty() && prev != report.focused_global {
+                let active = WindowId(report.focused_global.clone());
+                let _ = self.record_canonical(&active, &held_scopes, false);
+            }
+        }
         // Commandless born maximize-clear minting: first-seen maximized /
         // fullscreen births bind here (post-sweep, so `known_before` names
         // the pre-sweep retained lifetimes) and ride this same reply's
@@ -1738,7 +1766,15 @@ impl WorldEngine {
                     self.build_staged_domains(report);
                     // Admission intent first: an explicit command
                     // focuses after it, so user intent wins when they
-                    // coincide.
+                    // coincide. A same-target admission duplicate is
+                    // redundant with the explicit winner: drop it so one
+                    // Focus effect names the native target once.
+                    if effect.kind == crate::world_report::EffectKind::Focus {
+                        effects.retain(|existing| {
+                            !(existing.kind == crate::world_report::EffectKind::Focus
+                                && existing.target == effect.target)
+                        });
+                    }
                     effects.push(effect);
                     crate::world_cursor::maybe_push_focus_follows(
                         self,
@@ -1785,6 +1821,23 @@ impl WorldEngine {
     /// semantic no-op. The revision cannot wrap: exhaustion is refused
     /// before staging.
     fn finish(&mut self, report: &WorldReport, digest: u64, mut reply: WorldReply) -> WorldOutcome {
+        // Canonical memory prunes to the live inventory: a complete report
+        // drops every dead identity, an incomplete one only drops explicit
+        // closes. Closed ids never survive even under reuse.
+        {
+            if report.inventory_complete {
+                let live: BTreeSet<WindowId> = report
+                    .windows
+                    .iter()
+                    .map(|fact| fact.window.clone())
+                    .collect();
+                self.last_active_window
+                    .retain(|_, window| live.contains(window));
+            } else if !report.closed.is_empty() {
+                self.last_active_window
+                    .retain(|_, window| !report.closed.contains(window));
+            }
+        }
         // Retain the last-known focused output before membership converges,
         // so the latch reflects strictly prior retention: a stealing
         // newcomer or an empty report never overwrites pre-admission

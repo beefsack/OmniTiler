@@ -467,6 +467,7 @@ impl WorldEngine {
                 cause: None,
             });
             self.note_command(command_seq);
+            let _ = self.record_command_focus(&target, held_scopes);
             return CommandApplied::Effect(OneShotEffect::explicit_focus(
                 command_seq,
                 target,

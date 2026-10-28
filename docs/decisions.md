@@ -346,10 +346,22 @@ New decisions:
   burst jank with the staged switch. The goal is to coalesce fully and rapidly
   to any latest world state; family-by-family command-contract changes follow
   that data.
-- **Tentative (pending user review):** floating, sticky, exception and non-leaf
-  command-memory targets stay parked; the existing `last_active` model stores
-  tiled leaves only. Whether a focused floating window regains focus on
-  workspace return is under investigation.
+- **Last active window per workspace (approved 2026-10-28):** core remembers
+  lifetime-bound floating, sticky and tiled identities in one workspace slot.
+  Restore the eligible remembered target first, without a float-versus-tile
+  preference, then retain the existing tiled MRU/layout fallback. Accepted
+  focus choices record before native effects; exception observations use the
+  same ingestion safeguards as tiled observations. Sticky focus records only
+  for the workspace where it was selected or observed focused, not every view
+  where it remains visible. No arbitrary sticky fallback, no forced recovery
+  from host focus loss, and no change to empty-workspace selection.
+  Unattributed foreground changes can still replace intended memory, including
+  after an unfinished arrival: this accepted parity residual remains with the
+  separate unknown-foreground decision for both tiled and exception windows.
+  Windows may dispatch a core-selected sticky target away from its actual home
+  only with fresh lifetime/visibility proof and Controlled home and shown scopes
+  on the same output; native homing and foreground vetoes stay authoritative.
+  [Outcome](changes/archive/windows-floating-return-focus.md).
 
 ## Active-drag preview continuity (2026-10-27)
 

@@ -152,6 +152,16 @@ missing facts. Shape:
   nonempty observed focus refuses. Missing/null `win` still refuses. Move/send
   still require a subject. Observation-only host focus loss needs no recovery
   command or focus setter. [Decision](../decisions.md#workspaces).
+- Workspace return focus now uses one core-owned last-active identity for
+  tiled, ordinary floating and sticky windows, then the existing tiled fallback.
+  Sticky memory is per intentionally focused workspace, not every visible view.
+  All adapters can receive these core-selected targets; this does not authorize
+  forced focus or a native policy override. Preserve full lifetime identity and
+  distinguish actual native home from the selected effective view for sticky
+  targets. Keep native safety/foreground checks; never rewrite home to make a
+  focus pass. KDE and macOS adapter changes and native acceptance are not part
+  of the Windows implementation. Unknown foreground attribution is unchanged:
+  unattributed transitions can still replace memory for either window class.
 - Tiling-mode actions: `ToggleWorkspaceTiling { output, workspace }` (wire
   `toggle-workspace-tiling`, `out/ws`) flips core-retained mode at execution.
   Never negate cached reply mode into `SetWorkspaceTiling`; keep explicit set

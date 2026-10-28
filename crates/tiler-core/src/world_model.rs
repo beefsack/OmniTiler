@@ -934,6 +934,15 @@ impl WorldEngine {
             })
             .collect();
         let mut newcomer: Option<(WindowId, DomainKey)> = None;
+        // Sticky lifetimes follow the current view without members-map
+        // homing, so a view switch restages an already-known sticky in a
+        // domain that never held it. That move is visibility, never a
+        // birth: only a sticky unknown to every retained session counts
+        // as a new admission. Ordinary windows keep per-domain diffing.
+        let known_anywhere: BTreeSet<&str> = known_before
+            .values()
+            .flat_map(|known| known.iter().map(String::as_str))
+            .collect();
         for domain in &self.staged.domains.clone() {
             if !domain.readable
                 || self.floating_scopes.contains(&domain.key)
@@ -956,6 +965,9 @@ impl WorldEngine {
             for window in &domain.windows {
                 let id = window.window.0.as_str();
                 if before.contains(id) || transferred.contains(id) {
+                    continue;
+                }
+                if window.sticky && known_anywhere.contains(id) {
                     continue;
                 }
                 // Safety priority: an unexplained fit-excluded newcomer

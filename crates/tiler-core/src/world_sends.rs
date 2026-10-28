@@ -35,18 +35,71 @@ impl WorldEngine {
     }
 
     /// Best-effort command-time recording of one accepted explicit-focus
-    /// target: `focus` + MRU + `last_active` via the existing
-    /// [`crate::session::Session::remember_focus`] gates, before native
-    /// writes. Fail-closed skips (held home, unlinked/unknown or exception
-    /// target, pending/drag/divergence or binding residue) record nothing
-    /// and report false; that subset stays parked with no retry, refusal,
-    /// or repair promised. Effects and rejections are unchanged.
+    /// target into the canonical per-workspace slot, before native writes.
+    /// Tiled targets also advance Session leaf/MRU via
+    /// [`crate::session::Session::remember_focus`]; float/sticky targets
+    /// record only the canonical slot through the narrow owning-Session
+    /// gate plus World effective-domain validation. Fail-closed skips
+    /// (held home/effective, unlinked/unknown target, floating scope,
+    /// unreadable effective, pending/drag/divergence or binding residue)
+    /// record nothing and report false. Effects and rejections unchanged.
     #[must_use]
     pub(crate) fn record_command_focus(
         &mut self,
         window: &WindowId,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
+        self.record_canonical(window, held_scopes, true)
+    }
+
+    /// Shared accepted focus-effect publication recorder: one pass over the
+    /// final ordered effects for this reply, before native writes. Every
+    /// accepted Focus effect (explicit command, operation, send survivor,
+    /// admission newcomer, focus-follows) records through the same
+    /// fail-closed [`WorldEngine::record_canonical`] slot with the publish
+    /// held scopes, in effect order so the latest wins. Slot only, never
+    /// the Session leaf (no delta-only leaf sync): the sweep and Engine
+    /// own Session topology; this pass only backfills the canonical slot
+    /// for the routes that never record (tiled operation focus, no-focus/
+    /// move/send survivors, admission, hover). Best-effort: accepted
+    /// `false` preserves the existing effect unchanged. Direct
+    /// command-time [`WorldEngine::record_command_focus`] stays for
+    /// same-report memory before publication.
+    pub(crate) fn record_published_focus(
+        &mut self,
+        effects: &[OneShotEffect],
+        held_scopes: &BTreeSet<DomainKey>,
+    ) {
+        for effect in effects {
+            if effect.kind != crate::world_report::EffectKind::Focus {
+                continue;
+            }
+            let _ = self.record_canonical(&effect.target, held_scopes, false);
+        }
+    }
+
+    /// Test-visible projection of the canonical slot.
+    #[cfg(test)]
+    pub(crate) fn canonical_memory(&self, domain: &DomainKey) -> Option<WindowId> {
+        self.last_active_window.get(domain).cloned()
+    }
+
+    /// Shared canonical write for command and observation paths. When
+    /// `advance_tiled` is set, tiled links also advance the Session leaf
+    /// (existing contract); float/sticky never touch Session topology.
+    /// Non-sticky tiled command choices use the Session gate first with no
+    /// staged veto (post-commit restage may lag). Single slot per
+    /// effective domain: most recent wins regardless of kind. Cross-output
+    /// effective never records; non-sticky requires effective == home.
+    pub(crate) fn record_canonical(
+        &mut self,
+        window: &WindowId,
+        held_scopes: &BTreeSet<DomainKey>,
+        advance_tiled: bool,
+    ) -> bool {
+        if window.0.is_empty() {
+            return false;
+        }
         let home = self.engine.domain_keys().into_iter().find(|key| {
             !held_scopes.contains(key)
                 && self.engine.session(key).is_some_and(|session| {
@@ -55,23 +108,114 @@ impl WorldEngine {
                         .windows
                         .iter()
                         .any(|link| &link.window == window)
+                        || session.is_exception(window)
                 })
         });
         let Some(home) = home else {
             return false;
         };
-        if self
-            .engine
-            .session(&home)
-            .is_some_and(|session| session.is_exception(window))
-        {
+        let is_linked = self.engine.session(&home).is_some_and(|session| {
+            session
+                .snapshot()
+                .windows
+                .iter()
+                .any(|link| &link.window == window)
+        });
+        let sticky = self
+            .staged
+            .facts
+            .get(window)
+            .is_some_and(|fact| fact.sticky);
+        // Tiled command contract first (pre-canonical behavior): the owned
+        // Session gate alone decides. Staged effective/readability state
+        // may lag a just-committed move (post-swap moved domain), so no
+        // staged gate may veto a Session-accepted tiled choice here.
+        if advance_tiled && is_linked && !sticky {
+            let recorded = self
+                .engine
+                .session_mut(&home)
+                .is_some_and(|session| session.remember_focus(&home, window));
+            if !recorded {
+                return false;
+            }
+            self.last_active_window.insert(home, window.clone());
+            return true;
+        }
+        let effective = if sticky {
+            let view = self.effective_view(&home.output);
+            crate::world_directional::effective_domain(&home, true, view.as_deref())
+        } else {
+            home.clone()
+        };
+        if effective.output != home.output {
             return false;
         }
-        if let Some(session) = self.engine.session_mut(&home) {
-            session.remember_focus(&home, window)
-        } else {
-            false
+        if !sticky && effective != home {
+            return false;
         }
+        if held_scopes.contains(&effective) || held_scopes.contains(&home) {
+            return false;
+        }
+        if self.floating_scopes.contains(&effective) {
+            return false;
+        }
+        let readable = self
+            .staged
+            .domains
+            .iter()
+            .find(|domain| domain.key == effective)
+            .is_some_and(|domain| domain.readable);
+        if !readable {
+            return false;
+        }
+        if is_linked {
+            let ok = self
+                .engine
+                .session(&home)
+                .is_some_and(|session| session.validates_memory_target(window));
+            if !ok {
+                return false;
+            }
+            if advance_tiled {
+                let recorded = self
+                    .engine
+                    .session_mut(&home)
+                    .is_some_and(|session| session.remember_focus(&home, window));
+                if !recorded {
+                    return false;
+                }
+            }
+            self.last_active_window.insert(effective, window.clone());
+            return true;
+        }
+        let ok = self
+            .engine
+            .session(&home)
+            .is_some_and(|session| session.validates_memory_target(window));
+        if !ok {
+            return false;
+        }
+        if !sticky {
+            let homed_here = self.engine.session(&home).is_some_and(|session| {
+                session.exception_observed().iter().any(|entry| {
+                    &entry.window == window
+                        && entry.output == effective.output
+                        && entry.workspace == effective.workspace
+                })
+            });
+            if !homed_here {
+                let linked_home = self
+                    .staged
+                    .homing
+                    .get(window)
+                    .is_some_and(|key| *key == effective);
+                if !linked_home {
+                    return false;
+                }
+            }
+        }
+        self.last_active_window.insert(effective, window.clone());
+        true
     }
     /// Shared window-send path for [`WorldCommand::Send`],
     /// [`WorldCommand::SendRelative`], [`WorldCommand::SendNumbered`], and

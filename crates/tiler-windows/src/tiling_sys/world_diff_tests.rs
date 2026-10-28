@@ -7457,3 +7457,296 @@ fn staged_switch_refused_hide_stays_pending_without_replay() {
         "still no proven view"
     );
 }
+
+// --- sticky focus return: actual home may differ from the shown view ---
+//
+// The core remembers the canonical last-active window per effective domain
+// (tile/float/sticky, most recent wins) and may return focus to a sticky
+// window whose native actual home differs from the selected shown
+// workspace on the same output. The gate under test is the narrow
+// platform classifier for exactly that shape: same output, shown view
+// under Controlled authority, and a fresh live read proving the sticky
+// lane, the exact lifetime key, the stored tag, visibility, and rideable
+// facts. `read_homing` stays truthful (never normalized) and membership
+// is untouched. The competing-foreground/NA guard still routes on the
+// shown view, so a mismatch never skips it.
+
+/// Sticky return rig: `w1` sticky homed on `(out, ws1)` while the live
+/// view on the same output shows `ws2`. The stock reply controls both
+/// scopes; per-test mutations diverge the live [`FakeNative`] facts.
+fn sticky_return_shapes() -> (HostDiff, FreshHost, FakeNative, String, String, String) {
+    let rig = rig();
+    let home = rig.ws.clone();
+    let shown = "ws2".to_owned();
+    let (diff, mut fresh, mut native) = converted(&rig);
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.sticky = true;
+    }
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.sticky = true;
+    }
+    native.views.insert(rig.out.clone(), shown.clone());
+    native.foreground = Some("w2".to_owned());
+    (diff, fresh, native, rig.out, home, shown)
+}
+
+/// Focus-only reply controlling both the actual home and the shown view.
+fn sticky_return_reply(out: &str, home: &str, shown: &str) -> WorldReply {
+    let mut reply = reply_shell(7, 1, &[(out, home), (out, shown)]);
+    reply.effects.push(focus_effect("fx-9", "w1"));
+    reply
+}
+
+/// Positive: a freshly proven sticky lifetime focuses onto the shown view
+/// of the same output even though its actual home names a different
+/// workspace. The one-shot spends exactly once: a duplicate delivery
+/// holds already-spent with no new dispatch.
+#[test]
+fn sticky_focus_return_dispatches_when_home_differs_from_shown() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.view_writes, 0, "no switch: the view already shows");
+    assert_eq!(stats.effects, 1);
+    assert!(native.is_foreground("w1"));
+    assert_eq!(stats.staged_focus, 0, "never the staged lane");
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched);
+    assert_eq!(row.setter, "accepted");
+    assert!(row.foreground);
+    assert_eq!(row.hold, None);
+    assert!(
+        !diff.effects.mark_effect_spent("fx-9"),
+        "spent exactly once"
+    );
+    let (restats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(restats.view_writes, 0);
+    assert_eq!(restats.effects, 0);
+    assert_eq!(restats.focus_dispatch.len(), 1);
+    assert_eq!(restats.focus_dispatch[0].hold, Some("already-spent"));
+}
+
+/// Narrowness: an ordinary (non-sticky) window with the same home/shown
+/// mismatch still holds for the view, unspent.
+#[test]
+fn sticky_focus_return_holds_for_ordinary_window_mismatch() {
+    let (mut diff, mut fresh, mut native, out, home, shown) = sticky_return_shapes();
+    // Ordinary lane only: clear the sticky flag on both reads.
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.sticky = false;
+    }
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.sticky = false;
+    }
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("view-not-shown"));
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Effective authority: the shown view without Controlled scope holds the
+/// sticky focus for the view, unspent.
+#[test]
+fn sticky_focus_return_holds_when_shown_scope_uncontrolled() {
+    let (mut diff, fresh, mut native, out, home, _shown) = sticky_return_shapes();
+    let mut reply = reply_shell(7, 1, &[(out.as_str(), home.as_str())]);
+    reply.effects.push(focus_effect("fx-9", "w1"));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("view-not-shown"));
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Wrong output: a live home on an uncontrolled output holds on the home
+/// scope, unspent. `read_homing` stays truthful: nothing is normalized.
+#[test]
+fn sticky_focus_return_holds_when_home_output_not_controlled() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.output = "out-ghost".to_owned();
+    }
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("held-scope"));
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Not shown: no live view on the home output holds the sticky focus for
+/// the view, unspent.
+#[test]
+fn sticky_focus_return_holds_when_view_unknown() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    native.views.remove(&out);
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("view-not-shown"));
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Stale identity: a recycled HWND behind the sticky token stops at the
+/// pre-setter fence before the sticky lane, unspent.
+#[test]
+fn sticky_focus_return_holds_on_recycled_hwnd() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    native.windows.get_mut("w1").expect("live w1").key = win_key(9999, 2001, "proc-1");
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("pre-setter-stop"));
+    assert!(stats.stopped_mid_apply);
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Stale lifetime: a rotated tag behind the same HWND stops at the
+/// pre-setter fence before the sticky lane, unspent.
+#[test]
+fn sticky_focus_return_holds_on_rotated_tag() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    native.windows.get_mut("w1").expect("live w1").live_tag = Some("rotated-tag".to_owned());
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("pre-setter-stop"));
+    assert!(stats.stopped_mid_apply);
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Hidden target: a live-hidden sticky window holds without dispatch,
+/// unspent. The stale visible preimage never overrides the fresh read.
+#[test]
+fn sticky_focus_return_holds_when_live_hidden() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    native.windows.get_mut("w1").expect("live w1").hidden = true;
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("pre-setter-hold"));
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Iconic target: a live-minimized sticky window holds without dispatch,
+/// unspent.
+#[test]
+fn sticky_focus_return_holds_when_live_iconic() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    native.windows.get_mut("w1").expect("live w1").iconic = true;
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("pre-setter-hold"));
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Dead target: an unreadable sticky lifetime holds without dispatch,
+/// unspent.
+#[test]
+fn sticky_focus_return_holds_when_target_dead() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    native.windows.remove("w1");
+    let reply = sticky_return_reply(&out, &home, &shown);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0);
+    assert!(!native.is_foreground("w1"));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("pre-setter-hold"));
+    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+}
+
+/// Guard routing: the NA foreground guard still applies to a sticky
+/// home/shown mismatch via the shown view. A foreign competitor moving
+/// during the nonactivating switch vetoes the sticky focus without
+/// stealing it: unspent, with the view write intact.
+#[test]
+fn sticky_focus_return_competing_foreground_vetoes_without_stealing() {
+    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
+    // Arm the nonactivating lane on the shown view: `w2` lives there and
+    // carries the arming focus effect. The view starts elsewhere so the
+    // switch runs and the probe flips the foreground to a foreign
+    // competitor mid-switch.
+    if let Some(live) = native.windows.get_mut("w2") {
+        live.output = out.clone();
+        live.workspace = shown.clone();
+        live.hidden = false;
+    }
+    native.views.insert(out.clone(), "ws-other".to_owned());
+    let mut reply = reply_shell(
+        7,
+        1,
+        &[
+            (out.as_str(), home.as_str()),
+            (out.as_str(), shown.as_str()),
+        ],
+    );
+    reply.transfers.push(view_transfer("op-v", &out, &shown));
+    reply.effects.push(focus_effect("fx-9", "w1"));
+    reply.effects.push(focus_effect("fx-d", "w2"));
+    let mut probe = ForeignDuringNonactivating { inner: native };
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.view_writes, 1);
+    assert_eq!(stats.effects, 0);
+    assert!(
+        !probe.inner.is_foreground("w1"),
+        "competing foreground must not be stolen"
+    );
+    assert_eq!(stats.focus_dispatch.len(), 2);
+    for row in &stats.focus_dispatch {
+        assert!(!row.dispatched);
+        assert_eq!(row.hold, Some("foreground-changed"));
+    }
+    assert!(
+        diff.effects.mark_effect_spent("fx-9"),
+        "sticky stays unspent"
+    );
+    assert!(
+        diff.effects.mark_effect_spent("fx-d"),
+        "arming effect stays unspent"
+    );
+}

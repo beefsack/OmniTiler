@@ -80,6 +80,10 @@ impl WorldEngine {
         command_result: Option<CommandResult>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> WorldReply {
+        // Accepted focus-effect publication record: every Focus effect in
+        // order (latest wins) lands on the one canonical slot under the
+        // publish held scopes before any native write is built below.
+        self.record_published_focus(&effects, held_scopes);
         // Command-created logicals land after convergence: mint their
         // explicit creation desires here (idempotent with the pre-command
         // ensure) so the same reply authorizes them. Same-reply desires

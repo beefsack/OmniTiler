@@ -3918,7 +3918,11 @@ pub(super) fn apply_world_reply(
         // observation preimage) must name a controlled live scope whose
         // exact-output view is shown. A moved lifetime focuses only where
         // it actually lives. The staged lane below relaxes only the
-        // shown-view half under arrival-ready proof.
+        // shown-view half under arrival-ready proof; the sticky lane
+        // relaxes it only for a freshly proven sticky lifetime onto the
+        // shown view of the SAME output under selected effective view
+        // authority. `read_homing` stays truthful throughout (never
+        // normalized): membership is untouched here.
         let mut arrival_ready_lane = false;
         let Some((live_out, live_ws)) = ops.read_homing(&effect.target.0) else {
             push_focus!(false, "skipped", false, Some("unknown-homing"));
@@ -3930,7 +3934,13 @@ pub(super) fn apply_world_reply(
             stats.held += 1;
             continue;
         }
-        if ops.read_view(&live_out).as_deref() != Some(live_ws.as_str()) {
+        // One live shown-view read for this output, reused by every lane
+        // below (never a second native read).
+        let shown_view = ops.read_view(&live_out);
+        // Narrow sticky return lane state: the shown workspace the sticky
+        // focus is allowed onto. `None` on every other path.
+        let mut sticky_shown: Option<String> = None;
+        if shown_view.as_deref() != Some(live_ws.as_str()) {
             // Staged explicit-selection lane: the arrival reveal proved
             // every required arrival visible under this exact grant-bound
             // effect, so this one-shot focus may dispatch while departures
@@ -3943,14 +3953,46 @@ pub(super) fn apply_world_reply(
                 .any(|(o, w, _)| o == &live_out && w == &live_ws)
                 && ops.selection_arrival_allows(&effect.id, &effect.target.0)
                 && staged_arrival_ready(ops, reply, fresh, &live_out, &live_ws);
-            if !staged_ready {
-                // The live workspace is not shown on its output: focusing now
-                // would steal focus from the wrong view. Hold for the view.
-                push_focus!(false, "skipped", false, Some("view-not-shown"));
-                stats.held += 1;
-                continue;
+            if staged_ready {
+                arrival_ready_lane = true;
+            } else {
+                // Sticky return lane: the core may return focus to a
+                // remembered sticky window whose actual home differs from
+                // the selected shown workspace. A sticky window is visible
+                // on every workspace of its output, but that visibility
+                // alone grants nothing. Require every freshness/safety
+                // proof: same output with its shown view under Controlled
+                // authority (the home scope above already is), plus a fresh
+                // live read proving the sticky lane, the exact lifetime
+                // key, the stored tag, visibility, and rideable facts.
+                // Ordinary windows, wrong outputs, unshown views, unsafe
+                // scopes, and stale/recycled identities all hold below.
+                // Never a policy input: the core already selected this
+                // exact target; this classifies freshness/safety only.
+                let sticky_ready = shown_view.as_deref().is_some_and(|shown_ws| {
+                    scope_controlled(reply, &live_out, shown_ws)
+                        && ops.read_window(&effect.target.0).is_some_and(|live| {
+                            live.sticky
+                                && live.key == base.key
+                                && lifetime_ok(&live, &fresh.stored_tags)
+                                && !live.hidden
+                                && !live.iconic
+                                && live.frame.is_some()
+                                && live
+                                    .facts
+                                    .is_some_and(|facts| capture_facts_rideable(&facts))
+                        })
+                });
+                if !sticky_ready {
+                    // The live workspace is not shown on its output:
+                    // focusing now would steal focus from the wrong view.
+                    // Hold for the view.
+                    push_focus!(false, "skipped", false, Some("view-not-shown"));
+                    stats.held += 1;
+                    continue;
+                }
+                sticky_shown = shown_view.clone();
             }
-            arrival_ready_lane = true;
         }
         // NA-only foreground identity guard: a changed or unreadable
         // foreground during the nonactivating switch vetoes unless the
@@ -3962,8 +4004,18 @@ pub(super) fn apply_world_reply(
         // superseded. A double zero baseline (None/None) still fails
         // closed: verifiably no foreground at both reads proves nothing
         // about the switch, so only a target already holding foreground
-        // or an exact in-flight landing proceeds.
-        if na_views.contains(&(live_out.clone(), live_ws.clone())) {
+        // or an exact in-flight landing proceeds. The guard keys on the
+        // switched view: ordinary targets home where shown, while a sticky
+        // return focuses from its actual home onto the shown view of the
+        // same output. Routing the sticky lane on its shown view keeps a
+        // competing-foreground veto from being skipped only because the
+        // actual home mismatches; every other path keeps its exact home
+        // key, and pumped paths keep existing behavior.
+        let na_applies = na_views.contains(&(live_out.clone(), live_ws.clone()))
+            || sticky_shown.as_deref().is_some_and(|shown_ws| {
+                na_views.contains(&(live_out.clone(), shown_ws.to_owned()))
+            });
+        if na_applies {
             let fg_live = ops.foreground_state();
             let changed_or_unknown = match (&fg_baseline, &fg_live) {
                 (ForegroundState::Known(a), ForegroundState::Known(b)) => a != b,

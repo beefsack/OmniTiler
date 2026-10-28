@@ -639,6 +639,27 @@ impl super::Session {
         true
     }
 
+    /// Narrow fail-closed gate for World-owned canonical focus memory.
+    /// True when `window` is a known lifetime (tiled link or exception)
+    /// in this session with no divergence, pending/drag residue, or
+    /// malformed topology. No domain check here: the World validates the
+    /// effective domain (same-output, readable, unheld) before writing.
+    pub(crate) fn validates_memory_target(&self, window: &WindowId) -> bool {
+        if window.0.is_empty() {
+            return false;
+        }
+        if self.reconciler.divergence().is_some() {
+            return false;
+        }
+        if self.has_pending() || self.has_pending_desired() || self.drag.is_some() {
+            return false;
+        }
+        if !self.validate_current_topology() {
+            return false;
+        }
+        self.windows.contains_key(window) || self.exceptions.contains_key(window)
+    }
+
     /// Whether an exception member is eligible for the slotless deferred
     /// send transfer (D28 born-fullscreen carry, option (a); D16 ordinary
     /// intentional-float carry, option (a), no setting; D16 approved
