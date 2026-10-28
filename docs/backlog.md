@@ -26,12 +26,12 @@ Prioritise by return toward these goals
 
 ## Open work
 
-- Windows order (user 2026-10-28): (1) keyboard stress runner; (2) batched
-  physical checks session, including pending Xbox shortcut, launcher geometry
-  and cross-output edge focus acceptance; (3) staged switch prototype and
-  intermittent incomplete hide, with the coordinated protocol bump;
-  (4) sticky-rehome sampling and pager event coverage (P2); (5) panic_diag
-  flake watch (P3).
+- Windows order (user 2026-10-28): (1) batched physical checks session,
+  including pending Xbox shortcut, launcher geometry and cross-output edge
+  focus acceptance; (2) staged switch prototype and intermittent incomplete
+  hide, with the coordinated protocol bump; (3) sticky-rehome sampling and
+  pager event coverage (P2); (4) panic_diag flake watch (P3). Keyboard stress
+  runner is blocked on a parked user question (item below).
 - P1 | Windows staged workspace switch prototype | Approved 2026-10-28
   ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
   arrival shows, prove visible, one-shot focus, prove foreground, then hide
@@ -48,8 +48,9 @@ Prioritise by return toward these goals
   platform-reconciles alternative; platforms own execution scheduling, and the
   bump must define concrete core and platform responsibilities
   ([decision](decisions.md#windows-decisions-2026-10-28)). Core, protocol and
-  Windows land together, coordinated with the KDE and macOS ports, after the
-  tabs investigation below.
+  Windows land together, coordinated with the KDE and macOS ports. Tabs
+  investigation done (below): the bump should be visibility-ready, pending the
+  user's tabs decisions.
   [Record](changes/windows-workspace-return-focus.md).
 - P1 | KDE: workspace ownership through unreadable desktop facts | DECIDED
   2026-10-28, option (a): KDE always reports native ownership, unreadable
@@ -69,6 +70,21 @@ Prioritise by return toward these goals
   has no tabbed/stacked concept today. Outcome returns to the user to decide
   whether the core/protocol part of tabs moves into 0.1; tab UI stays after
   0.1 (see the P3 Tabbed stacks item).
+  Investigation done 2026-10-29. Findings: the planned per-window visibility
+  work can carry hidden tabs if the bump is "visibility-ready": per-window
+  suppression authority and correlation independent of workspace ownership,
+  its own capability flag, core-composed workspace vs inactive-tab
+  suppression, and truthful hidden observations (a small slice of the bump).
+  Typed tab reservations that avoid any later tab bump would be a medium
+  contract project; codecs reject unknown keys, so a flag alone cannot avoid
+  it. KDE per-window hide is unproven (hidden/minimized are read-only in the
+  bindings); macOS has no approved per-window hide route. Hyprland tab claims
+  were not verified at the pin (pin object unavailable locally).
+  Parked user decisions, one at a time: (1) full tab core/protocol into 0.1?
+  Recommendation: no, keep it after 0.1. (2) require zero later tab bump?
+  Recommendation: no; make the bump visibility-ready and accept a later tab
+  bump. Later: tab-close survivor rule (recommendation: positional-next,
+  clamped at the end, vs MRU).
 - P1 | Windows batched physical checks | One user session, not waiting on the
   staged switch prototype: Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
   fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls);
