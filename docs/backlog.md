@@ -404,8 +404,10 @@ Prioritise by return toward these goals
   - Execution-time float toggle: approved, not started; blocked on the open
     macOS first-float placement question under the macOS port item.
     Execution-time implicit output targeting is closed by `a68036b3`.
-  - Deferred: investigate operation-pair outer-gap bookkeeping outside the drag
-    path, following the gesture-local `world_gesture.rs` fix.
+  - **DONE (2026-10-29):** operation-pair outer-gap investigation: corrected
+    operation drag preview/drop gap fields; directional and send routes pinned.
+    Separate explicit-operation output-send dispatch finding awaits triage.
+    [Outcome](changes/kde-world-v2-port.md#operation-pair-outer-gap-bookkeeping-2026-10-29).
   - User physical checks 2026-10-28 pass: directional focus (local then
     cross-output), send/follow both directions, close/reflow on each output,
     rapid A/B drags (no stale paint, correct drop), Stage 6 cursor/border/

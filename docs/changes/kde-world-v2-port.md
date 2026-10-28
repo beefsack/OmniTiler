@@ -1819,6 +1819,42 @@
 - Only Stage 5 causal freshness is implementation scope here. Fullscreen, N5,
   float/output command changes and Stages 6-8 remain separate work.
 
+## Operation-pair outer-gap bookkeeping (2026-10-29)
+
+- Closed the deferred builder investigation. `world_operations.rs` now carries
+  the source `outer_gap` and destination `directional_target_outer_gap` in
+  `operation_drag_pair`, matching the gesture-local event. Only two production
+  assignments change; no engine, protocol, wire or public-contract changes.
+- Failing-first evidence: distinct source/destination gaps 8/12 with asymmetric
+  non-full work areas made direct operation drop retain source gap 12 instead
+  of 8. The old event also omitted the target gap, which the drag commit
+  otherwise defaults to zero. Corrected direct drop and preview/drop retain
+  both gaps, exact inset rectangles and preview/drop agreement; a subsequent
+  local placement resolves after native-arrival facts.
+- `world_restored_routing_tests.rs` adds two table-driven regressions: direct
+  versus previewed operation drop, and eight directional move/focus/send
+  entry points. Typed and operation move/focus, workspace send follow/stay,
+  and directional output send follow/stay preserve retained gaps and non-full
+  work-area geometry. Same-output workspace sends necessarily share the
+  output's gap; their new workspace retains 8 while the other output keeps 12.
+- Other builders are correct for this case: `operation_directional` carries
+  both gaps; `world_sends.rs::execute_send` and `execute_output_send` inset
+  each endpoint independently and carry the source gap. Focus and sends use
+  `Engine::store_canonical_pair`, retaining the existing destination gap.
+  Workspace migration is a source-session rekey, not a directional pair.
+  Dynamic gap-setting policy and general pair-route refactors remain outside
+  this repair.
+- Separate finding, not fixed: `execute_operation` dispatches explicit
+  `CoreCommand::SendToOutput` through `start_send`, which builds
+  `SendToWorkspace`; an explicit cross-output target therefore refuses with
+  `cross-domain-mismatch`. Directional sends use the working output-send
+  route. Correcting explicit-operation dispatch needs separate triage; no
+  regression codifies the refusal as desired behavior.
+- Offline gates pass: core/Windows/protocol tests, workspace strict clippy
+  excluding macOS, workspace fmt, portable boundary, KWin tests (855/855),
+  KWin typecheck and whitespace. An initial test-only clippy range-pattern
+  warning was corrected. No live testing was performed.
+
 ## Mixed-scale cross-output drop outcome (2026-10-27)
 
 - Goal: cross-output release must honor the targeted split half and destination

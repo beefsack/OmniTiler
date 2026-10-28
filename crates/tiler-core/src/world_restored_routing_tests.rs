@@ -13,6 +13,7 @@
 use crate::boundary::CoreCommand;
 use crate::directional::{OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::geometry::Rect;
+use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
@@ -1842,4 +1843,385 @@ fn unknown_outputs_and_views_hold_fail_closed() {
     );
     assert_eq!(row_of(&calm, "win-a").output.0, "out-a");
     assert!(calm.transfers.is_empty());
+}
+
+/// Distinct-gap operation-pair pins: nonzero source/destination outer gaps
+/// with asymmetric non-full work areas. Every reachable non-gesture
+/// operation route must leave both staged outer gaps untouched; the
+/// drag-pair builder defect (destination gap in `outer_gap`, `None` target)
+/// reset them before the fix.
+fn gapped_pair_screens() -> Vec<ScreenReport> {
+    vec![
+        ScreenReport {
+            output: OutputId("out-a".to_owned()),
+            full_rect: Some(rect(0, 0, 800, 600)),
+            work_area: Some(rect(0, 20, 800, 560)),
+            gap: 0,
+            outer_gap: 8,
+            complete: true,
+            primary: true,
+        },
+        ScreenReport {
+            output: OutputId("out-b".to_owned()),
+            full_rect: Some(rect(800, 0, 800, 600)),
+            work_area: Some(rect(810, 10, 780, 570)),
+            gap: 0,
+            outer_gap: 12,
+            complete: true,
+            primary: false,
+        },
+    ]
+}
+
+fn bootstrap_gapped_pair() -> (WorldEngine, Vec<ScreenReport>, String, String, Vec<String>) {
+    let screens = gapped_pair_screens();
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            screens.clone(),
+            vec![
+                fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+                fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+                fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+            ],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let view_b = output_view(&first, "out-b").expect("view b");
+    let ring: Vec<String> = first
+        .workspaces
+        .iter()
+        .filter(|row| row.output.0 == "out-a")
+        .map(|row| row.id.clone())
+        .collect();
+    (engine, screens, view_a, view_b, ring)
+}
+
+fn pair_keys(view_a: &str, view_b: &str) -> (DomainKey, DomainKey) {
+    (
+        DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(view_a.to_owned()),
+        },
+        DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId(view_b.to_owned()),
+        },
+    )
+}
+
+fn assert_pair_gaps(engine: &WorldEngine, key_a: &DomainKey, key_b: &DomainKey) {
+    let keys = engine.engine().domain_keys();
+    assert_eq!(
+        engine.engine().outer_gap(key_a),
+        Some(8),
+        "source outer gap retained; keys={keys:?} want={key_a:?}/{key_b:?}"
+    );
+    assert_eq!(
+        engine.engine().outer_gap(key_b),
+        Some(12),
+        "destination outer gap retained"
+    );
+}
+
+#[test]
+fn operation_drag_pair_preserves_distinct_outer_gaps() {
+    // Preview-then-drop and direct-drop over distinct gaps: both stored
+    // gaps survive, the drop commits the previewed slot, and a follow-up
+    // same-output placement on the destination routes locally.
+    for chained in [false, true] {
+        let (mut engine, screens, view_a, view_b, _) = bootstrap_gapped_pair();
+        let (key_a, key_b) = pair_keys(&view_a, &view_b);
+        let facts = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        // Observation-only round materializes both sessions before any
+        // command; both staged gaps must be stored verbatim.
+        accepted(
+            &mut engine,
+            &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        assert_pair_gaps(&engine, &key_a, &key_b);
+        let source = Some(key_a.clone());
+        // Full work-area insets: out-a (0,20,800,560) minus gap 8 and
+        // out-b (810,10,780,570) minus gap 12.
+        let source_inset = rect(8, 28, 784, 544);
+        let dest_inset = rect(822, 22, 756, 546);
+        let destination_left = rect(822, 22, 378, 546);
+        let mut preview_rect = None;
+        if chained {
+            let preview = report(
+                3,
+                3,
+                screens.clone(),
+                facts.clone(),
+                "win-a",
+                Some(81),
+                Some(WorldCommand::Operation(CoreCommand::DragPreview {
+                    window: "win-a".to_owned(),
+                    x: 860,
+                    y: 120,
+                    hover_prior: None,
+                    source: source.clone(),
+                })),
+            );
+            let reply = accepted(&mut engine, &preview);
+            let Some(CommandResult::DragPreview { rect, domain, .. }) =
+                reply.command_result.clone()
+            else {
+                panic!(
+                    "expected drag-preview result, got {:?}",
+                    reply.command_result
+                );
+            };
+            assert_eq!(domain.output.0, "out-b", "preview names the pointer output");
+            assert_eq!(rect, destination_left, "preview names the left inset half");
+            assert!(reply.transfers.is_empty(), "preview retains nothing");
+            preview_rect = Some(rect);
+            assert_pair_gaps(&engine, &key_a, &key_b);
+        }
+        let drop_seq = if chained { 82 } else { 81 };
+        let drop = report(
+            4,
+            4,
+            screens.clone(),
+            facts,
+            "win-a",
+            Some(drop_seq),
+            Some(WorldCommand::Operation(CoreCommand::DragDrop {
+                window: "win-a".to_owned(),
+                x: 860,
+                y: 120,
+                hover_prior: None,
+                source: source.clone(),
+            })),
+        );
+        let reply = accepted(&mut engine, &drop);
+        assert!(
+            matches!(
+                reply.transfers.as_slice(),
+                [t] if matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a")
+                    && t.target_output.0 == "out-b"
+                    && t.operation_id == format!("op-{drop_seq}")
+            ),
+            "pointer-domain transfer: {:?}",
+            reply.transfers
+        );
+        assert_eq!(row_of(&reply, "win-a").output.0, "out-b");
+        let allocation = row_of(&reply, "win-a")
+            .allocation
+            .expect("drop carries full geometry");
+        let neighbor = row_of(&reply, "win-b")
+            .allocation
+            .expect("neighbor carries full geometry");
+        let stayer = row_of(&reply, "win-s")
+            .allocation
+            .expect("source stayer carries full geometry");
+        assert_eq!(
+            allocation, destination_left,
+            "drop names the left inset half"
+        );
+        assert_eq!(stayer, source_inset, "source stayer fills source inset");
+        let union = Rect {
+            x: allocation.x.min(neighbor.x),
+            y: allocation.y.min(neighbor.y),
+            w: (allocation.x + allocation.w).max(neighbor.x + neighbor.w)
+                - allocation.x.min(neighbor.x),
+            h: (allocation.y + allocation.h).max(neighbor.y + neighbor.h)
+                - allocation.y.min(neighbor.y),
+        };
+        assert_eq!(union, dest_inset, "destination rows fill destination inset");
+        if let Some(slot) = preview_rect {
+            assert_eq!(allocation, slot, "drop commits the previewed slot");
+        }
+        assert_pair_gaps(&engine, &key_a, &key_b);
+        // Same-output placement on the destination resolves locally: facts
+        // echo the retained destination allocations (native arrival) and the
+        // pointer targets the far right edge of the neighbor slot, which is
+        // in the right half while the post-drop mover sits left.
+        let px = neighbor.x + neighbor.w - 2;
+        let py = neighbor.y + neighbor.h / 2;
+        let local = report(
+            5,
+            5,
+            screens.clone(),
+            vec![
+                fact_rect("win-a", "out-b", allocation),
+                fact_rect("win-b", "out-b", neighbor),
+                fact_rect("win-s", "out-a", stayer),
+            ],
+            "win-a",
+            Some(83),
+            Some(WorldCommand::Operation(CoreCommand::DragPreview {
+                window: "win-a".to_owned(),
+                x: px,
+                y: py,
+                hover_prior: None,
+                source: None,
+            })),
+        );
+        let local_reply = accepted(&mut engine, &local);
+        let Some(CommandResult::DragPreview {
+            rect: local_rect, ..
+        }) = local_reply.command_result.clone()
+        else {
+            panic!("local placement runs, got {:?}", local_reply.command_result)
+        };
+        assert_eq!(
+            local_rect, neighbor,
+            "local placement names the right inset half"
+        );
+        assert_pair_gaps(&engine, &key_a, &key_b);
+    }
+}
+
+#[test]
+fn operation_routes_preserve_distinct_outer_gaps() {
+    // Eight reachable non-gesture routes: typed/operation move and focus,
+    // operation workspace send and typed directional send (follow/stay).
+    for case in 0..8 {
+        let (mut engine, screens, view_a, view_b, ring) = bootstrap_gapped_pair();
+        assert!(ring.len() >= 2, "same-output send needs a ring");
+        let (key_a, key_b) = pair_keys(&view_a, &view_b);
+        // Cross-output moves exhaust only with a sole mover on the source
+        // (a stayer restructures locally with no transfer); focus likewise
+        // resolves against the sole pair. Sends keep a stayer so the
+        // source scope survives.
+        let sole_mover = matches!(case, 0..=3);
+        let mut facts = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        if !sole_mover {
+            facts.push(fact_rect("win-s", "out-a", rect(100, 40, 40, 90)));
+        }
+        let report_in = report(2, 2, screens.clone(), facts.clone(), "win-a", None, None);
+        let _ = accepted(&mut engine, &report_in);
+        assert_pair_gaps(&engine, &key_a, &key_b);
+        let command = match case {
+            0 => WorldCommand::MoveDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                same_axis: SameAxisMove::GroupWithNeighbor,
+            },
+            1 => WorldCommand::Operation(CoreCommand::Move {
+                window: "win-a".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: SameAxisMove::GroupWithNeighbor,
+            }),
+            2 => WorldCommand::FocusDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+            },
+            3 => WorldCommand::Operation(CoreCommand::Focus {
+                window: "win-a".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                float_subject: false,
+            }),
+            4 => WorldCommand::Operation(CoreCommand::SendToWorkspace {
+                window: "win-a".to_owned(),
+                target_output: "out-a".to_owned(),
+                target_workspace: ring[1].clone(),
+                follow: true,
+            }),
+            5 => WorldCommand::Operation(CoreCommand::SendToWorkspace {
+                window: "win-a".to_owned(),
+                target_output: "out-a".to_owned(),
+                target_workspace: ring[1].clone(),
+                follow: false,
+            }),
+            6 => WorldCommand::SendDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                follow: true,
+            },
+            _ => WorldCommand::SendDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                follow: false,
+            },
+        };
+        let report_in = report(3, 3, screens, facts, "win-a", Some(11), Some(command));
+        let reply = match engine.handle_report(&report_in) {
+            WorldOutcome::Accepted(reply) => reply,
+            WorldOutcome::Rejected { kind, message } => {
+                panic!("case {case}: expected accept, rejected {kind} {message}")
+            }
+            other => panic!("case {case}: expected accept, got {other:?}"),
+        };
+        match case {
+            0 | 1 => {
+                assert!(
+                    reply.transfers.iter().any(
+                        |t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a")
+                            && t.target_output.0 == "out-b"
+                    ),
+                    "case {case}: move crosses to out-b: {:?}",
+                    reply.transfers
+                );
+                assert_eq!(row_of(&reply, "win-a").output.0, "out-b");
+                // R4 cross moves stage pending: both sessions survive with
+                // their own gaps (checked by the shared assert below).
+            }
+            2 | 3 => {
+                let focus: Vec<_> = reply
+                    .effects
+                    .iter()
+                    .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
+                    .collect();
+                assert_eq!(focus.len(), 1, "case {case}: one focus effect");
+                assert_ne!(focus[0].target.0, "win-a", "focus crosses the output");
+            }
+            4 => {
+                assert_eq!(reply.transfers.len(), 2, "follow keeps view flight");
+                assert_eq!(row_of(&reply, "win-a").workspace, ring[1]);
+            }
+            5 => {
+                assert_eq!(reply.transfers.len(), 1, "stay keeps only the window");
+                assert_eq!(row_of(&reply, "win-a").workspace, ring[1]);
+            }
+            _ => {
+                assert!(
+                    reply.transfers.iter().any(
+                        |t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a")
+                            && t.target_output.0 == "out-b"
+                    ),
+                    "case {case}: send crosses to out-b: {:?}",
+                    reply.transfers
+                );
+            }
+        }
+        assert_pair_gaps(&engine, &key_a, &key_b);
+        if matches!(case, 4 | 5) {
+            let workspace_target = DomainKey {
+                output: key_a.output.clone(),
+                workspace: WorkspaceId(ring[1].clone()),
+            };
+            assert_eq!(engine.engine().outer_gap(&workspace_target), Some(8));
+        }
+        for row in &reply.windows {
+            if let Some(allocation) = row.allocation {
+                let inset = if row.output == key_a.output {
+                    rect(8, 28, 784, 544)
+                } else {
+                    rect(822, 22, 756, 546)
+                };
+                assert_eq!(allocation.y, inset.y, "case {case}: work-area top");
+                assert_eq!(allocation.h, inset.h, "case {case}: work-area height");
+                assert!(
+                    allocation.x >= inset.x && allocation.x + allocation.w <= inset.x + inset.w
+                );
+            }
+        }
+    }
 }
