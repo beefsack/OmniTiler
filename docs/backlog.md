@@ -832,6 +832,9 @@ decisions of 2026-09-24 are under
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
 - P0 | macOS: propose 0.1 gate exceptions against the shared template |
   Apply the [shared gate decision](decisions.md#scope-and-platform-goals) for user approval.
+  Drafted 2026-10-28 ([proposal](changes/macos-0.1-gate-proposal.md)): 43
+  must-pass / 7 known-issue-allowed / 7 excluded plus eight macOS extras;
+  D1-D6 await user approval.
 - P1 | Ubuntu 26.04/26.10 acceptance | KWin 6.6 floor selected by user
   2026-10-11 and delivered offline; release 6.6.4, updates 6.6.6 and 26.10
   6.7.5 two-package builds and full apt install/upgrade/removal solver acceptance
@@ -1445,8 +1448,11 @@ decisions of 2026-09-24 are under
   (b) delivered offline 2026-10-28: every user command reaches core FIFO, T3
   supersession retained (`3d64b5c5`).
   **ROI review (user 2026-10-28) - macOS order:** (1) propose 0.1 gate
-  exceptions (P0 item below); (2) small fixes: focus-walk test fence, pager
-  core-trailing-workspace check, first-float placement decision, `just dev`
+  exceptions (P0 item below; drafted, awaiting approval); (2) small fixes:
+  focus-walk test fence (delivered offline `812eba82`), pager
+  core-trailing-workspace check (incomplete projection found: the `+` action
+  disappears when the last native Space is empty; segment semantics pending
+  user decision), first-float placement decision, `just dev`
   log-follower leak, `just launch` exit code; (3) targeted redogfood, including
   trailing send-follow (3a) and direct-wake feel; (4) fullscreen
   logical-membership design plus one bounded probe; (5) best-effort admission
