@@ -13,6 +13,17 @@ before acting ([review](research/architecture-review/review.md)); user
 decisions of 2026-09-24 are under
 [Architecture Direction](decisions.md#engine-architecture-and-convergence).
 
+## Current goals
+
+Prioritise by return toward these goals
+([principle](principles.md#focus-and-return-on-investment)).
+
+- 0.1 release with broad functional compatibility with the Tier 1 input
+  tilers (i3, sway, Hyprland, COSMIC).
+- Before 0.1, core and its protocol are as correct and sensible as possible,
+  with no workarounds or hacks directly or indirectly related to either.
+  Both get harder to change once releases ship.
+
 ## Open work
 
 - Windows order (user 2026-10-28): (1) floating-window return focus check;
@@ -51,6 +62,16 @@ decisions of 2026-09-24 are under
   shared native creation/desires) with producer-shaped gap/recovery tests
   before the ownership flag changes. KDE work lands with the bump.
   [Answer](changes/windows-workspace-return-focus.md#kde-answer-option-a-stable-native-ownership-2026-10-28).
+- P1 | Tabbed stacks core/protocol investigation (user 2026-10-28) |
+  Read-only, before the coordinated protocol bump lands. Map the tab matrix
+  rows (R-INS-02, R-GRP-01..03, R-DRAG-01, R-COL-06) to the core and protocol
+  additions tabs would need: tabbed container and tab focus/close rules,
+  hidden inactive tabs on every platform, tab strip shape and labels (window
+  titles are user content), tab-click input. Check whether the planned
+  core-owned per-window visibility work can carry hidden tabs. The protocol
+  has no tabbed/stacked concept today. Outcome returns to the user to decide
+  whether the core/protocol part of tabs moves into 0.1; tab UI stays after
+  0.1 (see the P3 Tabbed stacks item).
 - P1 | Windows batched physical checks | One user session, not waiting on the
   staged switch prototype: Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
   fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls);

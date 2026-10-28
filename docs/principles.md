@@ -62,6 +62,17 @@ Project principles, approved by the user.
 - Example: simplify a feature like the pager before accepting a significant
   performance cost, but do not drop it for a negligible gain.
 
+## Focus and Return on Investment
+
+- Work advances explicit goals that serve [VISION.md](../VISION.md). Current
+  goals are listed at the top of [docs/backlog.md](backlog.md) and change as
+  milestones land.
+- Prioritise the backlog by return toward the current goals: the most
+  goal-advancing or risk-reducing progress per unit of effort comes first.
+- Tooling, test harnesses and evidence collection are means, not ends. Size
+  them to the decision they inform. When effort outgrows the value, stop and
+  choose a simpler route, accept weaker evidence, or drop the work.
+
 ## Layering
 
 - The core is the single model and decision maker: it owns screens, workspaces and their per-screen mapping, windows, focus and cursor position; the policy for every action; and the resulting desired world state, including the shapes and bounds of borders, underlays and drop overlays.
