@@ -19,8 +19,116 @@ trivially different start state.
 
 | Variant | Minimal action sequence | Observed KDE outcome | Unsupported outcome / decision |
 | --- | --- | --- | --- |
-| Client-driven tiled geometry | Tile A/B; have A request a different size without activation or output/desktop change; observe; admit C | Wayland and X11/XWayland: A keeps client-requested geometry, no world dispatch in bounded capture; admission triggers reconciliation and reclaims A's tile. Current hooks observe homing/activation/inventory, not ordinary frame changes | Desired immediate correction versus retained client geometry and reference-WM outcomes TBD; no new policy selected. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
 | X11 urgency hint versus attention state | With B active, request critical attention on A; clear A's attention; activate A | WM_HINTS urgency clears, but KWin DEMANDS_ATTENTION persists until activation. Accepted clear is a client-hint acknowledgement, not compositor-state withdrawal | Other hosts/reference WMs and visual urgency presentation TBD; no tiler urgency policy changed. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
+
+<a id="client-driven-tiled-geometry"></a>
+### Client-driven tiled geometry
+
+Source-only Tier 1 audit (2026-10-29) completes the existing F1 discriminator;
+reference runtime results remain TBD. Ordinary mapped resizable A/B, stable
+output/workspace, no hint changes, interactive drag, fullscreen or floating
+state. Use a size different from A's tile, within unchanged min/max bounds.
+Reset between protocol legs. "Retain allocation" does not prove that an
+uncooperative client's pixels or native frame fill it.
+
+| Minimal action sequence | i3 | sway | Hyprland | COSMIC | Ours KDE |
+| --- | --- | --- | --- | --- | --- |
+| Tile A/B; A sends X11 ConfigureRequest for a different size without activation/homing; observe before any other event; admit C | Ignore requested tiled size; immediately send synthetic ConfigureNotify describing current tile, not an adopting resize (`SR-I`) | Xwayland immediately configures current container content box, ignoring requested size (`SR-S`) | Xwayland immediately forces tile-size configure (`sendWindowSize(true)`); no adoption (`SR-H`) | Xwayland rejects mapped workspace-tiled resize with `configure(None)` (source comment: "ack and force old state"); no adoption (`SR-C`) | Recorded F1: native frame drifts, no world dispatch in bounded capture; C's admission reconciles. No ordinary frame subscription. Current source path below |
+| Tile A/B; Wayland A commits different logical window geometry/buffer size after initial map, without activation/homing; observe; admit C. Separately omit ack for a pending tile configure | N/A: X11 only | Keep container allocation; copy committed surface geometry and clip to current tile content box, no corrective configure in tiled commit handler. Pending transaction accepts matching serial regardless of size; missing ack progresses on timeout (`SR-S`) | Managed tiled commit does not resize layout target or resend configure. Later ordinary configure dedups against last requested size, not ack. Wrong-size rendering and full no-ack settlement TBD (`SR-H`) | No corrective configure in inspected mapped-toplevel commit chain; layout recompute owns tile-size requests. Pending blockers expire (ready 300ms / processed 500ms), not a resend loop. Wrong-size rendering and full no-ack settlement TBD (`SR-C`) | Recorded F1 Wayland frame drift/no dispatch and later admission correction; exact buffer/ack discriminator TBD, not inferred from fixture resize acceptance |
+
+Existing coverage and decision boundary:
+
+- [Fixed-Size Admission D2](../decisions.md#fixed-size-admission)
+  (`decisions.md:2366-2373`) already says "keep reacting to windows resizing
+  themselves to avoid gaps/overlaps"; admission-only hint changes are not a
+  direction to ignore native geometry drift. D2 does not choose event timing,
+  acknowledgement semantics or a retry policy.
+- [R-SPC-08](reference-outcomes/special-windows.md#r-spc-08-gain-or-lose-fixed-hints-after-admission)
+  and [REQ-SPC-04b](functional-spec.md) repeat that requirement while testing
+  hint gain/loss and classification. [R-MIN-01 through R-MIN-03](reference-outcomes/minimum-size.md)
+  cover admission/area changes and minimum projection, not an isolated
+  client-size change. Their native settlement TBDs do not answer this row.
+- Recommendation, pending user decision: promptly observe ordinary tiled
+  frame drift and reconcile the retained allocation through existing
+  gesture/safety/clamp/suppression rules; do not adopt client size as new
+  sibling shares or create an unbounded configure fight. This follows D2's
+  anti-gap intent, not a four-WM Wayland immediate-resend consensus.
+- Alternative: retain today's correction only on the next independently
+  subscribed event. Fewer reactive writes, but gaps/overlaps can persist
+  indefinitely; this would need an explicit qualification of D2. No new
+  product policy is selected here.
+
+Pinned local-source citation keys (handler behavior, not runtime proof):
+
+- `SR-I`, i3 `903bcd518df32b0e055b17f5da3f988a0187fd3d`:
+  [src/handlers.c:300-446](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/handlers.c#L300-L446)
+  restricts size adoption to floating/dock branches; ordinary tiled requests
+  reach `fake_absolute_configure_notify`. `src/xcb.c:64-77` and
+  `libi3/fake_configure_notify.c:21-43` send the current absolute client rect
+  in synthetic ConfigureNotify, not a new requested geometry.
+- `SR-S`, sway `1652c54b73f67df17b7b4ab0b0f7048204aa8104`:
+  [sway/desktop/xwayland.c:578-606](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/desktop/xwayland.c#L578-L606)
+  rejects the tiled X11 request with the current box; `:267-280` forwards
+  configure to wlroots. `:415-454` handles later Xwayland surface commits
+  without resizing the tiled container, with geometry-based transaction
+  readiness. [sway/desktop/xdg_shell.c:291-349](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/desktop/xdg_shell.c#L291-L349)
+  updates only floating container size; tiled changed geometry calls
+  `view_center_and_clip_surface`. `sway/tree/view.c:1032-1062` places ordinary
+  tiled content at (0,0) and clips to current content extents, rather than
+  adopting its size. `sway/desktop/transaction.c:934-957` checks xdg serial
+  versus Xwayland geometry; `:796-802` releases a timed-out transaction;
+  `:805-851` gates new configure on server transaction state, not every commit.
+- `SR-H`, Hyprland `19fb395d45314960e6f79f17994a84094f1cd4f6`:
+  [src/desktop/view/window/Window.cpp:950-978](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/desktop/view/window/Window.cpp#L950-L978)
+  forces tiled X11 response. `src/layout/target/WindowTarget.cpp:461-467`
+  forwards the tile goal; `src/desktop/view/window/X11Backend.cpp:334-344`
+  bypasses dedup when forced. [Window.cpp:1750-1807](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/desktop/view/window/Window.cpp#L1750-L1807)
+  configures initially, not on ordinary tiled commit; `:1872-1875` limits
+  geometry-change adoption to override-redirect X11.
+  `src/desktop/view/window/WaylandBackend.cpp:137-148,304-324,442-447`
+  tracks committed geometry, dedups pending requested size and records acked
+  size without corrective resend. No ack-timeout recovery was established in
+  this backend; exact rendered crop/scale/overflow remains TBD.
+- `SR-C`, COSMIC `3d55cba06c9cf6f27609cdefb520f7857dba20af`:
+  [src/xwayland.rs:918-990](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/xwayland.rs#L918-L990)
+  allows workspace floating resize only; `:973` rejects tiled requests.
+  [src/wayland/handlers/compositor.rs:263-280,347-359](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/wayland/handlers/compositor.rs#L263-L359)
+  schedules rendering and floating-grab handling, not tiled correction.
+  The ordinary `common.on_commit` chain is `src/shell/mod.rs:1670-1724`,
+  `src/shell/element/mod.rs:461-467`, `window.rs:260-271` (Smithay state and
+  header resize), not layout reallocation. `src/shell/layout/tiling/mod.rs:3119-3126`
+  owns tile geometry/configure; `src/shell/element/surface.rs:629-667`
+  gates interactive progression on committed ack state, not actual buffer
+  dimensions. `src/shell/layout/tiling/blocker.rs:39-53` bounds pending
+  serial waits, without corrective resend. Smithay-internal handling and
+  exact wrong-size pixels remain TBD; timeout is not geometry acceptance.
+
+Current OmniTiler source (2026-10-29):
+
+- `kwin/src/world-entry.ts:4241-4244` subscribes per-window
+  `outputChanged`, `desktopsChanged`, `hiddenChanged`; `:4305-4306,4315-4326`
+  subscribes workspace add/activate/remove, desktop/output/view changes;
+  `:4380` configuration changes. `frameGeometryChanged` is declared at
+  `kwin/src/kwin-globals.d.ts:264-273` but not connected. Ordinary self-resize
+  alone therefore misses `onNativeInvalidation` (`world-entry.ts:750-758`)
+  and its scheduled full capture/dispatch, unlike unrelated subscribed edges.
+- A report does not inherently adopt drift: current world-v2
+  `crates/tiler-core/src/world_publish.rs:486-516,594-632` projects retained
+  topology with `ProjectionKind::Reconcile` and publishes controlled target
+  frames unless held/suppressed. `kwin/src/world-apply.ts:694-752` checks live
+  safety/authority and writes a mismatched controlled target once per apply.
+  Existing shared hint projection, learned minima and stable-pair/backoff
+  suppression still apply (`crates/tiler-core/src/world_frames.rs:244-321,353-421,600-617`);
+  a report is not an unconditional retry or proof the client obeys.
+- Windows already includes `EVENT_OBJECT_LOCATIONCHANGE` for window objects
+  in its wake rule (`crates/tiler-windows/src/tiling_sys/observe.rs:416-453`);
+  non-overlay wakes cause a full turn (`tiling_sys/run_loop_wait.rs:398-408`,
+  `tiling_sys/run_loop.rs:1097,1124-1137`, in the same crate). This is a
+  source-path contrast, not new native self-resize acceptance evidence.
+- Earlier KDE native evidence is unchanged:
+  [F1](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits).
+  The archived [production resize reconciliation](../changes/archive/production-resize-reconciliation.md)
+  describes the earlier DescribePlan route, not today's world-v2 subscriptions.
 
 <a id="hidden-frame-stress-discriminator"></a>
 ### Hidden frame versus logical allocation

@@ -478,8 +478,14 @@ Prioritise by return toward these goals
 - P1 | KDE client self-resize while tiled (F1, 2026-10-20) | A tiled
   client resizing itself leaves geometry inconsistent with its tile until an
   unrelated subscribed event reconciles; reproduced on Wayland and X11 with
-  the live fixture. First: capture Tier 1 reference outcomes and check
-  existing spec rows, then user decides the desired behavior before repair.
+  the live fixture. [Tier 1 source audit and current path](spec/reference-outcomes.md#client-driven-tiled-geometry)
+  recorded: X11 rejects tiled size requests promptly; Wayland commit paths
+  do not share an immediate resend policy. D2 already requires reacting to
+  self-resize. Parked user decision before repair: recommend prompt frame-drift
+  observation and retained-tile reconciliation under existing safety/clamp
+  suppression (avoids persistent gaps, no unbounded fight); alternative defer
+  until another subscribed event (fewer reactive writes, gaps may persist;
+  needs explicit D2 qualification). Exact native buffer/ack outcomes remain TBD.
   [Record](changes/archive/kde-dev-scope-fixture-integration.md).
   [Research](research/live-test-window.md),
   [record](changes/archive/controllable-live-test-window.md).
