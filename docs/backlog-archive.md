@@ -13,6 +13,21 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## Floating and sticky return focus (closed 2026-10-28)
+
+- P1 | Windows floating-window return focus check | Shipped behavior restored
+  no floating or sticky window on return. User 2026-10-28 approved core-owned
+  last active window per workspace for floating and sticky windows, with the
+  same observation gates as tiled memory. Delivered in `430a52d7`: mouse and
+  keyboard floats, float-only workspaces and sticky (per workspace where
+  focused) restore; a newer tiled choice wins; close/lifetime/HWND reuse pruned;
+  no-focus and empty-workspace decisions preserved. 17 core and 11 Windows
+  regressions, independent review, offline gates pass. Residual: unattributed
+  foreground changes can still replace memory (unknown-foreground decision).
+  Physical acceptance runs in the batched physical checks session; KDE/macOS
+  port impact documented.
+  [Record](changes/archive/windows-floating-return-focus.md).
+
 ## Command-owned memory and Windows latest-world rendering (closed 2026-10-28)
 
 - P1 | Command-owned active-window memory | Linked, safely bindable command
