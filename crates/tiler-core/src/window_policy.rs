@@ -277,8 +277,10 @@ pub const fn overlay_refusal(fullscreen: bool, maximized: bool) -> Option<&'stat
     }
 }
 
-/// Intentional-float toggle refusal (`float-refused-fullscreen` /
-/// `float-refused-maximize` vocabulary). Fullscreen wins.
+/// Legacy native-float route refusal (`float-refused-fullscreen` /
+/// `float-refused-maximize` vocabulary). Fullscreen wins until callers can
+/// change membership without native fullscreen-subject writes. Session's
+/// model-only float toggle independently permits retained fullscreen.
 /// The B9 lane ([`unfloat_maximize_clear_eligible`]) is defined separately;
 /// this snapshot vocabulary still reports that lane.
 #[must_use]

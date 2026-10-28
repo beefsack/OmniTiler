@@ -34,13 +34,20 @@ impl super::super::Session {
             // Membership binds flags plus homing exactly (original
             // semantics, always used when the fixed-size opt-in is off).
             // With the opt-in on, overlays ride advisory-style and only
-            // the portable floating flag binds an unfloat. Diagnostic
-            // capacity origin grants no leniency (D4): capacity floats
-            // bind exactly like ordinary floats, and homing always binds.
+            // the portable floating flag binds an unfloat. An explicit
+            // unfloat additionally tolerates a fullscreen-only overlay on
+            // the subject (command-only): floating stays bound, maximized
+            // and sticky still refuse below, and homing always binds.
+            // Diagnostic capacity origin grants no leniency (D4): capacity
+            // floats bind exactly like ordinary floats, and homing always
+            // binds.
             let bindings_match = if self.fixed_admission {
                 target.floating == record.flags.floating
             } else {
-                target.flags() == record.flags
+                let exact = target.flags() == record.flags;
+                let fullscreen_tolerance =
+                    target.floating && target.fullscreen && !target.maximized && !target.sticky;
+                exact || fullscreen_tolerance
             };
             if !bindings_match
                 || target.output != record.output
@@ -84,6 +91,11 @@ impl super::super::Session {
                 .iter_mut()
                 .find(|entry| &entry.window == window)
             {
+                // The subject fresh-admits as an ordinary tile beneath the
+                // retained fullscreen overlay: only the floating flag
+                // clears. Fullscreen (and its native frame) is never
+                // touched here; the admission below strips the subject
+                // from desired geometry (D5).
                 entry.floating = false;
             }
             let domain = candidate
@@ -106,6 +118,7 @@ impl super::super::Session {
                 &observation,
                 correlation_id,
                 capabilities,
+                true,
             )?;
             *self = candidate;
             return Ok(plan);
@@ -115,7 +128,15 @@ impl super::super::Session {
             .iter()
             .find(|entry| &entry.window == window)
             .ok_or(ProposeError::Refused(RefusalKind::PartialObservation))?;
-        if target.flags().any() || !self.windows.contains_key(window) {
+        // An explicit float toggle changes base membership beneath a
+        // retained fullscreen overlay: only floating, maximized and sticky
+        // refuse here. Fullscreen rides along untouched (never captured,
+        // never cleared); maximized keeps its refusal.
+        if target.floating
+            || target.maximized
+            || target.sticky
+            || !self.windows.contains_key(window)
+        {
             return Err(ProposeError::Refused(RefusalKind::NotTiled));
         }
         // Select the effective placement: an explicit rect wins, else the
@@ -132,8 +153,13 @@ impl super::super::Session {
                 ),
             },
         };
-        let plan =
-            self.propose_remove(window, session_observation, correlation_id, capabilities)?;
+        let plan = self.propose_remove(
+            window,
+            session_observation,
+            correlation_id,
+            capabilities,
+            true,
+        )?;
         let Some(desired) = self.pending_desired.as_mut() else {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         };

@@ -267,12 +267,56 @@ describe("world native toggles", () => {
         assert.ok(h.logs.some((l) => l.includes("float-refused-unreadable")));
     });
 
-    it("refuses float overlays before any setter", () => {
+    it("routes a tiled fullscreen float through core with no rect and no writes", () => {
+        const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 0 });
+        (ref as unknown as Record<string, unknown>)["frameGeometry"] = { x: 0, y: 0, width: 1920, height: 1080 };
+        const h = setup(ref, order);
+        h.env.setFloating(false);
+        assert.equal(h.toggles.submitFloat("float"), true);
+        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+            op: "toggle-float", win: "win-a", rect: null,
+        });
+        assert.equal(ref.maximizeMode, 0, "no B9 clear runs under fullscreen");
+        assert.ok(!order.includes("invalidate"), "no native setter runs under fullscreen");
+    });
+
+    it("routes a floating fullscreen unfloat with no rect, never the fullscreen frame", () => {
+        const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 0 });
+        (ref as unknown as Record<string, unknown>)["frameGeometry"] = { x: 0, y: 0, width: 1920, height: 1080 };
+        const h = setup(ref, order);
+        h.env.setFloating(true);
+        assert.equal(h.toggles.submitFloat("float"), true);
+        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+            op: "toggle-float", win: "win-a", rect: null,
+        }, "fullscreen frame never becomes the retained float frame");
+        assert.equal(ref.maximizeMode, 0);
+        assert.ok(!order.includes("invalidate"), "no native setter runs under fullscreen");
+    });
+
+    it("takes no B9 clear under fullscreen maximized floating, submitting for core refusal", () => {
         const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 3 });
         const h = setup(ref, order);
         h.env.setFloating(true);
-        assert.equal(h.toggles.submitFloat("float"), false);
-        assert.equal(ref.maximizeMode, 3);
+        assert.equal(h.toggles.submitFloat("float"), true, "adapter submits; maximized core refusal owns the verdict");
+        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+            op: "toggle-float", win: "win-a", rect: null,
+        });
+        assert.equal(ref.maximizeMode, 3, "D5: no native state write to the fullscreen subject");
+        assert.ok(!order.includes("invalidate"));
+        assert.ok(!h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")));
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.calls.length, 1, "no deferred B9 admission arms under fullscreen");
+    });
+
+    it("takes no B9 clear for tiled fullscreen maximized, submitting for core refusal", () => {
+        const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 3 });
+        const h = setup(ref, order);
+        h.env.setFloating(false);
+        assert.equal(h.toggles.submitFloat("float"), true, "adapter submits; maximized core refusal owns the verdict");
+        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+            op: "toggle-float", win: "win-a", rect: null,
+        });
+        assert.equal(ref.maximizeMode, 3, "D5: no native state write to the fullscreen subject");
         assert.ok(!order.includes("invalidate"));
     });
 

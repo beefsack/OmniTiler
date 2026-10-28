@@ -1995,3 +1995,528 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
         );
     }
 }
+
+#[test]
+fn fullscreen_toggle_float_round_trip_on_world_command_path() {
+    // Real ENGINE regression for the fullscreen float toggle (not Session
+    // only, no mock broker): the ToggleFloat WorldReport command path must
+    // stage/commit the world lifecycle exactly like the Session unit does.
+    // Single toggle under fullscreen floats beneath the overlay (subject
+    // row floated, sibling reflows, no subject-targeted effects); a second
+    // toggle under the retained fullscreen overlay re-tiles invisibly.
+    // Independent fresh-engine legs then prove the actual native exit
+    // (fullscreen cleared, no command) converges: float stays floated on
+    // its durable placement, re-tiled stays tiled.
+    let area = |r: Rect| i64::from(r.w) * i64::from(r.h);
+    // Centered 60% fallback over the 800x600 roomy work area.
+    let fallback = rect(160, 120, 480, 360);
+    let fullscreen_frame = rect(0, 0, 800, 600);
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = vec![roomy("out-a", 0, true)];
+    let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
+    let first = accepted(
+        &mut engine,
+        &report(1, screens.clone(), seed, "w0", vec![], None, None),
+    );
+    let w0_tile_alloc = row_of(&first, "w0").allocation;
+    assert!(
+        row_of(&first, "w0").allocation.is_some() && row_of(&first, "w1").allocation.is_some(),
+        "seed tiles both: {:?}",
+        first.windows
+    );
+    let w0_seed_area = area(w0_tile_alloc.expect("w0 seed allocation"));
+
+    // Single toggle: subject observed fullscreen over its full-screen
+    // frame, no explicit rect, so the centered 60% fallback is the
+    // durable placement.
+    let mut fullscreen_w1 = fact("w1", "out-a", 100);
+    fullscreen_w1.fullscreen = true;
+    fullscreen_w1.rect = Some(fullscreen_frame);
+    let floated = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fullscreen_w1],
+            "w0",
+            vec![],
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "w1".to_owned(),
+                float_rect: None,
+            })),
+        ),
+    );
+    match &floated.command_result {
+        Some(CommandResult::Float {
+            window,
+            rect,
+            no_space,
+        }) => {
+            assert_eq!(window.0, "w1", "float names the subject");
+            assert_eq!(*rect, Some(fallback), "exact fallback placement");
+            assert!(!no_space, "fallback placement, not no-space");
+        }
+        other => panic!("expected float result, got {other:?}"),
+    }
+    let subject = row_of(&floated, "w1");
+    assert!(subject.floating, "subject floats: {subject:?}");
+    assert_eq!(
+        subject.allocation, None,
+        "floated subject holds no tile allocation: {subject:?}"
+    );
+    assert_eq!(
+        subject.effective_frame,
+        Some(fallback),
+        "durable fallback rides the row: {subject:?}"
+    );
+    assert_eq!(
+        subject.frame_authority,
+        ScopeAuthority::Untouched,
+        "no float frame writes: {subject:?}"
+    );
+    assert_eq!(
+        subject.frame_operation.as_deref(),
+        Some("op-2"),
+        "one-shot placement token: {subject:?}"
+    );
+    let sibling = row_of(&floated, "w0");
+    let sibling_alloc = sibling.allocation.expect("sibling tile");
+    assert_ne!(
+        Some(sibling_alloc),
+        w0_tile_alloc,
+        "sibling leaves its own pre-toggle tile: {sibling:?}"
+    );
+    assert!(
+        area(sibling_alloc) > w0_seed_area,
+        "sibling expands into the freed tile: {sibling:?} vs seed {w0_tile_alloc:?}"
+    );
+    assert_eq!(
+        (sibling_alloc.w, sibling_alloc.h),
+        (800, 600),
+        "sibling takes the full domain: {sibling:?}"
+    );
+    assert!(
+        floated.effects.iter().all(|e| e.target.0 != "w1"),
+        "no subject-targeted effects while fullscreen: {:?}",
+        floated.effects
+    );
+    assert!(
+        floated.transfers.is_empty(),
+        "float mints no transfer: {:?}",
+        floated.transfers
+    );
+
+    // Native truth echo: still fullscreen over the full-screen frame,
+    // still floating. Observation-only must not flap the membership or
+    // mint subject effects.
+    let mut still_out = fact("w1", "out-a", 100);
+    still_out.floating = true;
+    still_out.fullscreen = true;
+    still_out.rect = Some(fullscreen_frame);
+    let echo = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), still_out],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        row_of(&echo, "w1").floating,
+        "echo stays floated: {:?}",
+        echo.windows
+    );
+    assert_eq!(
+        row_of(&echo, "w1").effective_frame,
+        Some(fallback),
+        "echo keeps the durable placement"
+    );
+    assert!(
+        echo.effects.iter().all(|e| e.target.0 != "w1"),
+        "echo mints no subject effects: {:?}",
+        echo.effects
+    );
+    assert!(
+        echo.transfers.is_empty(),
+        "echo retains no flight: {:?}",
+        echo.transfers
+    );
+
+    // Double toggle: floating + fullscreen observed, so the unfloat
+    // fresh-admits to tiling with no subject geometry write. The Float
+    // result carries no rect (tiled placement rides the snapshot) and the
+    // durable placement survives (never the fullscreen frame).
+    let mut float_full = fact("w1", "out-a", 100);
+    float_full.floating = true;
+    float_full.fullscreen = true;
+    float_full.rect = Some(fullscreen_frame);
+    let retiled = accepted(
+        &mut engine,
+        &report(
+            4,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), float_full],
+            "w0",
+            vec![],
+            Some(4),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "w1".to_owned(),
+                float_rect: None,
+            })),
+        ),
+    );
+    match &retiled.command_result {
+        Some(CommandResult::Float {
+            window,
+            rect,
+            no_space,
+        }) => {
+            assert_eq!(window.0, "w1", "unfloat names the subject");
+            assert_eq!(*rect, None, "tile rides the snapshot");
+            assert!(!no_space, "clean unfloat");
+        }
+        other => panic!("expected unfloat float result, got {other:?}"),
+    }
+    let subject = row_of(&retiled, "w1");
+    assert!(!subject.floating, "subject re-tiles: {subject:?}");
+    assert!(
+        subject.allocation.is_some(),
+        "subject holds a tile again: {subject:?}"
+    );
+    let reshrunk = row_of(&retiled, "w0").allocation.expect("sibling tile");
+    assert!(
+        area(reshrunk) < area(sibling_alloc),
+        "sibling shrinks once the subject re-tiles: {reshrunk:?} vs {sibling_alloc:?}"
+    );
+    assert!(
+        row_of(&retiled, "w0").allocation.is_some(),
+        "sibling keeps a tile: {:?}",
+        retiled.windows
+    );
+    assert!(
+        retiled.effects.iter().all(|e| e.target.0 != "w1"),
+        "fresh admission carries no subject effects: {:?}",
+        retiled.effects
+    );
+    assert!(
+        retiled.transfers.is_empty(),
+        "unfloat mints no transfer: {:?}",
+        retiled.transfers
+    );
+
+    // Actual native exit after the single toggle: fresh engine, toggle
+    // under fullscreen, then the overlay clears with the float frame
+    // observed and no command. The row stays floated on the exact
+    // durable fallback with untouched frame authority.
+    {
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let mut fullscreen_w1 = fact("w1", "out-a", 100);
+        fullscreen_w1.fullscreen = true;
+        fullscreen_w1.rect = Some(fullscreen_frame);
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fullscreen_w1],
+                "w0",
+                vec![],
+                Some(2),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: None,
+                })),
+            ),
+        );
+        let mut exited = fact("w1", "out-a", 100);
+        exited.floating = true;
+        exited.rect = Some(fallback);
+        let reply = accepted(
+            &mut engine,
+            &report(
+                3,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), exited],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let row = row_of(&reply, "w1");
+        assert!(row.floating, "exit keeps the float: {row:?}");
+        assert_eq!(row.allocation, None, "still no tile: {row:?}");
+        assert_eq!(
+            row.effective_frame,
+            Some(fallback),
+            "exit keeps the durable fallback: {row:?}"
+        );
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Untouched,
+            "exit writes no frame: {row:?}"
+        );
+        assert!(
+            reply.effects.iter().all(|e| e.target.0 != "w1"),
+            "exit mints no subject effects: {:?}",
+            reply.effects
+        );
+        assert!(
+            reply.transfers.is_empty(),
+            "exit mints no transfer: {:?}",
+            reply.transfers
+        );
+    }
+
+    // Actual native exit after the double toggle: fresh engine, float
+    // then unfloat under the retained overlay, then the overlay clears
+    // with a plain tiled observation and no command. Both rows tile.
+    {
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let mut fullscreen_w1 = fact("w1", "out-a", 100);
+        fullscreen_w1.fullscreen = true;
+        fullscreen_w1.rect = Some(fullscreen_frame);
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fullscreen_w1],
+                "w0",
+                vec![],
+                Some(2),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: None,
+                })),
+            ),
+        );
+        let mut float_full = fact("w1", "out-a", 100);
+        float_full.floating = true;
+        float_full.fullscreen = true;
+        float_full.rect = Some(fullscreen_frame);
+        accepted(
+            &mut engine,
+            &report(
+                3,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), float_full],
+                "w0",
+                vec![],
+                Some(3),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: None,
+                })),
+            ),
+        );
+        let reply = accepted(
+            &mut engine,
+            &report(
+                4,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let row = row_of(&reply, "w1");
+        assert!(!row.floating, "exit stays tiled: {row:?}");
+        let alloc = row.allocation.expect("tiled after exit");
+        assert_eq!(
+            row.effective_frame,
+            Some(alloc),
+            "tiled frame rides the allocation: {row:?}"
+        );
+        assert!(
+            reply.effects.iter().all(|e| e.target.0 != "w1"),
+            "exit mints no subject effects: {:?}",
+            reply.effects
+        );
+        assert!(
+            reply.transfers.is_empty(),
+            "exit mints no transfer: {:?}",
+            reply.transfers
+        );
+    }
+
+    // Durable previously floated placement beats the fallback: fresh
+    // engine, an explicit float placement persists through an unfloat,
+    // so a later fullscreen toggle reuses it instead of the fallback.
+    {
+        let durable = rect(10, 10, 100, 100);
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                Some(2),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: Some(durable),
+                })),
+            ),
+        );
+        let mut floated = fact("w1", "out-a", 100);
+        floated.floating = true;
+        floated.rect = Some(durable);
+        accepted(
+            &mut engine,
+            &report(
+                3,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), floated],
+                "w0",
+                vec![],
+                Some(3),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: None,
+                })),
+            ),
+        );
+        let mut fullscreen_w1 = fact("w1", "out-a", 100);
+        fullscreen_w1.fullscreen = true;
+        fullscreen_w1.rect = Some(fullscreen_frame);
+        let reply = accepted(
+            &mut engine,
+            &report(
+                4,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fullscreen_w1],
+                "w0",
+                vec![],
+                Some(4),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: None,
+                })),
+            ),
+        );
+        match &reply.command_result {
+            Some(CommandResult::Float { window, rect, .. }) => {
+                assert_eq!(window.0, "w1");
+                assert_eq!(*rect, Some(durable), "durable beats fallback");
+            }
+            other => panic!("expected durable float result, got {other:?}"),
+        }
+        assert_eq!(
+            row_of(&reply, "w1").effective_frame,
+            Some(durable),
+            "row keeps the durable placement"
+        );
+    }
+
+    // Maximize still refuses on the same command path, both directions.
+    let mut maxed = fact("w1", "out-a", 100);
+    maxed.maximized = true;
+    match engine.handle_report(&report(
+        5,
+        screens.clone(),
+        vec![fact("w0", "out-a", 0), maxed],
+        "w0",
+        vec![],
+        Some(5),
+        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "w1".to_owned(),
+            float_rect: None,
+        })),
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "not-tiled"),
+        other => panic!("maximized toggle must refuse, got {other:?}"),
+    }
+
+    // Floating + maximized unfloat refuses too (post-clear observation
+    // required): fresh engine, plain float, then the maximized overlay.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
+    accepted(
+        &mut engine,
+        &report(1, screens.clone(), seed, "w0", vec![], None, None),
+    );
+    let floated = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            vec![],
+            Some(2),
+            Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: "w1".to_owned(),
+                float_rect: None,
+            })),
+        ),
+    );
+    assert!(
+        row_of(&floated, "w1").floating,
+        "plain float stages: {:?}",
+        floated.windows
+    );
+    let mut maxed_float = fact("w1", "out-a", 100);
+    maxed_float.floating = true;
+    maxed_float.maximized = true;
+    match engine.handle_report(&report(
+        3,
+        screens.clone(),
+        vec![fact("w0", "out-a", 0), maxed_float],
+        "w0",
+        vec![],
+        Some(3),
+        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: "w1".to_owned(),
+            float_rect: None,
+        })),
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "partial-observation"),
+        other => panic!("maximized unfloat must refuse, got {other:?}"),
+    }
+}

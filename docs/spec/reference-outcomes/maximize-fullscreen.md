@@ -667,20 +667,32 @@ rectangles where geometry is load-bearing.
   no runtime proof claimed).
 - Then paneru: TBD: combined sequence not audited at pin (source-only; no
   runtime proof claimed).
-- Then Ours KDE: Current recorded policy refuses float on a fullscreen target
-  (`float-refused-fullscreen`); no writes to B during fullscreen (D5);
-  slot restore follows the retained-slot
-  R-MAX-02 path. `UT(2026-10-28)`: Meta+G appears dropped and Meta+F11
-  exit tiles; exact slot/share/focus not measured, TBD. `D(D-dec-ww)` +
-  `D(D-dec-max)` (window-state decisions: refusal tokens at :4528-4529,
-  D5 at :2321-2325); requirement OPEN pending user decision, current
-  decisions stand.
-- Then Ours Windows: Recorded fullscreen float refusal, no deferred float;
-  retained tile/share remains beneath fullscreen, revealed on project exit
-  (R-MAX-02); refusal preserves focus by policy. `D(D-dec-ww)` +
-  `D(D-dec-max)`; this exact sequence's native slot/state/focus outcome TBD.
-  OPEN pending user decision; current decisions stand.
-- Variant hook: V-FS-SLOT; no new REQ row, no normative selection.
+- Then Ours KDE: User-approved 2026-10-28, delivered offline: explicit float
+  changes core membership immediately, releases B's slot and reflows A beneath
+  retained fullscreen; no writes to B itself (D5). Exit shows B floating at
+  its durable retained placement (centered 60% work-area first-time fallback).
+  Double toggle fresh-admits B invisibly, so exit shows its new tile slot.
+  Real Engine and producer-shaped adapter regressions cover these paths;
+  native slot/share/focus acceptance remains TBD. Earlier `UT(2026-10-28)`
+  dropped-chord report predates this delivery. `D(D-dec-ww)` + `D(D-dec-max)`.
+- Then Ours Windows: Same selected target and shared Session behavior;
+  adapter integration pending. Legacy native float routes still retain the
+  `float-refused-fullscreen` safety fence to prevent subject writes, not a
+  deferred toggle; existing tile/share is revealed on exit (R-MAX-02).
+  `D(D-dec-ww)` + `D(D-dec-max)`; exact native slot/state/focus outcome TBD.
+- Double-toggle discriminator (same Given, independent fresh start): fullscreen
+  B; toggle float twice without exiting fullscreen between toggles; then exit
+  fullscreen. i3 at `903bcd51` (`src/floating.c:420-472`) reattaches after
+  current tiling focus or attaches to the workspace; sway at `1652c54b`
+  (`sway/tree/container.c:990-1030,1402-1487`) inserts by inactive tiling focus
+  or ordinary workspace admission, preserving fullscreen on reparenting.
+  Both leave B tiled on exit, with fresh admission rather than old-slot
+  restoration; focus B, exact slot geometry/native timing TBD (source-only).
+  `S(S-i3-fullscreen-float)` + `S(S-sway-fullscreen-float)`.
+  Other reference profiles' double-toggle outcome remains TBD.
+- Variant hook: V-FS-SLOT. User 2026-10-28 selects immediate base toggle under
+  retained fullscreen, including fresh-admission double toggle; D5 forbids
+  writes to the fullscreen subject. Delivery evidence below remains separate.
 
 <a id="r-max-11-maximize-toggle-on-fullscreen"></a>
 ### R-MAX-11: maximize toggle on fullscreen

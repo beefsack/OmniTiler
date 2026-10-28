@@ -1785,6 +1785,28 @@ impl Session {
         true
     }
 
+    /// Float-toggle tolerance for one fullscreen subject: like
+    /// [`Session::observed_known_match`] with no admission, except the named
+    /// tiled subject may carry a fullscreen-only overlay (floating,
+    /// maximized and sticky clear with matching homing). Every other link
+    /// and exception binds exactly, so this stays command-only: all other
+    /// commands keep the strict matcher.
+    fn observed_known_match_allow_fullscreen_subject(
+        &self,
+        observed: &[ObservedWindow],
+        subject: &WindowId,
+    ) -> bool {
+        let mut observed = observed.to_vec();
+        let Some(entry) = observed.iter_mut().find(|entry| &entry.window == subject) else {
+            return false;
+        };
+        if entry.floating || entry.maximized || entry.sticky {
+            return false;
+        }
+        entry.fullscreen = false;
+        self.observed_known_match(&observed, None)
+    }
+
     /// Record an explicit adapter acknowledgement (shared binding for movement,
     /// lifecycle, focus, resize, and drag pending plans). Terminal divergence
     /// clears the pending desired state, matching [`Session::note_adapter_loss`].
@@ -7628,6 +7650,280 @@ mod tests {
                 plan.dispatch.operation.clone(),
             ))
             .expect("toggle verify");
+    }
+
+    fn toggle_float_with_observed(
+        session: &mut Session,
+        window: &str,
+        rect: Option<Rect>,
+        tag: &str,
+        windows: Vec<ObservedWindow>,
+    ) -> SessionPlan {
+        let rev = session.accepted_revision();
+        let observation = SessionObservation {
+            observation: Observation::new(owner(), generation(), rev, 100 + rev),
+            windows,
+        };
+        let correlation = corr(&format!("corr-float-{window}-{tag}"));
+        let plan = session
+            .propose(
+                &SessionCommand::ToggleFloat {
+                    window: WindowId(window.to_owned()),
+                    float_geometry: rect,
+                },
+                &observation,
+                &correlation,
+                &LifecycleCapabilities::full(),
+            )
+            .expect("toggle propose");
+        session
+            .acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("toggle ack");
+        session
+            .verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                correlation,
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("toggle verify");
+        plan
+    }
+
+    fn obs_windows_with_flag(
+        session: &Session,
+        window: &str,
+        set: impl Fn(&mut ObservedWindow),
+    ) -> Vec<ObservedWindow> {
+        let mut windows = obs_windows(session);
+        for entry in &mut windows {
+            if entry.window.0 == window {
+                set(entry);
+            }
+        }
+        windows
+    }
+
+    #[test]
+    fn fullscreen_toggle_float_changes_membership_without_subject_writes() {
+        // Single toggle under fullscreen: the subject leaves tiling
+        // immediately (siblings reflow) with no subject geometry write,
+        // and durable placement falls back to the centered 60% rect.
+        let mut session = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![canon_domain("out-1", "ws-1")],
+        )
+        .expect("session new");
+        admit_in(&mut session, "fs-win-1", "out-1", "ws-1", true);
+        admit_in(&mut session, "fs-win-2", "out-1", "ws-1", true);
+        let observed = obs_windows_with_flag(&session, "fs-win-1", |entry| entry.fullscreen = true);
+        let plan = toggle_float_with_observed(&mut session, "fs-win-1", None, "fs-float", observed);
+        assert!(
+            plan.desired_geometry
+                .iter()
+                .all(|g| g.window.0 != "fs-win-1"),
+            "no geometry write targets the fullscreen subject"
+        );
+        assert!(
+            !plan.desired_geometry.is_empty(),
+            "the surviving sibling still reflows"
+        );
+        let subject = WindowId("fs-win-1".to_owned());
+        assert!(!session.windows.contains_key(&subject));
+        let record = session.exceptions.get(&subject).expect("float exception");
+        assert_eq!(
+            record.flags,
+            ExceptionFlags {
+                floating: true,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+            }
+        );
+        let expected = crate::session::ops::float::centered_float_rect(Rect {
+            x: 0,
+            y: 0,
+            w: 120,
+            h: 80,
+        });
+        assert_eq!(record.floating_geometry, Some(expected));
+        assert_eq!(
+            session.retained_float_geometry.get(&subject),
+            Some(&expected)
+        );
+    }
+
+    #[test]
+    fn fullscreen_double_toggle_readmits_invisibly() {
+        // Second toggle under fullscreen: the subject fresh-admits to
+        // tiling with no subject geometry write; exiting fullscreen
+        // would reveal the tile again.
+        let mut session = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![canon_domain("out-1", "ws-1")],
+        )
+        .expect("session new");
+        admit_in(&mut session, "fs-win-1", "out-1", "ws-1", true);
+        admit_in(&mut session, "fs-win-2", "out-1", "ws-1", true);
+        let observed = obs_windows_with_flag(&session, "fs-win-1", |entry| entry.fullscreen = true);
+        toggle_float_with_observed(&mut session, "fs-win-1", None, "fs-float", observed);
+        let subject = WindowId("fs-win-1".to_owned());
+        let retained = session
+            .retained_float_geometry
+            .get(&subject)
+            .copied()
+            .expect("retained placement");
+        let observed = obs_windows_with_flag(&session, "fs-win-1", |entry| {
+            entry.floating = true;
+            entry.fullscreen = true;
+        });
+        let plan =
+            toggle_float_with_observed(&mut session, "fs-win-1", None, "fs-unfloat", observed);
+        assert!(
+            plan.desired_geometry
+                .iter()
+                .all(|g| g.window.0 != "fs-win-1"),
+            "fresh admission carries no subject geometry write"
+        );
+        assert!(
+            session.windows.contains_key(&subject),
+            "the subject is tiled again"
+        );
+        assert!(!session.exceptions.contains_key(&subject));
+        // Durable placement survives the round trip: the fullscreen frame
+        // is never captured as the float placement.
+        assert_eq!(
+            session.retained_float_geometry.get(&subject),
+            Some(&retained)
+        );
+    }
+
+    #[test]
+    fn fullscreen_toggle_float_keeps_explicit_retained_placement() {
+        // An explicit rect wins under fullscreen and persists across the
+        // double toggle; the unfloat never stores the fullscreen frame.
+        let mut session = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![canon_domain("out-1", "ws-1")],
+        )
+        .expect("session new");
+        admit_in(&mut session, "fs-win-1", "out-1", "ws-1", true);
+        admit_in(&mut session, "fs-win-2", "out-1", "ws-1", true);
+        let explicit = Rect {
+            x: 8,
+            y: 8,
+            w: 40,
+            h: 30,
+        };
+        let observed = obs_windows_with_flag(&session, "fs-win-1", |entry| entry.fullscreen = true);
+        let plan = toggle_float_with_observed(
+            &mut session,
+            "fs-win-1",
+            Some(explicit),
+            "fs-float-explicit",
+            observed,
+        );
+        assert!(
+            plan.desired_geometry
+                .iter()
+                .all(|g| g.window.0 != "fs-win-1"),
+            "no geometry write targets the fullscreen subject"
+        );
+        let subject = WindowId("fs-win-1".to_owned());
+        assert_eq!(
+            session.retained_float_geometry.get(&subject),
+            Some(&explicit)
+        );
+        let observed = obs_windows_with_flag(&session, "fs-win-1", |entry| {
+            entry.floating = true;
+            entry.fullscreen = true;
+        });
+        toggle_float_with_observed(&mut session, "fs-win-1", None, "fs-unfloat", observed);
+        assert!(session.windows.contains_key(&subject));
+        assert_eq!(
+            session.retained_float_geometry.get(&subject),
+            Some(&explicit),
+            "unfloat keeps the durable placement, never the fullscreen frame"
+        );
+        // Toggling again with no rect reuses the retained placement.
+        let observed = obs_windows_with_flag(&session, "fs-win-1", |entry| entry.fullscreen = true);
+        toggle_float_with_observed(&mut session, "fs-win-1", None, "fs-refloat", observed);
+        let record = session.exceptions.get(&subject).expect("float exception");
+        assert_eq!(record.floating_geometry, Some(explicit));
+    }
+
+    #[test]
+    fn maximized_toggle_float_still_refuses_both_directions() {
+        let mut session = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![canon_domain("out-1", "ws-1")],
+        )
+        .expect("session new");
+        admit_in(&mut session, "max-win-1", "out-1", "ws-1", true);
+        // Tiled maximized target refuses.
+        let rev = session.accepted_revision();
+        let observed = obs_windows_with_flag(&session, "max-win-1", |entry| entry.maximized = true);
+        let refused = session.propose(
+            &SessionCommand::ToggleFloat {
+                window: WindowId("max-win-1".to_owned()),
+                float_geometry: None,
+            },
+            &SessionObservation {
+                observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                windows: observed,
+            },
+            &corr("corr-float-max-win-1-refused"),
+            &LifecycleCapabilities::full(),
+        );
+        assert!(
+            matches!(refused, Err(ProposeError::Refused(RefusalKind::NotTiled))),
+            "maximized tiled toggle still refuses, got {refused:?}"
+        );
+        // Floating maximized target refuses the unfloat.
+        toggle_float_in(&mut session, "max-win-1", None, "to-float");
+        let rev = session.accepted_revision();
+        let observed = obs_windows_with_flag(&session, "max-win-1", |entry| {
+            entry.floating = true;
+            entry.maximized = true;
+        });
+        let refused = session.propose(
+            &SessionCommand::ToggleFloat {
+                window: WindowId("max-win-1".to_owned()),
+                float_geometry: None,
+            },
+            &SessionObservation {
+                observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                windows: observed,
+            },
+            &corr("corr-float-max-win-1-unfloat-refused"),
+            &LifecycleCapabilities::full(),
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(ProposeError::Refused(RefusalKind::PartialObservation))
+            ),
+            "maximized unfloat still refuses, got {refused:?}"
+        );
     }
 
     fn tree_for(session: &Session, key: &DomainKey) -> Option<Node> {

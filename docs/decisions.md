@@ -4584,8 +4584,26 @@ platform API behavior.
   (the centered 60% work-area rectangle is only the first-time fallback), and
   unfloat is fresh planner admission, never prior-leaf restoration. Unfloat
   carries the window's live frame rect so a user moved/resized float is
-  retained across float/unfloat/float. Fullscreen and maximized targets refuse
-  with `float-refused-fullscreen` and `float-refused-maximize`. User decision
+  retained across float/unfloat/float. Maximized targets still refuse with
+  `float-refused-maximize` (subject to the separate B9 clear-before-unfloat
+  lane). User-approved 2026-10-28, superseding the fullscreen refusal:
+  explicit float toggle changes base membership immediately beneath retained
+  fullscreen. Floating releases the tile slot and siblings reflow; another
+  toggle while fullscreen fresh-admits by the ordinary rule, invisibly.
+  Exit reveals the last base state: durable float placement (centered 60%
+  first-time fallback) or current tile allocation. No writes to the fullscreen
+  subject itself, including geometry, focus, stacking or native state (D5);
+  sibling reflow writes are allowed. No observed fullscreen frame is captured
+  as float placement. This follows Hyprland/i3/sway's Tier 1 majority over
+  COSMIC; pinned i3/sway also confirm fresh admission on double toggle in
+  [R-MAX-10](spec/reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen).
+  Shared Session and KDE delivered offline; native acceptance pending.
+  Tentative implementation choice (2026-10-28, pending review): retain the
+  legacy native-float `float_toggle_refusal` fullscreen safety fence until
+  Windows replaces its subject-writing native float route; this is an adapter
+  delivery gap, not a reversal of the selected policy. Windows/macOS adapter
+  integration and maximize-on-fullscreen remain separate.
+  User decision
   2026-09-28, option A: unfloat uses exactly the new-window admission
   placement rule (focused leaf's projected rect, otherwise domain bounds),
   with no remembered-origin slot; COSMIC's `toggle_floating_window` maps

@@ -63,10 +63,15 @@ impl super::super::Session {
                 session_observation,
                 correlation_id,
                 capabilities,
+                false,
             ),
-            SessionCommand::Remove { window } => {
-                self.propose_remove(window, session_observation, correlation_id, capabilities)
-            }
+            SessionCommand::Remove { window } => self.propose_remove(
+                window,
+                session_observation,
+                correlation_id,
+                capabilities,
+                false,
+            ),
             SessionCommand::MoveToWorkspace {
                 window,
                 target_output,
@@ -235,6 +240,7 @@ impl super::super::Session {
         session_observation: &SessionObservation,
         correlation_id: &CorrelationId,
         capabilities: &LifecycleCapabilities,
+        allow_fullscreen_subject: bool,
     ) -> Result<SessionPlan, ProposeError> {
         if self.windows.contains_key(window) || self.exceptions.contains_key(window) {
             return Err(ProposeError::Refused(RefusalKind::DuplicateWindow));
@@ -284,10 +290,19 @@ impl super::super::Session {
         } else {
             entry_flags
         };
-        if &entry.output != output
-            || &entry.workspace != workspace
-            || observed_binding != exceptions
-        {
+        // Command-only fullscreen tolerance for an explicit float unfloat:
+        // a fullscreen-only subject (floating/maximized/sticky clear)
+        // fresh-admits as an ordinary tile beneath the retained overlay.
+        let fullscreen_only_subject = entry_flags
+            == crate::session::world::ExceptionFlags {
+                floating: false,
+                fullscreen: true,
+                maximized: false,
+                sticky: false,
+            };
+        let binding_holds = observed_binding == exceptions
+            || (allow_fullscreen_subject && !exceptions.any() && fullscreen_only_subject);
+        if &entry.output != output || &entry.workspace != workspace || !binding_holds {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
         // Known-window observation bindings must match stored state.
@@ -468,10 +483,16 @@ impl super::super::Session {
         // maximized-only birth (R-MAX-06 fresh-max carrier): it admits as
         // an ordinary tile so the ready reply seeds the approved
         // allocation, and the adapter clears the native overlay once
-        // before applying it. An observed floating/fullscreen/sticky
-        // window without an explicit exception selection is refused
-        // exactly as before.
-        if entry.floating || entry.fullscreen || entry.sticky {
+        // before applying it. An explicit float unfloat tolerates a
+        // fullscreen-only subject (command-only): it fresh-admits
+        // invisibly beneath the retained overlay with no subject geometry
+        // write (stripped below). Any other observed
+        // floating/fullscreen/sticky window without an explicit exception
+        // selection is refused exactly as before.
+        if entry.floating
+            || entry.sticky
+            || (entry.fullscreen && !(allow_fullscreen_subject && fullscreen_only_subject))
+        {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
         // Normal tiled admission under best effort (D2/D3): the ordinary
@@ -518,7 +539,7 @@ impl super::super::Session {
         );
         let leaf_id = leg.leaf_id;
         let ordinary_tree = leg.ordinary_tree;
-        match leg.selected {
+        let mut plan = match leg.selected {
             Ok(target) => self.stage_tiled_admission(
                 window,
                 output,
@@ -547,7 +568,15 @@ impl super::super::Session {
                 correlation_id,
                 capabilities,
             ),
+        }?;
+        // D5: a fullscreen subject fresh-admits invisibly beneath the
+        // retained overlay. Siblings keep their projected geometry; the
+        // subject itself carries no geometry write. Plain subjects keep
+        // the ordinary admission geometry untouched.
+        if allow_fullscreen_subject && fullscreen_only_subject {
+            plan.desired_geometry.retain(|g| &g.window != window);
         }
+        Ok(plan)
     }
 
     /// Stage a successful tiled admission (ordinary anchor or D2 fallback).
@@ -924,6 +953,7 @@ impl super::super::Session {
         session_observation: &SessionObservation,
         correlation_id: &CorrelationId,
         capabilities: &LifecycleCapabilities,
+        allow_fullscreen_subject: bool,
     ) -> Result<SessionPlan, ProposeError> {
         let tiled = self.windows.get(window).cloned();
         let deferred = self.exceptions.get(window).cloned();
@@ -944,7 +974,16 @@ impl super::super::Session {
         if observed_ids != known {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
-        if !self.observed_known_match(&session_observation.windows, None) {
+        // Command-only fullscreen tolerance for an explicit float toggle:
+        // the tiled subject may carry a fullscreen-only overlay while every
+        // other link and exception binds exactly. All other commands keep
+        // the strict matcher.
+        let known_match = if allow_fullscreen_subject {
+            self.observed_known_match_allow_fullscreen_subject(&session_observation.windows, window)
+        } else {
+            self.observed_known_match(&session_observation.windows, None)
+        };
+        if !known_match {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
         if let Some(record) = deferred {

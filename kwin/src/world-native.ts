@@ -5,11 +5,14 @@
 // first setter so the next full report carries the authoritative
 // observation. Sticky choreography keeps legacy parity natively (floating
 // origin plus keepAbove/keepBelow); fullscreen/maximized overlays refuse
-// before any adoption or setter and game safety wins over parity. Setters
-// use the exact KWin names (`setMaximize`, `fullScreen`, `onAllDesktops`,
-// `maximizeMode` readback); success is the truthful readback, never the
-// setter boolean. No workspace policy: core converges the tiling
-// consequences from the next full report.
+// for sticky, and game safety wins over parity. Explicit float toggles
+// route fullscreen subjects through core (no adapter fullscreen refusal):
+// the core owns membership beneath the retained overlay, and D5 forbids
+// every subject write (native state, geometry, focus, stacking) while
+// fullscreen holds. Setters use the exact KWin names (`setMaximize`,
+// `fullScreen`, `onAllDesktops`, `maximizeMode` readback); success is the
+// truthful readback, never the setter boolean. No workspace policy: core
+// converges the tiling consequences from the next full report.
 
 import type { WorldCommand } from "./world-report";
 import type { ApplyEnv } from "./world-apply";
@@ -406,16 +409,22 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
     };
 
     // Float toggle with B9 maximized-unfloat parity (native only). Fence
-    // order is load-bearing: busy fence, then the overlay recheck, then
-    // the maximize clear (when a floating maximized window needs it),
-    // and only then the toggle-float operation. Rect capture follows legacy
-    // frame semantics: float selects the session-retained placement (the
-    // request carries no rect, so the session never recomputes a center
-    // for a window that has floated before); unfloat carries the live
-    // frame rect so a user-moved/resized float is retained for the next
-    // float. A refused setter fails closed with no command; an issued
-    // clear defers the command until observed settlement (no same-stack
-    // readback: async KWin settlement arrives after the setter returns).
+    // order is load-bearing: busy fence, then the maximize clear (when a
+    // floating maximized non-fullscreen window needs it), and only then
+    // the toggle-float operation. Fullscreen never refuses: explicit
+    // intent routes through core, which owns base membership beneath the
+    // retained overlay (siblings reflow, subject takes no writes per D5).
+    // Rect capture follows legacy frame semantics, except fullscreen
+    // never captures the observed fullscreen frame as a retained float
+    // frame: float selects the session-retained placement (the request
+    // carries no rect, so the session never recomputes a center for a
+    // window that has floated before); unfloat carries the live frame
+    // rect so a user-moved/resized float is retained for the next float,
+    // but a fullscreen subject carries no rect so the durable placement
+    // survives the round trip. A refused setter fails closed with no
+    // command; an issued clear defers the command until observed
+    // settlement (no same-stack readback: async KWin settlement arrives
+    // after the setter returns).
     const submitFloat = (label: string): boolean => {
         const w = env.activeWindowId();
         const ref = env.activeWindowRef();
@@ -434,14 +443,6 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             return false;
         }
         const fullscreen = readFullscreen(readProp, ref);
-        if (fullscreen === true) {
-            if (pendingUnfloat !== null) {
-                cancelPendingSilent("newer-input-superseded");
-            }
-            log(`omnitiler:world:float-refused-overlay window=${token(w)}`);
-            env.shortcutFailed(label);
-            return false;
-        }
         const floating = env.isFloating(w);
         const maximized = readMaximized(readProp, ref);
         if (floating && maximized === true && fullscreen === false) {
@@ -477,10 +478,12 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         if (pendingUnfloat !== null) {
             cancelPendingSilent("newer-input-superseded");
         }
-        // Unfloat carries the live frame; float carries no rect (session
-        // retained placement wins, never a recomputed center).
+        // Unfloat carries the live frame, except a fullscreen subject
+        // carries no rect (D5: the observed fullscreen frame is never the
+        // retained float frame); float carries no rect (session retained
+        // placement wins, never a recomputed center).
         let rect: [number, number, number, number] | null = null;
-        if (floating) {
+        if (floating && fullscreen !== true) {
             let live: { x: number; y: number; w: number; h: number } | null = null;
             try {
                 live = env.readLiveRect(ref);

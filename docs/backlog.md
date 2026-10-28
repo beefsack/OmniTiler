@@ -422,8 +422,11 @@ Prioritise by return toward these goals
     until exit. Maximize toggle on a fullscreen window follows Hyprland:
     fullscreen is replaced by maximized. Both supersede the recorded
     refusals; explicit commands only, no automatic fullscreen writes (D5).
-    Shared core plus KDE first; Windows/macOS adapters follow in their own
-    items. Not started.
+    Float delivered offline in shared Session plus KDE: single/double toggle,
+    sibling reflow, no fullscreen-subject writes and both exit states covered.
+    Native/physical acceptance pending; maximize pending as a separate unit.
+    Windows/macOS adapters follow in their own items.
+    [Float record](changes/archive/fullscreen-float-toggle.md).
   - Ghostty cross-output height/width shortfall is external client/toolkit
     sizing; no OmniTiler retry or artificial resize workaround. Draft upstream
     report pending filing ([decision](decisions.md#cross-output-gesture-release-placement-2026-10-27)).
@@ -1184,6 +1187,12 @@ Prioritise by return toward these goals
   2026-10-24. Open: final package/update channel (see 0.1 release); day-one
   setup and pending governance ([environment](windows-dev-environment.md)).
   [Plan](research/windows-port/plan.md), [decision](decisions.md#scope-and-platform-goals).
+- P1 | Windows fullscreen float integration | User 2026-10-28: consume the
+  shared Session's fullscreen base toggle without native subject writes;
+  audit frame/topmost/focus writes in legacy float routes before removing
+  `float_toggle_refusal`'s retained safety fence. Preserve durable placement
+  and double-toggle fresh admission; add native/adapter acceptance.
+  [Shared/KDE record](changes/archive/fullscreen-float-toggle.md).
 - P0 | Windows feature parity queue | User order (2026-10-02), each matching
   KDE behavior/bindings. All slices delivered offline; physical/live acceptance
   pending per slice: (1) active border; (2) group underlay A/B (C parked, see
@@ -1370,6 +1379,13 @@ Prioritise by return toward these goals
   that to the current frame. Decide for macOS (accept the change or keep an
   exception) before the float-toggle package starts. Windows also needs fresh
   post-placement facts for parity.
+- P1 | macOS fullscreen float integration | User 2026-10-28: wire the shared
+  Session's fullscreen base toggle through the adapter, preserving native
+  fullscreen and durable float placement; verify zero AX geometry/focus/state
+  writes during fullscreen, sibling reflow and both exit states. No macOS
+  behavior acceptance inferred from shared core tests.
+  [Shared/KDE record](changes/archive/fullscreen-float-toggle.md).
+- P1 | macOS Linux portable gates | Baseline reproduces 9 dock-swipe tests failing with `macOS major unreadable` and strict clippy unused/dead-code errors; pre-existing, unrelated to fullscreen float ([evidence](changes/archive/fullscreen-float-toggle.md)).
 - P1 | macOS port | Started 2026-10-14 (user), superseding the after-KDE-0.1
   sequencing. Port contract finalized 2026-10-24:
   [world adapter guide](porting/world-adapter-guide.md) plus
