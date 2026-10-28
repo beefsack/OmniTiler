@@ -647,7 +647,7 @@ The proven blocker is foreground safety, not target classification or core targe
 | Keyboard hook | `ffi/llhook.rs:98-119,168-181` copies raw key events; Alt/Tab edges can traverse it. `snapkey/chords.rs:313-318` passes unrelated/extra-modified input untracked; no target-bound Alt-Tab activation record exists | Seeing Alt/Tab does not identify which later foreground event it caused. Current trace is not an all-key input log |
 | Mouse hook | `ffi/llhook.rs:16-24,245-264` is conditional FFC motion-only; ignores button messages, passes through and filters injected motion. No always-on click attribution hook exists | Cursor over Terminal at log 771 does not prove a click, nor prove no click. Adding click capture changes hook cost/scope and is not selected here |
 | WinEvents | `ffi/hooks.rs:13-21,43-66` carries kind, HWND, object, thread and generated-time; foreground event identifies the resulting foreground window. `observe.rs:403-408` explicitly encodes no causal claim | No source command/effect id or click/app/OS activation reason. Event thread is not proof of who initiated the focus change; callback/drain time is not causality |
-| Documented Alt-Tab events | Microsoft documents `EVENT_SYSTEM_SWITCHEND` with the switched-to HWND; it is stronger target-specific evidence than adjacent raw keys | Not currently subscribed: `tiling_sys/run_loop.rs:387-399` and `observe.rs:196-206` omit SWITCHSTART/END. New subscription, identity/source-order handling and safety/cost review would be a separate addition, not existing coverage |
+| Documented Alt-Tab events | Microsoft documents `EVENT_SYSTEM_SWITCHEND` with the switched-to HWND; it is stronger target-specific evidence than adjacent raw keys. Trace-only START/END + ordered foreground capture added 2026-10-29 ([scope/evidence](#trace-only-switch-capture-2026-10-29)) | Diagnostic recording only, not an intent detector or authorization. Physical destination/order/coverage and cost remain unmeasured; delivery identity does not prove generation lifetime |
 | Recipient activation messages | `WM_ACTIVATE` has `WA_CLICKACTIVE`; ordinary `WA_ACTIVE` also covers keyboard/API methods | These go to activated/deactivated window procedures, not our existing out-of-context WinEvent feed. No foreign-window activation-message capture exists; `ffi/pager.rs:813-826` handles our pager only. Do not propose invasive/injected foreign hooks as an automatic fix |
 | Own show/hide | We know exact issued operations, lifetimes and native postconditions; `world_native.rs:433-553` uses nonactivating paths, including async show | Nonactivating intent does not prove later foreground causality. `ShowWindowAsync` returns after posting, not after all application reactions. A visibility readback is not an activation-origin fence |
 | Own focus flight | `world_diff.rs:2297-2369,3758-3817` retains exact target HWND/PID/creation/tag lifetime and resolves accepted setters as own landing or readable supersession; no retry/timeout | This is the approved identity-based convention, not OS cause proof. The documented simultaneous click on that same flight target is indistinguishable and already accepted as ours. Another window becoming foreground is not automatically genuine external intent |
@@ -1193,7 +1193,8 @@ The proven blocker is foreground safety, not target classification or core targe
 - Existing keyboard input sees key edges, not an Alt-Tab target; the conditional
   mouse hook only counts genuine motion (`ffi/llhook.rs:16-24,245-264`). WinEvent
   foreground edges expressly carry no cause (`tiling_sys/observe.rs:403-420`).
-  Current subscriptions omit SWITCHEND (`tiling_sys/run_loop.rs:387-400`). Paths
+  Default subscriptions omit SWITCHEND; the 2026-10-29 trace-only addition below
+  captures it without using it for decisions. Paths
   in these sections are relative to `crates/tiler-windows/src/` unless qualified.
 
 | Source | Useful evidence / causal limit | Game-safety cost and recommendation, not selection |
@@ -1469,6 +1470,53 @@ The proven blocker is foreground safety, not target classification or core targe
   proof and, separately, any never-issued-focus continuation authority. Arrange
   a bounded physical Alt-Tab capture before its conditional implementation.
   Keep this record active; no policy, safety-proof or protocol change is adopted.
+
+### Trace-only SWITCH capture (2026-10-29)
+
+- Goal/acceptance: unblock the S1 physical evidence capture, not the deferred
+  unknown-foreground A/B decision. **Tentative implementation choice:**
+  diagnostic-only, off by default, enabled solely by existing `--trace`.
+  No intent-detector contract, core/protocol, focus-memory or attribution change.
+- Approach: the existing out-of-context WinEvent feed adds the contiguous
+  SWITCHSTART/END range only with trace. A trace-selected `JourneyEventSink`
+  records START/END and foreground in callback order, then forwards only
+  non-switch events to the unchanged product sink. Without trace, the original
+  sink and hook ranges remain: no new switch hook/callback, diagnostic callback
+  branch, native reads, queue, publication or drain/log work. A cheap disabled
+  guard at core delivery performs no publication. No new input hook, raw input,
+  timer, retry, window write or synthetic input is introduced.
+- Data: `switch-journey` rows contain `tick`, ordered `edges` and `omitted`.
+  Each edge includes kind, HWND, source PID/TID, event thread/time, queue/drain
+  monotonic times and observed foreground at delivery/drain. Source identity is
+  a delivery read (zero when unreadable), not generation/lifetime proof. The
+  diagnostic foreground feed includes all delivered foreground events, while
+  product wake filtering remains unchanged. START-less END is recorded as-is;
+  neither pairing nor cancellation/intent is inferred.
+- Supplementary revision evidence: `observed_command_seq_at_delivery` is the
+  last assigned adapter command sequence (zero before the first dispatch, not
+  a success/consumption claim); `observed_core_revision_at_delivery` is the core
+  state revision. The owner publishes both after every core delivery, before
+  native application can pump again, and at outer-turn entry. Drain-time
+  `drain_command_seq`/`drain_core_revision` accompany them. All are diagnostic
+  samples, explicitly `ordering: sampled-published-not-order-proof`; a delayed
+  event may have been generated before a newer command. Never use these rows
+  as a stale-command fence or a universal host-order guarantee.
+- Bounds: queue retains at most 128 edges; each emission retains the first 32.
+  Queue overflow plus emission truncation is reported in `omitted`; any such
+  loss makes the affected physical-order check incomplete. No diagnostic wake
+  is armed; rows drain on existing owner turns.
+- Verification/outcome: canonical event IDs, default-off hook/sink behavior,
+  callback ordering with foreground, START-less END, wake-neutral draining,
+  bounded omission counts and same-turn command/observation revision refresh
+  have offline regression coverage. Full locked core/protocol/Windows tests,
+  strict all-target clippy and formatting passed; independent safety review
+  accepted the recording-only/default-off paths. Parallel-test flag isolation
+  was corrected before final verification. No live leg or physical acceptance
+  is claimed; callback cost/fullscreen coverage remain unmeasured.
+- Exact next action: follow [S1](windows-physical-checklist.md#block-s-one-active-output-working-binding-setup)
+  using `mise exec -- just dev trace --scope-exe tiler-live-fixture.exe`, retaining
+  fixture handle mapping, trace/provenance and ordered physical observations.
+  Keep unknown policy and any production intent contract deferred.
 
 ## Independent implementation scope (2026-10-28)
 

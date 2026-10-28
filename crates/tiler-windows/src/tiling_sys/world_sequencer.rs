@@ -775,8 +775,12 @@ impl WorldSequencer {
         self.next_request_seq
     }
 
+    /// Next command sequence the sequencer will assign. Advances exactly
+    /// once per dispatched explicit command (core-only superseded dispatches
+    /// included); observation-only catch-up never moves it. Plain `u64`
+    /// read (no core lock): test command-ordering proof plus the trace-only
+    /// journey diagnostic's sampled/published delivery snapshot.
     #[must_use]
-    #[cfg(test)]
     pub(super) fn next_command_seq(&self) -> u64 {
         self.next_command_seq
     }

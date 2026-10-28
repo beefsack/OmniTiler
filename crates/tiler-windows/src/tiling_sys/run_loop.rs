@@ -383,7 +383,17 @@ pub(super) fn run_tile_loop(
     // The `extern` trampoline lives in `crate::ffi`; the safe sink below
     // carries the unchanged hook-queue policy. Guards unhook on drop, so a
     // failed install cleans up simply by returning.
-    crate::ffi::set_win_event_sink(std::sync::Arc::new(LoopEventSink));
+    crate::ffi::set_win_event_sink(if trace {
+        std::sync::Arc::new(super::observe::JourneyEventSink)
+    } else {
+        std::sync::Arc::new(LoopEventSink)
+    });
+    // Trace-only Alt-Tab journey capture: SWITCHSTART/SWITCHEND ride the
+    // same out-of-context pumped feed (no new input path, no timers or
+    // retries); recording only, never core/focus/memory/attribution. The
+    // flag gates the callback push and the drain log; off (default) adds
+    // no hook, no callback work, and no drain work.
+    super::observe::set_switch_diag_enabled(trace);
     let hooks = [
         (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
         (EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND),
@@ -396,6 +406,7 @@ pub(super) fn run_tile_loop(
         (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
     ]
     .into_iter()
+    .chain(super::observe::switch_hook_range(trace))
     .map(|(min, max)| crate::ffi::install_win_event_hook(min, max))
     .collect::<Option<Vec<_>>>();
     let Some(hooks) = hooks else {
@@ -860,6 +871,15 @@ pub(super) fn run_tile_loop(
             // no same-thread wake ever strands behind an idle wait. The
             // blocking wait itself stays atomic (queue plus handles), so no
             // cross-thread wake is lost either.
+            // Trace-only journey publish: last assigned command sequence
+            // (`0` before the first dispatch) plus core revision, sampled
+            // before any callback below fires.
+            if state.trace && super::observe::switch_diag_enabled() {
+                super::observe::publish_journey_snapshot(
+                    state.world.next_command_seq().saturating_sub(1),
+                    state.world.engine().state_revision(),
+                );
+            }
             let pre_messages = drain_owner_messages();
             let staged = pre_messages || hook_edges_pending() || tray_staged_pending(&state, &tray);
             // Event-driven wait: infinite at healthy idle; otherwise the

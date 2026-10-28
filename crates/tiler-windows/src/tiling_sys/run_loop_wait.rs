@@ -614,6 +614,60 @@ pub(super) fn drain_hook_edges(
             ow_wakes += taskbar_hits;
         }
     }
+    // Diagnostic-only journey capture (trace opt-in only): recording on
+    // this natural turn, never a wake/gate/focus/memory/core input (`woke`
+    // untouched). Rows carry the sampled command sequence plus core
+    // revision at delivery alongside the drain-time pair: all explicitly
+    // sampled, never proof of generation-time order. Array order is
+    // callback order. `omitted` folds queue overflow plus the emission
+    // cap, so dropped rows never masquerade as full evidence.
+    if state.trace && super::observe::switch_diag_enabled() {
+        let switch_edges = super::observe::take_switch_edges();
+        let queue_dropped = super::observe::take_journey_dropped();
+        if !switch_edges.is_empty() || queue_dropped > 0 {
+            let drain_mono_ms = super::trace::log_mono_ms();
+            let drain_command_seq = state.world.next_command_seq().saturating_sub(1);
+            let drain_core_revision = state.world.engine().state_revision();
+            let observed_foreground_at_drain = crate::ffi::foreground_window();
+            let total = switch_edges.len();
+            let mut rows = Vec::with_capacity(total.min(super::observe::MAX_SWITCH_TRACE_EDGES));
+            for edge in switch_edges
+                .iter()
+                .take(super::observe::MAX_SWITCH_TRACE_EDGES)
+            {
+                rows.push(serde_json::json!({
+                    "kind": super::observe::switch_kind_str(edge.event),
+                    "hwnd": edge.hwnd,
+                    "source_pid": edge.source_pid,
+                    "source_tid": edge.source_tid,
+                    "event_thread": edge.thread,
+                    "event_time": edge.time,
+                    "queued_mono_ms": edge.queued_mono_ms,
+                    "drain_mono_ms": drain_mono_ms,
+                    "observed_foreground_at_delivery": edge.observed_foreground_at_delivery,
+                    "observed_foreground_at_drain": observed_foreground_at_drain,
+                    "observed_command_seq_at_delivery": edge.observed_command_seq_at_delivery,
+                    "observed_core_revision_at_delivery": edge.observed_core_revision_at_delivery,
+                    "drain_command_seq": drain_command_seq,
+                    "drain_core_revision": drain_core_revision,
+                }));
+            }
+            let omitted = queue_dropped.saturating_add(total.saturating_sub(rows.len()) as u64);
+            super::trace::log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "switch-journey",
+                    "tick": state.tick,
+                    "edges": rows,
+                    "omitted": omitted,
+                    "drain_command_seq": drain_command_seq,
+                    "drain_core_revision": drain_core_revision,
+                    "ordering": "sampled-published-not-order-proof",
+                    "scope": "trace-only-diagnostic",
+                }),
+            );
+        }
+    }
     EdgeDrain {
         woke,
         batch_total: ow_batch_total,
@@ -841,5 +895,248 @@ mod edge_kind_tests {
         assert_eq!(drain.kind_unknown, 0);
         // Only foreground HWNDs arm the in-flight join.
         assert_eq!(drain.foreground, vec![11u64]);
+    }
+
+    /// Trace-only journey capture is recording-only: the drain logs one
+    /// `switch-journey` row per edge in callback order without waking,
+    /// gating, or touching foreground/core state. Delivery rows carry the
+    /// sampled command sequence plus core revision; the drain pair rides
+    /// alongside, never substituted.
+    #[test]
+    fn switch_drain_records_without_waking() {
+        use super::super::observe::{
+            SwitchEdge, hook_queue, publish_journey_snapshot, push_switch, set_switch_diag_enabled,
+            take_journey_dropped, take_switch_edges,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_SWITCHEND, EVENT_SYSTEM_SWITCHSTART,
+        };
+        static SWITCH_LOG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        use super::drain_hook_edges;
+        let mut state = super::super::rmax03_adapter_tests::test_state();
+        state.trace = true;
+        // The shared harness points at the NUL sink (no log-byte asserts);
+        // this test reroutes to a temp file for its reporting assertions.
+        let seq = SWITCH_LOG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-switch-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("switch log dir");
+        let log = dir.join("run.log");
+        state.log_path = log.clone();
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.clear();
+        }
+        assert!(take_switch_edges().is_empty());
+        assert_eq!(take_journey_dropped(), 0);
+        // Direct push (no native reads): the push path itself is ungated;
+        // the callback gate and the drain log are what the flag controls.
+        // Delivery snapshots are crafted here; the callback-sampling path
+        // is covered in `observe::switch_tests`.
+        for (hwnd, event, time, delivery_seq, delivery_rev) in [
+            (71u64, EVENT_SYSTEM_SWITCHSTART, 31u32, 41u64, 7u64),
+            (71u64, EVENT_SYSTEM_FOREGROUND, 32u32, 41u64, 7u64),
+            (72u64, EVENT_SYSTEM_SWITCHEND, 33u32, 42u64, 8u64),
+        ] {
+            push_switch(SwitchEdge {
+                hwnd,
+                event,
+                source_pid: 501,
+                source_tid: 502,
+                thread: 5,
+                time,
+                queued_mono_ms: 100,
+                observed_foreground_at_delivery: 70,
+                observed_command_seq_at_delivery: delivery_seq,
+                observed_core_revision_at_delivery: delivery_rev,
+            });
+        }
+        publish_journey_snapshot(0, 0);
+        set_switch_diag_enabled(true);
+        let me = crate::model::ProcessIdentity {
+            pid: 9999,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        };
+        let drain_command_seq = state.world.next_command_seq().saturating_sub(1);
+        let drain_core_revision = state.world.engine().state_revision();
+        let drain = drain_hook_edges(&mut state, &me, &log);
+        set_switch_diag_enabled(false);
+        // Recording only: no wake, no foreground arming, no hook counts.
+        assert!(!drain.woke);
+        assert!(drain.foreground.is_empty());
+        assert!(drain.foreground_detail.is_empty());
+        assert_eq!(drain.wakes, 0);
+        assert_eq!(drain.kind_foreground, 0);
+        assert!(take_switch_edges().is_empty());
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let line = text
+            .lines()
+            .find(|line| line.contains("\"event\":\"switch-journey\""))
+            .expect("switch-journey line logged");
+        for token in [
+            "\"kind\":\"switchstart\"",
+            "\"kind\":\"foreground\"",
+            "\"kind\":\"switchend\"",
+            "\"hwnd\":71",
+            "\"hwnd\":72",
+            "\"source_pid\":501",
+            "\"source_tid\":502",
+            "\"event_thread\":5",
+            "\"event_time\":31",
+            "\"observed_foreground_at_delivery\":70",
+            "\"observed_foreground_at_drain\":",
+            "\"observed_command_seq_at_delivery\":41",
+            "\"observed_command_seq_at_delivery\":42",
+            "\"observed_core_revision_at_delivery\":7",
+            "\"observed_core_revision_at_delivery\":8",
+            "\"ordering\":\"sampled-published-not-order-proof\"",
+            "\"scope\":\"trace-only-diagnostic\"",
+        ] {
+            assert!(line.contains(token), "missing {token}: {line}");
+        }
+        assert!(
+            line.contains(&format!("\"drain_command_seq\":{drain_command_seq}")),
+            "drain seq alongside delivery, never substituted: {line}"
+        );
+        assert!(
+            line.contains(&format!("\"drain_core_revision\":{drain_core_revision}")),
+            "drain revision alongside delivery, never substituted: {line}"
+        );
+        // Callback order survives: switchstart, foreground, switchend.
+        let kinds: Vec<&str> = ["switchstart", "foreground", "switchend"].to_vec();
+        let mut cursor = 0;
+        for kind in kinds {
+            let token = format!("\"kind\":\"{kind}\"");
+            let next = line[cursor..]
+                .find(&token)
+                .unwrap_or_else(|| panic!("missing {token}: {line}"));
+            cursor += next + token.len();
+        }
+    }
+
+    /// Omission accounting: queue overflow plus the emission cap fold into
+    /// one honest `omitted`, never masquerading as full evidence.
+    #[test]
+    fn switch_drain_omitted_counts_overflow_and_cap() {
+        use super::super::observe::{
+            MAX_JOURNEY_QUEUE, MAX_SWITCH_TRACE_EDGES, SwitchEdge, hook_queue, push_switch,
+            set_switch_diag_enabled, take_journey_dropped, take_switch_edges,
+        };
+        use super::drain_hook_edges;
+        use windows_sys::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_SWITCHEND;
+        static SWITCH_OMIT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut state = super::super::rmax03_adapter_tests::test_state();
+        state.trace = true;
+        let seq = SWITCH_OMIT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-switch-omit-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("switch omit log dir");
+        let log = dir.join("run.log");
+        state.log_path = log.clone();
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.clear();
+        }
+        assert!(take_switch_edges().is_empty());
+        assert_eq!(take_journey_dropped(), 0);
+        for hwnd in 0..(MAX_JOURNEY_QUEUE as u64 + 7) {
+            push_switch(SwitchEdge {
+                hwnd,
+                event: EVENT_SYSTEM_SWITCHEND,
+                source_pid: 0,
+                source_tid: 0,
+                thread: 0,
+                time: 0,
+                queued_mono_ms: 0,
+                observed_foreground_at_delivery: 0,
+                observed_command_seq_at_delivery: 0,
+                observed_core_revision_at_delivery: 0,
+            });
+        }
+        set_switch_diag_enabled(true);
+        let me = crate::model::ProcessIdentity {
+            pid: 9999,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        };
+        let drain = drain_hook_edges(&mut state, &me, &log);
+        set_switch_diag_enabled(false);
+        assert!(!drain.woke);
+        assert!(take_switch_edges().is_empty());
+        let expected = 7 + (MAX_JOURNEY_QUEUE - MAX_SWITCH_TRACE_EDGES) as u64;
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let line = text
+            .lines()
+            .find(|line| line.contains("\"event\":\"switch-journey\""))
+            .expect("switch-journey line logged");
+        assert!(
+            line.contains(&format!("\"omitted\":{expected}")),
+            "overflow plus cap fold into omitted: {line}"
+        );
+    }
+
+    /// Disabled (default) capture drains nothing and logs nothing:
+    /// no hook installed, no callback work, no drain work.
+    #[test]
+    fn switch_drain_disabled_logs_nothing() {
+        use super::super::observe::{
+            SwitchEdge, push_switch, take_journey_dropped, take_switch_edges,
+        };
+        use super::drain_hook_edges;
+        use windows_sys::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_SWITCHEND;
+        let mut state = super::super::rmax03_adapter_tests::test_state();
+        state.trace = true;
+        assert!(take_switch_edges().is_empty());
+        assert_eq!(take_journey_dropped(), 0);
+        push_switch(SwitchEdge {
+            hwnd: 81,
+            event: EVENT_SYSTEM_SWITCHEND,
+            source_pid: 0,
+            source_tid: 0,
+            thread: 0,
+            time: 0,
+            queued_mono_ms: 0,
+            observed_foreground_at_delivery: 0,
+            observed_command_seq_at_delivery: 0,
+            observed_core_revision_at_delivery: 0,
+        });
+        // Flag off (default): the drain must not consume or report.
+        let me = crate::model::ProcessIdentity {
+            pid: 9999,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        };
+        let log = state.log_path.clone();
+        let drain = drain_hook_edges(&mut state, &me, &log);
+        assert!(!drain.woke);
+        // Stale disabled edges stay queued (never consumed while off), so
+        // clear explicitly to leave no residue for other tests.
+        assert_eq!(take_switch_edges().len(), 1);
+        assert_eq!(take_journey_dropped(), 0);
+        assert!(take_switch_edges().is_empty());
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            !text.contains("switch-journey"),
+            "disabled must not log: {text}"
+        );
     }
 }

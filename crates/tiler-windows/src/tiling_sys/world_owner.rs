@@ -307,7 +307,16 @@ impl WorldOwner {
     /// with the source world unchanged). Unaffected commands and
     /// `CommandConsumed` run the direct path. Never reads `FloatOrigin`.
     pub(super) fn deliver_production(&mut self, report: &WorldReport) -> WorldOutcome {
-        self.seq.deliver_production(report)
+        let outcome = self.seq.deliver_production(report);
+        // Refresh after every core delivery, before native code can pump.
+        // Diagnostic reads only; neither value controls core or actuation.
+        if super::observe::switch_diag_enabled() {
+            super::observe::publish_journey_snapshot(
+                self.seq.next_command_seq().saturating_sub(1),
+                self.engine().state_revision(),
+            );
+        }
+        outcome
     }
 
     /// Offer one core reply: acknowledge obligations, apply desired state
@@ -363,13 +372,11 @@ impl WorldOwner {
         self.seq.arm_catchup_for_test();
     }
 
-    /// Test-only command-ordering proof: the next command sequence the
-    /// sequencer will assign. Advances exactly once per dispatched explicit
-    /// command (core-only superseded dispatches included); observation-only
-    /// catch-up never moves it. Lets latest-only regressions prove every
-    /// queued command was ordered while native application ran once.
+    /// Next command sequence the sequencer will assign. Advances exactly
+    /// once per dispatched explicit command; observation-only catch-up never
+    /// moves it. Plain `u64` read (no lock): test command-ordering proof
+    /// plus the trace-only journey diagnostic's sampled/published snapshot.
     #[must_use]
-    #[cfg(test)]
     pub(super) fn next_command_seq(&self) -> u64 {
         self.seq.next_command_seq()
     }

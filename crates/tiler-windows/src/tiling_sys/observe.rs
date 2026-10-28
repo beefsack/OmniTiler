@@ -186,6 +186,233 @@ fn push_hook(event: HookEvent) {
     }
 }
 
+/// Trace-only opt-in for journey capture. Set once from the owner
+/// `--trace` flag before hooks install; the callback checks it before
+/// pushing (no switch hook installed when off, so no switch delivery at
+/// all by default).
+#[cfg(not(test))]
+static SWITCH_DIAG_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Sampled delivery snapshot the owner publishes for the callback:
+/// last assigned command sequence (`0` before the first dispatch) plus
+/// the current core revision after the latest delivery. Same pumped thread,
+/// plain `u64`s, no core lock.
+#[cfg(not(test))]
+static PUBLISHED_JOURNEY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(not(test))]
+static PUBLISHED_JOURNEY_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Bounded-queue overflow count: edges dropped because the journey queue
+/// was full. Folded into the drain `omitted`, never silent.
+#[cfg(not(test))]
+static JOURNEY_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SWITCH_DIAG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_PUBLISHED_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static TEST_PUBLISHED_REV: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static TEST_JOURNEY_DROPPED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(not(test))]
+pub(super) fn set_switch_diag_enabled(enabled: bool) {
+    SWITCH_DIAG_ENABLED.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+#[cfg(test)]
+pub(super) fn set_switch_diag_enabled(enabled: bool) {
+    TEST_SWITCH_DIAG.with(|v| v.set(enabled));
+}
+
+#[cfg(not(test))]
+pub(super) fn switch_diag_enabled() -> bool {
+    SWITCH_DIAG_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+#[cfg(test)]
+pub(super) fn switch_diag_enabled() -> bool {
+    TEST_SWITCH_DIAG.with(|v| v.get())
+}
+
+/// Owner publish of the delivery snapshot. Called before any pump that
+/// can deliver journey callbacks: per turn plus immediately after each
+/// core delivery. Trace-gated by the caller.
+pub(super) fn publish_journey_snapshot(command_seq: u64, core_revision: u64) {
+    #[cfg(not(test))]
+    {
+        PUBLISHED_JOURNEY_SEQ.store(command_seq, std::sync::atomic::Ordering::SeqCst);
+        PUBLISHED_JOURNEY_REV.store(core_revision, std::sync::atomic::Ordering::SeqCst);
+    }
+    #[cfg(test)]
+    {
+        TEST_PUBLISHED_SEQ.with(|v| v.set(command_seq));
+        TEST_PUBLISHED_REV.with(|v| v.set(core_revision));
+    }
+}
+
+/// Callback-side sample of the last published snapshot. Same pumped
+/// thread as the publisher; current at delivery, never proof of
+/// generation-time order.
+fn journey_snapshot() -> (u64, u64) {
+    #[cfg(not(test))]
+    {
+        (
+            PUBLISHED_JOURNEY_SEQ.load(std::sync::atomic::Ordering::SeqCst),
+            PUBLISHED_JOURNEY_REV.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+    #[cfg(test)]
+    {
+        (
+            TEST_PUBLISHED_SEQ.with(|v| v.get()),
+            TEST_PUBLISHED_REV.with(|v| v.get()),
+        )
+    }
+}
+
+fn note_journey_dropped(count: u64) {
+    #[cfg(not(test))]
+    {
+        JOURNEY_DROPPED.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+    }
+    #[cfg(test)]
+    {
+        TEST_JOURNEY_DROPPED.with(|v| v.set(v.get().saturating_add(count)));
+    }
+}
+
+/// Take-and-reset of the bounded-queue overflow count.
+pub(super) fn take_journey_dropped() -> u64 {
+    #[cfg(not(test))]
+    {
+        JOURNEY_DROPPED.swap(0, std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(test)]
+    {
+        TEST_JOURNEY_DROPPED.with(|v| {
+            let count = v.get();
+            v.set(0);
+            count
+        })
+    }
+}
+
+/// Pure switch filter: only START/END become diagnostic edges. Checked
+/// before (and independently of) the window-object wake rule, since switch
+/// events are system-scoped, never wakes, never gates.
+pub(super) fn is_switch_event(event: u32) -> bool {
+    matches!(event, EVENT_SYSTEM_SWITCHSTART | EVENT_SYSTEM_SWITCHEND)
+}
+
+/// Trace-only switch hook range: installed only when tracing, so a default
+/// run adds no hook. Foreground rides its always-installed product hook.
+pub(super) fn switch_hook_range(trace: bool) -> Option<(u32, u32)> {
+    trace.then_some((EVENT_SYSTEM_SWITCHSTART, EVENT_SYSTEM_SWITCHEND))
+}
+
+/// Exact journey kind vocabulary for trace-only rows.
+pub(super) fn switch_kind_str(event: u32) -> &'static str {
+    if event == EVENT_SYSTEM_SWITCHSTART {
+        "switchstart"
+    } else if event == EVENT_SYSTEM_SWITCHEND {
+        "switchend"
+    } else if event == EVENT_SYSTEM_FOREGROUND {
+        "foreground"
+    } else {
+        "unknown"
+    }
+}
+
+/// One recorded journey delivery in callback order (SWITCHSTART/SWITCHEND
+/// plus a trace-only duplicate of each FOREGROUND delivery; array order
+/// is callback order). Plain values only: the event HWND, its owning
+/// pid/tid (`0` when unreadable), the callback event thread/time, the
+/// queueing timestamp, the foreground observed in the callback, and the
+/// sampled command sequence plus core revision at delivery. Never wakes,
+/// never gates, never enters core/focus/memory decisions. An END with no
+/// preceding START records as-is; no pairing, no cancellation inferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SwitchEdge {
+    pub hwnd: u64,
+    pub event: u32,
+    pub source_pid: u32,
+    pub source_tid: u32,
+    pub thread: u32,
+    pub time: u32,
+    pub queued_mono_ms: u64,
+    pub observed_foreground_at_delivery: u64,
+    pub observed_command_seq_at_delivery: u64,
+    pub observed_core_revision_at_delivery: u64,
+}
+
+#[cfg(not(test))]
+fn switch_queue() -> &'static Mutex<Vec<SwitchEdge>> {
+    static QUEUE: OnceLock<Mutex<Vec<SwitchEdge>>> = OnceLock::new();
+    QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SWITCH_QUEUE: std::sync::Arc<Mutex<Vec<SwitchEdge>>> =
+        std::sync::Arc::new(Mutex::new(Vec::new()));
+}
+
+/// Test storage for [`switch_queue`]: each test thread owns its queue, so
+/// parallel switch tests never observe each other's edges.
+#[cfg(test)]
+fn switch_queue() -> std::sync::Arc<Mutex<Vec<SwitchEdge>>> {
+    TEST_SWITCH_QUEUE.with(std::sync::Arc::clone)
+}
+
+pub(super) fn push_switch(edge: SwitchEdge) {
+    if let Ok(mut queue) = switch_queue().lock() {
+        if queue.len() >= MAX_JOURNEY_QUEUE {
+            drop(queue);
+            note_journey_dropped(1);
+            return;
+        }
+        queue.push(edge);
+    }
+}
+
+/// Consuming take of queued SWITCH edges. Called only on natural owner
+/// turns (never arms a wait, never wakes); the take always empties the
+/// store so no stale backlog survives a drain.
+pub(super) fn take_switch_edges() -> Vec<SwitchEdge> {
+    switch_queue()
+        .lock()
+        .map(|mut queue| std::mem::take(&mut *queue))
+        .unwrap_or_default()
+}
+
+/// Max SWITCH edges retained per trace-only diagnostic emission. Excess
+/// folds into an honest omitted count, never a silent drop.
+pub(super) const MAX_SWITCH_TRACE_EDGES: usize = 32;
+
+/// Max journey edges queued. Beyond this the push drops the incoming edge
+/// and counts it via [`take_journey_dropped`], so omitted rows never
+/// masquerade as full evidence.
+pub(super) const MAX_JOURNEY_QUEUE: usize = 128;
+
+/// Record one journey delivery: source pid/tid plus the foreground and
+/// the published snapshot observed at delivery, all fail-closed to zero.
+/// The pid/tid reads can reflect HWND reuse (a new generation behind the
+/// number), never generation identity; reads only, never gates. Reads run
+/// before the queue lock like `snapshot_delivery`.
+fn record_journey(hwnd_u64: u64, event: u32, thread: u32, time: u32) {
+    let (command_seq, core_revision) = journey_snapshot();
+    push_switch(SwitchEdge {
+        hwnd: hwnd_u64,
+        event,
+        source_pid: crate::ffi::window_pid(hwnd_u64),
+        source_tid: crate::ffi::window_thread_id(hwnd_u64),
+        thread,
+        time,
+        queued_mono_ms: super::trace::log_mono_ms(),
+        observed_foreground_at_delivery: crate::ffi::foreground_window(),
+        observed_command_seq_at_delivery: command_seq,
+        observed_core_revision_at_delivery: core_revision,
+    });
+}
+
 /// Pure window-edge wake rule: which delivered WinEvents become loop wakes.
 /// Foreground always wakes; object create/destroy/show/hide/location wake
 /// only for window objects (`id_object == OBJID_WINDOW`), so menu, client,
@@ -278,6 +505,22 @@ fn snapshot_delivery(event: u32, hwnd_u64: u64) -> DeliverySnapshot {
 /// `crate::ffi` and forwards here; this filtering (which edges become
 /// wakes, event-time cursor/sequence capture) is unchanged policy.
 pub(super) struct LoopEventSink;
+
+/// Selected only for trace runs; the default sink has no diagnostic branch.
+pub(super) struct JourneyEventSink;
+
+impl crate::ffi::WinEventSink for JourneyEventSink {
+    fn on_win_event(&self, ev: crate::ffi::WinEvent) {
+        if switch_diag_enabled()
+            && (is_switch_event(ev.event) || ev.event == EVENT_SYSTEM_FOREGROUND)
+        {
+            record_journey(ev.hwnd, ev.event, ev.thread, ev.time);
+        }
+        if !is_switch_event(ev.event) {
+            LoopEventSink.on_win_event(ev);
+        }
+    }
+}
 
 impl crate::ffi::WinEventSink for LoopEventSink {
     fn on_win_event(&self, ev: crate::ffi::WinEvent) {
@@ -1421,5 +1664,161 @@ mod cause_tests {
         assert_eq!(hook_cause_summary(), vec![("foreground", 1)]);
         assert!(hook_edges_pending(), "diag peek must not drain");
         clear_queue();
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+    use crate::ffi::WinEventSink;
+
+    fn clear_switch() {
+        if let Ok(mut queue) = switch_queue().lock() {
+            queue.clear();
+        }
+        if let Ok(mut queue) = hook_queue().lock() {
+            queue.clear();
+        }
+        set_switch_diag_enabled(false);
+        publish_journey_snapshot(0, 0);
+        assert_eq!(take_journey_dropped(), 0);
+    }
+
+    #[test]
+    fn switch_filter_hook_range_and_kinds() {
+        assert!(is_switch_event(EVENT_SYSTEM_SWITCHSTART));
+        assert!(is_switch_event(EVENT_SYSTEM_SWITCHEND));
+        assert!(!is_switch_event(EVENT_SYSTEM_FOREGROUND));
+        assert!(!is_switch_event(EVENT_SYSTEM_MOVESIZESTART));
+        assert!(!is_switch_event(EVENT_OBJECT_LOCATIONCHANGE));
+        assert_eq!(switch_hook_range(false), None);
+        assert_eq!(
+            switch_hook_range(true),
+            Some((EVENT_SYSTEM_SWITCHSTART, EVENT_SYSTEM_SWITCHEND))
+        );
+        assert_eq!(switch_kind_str(EVENT_SYSTEM_SWITCHSTART), "switchstart");
+        assert_eq!(switch_kind_str(EVENT_SYSTEM_SWITCHEND), "switchend");
+        assert_eq!(switch_kind_str(EVENT_SYSTEM_FOREGROUND), "foreground");
+        assert_eq!(switch_kind_str(EVENT_OBJECT_LOCATIONCHANGE), "unknown");
+        assert!(!window_edge_wakes(EVENT_SYSTEM_SWITCHSTART, OBJID_WINDOW));
+        assert!(!window_edge_wakes(EVENT_SYSTEM_SWITCHEND, OBJID_WINDOW));
+        assert_eq!(wake_cause(EVENT_SYSTEM_SWITCHSTART), HookCause::Unknown);
+    }
+
+    #[test]
+    fn disabled_collects_nothing_and_never_wakes() {
+        clear_switch();
+        let sink = LoopEventSink;
+        for event in [
+            EVENT_SYSTEM_SWITCHSTART,
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_SWITCHEND,
+        ] {
+            sink.on_win_event(crate::ffi::WinEvent {
+                event,
+                hwnd: 11,
+                id_object: OBJID_WINDOW,
+                thread: 3,
+                time: 9,
+            });
+        }
+        assert!(take_switch_edges().is_empty());
+        assert!(hook_edges_pending());
+        assert_eq!(hook_cause_summary(), vec![("foreground", 1)]);
+        clear_switch();
+    }
+
+    #[test]
+    fn enabled_preserves_callback_order_with_foreground() {
+        clear_switch();
+        set_switch_diag_enabled(true);
+        publish_journey_snapshot(7, 70);
+        let sink = JourneyEventSink;
+        for (event, hwnd, time) in [
+            (EVENT_SYSTEM_SWITCHSTART, 21, 31),
+            (EVENT_SYSTEM_FOREGROUND, 21, 32),
+            (EVENT_SYSTEM_SWITCHEND, 22, 33),
+        ] {
+            sink.on_win_event(crate::ffi::WinEvent {
+                event,
+                hwnd,
+                id_object: OBJID_WINDOW,
+                thread: 5,
+                time,
+            });
+        }
+        // Product path unchanged: the foreground still wakes via the hook queue.
+        assert!(hook_edges_pending());
+        assert_eq!(hook_cause_summary(), vec![("foreground", 1)]);
+        // Diagnostic feed keeps full callback order: START, foreground, END.
+        let edges = take_switch_edges();
+        assert_eq!(edges.len(), 3);
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| (edge.event, edge.hwnd, edge.time))
+                .collect::<Vec<_>>(),
+            vec![
+                (EVENT_SYSTEM_SWITCHSTART, 21, 31),
+                (EVENT_SYSTEM_FOREGROUND, 21, 32),
+                (EVENT_SYSTEM_SWITCHEND, 22, 33),
+            ]
+        );
+        for edge in &edges {
+            assert_eq!(
+                (
+                    edge.thread,
+                    edge.observed_command_seq_at_delivery,
+                    edge.observed_core_revision_at_delivery
+                ),
+                (5, 7, 70)
+            );
+        }
+        assert!(take_switch_edges().is_empty());
+        clear_switch();
+    }
+
+    #[test]
+    fn startless_end_records_without_pairing() {
+        clear_switch();
+        set_switch_diag_enabled(true);
+        publish_journey_snapshot(9, 90);
+        let sink = JourneyEventSink;
+        sink.on_win_event(crate::ffi::WinEvent {
+            event: EVENT_SYSTEM_SWITCHEND,
+            hwnd: 22,
+            id_object: OBJID_WINDOW,
+            thread: 5,
+            time: 33,
+        });
+        assert!(!hook_edges_pending());
+        let edges = take_switch_edges();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].event, EVENT_SYSTEM_SWITCHEND);
+        assert_eq!(edges[0].observed_command_seq_at_delivery, 9);
+        assert_eq!(edges[0].observed_core_revision_at_delivery, 90);
+        clear_switch();
+    }
+
+    #[test]
+    fn queue_bound_counts_dropped() {
+        clear_switch();
+        for hwnd in 0..(MAX_JOURNEY_QUEUE as u64 + 5) {
+            push_switch(SwitchEdge {
+                hwnd,
+                event: EVENT_SYSTEM_SWITCHSTART,
+                source_pid: 0,
+                source_tid: 0,
+                thread: 0,
+                time: 0,
+                queued_mono_ms: 0,
+                observed_foreground_at_delivery: 0,
+                observed_command_seq_at_delivery: 0,
+                observed_core_revision_at_delivery: 0,
+            });
+        }
+        assert_eq!(take_switch_edges().len(), MAX_JOURNEY_QUEUE);
+        assert_eq!(take_journey_dropped(), 5);
+        clear_switch();
     }
 }

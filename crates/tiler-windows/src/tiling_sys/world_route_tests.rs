@@ -1514,6 +1514,135 @@ fn keyup_only_turn_without_pending_foreground_stays_quiet() {
 }
 
 #[test]
+fn journey_snapshot_refreshes_at_command_delivery_before_callback() {
+    use crate::ffi::WinEventSink as _;
+    use windows_sys::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_SWITCHSTART;
+    // Same-turn freshness: a real command dispatch refreshes the published
+    // journey snapshot at delivery, so a callback firing on a nested pump
+    // during the native apply below sees the new command sequence plus
+    // core revision with no manual republish between command and callback.
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    let key = crate::native_guards::WindowKey {
+        hwnd: 101,
+        pid: 202,
+        creation: "proc-1".to_owned(),
+    };
+    state.member_tokens.insert(key.clone(), "w1".to_owned());
+    state.member_tags.insert(key.clone(), "tag-1".to_owned());
+    state.member_identity.insert(
+        key.clone(),
+        crate::model::ProcessIdentity {
+            pid: 202,
+            process_creation: "proc-1".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        },
+    );
+    let observed = vec![observed_window()];
+    let (dir, store, areas, fulls) = route_dirs("journey-cmd");
+    let me = route_me();
+    super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("seed tick converges");
+    assert!(super::observe::take_switch_edges().is_empty());
+    assert_eq!(super::observe::take_journey_dropped(), 0);
+    super::observe::set_switch_diag_enabled(true);
+    state.trace = true;
+    let out = state.output_token("DEV1");
+    let current = state
+        .world
+        .engine()
+        .logical_view(&out)
+        .expect("current view");
+    let target = state
+        .world
+        .engine()
+        .logical_ring(&out)
+        .into_iter()
+        .find(|id| id != &current)
+        .expect("second workspace");
+    let reply = super::world_tick::run_world_command(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        tiler_core::world_report::WorldCommand::SelectWorkspace {
+            output: tiler_core::directional::OutputId(out),
+            workspace: target,
+        },
+        None,
+    )
+    .expect("command delivers");
+    let want_seq = state.world.next_command_seq().saturating_sub(1);
+    assert!(want_seq >= 1, "one command assigned this turn");
+    super::observe::JourneyEventSink.on_win_event(crate::ffi::WinEvent {
+        event: EVENT_SYSTEM_SWITCHSTART,
+        hwnd: 101,
+        id_object: 0,
+        thread: 1,
+        time: 2,
+    });
+    let edges = super::observe::take_switch_edges();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].observed_command_seq_at_delivery, want_seq);
+    assert_eq!(
+        edges[0].observed_core_revision_at_delivery,
+        reply.state_revision
+    );
+    // An observation delivery also refreshes the revision before native
+    // pumps, without assigning another command sequence.
+    super::observe::publish_journey_snapshot(0, 0);
+    super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+        false,
+    )
+    .expect("observation delivers");
+    super::observe::JourneyEventSink.on_win_event(crate::ffi::WinEvent {
+        event: EVENT_SYSTEM_SWITCHSTART,
+        hwnd: 101,
+        id_object: 0,
+        thread: 1,
+        time: 3,
+    });
+    let edges = super::observe::take_switch_edges();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].observed_command_seq_at_delivery, want_seq);
+    assert_eq!(
+        edges[0].observed_core_revision_at_delivery,
+        state.world.engine().state_revision()
+    );
+    super::observe::set_switch_diag_enabled(false);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn real_command_turn_consumes_pending_without_extra_pass() {
     // A real select turn dispatches through the owner and consumes the
     // drained edge at apply entry, so no owed pass follows: exactly one

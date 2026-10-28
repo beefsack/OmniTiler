@@ -95,7 +95,9 @@ Prioritise by return toward these goals
 - P1 | Windows batched physical checks | One user session, not waiting on the
   staged switch prototype. [Ordered run sheet](changes/windows-physical-checklist.md#batched-physical-run-sheet-2026-10-29)
   (capture availability and setup prerequisites explicit): Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
-  fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls);
+  fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls; trace-only
+  START/END + ordered foreground recording delivered, physical capture UNRUN;
+  no intent/memory-policy change);
   wake-attribution same-tick confirmation during spam; exact-desktop WS1 ->
   empty WS2 -> WS1 return; floating-window focus across a workspace round trip;
   pending physical acceptance for Xbox shortcut conflicts and launcher geometry
