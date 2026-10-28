@@ -260,6 +260,11 @@ const MAX_APPLY_DIAG_SCREENS: usize = 16;
 /// rows stay bounded with honest `omitted` counts. Effects are already
 /// bounded by the reply budget; this caps only the retained trace rows.
 const MAX_APPLY_DIAG_FOCUS: usize = 8;
+/// Trace-only fresh receipt proof cap: the fresh full-view proof map from
+/// the post-apply `receipt_updates` read (never merged applied transfers,
+/// never homing). Bounded with an honest omitted count; empty means zero
+/// fresh proof, never an echo of prior applied maps.
+const MAX_APPLY_DIAG_RECEIPT_VIEWS: usize = 16;
 
 /// Redacted fixed command vocabulary for the apply diagnostic: the kind
 /// alone, never window tokens, output/workspace strings, exe paths,
@@ -297,6 +302,79 @@ fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
         Some(CommandResult::Directional { .. }) => "directional",
         Some(CommandResult::Migration { .. }) => "migration",
     }
+}
+
+/// True when the fresh receipt proof differs from the last accepted trace
+/// snapshot (bounded prefix plus honest omission, stamps excluded). The
+/// full-view map and the homing map change together: either map changing
+/// (or a changed omission) means the proof moved and must log. `None` or
+/// a snapshot without `receipt_views` means first status and must log, so
+/// a new arrival proof never stays quiet on a views-only match. Homing is
+/// a bounded comparison only: the caller passes the truncated `receipt_homing`
+/// prefix plus the true `receipt_homing_total`; omission derives from the
+/// total, never the prefix length. A tail-only change past the cap with the
+/// same prefix and same total is unavailable and stays quiet by design: this
+/// is never whole-map proof, and no tail census, hash, or history is kept.
+fn receipt_proof_changed(
+    receipt_views: &[(String, String)],
+    receipt_homing: &[(String, String, String)],
+    receipt_homing_total: usize,
+    prior: Option<&serde_json::Value>,
+) -> bool {
+    let Some(prior) = prior else {
+        return true;
+    };
+    let Some(rows) = prior
+        .get("receipt_views")
+        .and_then(|value| value.as_array())
+    else {
+        return true;
+    };
+    let prior_omitted = prior
+        .get("receipt_views_omitted")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let taken = receipt_views.len().min(MAX_APPLY_DIAG_RECEIPT_VIEWS);
+    let current_omitted = (receipt_views.len().saturating_sub(taken)) as u64;
+    if rows.len() != taken || prior_omitted != current_omitted {
+        return true;
+    }
+    for (index, row) in receipt_views.iter().take(taken).enumerate() {
+        let prior_row = &rows[index];
+        if prior_row.get("output").and_then(|v| v.as_str()) != Some(row.0.as_str())
+            || prior_row.get("view").and_then(|v| v.as_str()) != Some(row.1.as_str())
+        {
+            return true;
+        }
+    }
+    let homing_rows = prior
+        .get("receipt_homing")
+        .and_then(|value| value.as_array());
+    let Some(homing_rows) = homing_rows else {
+        return true;
+    };
+    let prior_homing_omitted = prior
+        .get("receipt_homing_omitted")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let homing_taken = receipt_homing
+        .len()
+        .min(super::world_diff::MAX_RECEIPT_HOMING_DIAG)
+        .min(receipt_homing_total);
+    let homing_omitted = (receipt_homing_total.saturating_sub(homing_taken)) as u64;
+    if homing_rows.len() != homing_taken || prior_homing_omitted != homing_omitted {
+        return true;
+    }
+    for (index, row) in receipt_homing.iter().take(homing_taken).enumerate() {
+        let prior_row = &homing_rows[index];
+        if prior_row.get("window").and_then(|v| v.as_str()) != Some(row.0.as_str())
+            || prior_row.get("output").and_then(|v| v.as_str()) != Some(row.1.as_str())
+            || prior_row.get("view").and_then(|v| v.as_str()) != Some(row.2.as_str())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Event-driven throttle: commands always log (the owner trace only runs on
@@ -449,8 +527,10 @@ fn rect_value(rect: tiler_core::geometry::Rect) -> serde_json::Value {
 /// refusal as `Ok(false)` and torn state as `Err` without a native errno,
 /// so deeper refusal detail would need a broader seam change (reported as a
 /// limitation, not papered over here).
-// Thirteen inputs are the disjoint trace context plus the pass products;
-// bundling would hide the call-site borrow split the tick relies on.
+// Fifteen inputs are the disjoint trace context plus the pass products
+// (reply, delivery, command kind, stats, raw attempts, fresh receipt proof,
+// cursor-hit/FFC, dispatched-report geometry basis); bundling would hide
+// the call-site borrow split the tick relies on.
 #[allow(clippy::too_many_arguments)]
 fn apply_diag_value(
     tick: u64,
@@ -466,6 +546,8 @@ fn apply_diag_value(
     cursor_hit: Option<String>,
     ffc_enabled: bool,
     report: &tiler_core::world_report::WorldReport,
+    receipt_views: &[(String, String)],
+    receipt_proof_mono_ms: Option<u64>,
 ) -> serde_json::Value {
     let member_rows: Vec<serde_json::Value> = member_attempts
         .iter()
@@ -479,6 +561,7 @@ fn apply_diag_value(
                 "setter": item.setter.as_str(),
                 "pre": item.pre.as_ref().map(|(out, ws)| format!("{out}/{ws}", out = out.0)),
                 "post": item.post.as_ref().map(|(out, ws)| format!("{out}/{ws}", out = out.0)),
+                "attempt_ms": item.attempt_ms,
             })
         })
         .collect();
@@ -494,6 +577,7 @@ fn apply_diag_value(
                 "pre": item.pre,
                 "post": item.post,
                 "base": item.baseline,
+                "attempt_ms": item.attempt_ms,
             })
         })
         .collect();
@@ -507,6 +591,7 @@ fn apply_diag_value(
                 "setter": item.setter.as_str(),
                 "pre": item.pre_maximized,
                 "post": item.post_maximized,
+                "attempt_ms": item.attempt_ms,
             })
         })
         .collect();
@@ -777,6 +862,7 @@ fn apply_diag_value(
                 "api": row.api,
                 "call_mono_ms": row.call_mono_ms,
                 "ret_mono_ms": row.ret_mono_ms,
+                "fg_proof_mono_ms": row.fg_proof_mono_ms,
                 "gui_dispatch": row.gui_dispatch.clone(),
                 "gui_landing": row.gui_landing.clone(),
                 "primitive_called": row.primitive_called,
@@ -879,6 +965,22 @@ fn apply_diag_value(
             })
         })
         .collect();
+    // Trace-only fresh receipt proof: the fresh full-view map from the
+    // post-apply `receipt_updates` read, captured before merged applied
+    // transfers so the source stays fresh-only (never stale/ambiguous
+    // merged state). Only the `read_view` map rides, never homing fields or
+    // source flags. Empty means zero fresh proof, never an echo of prior
+    // applied maps. Bounded with an honest omitted count.
+    let receipt_rows: Vec<serde_json::Value> = receipt_views
+        .iter()
+        .take(MAX_APPLY_DIAG_RECEIPT_VIEWS)
+        .map(|(output, view)| {
+            serde_json::json!({
+                "output": output,
+                "view": view,
+            })
+        })
+        .collect();
     let mut out = serde_json::json!({
         "event": "world-apply",
         "tick": tick,
@@ -908,6 +1010,12 @@ fn apply_diag_value(
             "held": stats.held,
             "migration_total": stats.migration_total,
             "migration_proven": stats.migration_proven,
+            "staged_reveals": stats.staged_reveals,
+            "staged_focus": stats.staged_focus,
+            "staged_hides": stats.staged_hides,
+            "show_posts_done_mono_ms": stats.show_posts_done_mono_ms,
+            "arrivals_visible_mono_ms": stats.arrivals_visible_mono_ms,
+            "departures_hidden_mono_ms": stats.departures_hidden_mono_ms,
             "stopped_mid_apply": stats.stopped_mid_apply,
             "partial": stats.partial,
         },
@@ -976,6 +1084,44 @@ fn apply_diag_value(
             .saturating_sub(stats.visibility_posts.len().min(MAX_APPLY_DIAG_FOCUS)),
         "fresh_route": fresh_route,
     });
+    out["receipt_views"] = serde_json::Value::Array(receipt_rows);
+    out["receipt_views_omitted"] = serde_json::json!(
+        receipt_views
+            .len()
+            .saturating_sub(out["receipt_views"].as_array().map_or(0, |rows| rows.len()))
+    );
+    out["receipt_proof_mono_ms"] = match receipt_proof_mono_ms {
+        Some(stamp) => serde_json::json!(stamp),
+        None => serde_json::Value::Null,
+    };
+    // Post-apply arrival map (fresh homing proof, distinct from the full-view
+    // map above): the current-order equivalent arrival proof. Same
+    // `receipt_proof_mono_ms` instant proves both maps post-apply; the staged
+    // pre-focus proof (`stats.arrivals_visible_mono_ms`) is earlier and
+    // separate. Empty means zero fresh arrival proof (empty arrival stays
+    // N/A): extraction must require a homing row for the target view before
+    // using the stamp, never treat the stamp alone as arrival success.
+    // Bounded with an honest omitted count.
+    let homing_rows: Vec<serde_json::Value> = stats
+        .receipt_homing
+        .iter()
+        .take(super::world_diff::MAX_RECEIPT_HOMING_DIAG)
+        .map(|(token, output, view)| {
+            serde_json::json!({
+                "window": token,
+                "output": output,
+                "view": view,
+            })
+        })
+        .collect();
+    out["receipt_homing"] = serde_json::Value::Array(homing_rows);
+    out["receipt_homing_omitted"] = serde_json::json!(
+        stats.receipt_homing_total.saturating_sub(
+            out["receipt_homing"]
+                .as_array()
+                .map_or(0, |rows| rows.len())
+        )
+    );
     out["desired_windows"] = serde_json::Value::Array(desired_windows);
     out["desired_windows_omitted"] = serde_json::json!(
         reply
@@ -1030,10 +1176,11 @@ fn apply_diag_value(
 /// no input-hook cost, no native re-read, no per-window dump. Returns true
 /// when a row was emitted (the caller records the hover triple then, never
 /// on quiet ticks).
-// Sixteen inputs are the disjoint trace context plus the pass products
-// (reply, delivery, command kind, stats, raw attempts, cursor-hit/FFC,
-// dispatched-report geometry basis, hover-change); bundling would hide the
-// call-site borrow split the tick relies on.
+// Twenty inputs are the disjoint trace context plus the pass products
+// (reply, delivery, command kind, stats, raw attempts, fresh receipt proof,
+// cursor-hit/FFC, dispatched-report geometry basis, hover-change,
+// receipt-change, command-receipt stamp); bundling would hide the
+// call-site borrow split.
 #[allow(clippy::too_many_arguments)]
 fn log_apply_diag(
     log_path: &std::path::Path,
@@ -1051,7 +1198,11 @@ fn log_apply_diag(
     cursor_hit: Option<String>,
     ffc_enabled: bool,
     report: &tiler_core::world_report::WorldReport,
+    receipt_views: &[(String, String)],
+    receipt_proof_mono_ms: Option<u64>,
     hover_changed: bool,
+    receipt_changed: bool,
+    recv_mono_ms: u64,
 ) -> bool {
     if !trace
         || !(should_log_apply(
@@ -1062,28 +1213,35 @@ fn log_apply_diag(
             clear_attempts,
             frame_attempts,
             reply,
-        ) || hover_changed)
+        ) || hover_changed
+            || receipt_changed)
     {
         return false;
     }
-    super::trace::log_json_at(
-        log_path,
-        apply_diag_value(
-            tick,
-            reply,
-            delivery,
-            command_kind,
-            stats,
-            member_attempts,
-            view_attempts,
-            clear_attempts,
-            frame_attempts,
-            fresh_route,
-            cursor_hit,
-            ffc_enabled,
-            report,
-        ),
+    // Command-receipt stamp rides post-hoc so the stored proof snapshot (see
+    // the call sites) and this emitted row share one value without
+    // rethreading every `apply_diag_value` caller: both use the same
+    // command-entry `recv_mono_ms` (sampled before the admission preamble),
+    // never the post-preamble dispatch clock.
+    let mut value = apply_diag_value(
+        tick,
+        reply,
+        delivery,
+        command_kind,
+        stats,
+        member_attempts,
+        view_attempts,
+        clear_attempts,
+        frame_attempts,
+        fresh_route,
+        cursor_hit,
+        ffc_enabled,
+        report,
+        receipt_views,
+        receipt_proof_mono_ms,
     );
+    value["recv_mono_ms"] = serde_json::json!(recv_mono_ms);
+    super::trace::log_json_at(log_path, value);
     true
 }
 
@@ -1561,7 +1719,7 @@ pub(super) fn run_observation_tick(
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
     let mut clear_attempts = Vec::new();
-    let stats = world.apply_accepted(
+    let mut stats = world.apply_accepted(
         &reply,
         &fresh,
         &mut native,
@@ -1579,15 +1737,74 @@ pub(super) fn run_observation_tick(
         &captured.focused_global,
         captured.focus_follows_cursor,
     );
+    let fresh_run = delivery != "duplicate";
+    // Proven receipt snapshot: desired values only where live native
+    // evidence proves arrival (identity/tag/claim/visibility/scope
+    // gates, exact frame on the target for tiled rows). Changed homing
+    // additionally merges from staged raw attempt post proofs with
+    // independent fresh revalidation. Never wholesale desire.
+    //
+    // TRACE-ONLY measurement order: the existing `receipt_updates` reads
+    // yield the fresh final full-view proven state plus the fresh homing
+    // arrival proof. The existing world-apply JSON construction/log
+    // emission below defers until after these existing native calls,
+    // preserving exact native-probe order with no new native queries. The
+    // owner-clock stamp fires immediately after the existing
+    // `receipt_updates`, and both maps are captured before the merge so
+    // the trace source stays fresh-only (never stale/ambiguous merged
+    // state). Trace-off builds no extra payload: the snapshot, stamp, and
+    // arrival map are gated on `trace && fresh_run`.
+    let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
+    let receipt_proof_mono_ms = if trace && fresh_run {
+        Some(super::trace::log_mono_ms())
+    } else {
+        None
+    };
+    let mut receipt_views: Vec<(String, String)> = if trace && fresh_run {
+        let mut rows: Vec<(String, String)> = proven_v
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        rows.sort();
+        rows
+    } else {
+        Vec::new()
+    };
+    if trace && fresh_run {
+        let mut homing_rows: Vec<(String, String, String)> = proven_h
+            .iter()
+            .map(|(token, (out, ws))| (token.clone(), out.clone(), ws.clone()))
+            .collect();
+        homing_rows.sort();
+        stats.receipt_homing_total = homing_rows.len();
+        homing_rows.truncate(super::world_diff::MAX_RECEIPT_HOMING_DIAG);
+        stats.receipt_homing = homing_rows;
+        // Current-order arrival fallback: the post-apply receipt instant
+        // proves arrival only when the staged pre-focus proof did not fire
+        // this pass. Never overwrites the staged stamp with this later one.
+        if stats.arrivals_visible_mono_ms.is_none() && !stats.receipt_homing.is_empty() {
+            stats.arrivals_visible_mono_ms = receipt_proof_mono_ms;
+        }
+    }
+    merge_applied_transfers(
+        &reply,
+        &member_attempts,
+        &view_attempts,
+        &fresh,
+        &mut native,
+        &mut proven_h,
+        &mut proven_v,
+    );
     // Bounded accepted trace-proof snapshot (TRACE-ONLY): the exact
     // `world-apply` projection for this reply, captured on every fresh
     // (non-duplicate) accept even when the ordinary world log stays
     // silent, so a later `pager-cells` emission can pair it. Duplicates
     // reuse the cached snapshot and must never relabel it; stale or
-    // ignored acks retain the fallback snapshot below.
-    let fresh_run = delivery != "duplicate";
+    // ignored acks retain the fallback snapshot below. The paired copy
+    // retains the original timestamp/row: this snapshot is built once here
+    // and never rebuilt with a fresh clock on pairing.
     let proof_row = if trace && fresh_run {
-        Some(apply_diag_value(
+        let mut row = apply_diag_value(
             tick,
             &reply,
             delivery,
@@ -1607,10 +1824,23 @@ pub(super) fn run_observation_tick(
             hover_hit.clone(),
             captured.focus_follows_cursor,
             &report,
-        ))
+            &receipt_views,
+            receipt_proof_mono_ms,
+        );
+        row["recv_mono_ms"] = serde_json::json!(tick_ms);
+        Some(row)
     } else {
+        receipt_views.clear();
         None
     };
+    let receipt_changed = trace
+        && fresh_run
+        && receipt_proof_changed(
+            &receipt_views,
+            &stats.receipt_homing,
+            stats.receipt_homing_total,
+            world.trace_proof(),
+        );
     let emitted = log_apply_diag(
         &log_path,
         trace,
@@ -1633,7 +1863,11 @@ pub(super) fn run_observation_tick(
         hover_hit,
         captured.focus_follows_cursor,
         &report,
+        &receipt_views,
+        receipt_proof_mono_ms,
         hover_changed,
+        receipt_changed,
+        tick_ms,
     );
     // Record the hover triple only for an emitted row, never on quiet
     // ticks, so a changed hover keeps triggering until it is on the trace.
@@ -1644,21 +1878,6 @@ pub(super) fn run_observation_tick(
             captured.focus_follows_cursor,
         );
     }
-    // Proven receipt snapshot: desired values only where live native
-    // evidence proves arrival (identity/tag/claim/visibility/scope
-    // gates, exact frame on the target for tiled rows). Changed homing
-    // additionally merges from staged raw attempt post proofs with
-    // independent fresh revalidation. Never wholesale desire.
-    let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
-    merge_applied_transfers(
-        &reply,
-        &member_attempts,
-        &view_attempts,
-        &fresh,
-        &mut native,
-        &mut proven_h,
-        &mut proven_v,
-    );
     // Hide-commit snapshot seeds: exact-lifetime freshly proven frames read
     // before the hide posts. Routed into the tile/float caches under the
     // same lane row assembly uses, so the next hidden report stages the
@@ -1929,6 +2148,11 @@ fn run_world_command_impl(
     let tick = state.tick;
     let log_path = state.log_path.clone();
     let command_kind = world_command_kind(&command);
+    // Command-receipt clock, sampled at command entry before the admission
+    // preamble below (binding/claim caches, catch-up fence service). Every
+    // `recv_mono_ms` on this leg uses this stamp, never the post-preamble
+    // dispatch clock, so receipt-to-phase latency starts at actual receipt.
+    let recv_mono_ms = super::trace::log_mono_ms();
     admit_observed(state, me, observed);
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
@@ -2080,6 +2304,7 @@ fn run_world_command_impl(
                     serde_json::json!({
                         "event": "world-apply",
                         "tick": tick,
+                        "recv_mono_ms": recv_mono_ms,
                         "delivery": "dispatch-refused",
                         "command": command_kind,
                         "reason": reason,
@@ -2139,6 +2364,7 @@ fn run_world_command_impl(
                 serde_json::json!({
                     "event": "world-apply",
                     "tick": tick,
+                    "recv_mono_ms": recv_mono_ms,
                     "request": report.request_id.clone(),
                     "delivery": "rejected",
                     "command": command_kind,
@@ -2195,6 +2421,7 @@ fn run_world_command_impl(
             serde_json::json!({
                 "event": "world-apply",
                 "tick": tick,
+                "recv_mono_ms": recv_mono_ms,
                 "request": report.request_id.clone(),
                 "delivery": delivery,
                 "command": command_kind,
@@ -2354,7 +2581,7 @@ fn run_world_command_impl(
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
     let mut clear_attempts = Vec::new();
-    let stats = world.apply_accepted(
+    let mut stats = world.apply_accepted(
         &reply,
         &fresh,
         &mut native,
@@ -2376,8 +2603,58 @@ fn run_world_command_impl(
     // as the observation path: command-consumed replies incorporate like
     // accepted ones, so they capture too; duplicates never relabel.
     let fresh_run = delivery != "duplicate";
+    // Proven receipt snapshot plus raw-attempt post proofs (see the
+    // observation path): re-proof of unchanged homing plus exact proven
+    // arrivals with independent fresh revalidation. Never wholesale desire.
+    //
+    // Same deferred-emission order as the observation path: the existing
+    // `receipt_updates` reads yield fresh final full-view state plus the
+    // fresh homing arrival proof first, the world-apply JSON builds after,
+    // with the owner-clock stamp immediately after `receipt_updates` and
+    // both maps captured before merge. Trace-off builds no extra payload.
+    let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
+    let receipt_proof_mono_ms = if trace && fresh_run {
+        Some(super::trace::log_mono_ms())
+    } else {
+        None
+    };
+    let mut receipt_views: Vec<(String, String)> = if trace && fresh_run {
+        let mut rows: Vec<(String, String)> = proven_v
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        rows.sort();
+        rows
+    } else {
+        Vec::new()
+    };
+    if trace && fresh_run {
+        let mut homing_rows: Vec<(String, String, String)> = proven_h
+            .iter()
+            .map(|(token, (out, ws))| (token.clone(), out.clone(), ws.clone()))
+            .collect();
+        homing_rows.sort();
+        stats.receipt_homing_total = homing_rows.len();
+        homing_rows.truncate(super::world_diff::MAX_RECEIPT_HOMING_DIAG);
+        stats.receipt_homing = homing_rows;
+        // Current-order arrival fallback: the post-apply receipt instant
+        // proves arrival only when the staged pre-focus proof did not fire
+        // this pass. Never overwrites the staged stamp with this later one.
+        if stats.arrivals_visible_mono_ms.is_none() && !stats.receipt_homing.is_empty() {
+            stats.arrivals_visible_mono_ms = receipt_proof_mono_ms;
+        }
+    }
+    merge_applied_transfers(
+        &reply,
+        &member_attempts,
+        &view_attempts,
+        &fresh,
+        &mut native,
+        &mut proven_h,
+        &mut proven_v,
+    );
     let proof_row = if trace && fresh_run {
-        Some(apply_diag_value(
+        let mut row = apply_diag_value(
             tick,
             &reply,
             delivery,
@@ -2397,10 +2674,23 @@ fn run_world_command_impl(
             hover_hit.clone(),
             captured.focus_follows_cursor,
             &report,
-        ))
+            &receipt_views,
+            receipt_proof_mono_ms,
+        );
+        row["recv_mono_ms"] = serde_json::json!(recv_mono_ms);
+        Some(row)
     } else {
+        receipt_views.clear();
         None
     };
+    let receipt_changed = trace
+        && fresh_run
+        && receipt_proof_changed(
+            &receipt_views,
+            &stats.receipt_homing,
+            stats.receipt_homing_total,
+            world.trace_proof(),
+        );
     let emitted = log_apply_diag(
         &log_path,
         trace,
@@ -2423,7 +2713,11 @@ fn run_world_command_impl(
         hover_hit,
         captured.focus_follows_cursor,
         &report,
+        &receipt_views,
+        receipt_proof_mono_ms,
         hover_changed,
+        receipt_changed,
+        recv_mono_ms,
     );
     if emitted {
         world.note_hover_traced(
@@ -2432,19 +2726,6 @@ fn run_world_command_impl(
             captured.focus_follows_cursor,
         );
     }
-    // Proven receipt snapshot plus raw-attempt post proofs (see the
-    // observation path): re-proof of unchanged homing plus exact proven
-    // arrivals with independent fresh revalidation. Never wholesale desire.
-    let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
-    merge_applied_transfers(
-        &reply,
-        &member_attempts,
-        &view_attempts,
-        &fresh,
-        &mut native,
-        &mut proven_h,
-        &mut proven_v,
-    );
     // Hide-commit snapshot seeds, routed exactly like the observation path
     // above (see `run_observation_tick`).
     let hidden_seeds = native.take_hidden_seeds();
@@ -2989,6 +3270,9 @@ mod apply_diag_tests {
             held: 2,
             migration_total: 0,
             migration_proven: 0,
+            staged_reveals: 0,
+            staged_focus: 0,
+            staged_hides: 0,
             stopped_mid_apply: false,
             partial: false,
             focus_dispatch: Vec::new(),
@@ -2999,6 +3283,11 @@ mod apply_diag_tests {
             clear_holds_total: 0,
             visibility_posts: Vec::new(),
             visibility_total: 0,
+            show_posts_done_mono_ms: None,
+            arrivals_visible_mono_ms: None,
+            departures_hidden_mono_ms: None,
+            receipt_homing: Vec::new(),
+            receipt_homing_total: 0,
         }
     }
 
@@ -3060,6 +3349,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         // Raw attempts and terminal verdicts stay distinct rows: the
         // attempt is mechanical proof, the event is the core verdict.
@@ -3121,6 +3412,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(value["invalidation_pending"], serde_json::json!([]));
         if let Ok(mut queue) = hook_queue().lock() {
@@ -3148,6 +3441,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(
             value["invalidation_pending"],
@@ -3212,6 +3507,8 @@ mod apply_diag_tests {
             Some("w2".to_owned()),
             true,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(value["event"], serde_json::json!("world-apply"));
         assert_eq!(value["tick"], serde_json::json!(11));
@@ -3420,6 +3717,7 @@ mod apply_diag_tests {
                 api: Some(super::super::world_diff::FOCUS_SETTER_API),
                 call_mono_ms: Some(7),
                 ret_mono_ms: Some(9),
+                fg_proof_mono_ms: Some(10),
                 gui_dispatch: Some("unknown".to_owned()),
                 gui_landing: None,
                 primitive_called: true,
@@ -3469,6 +3767,7 @@ mod apply_diag_tests {
                 api: None,
                 call_mono_ms: None,
                 ret_mono_ms: None,
+                fg_proof_mono_ms: None,
                 gui_dispatch: None,
                 gui_landing: None,
                 primitive_called: false,
@@ -3635,7 +3934,11 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
             false,
+            false,
+            0,
         ));
         assert!(!silent_log.exists());
         // The identical no-op stays quiet: no attempts, no hover, no
@@ -3657,7 +3960,11 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
             false,
+            false,
+            0,
         ));
         assert!(!quiet_log.exists());
         // The trace gate still dominates: no row when trace is off, even
@@ -3685,7 +3992,11 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
             false,
+            false,
+            0,
         ));
         assert!(!dark_log.exists());
     }
@@ -3769,6 +4080,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         let row40 = apply_diag_value(
             42,
@@ -3784,6 +4097,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         for (row, revision) in [(&row39, 39), (&row40, 40)] {
             assert_eq!(row["event"], serde_json::json!("world-apply"));
@@ -3852,6 +4167,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         assert_eq!(row["geometry_status"], serde_json::json!("paired"));
         assert_eq!(row["desired_geometry_omitted"], serde_json::json!(1));
@@ -3958,6 +4275,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let rows = value["visibility_posts"]
             .as_array()
@@ -4013,6 +4332,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(
             capped_value["visibility_posts"]
@@ -4025,6 +4346,200 @@ mod apply_diag_tests {
             capped_value["visibility_posts_omitted"],
             serde_json::json!(3)
         );
+    }
+
+    #[test]
+    fn diag_per_phase_stamps_join_receipt_to_attempts_and_staged_counts() {
+        // End-to-end measurement join on one row: per-attempt actuation
+        // stamps (every show issued) plus staged phase counts plus the
+        // fresh receipt proof ride with the command vocabulary, so a live
+        // leg can bind command receipt to each observed required phase
+        // (shows issued, arrivals proven, focus confirmed, departures
+        // hidden) with no new native query. Unavailable staged phases stay
+        // honest zeros, never absent keys.
+        use tiler_core::world_report::{ClearAttempt, FrameSetter, MemberAttempt, ViewAttempt};
+        let members = vec![MemberAttempt {
+            operation_id: "op-3".to_owned(),
+            window: WindowId("w3".to_owned()),
+            target_output: OutputId("o1".to_owned()),
+            target_workspace: "ws2".to_owned(),
+            setter: FrameSetter::Threw,
+            pre: None,
+            post: Some((OutputId("o1".to_owned()), "ws2".to_owned())),
+            native_pre: None,
+            native_post: None,
+            attempt_ms: 31,
+        }];
+        let views = vec![ViewAttempt {
+            operation_id: "op-7".to_owned(),
+            target_output: OutputId("o1".to_owned()),
+            target_workspace: "ws2".to_owned(),
+            setter: FrameSetter::Threw,
+            pre: Some("ws1".to_owned()),
+            post: Some("ws2".to_owned()),
+            baseline: Some("ws1".to_owned()),
+            native_pre: None,
+            native_post: None,
+            native_baseline: None,
+            attempt_ms: 32,
+        }];
+        let clears = vec![ClearAttempt {
+            operation_id: "op-9".to_owned(),
+            window: WindowId("w9".to_owned()),
+            setter: FrameSetter::Threw,
+            pre_maximized: Some(true),
+            post_maximized: Some(false),
+            attempt_ms: 33,
+        }];
+        let mut stats = stats_shell();
+        stats.staged_reveals = 1;
+        stats.staged_focus = 1;
+        assert_eq!(stats.staged_hides, 0);
+        let value = apply_diag_value(
+            9,
+            &reply_shell(),
+            "accepted",
+            "select-workspace",
+            &stats,
+            &members,
+            &views,
+            &clears,
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[("o1".to_owned(), "ws2".to_owned())],
+            Some(40),
+        );
+        assert_eq!(value["members"][0]["attempt_ms"], serde_json::json!(31));
+        assert_eq!(value["views"][0]["attempt_ms"], serde_json::json!(32));
+        assert_eq!(value["views"][0]["out"], serde_json::json!("o1"));
+        assert_eq!(value["views"][0]["ws"], serde_json::json!("ws2"));
+        assert_eq!(value["clears"][0]["attempt_ms"], serde_json::json!(33));
+        assert_eq!(value["stats"]["staged_reveals"], serde_json::json!(1));
+        assert_eq!(value["stats"]["staged_focus"], serde_json::json!(1));
+        assert_eq!(value["stats"]["staged_hides"], serde_json::json!(0));
+        assert_eq!(
+            value["receipt_views"],
+            serde_json::json!([{"output": "o1", "view": "ws2"}])
+        );
+        assert_eq!(value["receipt_proof_mono_ms"], serde_json::json!(40));
+    }
+
+    #[test]
+    fn diag_phase_stamps_cover_show_arrival_departure_and_homing() {
+        // New phase stamps ride the same row with exact joins: staged
+        // arrival pre-proof plus post-apply homing rows (target-filtered)
+        // plus departure proof, with empty phases staying null/empty.
+        let mut stats = stats_shell();
+        stats.show_posts_done_mono_ms = Some(34);
+        stats.arrivals_visible_mono_ms = Some(35);
+        stats.departures_hidden_mono_ms = Some(37);
+        stats.receipt_homing = vec![("w3".to_owned(), "o1".to_owned(), "ws2".to_owned())];
+        stats.receipt_homing_total = 1;
+        let value = apply_diag_value(
+            9,
+            &reply_shell(),
+            "accepted",
+            "select-workspace",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[("o1".to_owned(), "ws2".to_owned())],
+            Some(40),
+        );
+        assert_eq!(
+            value["stats"]["show_posts_done_mono_ms"],
+            serde_json::json!(34)
+        );
+        assert_eq!(
+            value["stats"]["arrivals_visible_mono_ms"],
+            serde_json::json!(35)
+        );
+        assert_eq!(
+            value["stats"]["departures_hidden_mono_ms"],
+            serde_json::json!(37)
+        );
+        assert_eq!(
+            value["receipt_homing"],
+            serde_json::json!([{"window": "w3", "output": "o1", "view": "ws2"}])
+        );
+        assert_eq!(value["receipt_homing_omitted"], serde_json::json!(0));
+        // Empty arrival stays N/A: null stamps plus empty maps, never
+        // fabricated success.
+        let empty = apply_diag_value(
+            10,
+            &reply_shell(),
+            "accepted",
+            "select-workspace",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            Some(41),
+        );
+        assert!(empty["stats"]["show_posts_done_mono_ms"].is_null());
+        assert!(empty["stats"]["arrivals_visible_mono_ms"].is_null());
+        assert!(empty["stats"]["departures_hidden_mono_ms"].is_null());
+        assert_eq!(empty["receipt_homing"], serde_json::json!([]));
+        assert_eq!(empty["receipt_homing_omitted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn diag_emitted_row_carries_command_receipt_stamp() {
+        // The emitted world-apply row carries the pass-entry owner-clock
+        // receipt stamp, so end-to-end latency reads command receipt to
+        // last observed phase with no new query and no payload bytes.
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-recv-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let log = dir.join("recv.log");
+        assert!(log_apply_diag(
+            &log,
+            true,
+            9,
+            &reply_shell(),
+            "accepted",
+            "select-workspace",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+            false,
+            false,
+            4242,
+        ));
+        let text = std::fs::read_to_string(&log).expect("row");
+        let row: serde_json::Value =
+            serde_json::from_str(text.trim()).expect("row is one JSON line");
+        assert_eq!(row["recv_mono_ms"], serde_json::json!(4242));
+        assert_eq!(row["command"], serde_json::json!("select-workspace"));
     }
 
     #[test]
@@ -4054,6 +4569,7 @@ mod apply_diag_tests {
                 api: None,
                 call_mono_ms: None,
                 ret_mono_ms: None,
+                fg_proof_mono_ms: None,
                 gui_dispatch: None,
                 gui_landing: None,
                 primitive_called: false,
@@ -4093,6 +4609,8 @@ mod apply_diag_tests {
             Some("w1".to_owned()),
             true,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(value["cursor_hit"], serde_json::json!("w1"));
         let minted = value["focus_effects"].as_array().expect("effects");
@@ -4149,6 +4667,7 @@ mod apply_diag_tests {
                 api: None,
                 call_mono_ms: None,
                 ret_mono_ms: None,
+                fg_proof_mono_ms: None,
                 gui_dispatch: None,
                 gui_landing: None,
                 primitive_called,
@@ -4241,6 +4760,8 @@ mod apply_diag_tests {
             Some("w1".to_owned()),
             true,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
         assert_eq!(dispatch.len(), 3);
@@ -4311,6 +4832,7 @@ mod apply_diag_tests {
                 api: None,
                 call_mono_ms: None,
                 ret_mono_ms: None,
+                fg_proof_mono_ms: None,
                 gui_dispatch: None,
                 gui_landing: None,
                 primitive_called: false,
@@ -4379,6 +4901,8 @@ mod apply_diag_tests {
             Some("w1".to_owned()),
             true,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
         assert_eq!(dispatch.len(), 2);
@@ -4435,6 +4959,7 @@ mod apply_diag_tests {
                 api: Some(super::super::world_diff::FOCUS_SETTER_API),
                 call_mono_ms: Some(7),
                 ret_mono_ms: Some(9),
+                fg_proof_mono_ms: Some(10),
                 gui_dispatch: None,
                 gui_landing: None,
                 primitive_called: true,
@@ -4478,6 +5003,8 @@ mod apply_diag_tests {
             Some("w0".to_owned()),
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
         assert_eq!(dispatch.len(), 1);
@@ -4527,6 +5054,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let holds = value["clear_holds"].as_array().expect("clear holds");
         assert_eq!(holds.len(), 1);
@@ -4570,6 +5099,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let holds = value["clear_holds"].as_array().expect("clear holds");
         assert_eq!(holds.len(), super::super::world_diff::MAX_CLEAR_HOLD_DIAG);
@@ -4612,6 +5143,7 @@ mod apply_diag_tests {
                     api: None,
                     call_mono_ms: None,
                     ret_mono_ms: None,
+                    fg_proof_mono_ms: None,
                     gui_dispatch: None,
                     gui_landing: None,
                     primitive_called: false,
@@ -4652,6 +5184,8 @@ mod apply_diag_tests {
             Some("w0".to_owned()),
             true,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(value["cursor_hit"], serde_json::json!("w0"));
         assert_eq!(value["ffc_enabled"], serde_json::json!(true));
@@ -4701,6 +5235,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let rows = value["members"].as_array().expect("member rows");
         assert!(rows.is_empty());
@@ -4733,6 +5269,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(value["command"], serde_json::json!("send"));
         let rendered = value.to_string();
@@ -4842,6 +5380,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         let desired = value["desired_operations"]
             .as_array()
@@ -4946,6 +5486,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(
             value["frames"].as_array().expect("frames").len(),
@@ -5080,6 +5622,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         // Provenance joins desire to attempts: same request/revision/
         // observation on the row as the accepted reply, same window/op
@@ -5229,6 +5773,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         assert_eq!(
             value["desired_windows"]
@@ -5290,6 +5836,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(empty["desired_windows"], serde_json::json!([]));
         assert_eq!(empty["desired_windows_omitted"], serde_json::json!(0));
@@ -5327,6 +5875,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         let duplicate = apply_diag_value(
             33,
@@ -5342,6 +5892,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         assert_eq!(duplicate["delivery"], serde_json::json!("duplicate"));
         assert_eq!(duplicate["request"], accepted["request"]);
@@ -5373,6 +5925,8 @@ mod apply_diag_tests {
             None,
             false,
             &report,
+            &[],
+            None,
         );
         assert_eq!(consumed["delivery"], serde_json::json!("command-consumed"));
         assert_eq!(consumed["command_consumed"], serde_json::json!(true));
@@ -5421,6 +5975,8 @@ mod apply_diag_tests {
             None,
             false,
             &foreign,
+            &[],
+            None,
         );
         assert_eq!(value["geometry_status"], serde_json::json!("mismatch"));
         assert_eq!(value["desired_geometry"], serde_json::json!([]));
@@ -5530,6 +6086,8 @@ mod apply_diag_tests {
             None,
             false,
             &report_shell(vec![]),
+            &[],
+            None,
         );
         assert_eq!(
             value["operation_settled"]
@@ -5541,5 +6099,767 @@ mod apply_diag_tests {
         assert_eq!(value["members"], serde_json::json!([]));
         assert_eq!(value["geometry_status"], serde_json::json!("paired"));
         let _ = paired;
+    }
+
+    #[test]
+    fn red_receipt_proof_views_present_and_bounded() {
+        let mut rows: Vec<(String, String)> = (0..17)
+            .map(|n| (format!("o{n:02}"), format!("ws{n:02}")))
+            .collect();
+        rows.sort();
+        let value = apply_diag_value(
+            90,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &rows,
+            Some(777),
+        );
+        let kept = value["receipt_views"].as_array().expect("receipt rows");
+        assert_eq!(kept.len(), MAX_APPLY_DIAG_RECEIPT_VIEWS);
+        assert_eq!(value["receipt_views_omitted"], serde_json::json!(1));
+        assert_eq!(kept[0]["output"], serde_json::json!("o00"));
+        assert_eq!(value["receipt_proof_mono_ms"], serde_json::json!(777));
+    }
+
+    #[test]
+    fn red_focus_proof_mono_ms_present() {
+        let mut stats = stats_shell();
+        stats
+            .focus_dispatch
+            .push(super::super::world_diff::FocusDispatchDiag {
+                id: "fx-1".to_owned(),
+                target: "w1".to_owned(),
+                kind: "focus",
+                dispatched: true,
+                setter: "accepted",
+                foreground: true,
+                hold: None,
+                fg_baseline: None,
+                fg_live: None,
+                api: Some(super::super::world_diff::FOCUS_SETTER_API),
+                call_mono_ms: Some(100),
+                ret_mono_ms: Some(101),
+                fg_proof_mono_ms: Some(102),
+                gui_dispatch: None,
+                gui_landing: None,
+                primitive_called: true,
+                native_return: Some(true),
+                prime_inserted: None,
+                hwnd: Some(11),
+                pid: Some(22),
+                creation: Some("c1".to_owned()),
+                refusal_gate: None,
+                refusal_reason: None,
+                target_visible: None,
+                target_cloaked: None,
+                target_hidden: None,
+                fg_identity: None,
+                fg_gate_identity: None,
+                fg_veto_kind: None,
+                fg_readable: None,
+                fg_shell: None,
+                fg_fullscreen: None,
+                fg_visible: None,
+                fg_exe: None,
+                desktop_exception: false,
+            });
+        let value = apply_diag_value(
+            91,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+        );
+        let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
+        assert_eq!(dispatch.len(), 1);
+        assert_eq!(dispatch[0]["ret_mono_ms"], serde_json::json!(101));
+        assert_eq!(dispatch[0]["fg_proof_mono_ms"], serde_json::json!(102));
+        assert!(
+            dispatch[0]["fg_proof_mono_ms"].as_u64().unwrap()
+                >= dispatch[0]["ret_mono_ms"].as_u64().unwrap()
+        );
+    }
+
+    #[test]
+    fn red_empty_receipt_never_echoes_prior() {
+        let value = apply_diag_value(
+            92,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            Some(555),
+        );
+        assert_eq!(value["receipt_views"], serde_json::json!([]));
+        assert_eq!(value["receipt_views_omitted"], serde_json::json!(0));
+        assert_eq!(value["receipt_proof_mono_ms"], serde_json::json!(555));
+    }
+
+    #[test]
+    fn receipt_changed_tracks_bounded_proof_status() {
+        assert!(receipt_proof_changed(&[], &[], 0, None));
+        let prior_missing = serde_json::json!({"event": "world-apply"});
+        assert!(receipt_proof_changed(&[], &[], 0, Some(&prior_missing)));
+        let rows = vec![("o1".to_owned(), "ws1".to_owned())];
+        let prior = apply_diag_value(
+            1,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &rows,
+            Some(100),
+        );
+        assert!(!receipt_proof_changed(&rows, &[], 0, Some(&prior)));
+        let same_restamped = apply_diag_value(
+            1,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &rows,
+            Some(999),
+        );
+        assert!(!receipt_proof_changed(&rows, &[], 0, Some(&same_restamped)));
+        assert!(receipt_proof_changed(&[], &[], 0, Some(&prior)));
+        assert!(receipt_proof_changed(
+            &[("o1".to_owned(), "ws2".to_owned())],
+            &[],
+            0,
+            Some(&prior)
+        ));
+        let empty_prior = apply_diag_value(
+            2,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            Some(101),
+        );
+        assert!(receipt_proof_changed(&rows, &[], 0, Some(&empty_prior)));
+    }
+
+    #[test]
+    fn show_boundary_reports_latest_accepted_show() {
+        // The show-phase boundary derives from the drained diagnostic
+        // rows (direction plus verdict), never from drain timing: posted
+        // shows stamp their latest return, while hides alone, refused
+        // shows, and empty batches never do. The drain folds batches with
+        // a monotonic max, so an older late batch never moves the
+        // boundary backward. Clock-only trace data; no native query.
+        use super::super::world_diff::show_boundary_ret_max;
+        use crate::product_hide::sys::VisibilityPostDiag;
+        let posted_show = |ret: u64| VisibilityPostDiag {
+            hwnd: 1,
+            hide: false,
+            api: "ShowWindowAsync",
+            flags: None,
+            cmd: Some(1),
+            posted: true,
+            call_mono_ms: 10,
+            ret_mono_ms: ret,
+        };
+        let posted_hide = VisibilityPostDiag {
+            hide: true,
+            ..posted_show(11)
+        };
+        let refused_show = VisibilityPostDiag {
+            posted: false,
+            ..posted_show(12)
+        };
+        assert_eq!(show_boundary_ret_max(&[]), None);
+        assert_eq!(show_boundary_ret_max(&[posted_hide]), None);
+        assert_eq!(show_boundary_ret_max(&[refused_show]), None);
+        assert_eq!(show_boundary_ret_max(&[posted_hide, refused_show]), None);
+        assert_eq!(show_boundary_ret_max(&[posted_show(11)]), Some(11));
+        assert_eq!(
+            show_boundary_ret_max(&[posted_hide, posted_show(9), posted_show(14)]),
+            Some(14)
+        );
+        // Multiple drains fold monotonically: 20, then an older 14 and a
+        // hides-only batch hold at 20, then 25 advances to 25.
+        let first = [posted_show(20)];
+        let second = [posted_show(14)];
+        let third = [posted_hide];
+        let fourth = [posted_show(25)];
+        let mut stamp: Option<u64> = None;
+        for batch in [&first[..], &second[..], &third[..], &fourth[..]] {
+            if let Some(latest) = show_boundary_ret_max(batch) {
+                stamp = Some(stamp.map_or(latest, |prev| prev.max(latest)));
+            }
+        }
+        assert_eq!(stamp, Some(25));
+    }
+
+    #[test]
+    fn receipt_changed_tracks_homing_only_move() {
+        // A homing-only proof move (views unchanged) must still log: the
+        // arrival map is first-class proof, never silently quiet on a
+        // views-only match. Bounded truncation stays honest in both maps.
+        let views = vec![("o1".to_owned(), "ws1".to_owned())];
+        let homing = vec![("w1".to_owned(), "o1".to_owned(), "ws1".to_owned())];
+        let mut stats = stats_shell();
+        stats.receipt_homing = homing.clone();
+        stats.receipt_homing_total = homing.len();
+        let prior = apply_diag_value(
+            1,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &views,
+            Some(100),
+        );
+        assert!(receipt_proof_changed(
+            &views,
+            &homing,
+            homing.len(),
+            Some(&prior)
+        ));
+        let with_homing = apply_diag_value(
+            1,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &views,
+            Some(101),
+        );
+        assert!(!receipt_proof_changed(
+            &views,
+            &homing,
+            homing.len(),
+            Some(&with_homing)
+        ));
+        assert!(receipt_proof_changed(&views, &[], 0, Some(&with_homing)));
+        // Over-cap homing truncates with honest omission: 17 fresh entries
+        // keep 16 rows and report 1 omitted.
+        let big: Vec<(String, String, String)> = (0..17)
+            .map(|n| (format!("w{n:02}"), "o1".to_owned(), "ws1".to_owned()))
+            .collect();
+        let mut big_stats = stats_shell();
+        big_stats.receipt_homing_total = big.len();
+        big_stats.receipt_homing =
+            big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        let big_value = apply_diag_value(
+            2,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &big_stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &views,
+            Some(102),
+        );
+        assert_eq!(
+            big_value["receipt_homing"]
+                .as_array()
+                .expect("homing rows")
+                .len(),
+            super::super::world_diff::MAX_RECEIPT_HOMING_DIAG
+        );
+        assert_eq!(big_value["receipt_homing_omitted"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn stable17_homing_stays_quiet() {
+        let views = vec![("o1".to_owned(), "ws1".to_owned())];
+        let big: Vec<(String, String, String)> = (0..17)
+            .map(|n| (format!("w{n:02}"), "o1".to_owned(), "ws1".to_owned()))
+            .collect();
+        let mut big_stats = stats_shell();
+        big_stats.receipt_homing_total = big.len();
+        big_stats.receipt_homing =
+            big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        let prior = apply_diag_value(
+            2,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &big_stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &views,
+            Some(102),
+        );
+        let current_prefix = big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        assert!(
+            !receipt_proof_changed(&views, &current_prefix, 17, Some(&prior)),
+            "stable 17-row homing must stay quiet"
+        );
+    }
+
+    #[test]
+    fn homing_count_change_logs() {
+        let views = vec![("o1".to_owned(), "ws1".to_owned())];
+        let big: Vec<(String, String, String)> = (0..17)
+            .map(|n| (format!("w{n:02}"), "o1".to_owned(), "ws1".to_owned()))
+            .collect();
+        let mut big_stats = stats_shell();
+        big_stats.receipt_homing_total = big.len();
+        big_stats.receipt_homing =
+            big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        let prior = apply_diag_value(
+            2,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &big_stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &views,
+            Some(102),
+        );
+        let current_prefix = big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        assert!(
+            receipt_proof_changed(&views, &current_prefix, 18, Some(&prior)),
+            "same prefix with changed total must log"
+        );
+    }
+
+    #[test]
+    fn homing_prefix_change_logs() {
+        let views = vec![("o1".to_owned(), "ws1".to_owned())];
+        let big: Vec<(String, String, String)> = (0..17)
+            .map(|n| (format!("w{n:02}"), "o1".to_owned(), "ws1".to_owned()))
+            .collect();
+        let mut big_stats = stats_shell();
+        big_stats.receipt_homing_total = big.len();
+        big_stats.receipt_homing =
+            big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        let prior = apply_diag_value(
+            2,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &big_stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &views,
+            Some(102),
+        );
+        let mut changed_prefix = big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        changed_prefix[0] = ("w99".to_owned(), "o1".to_owned(), "ws1".to_owned());
+        assert!(
+            receipt_proof_changed(&views, &changed_prefix, 17, Some(&prior)),
+            "changed prefix with same total must log"
+        );
+    }
+
+    #[test]
+    fn tail_only_homing_stays_quiet() {
+        // Tail-only change past the cap keeps the same prefix and total,
+        // so it stays quiet: the omitted tail is unavailable, never
+        // whole-map proof. No tail census, hash, or history is kept.
+        let views = vec![("o1".to_owned(), "ws1".to_owned())];
+        let big: Vec<(String, String, String)> = (0..17)
+            .map(|n| (format!("w{n:02}"), "o1".to_owned(), "ws1".to_owned()))
+            .collect();
+        let mut big_stats = stats_shell();
+        big_stats.receipt_homing_total = big.len();
+        big_stats.receipt_homing =
+            big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        let prior = apply_diag_value(
+            3,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &big_stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &views,
+            Some(103),
+        );
+        let tail_changed = big[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        let mut full_tail_changed = big.clone();
+        full_tail_changed[16] = ("w99".to_owned(), "o1".to_owned(), "ws1".to_owned());
+        let current_prefix =
+            full_tail_changed[..super::super::world_diff::MAX_RECEIPT_HOMING_DIAG].to_vec();
+        assert_eq!(current_prefix, tail_changed);
+        assert!(
+            !receipt_proof_changed(&views, &current_prefix, 17, Some(&prior)),
+            "tail-only change past the cap must stay omitted-quiet"
+        );
+    }
+
+    #[test]
+    fn receipt_only_row_emits_once_then_stays_quiet_with_aba() {
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let reply = reply_shell();
+        let report = report_shell(vec![]);
+        let route = || {
+            fresh_route_value(
+                "",
+                None,
+                "focused-output-last-focused",
+                "cursor-output",
+                (None, None, None, "retained"),
+            )
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-receipt-aba-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let log = dir.join("apply.log");
+        let count_rows = || {
+            std::fs::read_to_string(&log)
+                .map(|text| text.lines().filter(|line| !line.is_empty()).count())
+                .unwrap_or(0)
+        };
+        let empty: Vec<(String, String)> = Vec::new();
+        let proven = vec![("o1".to_owned(), "ws2".to_owned())];
+        let first = apply_diag_value(
+            10,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            route(),
+            None,
+            false,
+            &report,
+            &empty,
+            Some(10),
+        );
+        assert!(receipt_proof_changed(&empty, &[], 0, None));
+        assert!(log_apply_diag(
+            &log,
+            true,
+            10,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            route(),
+            None,
+            false,
+            &report,
+            &empty,
+            Some(10),
+            false,
+            true,
+            0,
+        ));
+        assert_eq!(count_rows(), 1);
+        assert!(!receipt_proof_changed(&empty, &[], 0, Some(&first)));
+        assert!(!log_apply_diag(
+            &log,
+            true,
+            11,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            route(),
+            None,
+            false,
+            &report,
+            &empty,
+            Some(11),
+            false,
+            false,
+            0,
+        ));
+        assert_eq!(count_rows(), 1);
+        assert!(receipt_proof_changed(&proven, &[], 0, Some(&first)));
+        assert!(log_apply_diag(
+            &log,
+            true,
+            12,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            route(),
+            None,
+            false,
+            &report,
+            &proven,
+            Some(12),
+            false,
+            true,
+            0,
+        ));
+        assert_eq!(count_rows(), 2);
+        let second = apply_diag_value(
+            12,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            route(),
+            None,
+            false,
+            &report,
+            &proven,
+            Some(12),
+        );
+        assert!(!receipt_proof_changed(&proven, &[], 0, Some(&second)));
+        assert!(!log_apply_diag(
+            &log,
+            true,
+            13,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            route(),
+            None,
+            false,
+            &report,
+            &proven,
+            Some(13),
+            false,
+            false,
+            0,
+        ));
+        assert_eq!(count_rows(), 2);
+        assert!(receipt_proof_changed(&empty, &[], 0, Some(&second)));
+        assert!(log_apply_diag(
+            &log,
+            true,
+            14,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            route(),
+            None,
+            false,
+            &report,
+            &empty,
+            Some(14),
+            false,
+            true,
+            0,
+        ));
+        assert_eq!(count_rows(), 3);
+        assert!(!log.join("extra").exists());
+    }
+
+    #[test]
+    fn trace_off_builds_no_receipt_payload_or_file_even_on_change() {
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let reply = reply_shell();
+        let report = report_shell(vec![]);
+        let dir = std::env::temp_dir().join(format!(
+            "tiler-receipt-dark-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let log = dir.join("dark.log");
+        assert!(!log_apply_diag(
+            &log,
+            false,
+            20,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            fresh_route_value(
+                "",
+                None,
+                "focused-output-last-focused",
+                "cursor-output",
+                (None, None, None, "retained"),
+            ),
+            None,
+            false,
+            &report,
+            &[("o1".to_owned(), "ws2".to_owned())],
+            Some(20),
+            false,
+            true,
+            0,
+        ));
+        assert!(!log.exists());
+        let value = apply_diag_value(
+            21,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report,
+            &[],
+            None,
+        );
+        assert_eq!(value["receipt_views"], serde_json::json!([]));
+        assert!(value["receipt_proof_mono_ms"].is_null());
+    }
+
+    #[test]
+    fn paired_copy_retains_exact_proof_timestamp_and_rows() {
+        let rows = vec![("o1".to_owned(), "ws2".to_owned())];
+        let proof = apply_diag_value(
+            30,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &rows,
+            Some(4242),
+        );
+        assert_eq!(proof["receipt_proof_mono_ms"], serde_json::json!(4242));
+        let mut paired = proof.clone();
+        paired["paired"] = serde_json::json!(true);
+        assert_eq!(paired["receipt_proof_mono_ms"], serde_json::json!(4242));
+        assert_eq!(paired["receipt_views"], proof["receipt_views"]);
     }
 }

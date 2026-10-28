@@ -1405,32 +1405,18 @@ impl<'a> LiveNative<'a> {
         out
     }
 
-    /// Shared view-batch core; only the hide/reveal lane differs.
-    /// Full native view proof still gates the caller exactly as before.
-    fn switch_view_inner(
+    /// Staged hide-only half of [`Self::switch_view_inner`]: commits
+    /// leaving-window hides through the same lane without revealing
+    /// arrivals, recording the same-pass nonactivating departure record
+    /// for the focus lane. Returns `(ambiguous, refused)`; the caller maps
+    /// it to the `Result` shape and re-reads proof instead of trusting the
+    /// setter booleans.
+    fn hide_departures(
         &mut self,
         output: &str,
         logical: &str,
         nonactivating: bool,
-    ) -> Result<bool, ()> {
-        if (self.prims.hook_pending)() {
-            return Err(());
-        }
-        if !self
-            .core_rings
-            .get(output)
-            .is_some_and(|ring| ring.iter().any(|id| id == logical))
-        {
-            return Ok(false);
-        }
-        if self
-            .proven_views
-            .get(output)
-            .is_some_and(|view| view == logical)
-            && self.read_view(output).as_deref() == Some(logical)
-        {
-            return Ok(true);
-        }
+    ) -> (bool, bool) {
         let leaving: Vec<(WindowKey, ProcessIdentity)> = self
             .core_homing
             .iter()
@@ -1438,19 +1424,6 @@ impl<'a> LiveNative<'a> {
             .filter_map(|(token, _)| {
                 let key = self.key_of(token)?;
                 if self.sticky.contains_key(&key) {
-                    return None;
-                }
-                let identity = self.member_identity.get(&key).cloned()?;
-                Some((key, identity))
-            })
-            .collect();
-        let entering: Vec<(WindowKey, ProcessIdentity)> = self
-            .core_homing
-            .iter()
-            .filter(|(_, (member_out, ws))| member_out == output && ws == logical)
-            .filter_map(|(token, _)| {
-                let key = self.key_of(token)?;
-                if !self.hidden_claims.contains_key(&key) {
                     return None;
                 }
                 let identity = self.member_identity.get(&key).cloned()?;
@@ -1486,6 +1459,35 @@ impl<'a> LiveNative<'a> {
                 }
             }
         }
+        (ambiguous, refused)
+    }
+
+    /// Staged reveal-only half of [`Self::switch_view_inner`]: commits
+    /// entering-window reveals through the same lane without hiding
+    /// departures. Returns the same `(ambiguous, refused)` outcome shape as
+    /// [`Self::hide_departures`]; the caller re-reads arrival proof instead
+    /// of trusting the setter booleans.
+    fn reveal_entering(
+        &mut self,
+        output: &str,
+        logical: &str,
+        nonactivating: bool,
+    ) -> (bool, bool) {
+        let entering: Vec<(WindowKey, ProcessIdentity)> = self
+            .core_homing
+            .iter()
+            .filter(|(_, (member_out, ws))| member_out == output && ws == logical)
+            .filter_map(|(token, _)| {
+                let key = self.key_of(token)?;
+                if !self.hidden_claims.contains_key(&key) {
+                    return None;
+                }
+                let identity = self.member_identity.get(&key).cloned()?;
+                Some((key, identity))
+            })
+            .collect();
+        let mut ambiguous = false;
+        let mut refused = false;
         for (key, expected) in &entering {
             match self.commit_reveal_with(key, expected, nonactivating) {
                 Ok(()) => {}
@@ -1497,10 +1499,42 @@ impl<'a> LiveNative<'a> {
                 }
             }
         }
-        if ambiguous {
+        (ambiguous, refused)
+    }
+
+    /// Shared view-batch core; only the hide/reveal lane differs.
+    /// Full native view proof still gates the caller exactly as before.
+    fn switch_view_inner(
+        &mut self,
+        output: &str,
+        logical: &str,
+        nonactivating: bool,
+    ) -> Result<bool, ()> {
+        if (self.prims.hook_pending)() {
             return Err(());
         }
-        if refused {
+        if !self
+            .core_rings
+            .get(output)
+            .is_some_and(|ring| ring.iter().any(|id| id == logical))
+        {
+            return Ok(false);
+        }
+        if self
+            .proven_views
+            .get(output)
+            .is_some_and(|view| view == logical)
+            && self.read_view(output).as_deref() == Some(logical)
+        {
+            return Ok(true);
+        }
+        let (hide_ambiguous, hide_refused) = self.hide_departures(output, logical, nonactivating);
+        let (reveal_ambiguous, reveal_refused) =
+            self.reveal_entering(output, logical, nonactivating);
+        if hide_ambiguous || reveal_ambiguous {
+            return Err(());
+        }
+        if hide_refused || reveal_refused {
             return Ok(false);
         }
         Ok(true)
@@ -2041,6 +2075,59 @@ impl NativeOps for LiveNative<'_> {
 
     fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
         self.switch_view_inner(output, logical, true)
+    }
+
+    fn reveal_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        // Same pre-gates as the combined switch: racing input fails
+        // closed, an unknown target refuses. Arrival proof itself stays
+        // with the caller (fresh re-reads, never the setter boolean).
+        if (self.prims.hook_pending)() {
+            return Err(());
+        }
+        if !self
+            .core_rings
+            .get(output)
+            .is_some_and(|ring| ring.iter().any(|id| id == logical))
+        {
+            return Ok(false);
+        }
+        let (ambiguous, refused) = self.reveal_entering(output, logical, true);
+        if ambiguous {
+            return Err(());
+        }
+        if refused {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn hide_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        // Same pre-gates as the combined switch. The caller revalidates
+        // latest desire and proven foreground before reaching this setter.
+        if (self.prims.hook_pending)() {
+            return Err(());
+        }
+        if !self
+            .core_rings
+            .get(output)
+            .is_some_and(|ring| ring.iter().any(|id| id == logical))
+        {
+            return Ok(false);
+        }
+        let (ambiguous, refused) = self.hide_departures(output, logical, true);
+        if ambiguous {
+            return Err(());
+        }
+        if refused {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn selection_arrival_allows(&mut self, effect_id: &str, target: &str) -> bool {
+        self.selection_arrival
+            .as_ref()
+            .is_some_and(|grant| grant.allows(effect_id, target))
     }
 
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {

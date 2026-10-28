@@ -477,6 +477,32 @@ pub(super) trait NativeOps {
     fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
         self.switch_view(output, logical)
     }
+    /// Staged reveal-only half of a nonactivating pure-view switch: posts
+    /// entering-window shows as a bounded nonactivating batch without
+    /// hiding departures or touching the proven view. Only the staged
+    /// explicit-selection lane calls this, after the usual scope, freshness
+    /// and at-most-once reveal arming. Fail-closed default (`Err`): seams
+    /// that do not stage hold instead of inventing arrival proof.
+    fn reveal_view_nonactivating(&mut self, _output: &str, _logical: &str) -> Result<bool, ()> {
+        Err(())
+    }
+    /// Staged hide-only half of a nonactivating pure-view switch: hides
+    /// current departures after the staged arrival focus proves foreground.
+    /// Only the staged lane calls this, revalidating latest desire, safety
+    /// and foreground first under the usual at-most-once view arming.
+    /// Fail-closed default (`Err`): seams that do not stage never hide late.
+    fn hide_view_nonactivating(&mut self, _output: &str, _logical: &str) -> Result<bool, ()> {
+        Err(())
+    }
+    /// Whether one exact one-shot focus effect rides the fresh accepted
+    /// explicit-selection arrival grant (effect id AND dispatch target).
+    /// Pure policy lookup, never a native read: only an effect the command
+    /// path armed for this pass qualifies, so directional, follow,
+    /// admission, cursor-follow and observation effects never stage.
+    /// Fail-closed default (`false`).
+    fn selection_arrival_allows(&mut self, _effect_id: &str, _target: &str) -> bool {
+        false
+    }
     /// Current foreground state (`Unknown` when unreadable: fail closed).
     /// Compared by HWND plus PID plus process creation, so a recycled HWND
     /// or a changed foreign window never equals the baseline.
@@ -587,6 +613,25 @@ pub(super) struct FakeNative {
     pub(super) throw_membership: HashSet<String>,
     pub(super) fail_view: HashSet<String>,
     pub(super) throw_view: HashSet<String>,
+    /// Staged-lane script dispositions, keyed `"{output}/{workspace}"` like
+    /// the view sets above. Reveal refusal/throw holds the whole staged
+    /// switch unspent; hide refusal/throw holds the operation pending with
+    /// its view phase spent (a possibly-executed hide never repeats).
+    pub(super) fail_reveal: HashSet<String>,
+    pub(super) throw_reveal: HashSet<String>,
+    pub(super) fail_hide: HashSet<String>,
+    pub(super) throw_hide: HashSet<String>,
+    /// Arrival tokens the staged reveal leaves hidden (partial-reveal
+    /// input): arrival-ready proof must fail while any is set.
+    pub(super) skip_reveal: HashSet<String>,
+    /// Every staged reveal/hide setter attempted, in order (vetoes and
+    /// unproven lanes record nothing: no setter ran).
+    pub(super) reveal_calls: Vec<(String, String)>,
+    pub(super) hide_calls: Vec<(String, String)>,
+    /// Scripted fresh accepted explicit-selection arrival grant (see
+    /// [`SelectionArrivalGrant`]): `None` takes the legacy single-shot
+    /// view path exactly as before.
+    pub(super) arrival_grant: Option<SelectionArrivalGrant>,
     pub(super) fail_focus: HashSet<String>,
     pub(super) throw_focus: HashSet<String>,
     /// Scripted clear dispositions for the offline lane: explicit native
@@ -745,6 +790,59 @@ impl NativeOps for FakeNative {
     }
     fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
         self.switch_view(output, logical)
+    }
+    fn reveal_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        let key = format!("{output}/{logical}");
+        // Every setter attempt records, including refusals and throws: the
+        // attempt (not this count) is the at-most-once proof the core
+        // reconciles.
+        self.reveal_calls
+            .push((output.to_owned(), logical.to_owned()));
+        if self.throw_reveal.contains(&key) {
+            return Err(());
+        }
+        if self.fail_reveal.contains(&key) {
+            self.note_write();
+            return Ok(false);
+        }
+        for window in self.windows.values_mut() {
+            if window.output == output
+                && window.workspace == logical
+                && !self.skip_reveal.contains(&window.token)
+            {
+                window.hidden = false;
+            }
+        }
+        self.note_write();
+        Ok(true)
+    }
+    fn hide_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        let key = format!("{output}/{logical}");
+        // Every setter attempt records, including refusals and throws: the
+        // attempt (not this count) is the at-most-once proof the core
+        // reconciles.
+        self.hide_calls
+            .push((output.to_owned(), logical.to_owned()));
+        if self.throw_hide.contains(&key) {
+            return Err(());
+        }
+        if self.fail_hide.contains(&key) {
+            self.note_write();
+            return Ok(false);
+        }
+        for window in self.windows.values_mut() {
+            if window.output == output && window.workspace != logical {
+                window.hidden = true;
+            }
+        }
+        self.views.insert(output.to_owned(), logical.to_owned());
+        self.note_write();
+        Ok(true)
+    }
+    fn selection_arrival_allows(&mut self, effect_id: &str, target: &str) -> bool {
+        self.arrival_grant
+            .as_ref()
+            .is_some_and(|grant| grant.allows(effect_id, target))
     }
     fn foreground_state(&mut self) -> ForegroundState {
         let token = match self.foreground.as_deref() {
@@ -981,6 +1079,12 @@ pub(super) struct EffectTracker {
     /// immediately before its setter; exact target proof may settle without
     /// a dispatch.
     pub(super) spent_views: HashSet<String>,
+    /// Distinct staged-reveal phases per owning core view id, armed
+    /// immediately before the reveal setter exactly like [`Self::spent_views`]:
+    /// a possibly-executed reveal never repeats, and a later pass re-proves
+    /// arrival-ready from live reads instead of re-actuating. Retired only by
+    /// [`HostDiff::prune`] (operation left the reply) or generation reset.
+    pub(super) spent_reveals: HashSet<String>,
     /// Cursor-warp watermark (stage 4b): the observation sequence whose
     /// warp already ran. One mechanical warp per observation at most, so a
     /// duplicate delivery of the same accepted reply never moves the
@@ -1042,6 +1146,16 @@ impl EffectTracker {
     pub(super) fn mark_view_spent(&mut self, owning: &str) -> bool {
         self.spent_views.insert(owning.to_owned())
     }
+    /// Reveal-phase fence: true once the owning core view id attempted its
+    /// staged arrival reveal. Late arrival proof never clears this.
+    pub(super) fn is_reveal_spent(&self, owning: &str) -> bool {
+        self.spent_reveals.contains(owning)
+    }
+    /// Arm one reveal phase immediately before its setter. Returns false
+    /// when already spent: duplicates never reapply.
+    pub(super) fn mark_reveal_spent(&mut self, owning: &str) -> bool {
+        self.spent_reveals.insert(owning.to_owned())
+    }
     /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
     /// ffc-enabled)` differs from the last emitted row (or no row has been
     /// emitted yet). Pure comparison over already-captured values: no
@@ -1067,6 +1181,7 @@ impl EffectTracker {
         self.spent_floats.clear();
         self.spent_clears.clear();
         self.spent_views.clear();
+        self.spent_reveals.clear();
         self.last_warp_obs = None;
     }
 }
@@ -1294,6 +1409,9 @@ impl HostDiff {
             .spent_views
             .retain(|op| live_ops.contains(op.as_str()));
         self.effects
+            .spent_reveals
+            .retain(|op| live_ops.contains(op.as_str()));
+        self.effects
             .attempted_members
             .retain(|key| live_ops.contains(key.0.as_str()));
     }
@@ -1488,6 +1606,12 @@ pub(super) struct FocusDispatchDiag {
     /// landing, trace off, or veto). Sampled at `ret_mono_ms`, never at
     /// edge time.
     pub(super) gui_landing: Option<String>,
+    /// Owner-clock stamp immediately after the existing `is_foreground`
+    /// read-back (TRACE-ONLY, never a native reread). `ret_mono_ms` is the
+    /// native return before proof; this is the result proof context. `Some`
+    /// only on dispatched rows that ran the read-back; `None` on skipped
+    /// rows that never proved. Never a setter-return-as-proof claim.
+    pub(super) fg_proof_mono_ms: Option<u64>,
     /// Whether the native setter primitive actually ran for this row
     /// (adapter dispatched vs primitive executed). Pre-primitive vetos
     /// report `dispatched: true` with `primitive_called: false`.
@@ -1623,6 +1747,11 @@ pub(super) const MAX_CLEAR_HOLD_DIAG: usize = 8;
 /// drift the cap.
 pub(super) const MAX_VISIBILITY_DIAG: usize = crate::product_hide::sys::MAX_VISIBILITY_POSTS;
 
+/// Bound for post-apply proven-homing trace rows per pass, matching the
+/// fresh receipt-views cap in the tick diag so arrival and full-view maps
+/// share one bound with honest omission.
+pub(super) const MAX_RECEIPT_HOMING_DIAG: usize = 16;
+
 /// Honest outcome of one diff pass. `partial` is true when at least one
 /// write landed while at least one row held: never atomic.
 /// `migration_total`/`migration_proven` bound the migration membership
@@ -1648,6 +1777,13 @@ pub(super) struct ApplyStats {
     pub(super) held: usize,
     pub(super) migration_total: usize,
     pub(super) migration_proven: usize,
+    /// Staged workspace-switch phases dispatched this pass: arrival reveals
+    /// that proved ready, arrival-ready focuses dispatched, and departure
+    /// hides that completed with view proof. Observability only; the
+    /// at-most-once fences live in [`EffectTracker`].
+    pub(super) staged_reveals: usize,
+    pub(super) staged_focus: usize,
+    pub(super) staged_hides: usize,
     pub(super) stopped_mid_apply: bool,
     pub(super) partial: bool,
     /// Trace-only per-effect focus dispatch rows (see [`FocusDispatchDiag`]).
@@ -1691,6 +1827,37 @@ pub(super) struct ApplyStats {
     /// Trace-only count of every executed visibility post this pass,
     /// including rows past the [`MAX_VISIBILITY_DIAG`] storage cap.
     pub(super) visibility_total: usize,
+    /// Trace-only all-show post boundary: the latest accepted show
+    /// `ret_mono_ms` across the drained post rows (`hide == false` with a
+    /// posted verdict) this pass. `None` when no show posted (empty arrival,
+    /// fully held, or hides-only): never fabricated. Hides alone and
+    /// refused shows never stamp this; per-row `posted` verdicts stay
+    /// authoritative. Clock-only trace data riding the existing rows; no
+    /// new native query.
+    pub(super) show_posts_done_mono_ms: Option<u64>,
+    /// Trace-only pre-focus all-arrivals-visible proof time: owner-clock
+    /// stamp immediately after the existing `staged_arrival_ready` fresh
+    /// re-reads prove all required arrivals visible (staged lane only).
+    /// `None` on the current-order path (no pre-focus arrival gate) and on
+    /// empty targets (no arrival means no authority): never fabricated.
+    /// The post-apply homing map (`receipt_homing` at `receipt_proof_mono_ms`)
+    /// is the current-order equivalent arrival proof. Clock-only; the
+    /// proof itself is the unchanged existing re-reads.
+    pub(super) arrivals_visible_mono_ms: Option<u64>,
+    /// Trace-only departure-hidden proof time: owner-clock stamp immediately
+    /// after an existing successful view `read_view` proof (single-shot
+    /// switch, staged hide, migration/follow views). `None` when no view
+    /// proof completed this pass. Clock-only alongside the existing proof;
+    /// the setter boolean never decides.
+    pub(super) departures_hidden_mono_ms: Option<u64>,
+    /// Trace-only post-apply arrival map: fresh homing proven by the
+    /// existing `receipt_updates` read, captured before merged applied
+    /// transfers (fresh-only). Triples `(token, output, view)`, sorted and
+    /// bounded; empty means zero fresh arrival proof, never an echo.
+    pub(super) receipt_homing: Vec<(String, String, String)>,
+    /// Trace-only count of every fresh proven homing entry this pass,
+    /// including rows past the cap.
+    pub(super) receipt_homing_total: usize,
 }
 
 impl ApplyStats {
@@ -1787,6 +1954,82 @@ fn scope_actuatable(
         }
         ScopeAuthority::Hold(_) => false,
     }
+}
+
+/// Staged arrival-ready proof for one target view: every required arrival
+/// the reply homes to `(out, ws)` reads live-visible with its desired home
+/// and, for tiled rows carrying a published frame, the exact target frame.
+/// Departing members may still be visible: this is a partial view-authority
+/// proof, never `read_view` completeness (inactive-hidden still gates the
+/// later departure hide and the final proof). Sticky arrivals prove through
+/// visibility like every other arrival; hidden, iconic, frameless,
+/// factless, cloaked, or lifetime-drifted arrivals never prove. Identity
+/// and lifetime gate each arrival against its observation-time baseline:
+/// the live full key (HWND plus PID plus creation, never HWND alone) must
+/// equal the baseline key and the live tag must match the stored tag, so a
+/// recycled HWND or rotated tag never proves. Facts fail closed: a missing
+/// read or a cloaked live read never proves. Identity/visibility re-checks
+/// bracket the homing/frame reads, so drift between the re-reads fails
+/// closed. An empty target never stages: no arrival means no arrival-ready
+/// authority. The setter boolean never decides: only these fresh re-reads
+/// do (same read kinds as before: window, homing, frame).
+fn staged_arrival_ready(
+    ops: &mut dyn NativeOps,
+    reply: &WorldReply,
+    fresh: &FreshHost,
+    out: &str,
+    ws: &str,
+) -> bool {
+    fn live_arrival_ok(
+        live: &FreshWindow,
+        base: &FreshWindow,
+        stored: &HashMap<String, String>,
+    ) -> bool {
+        if live.key != base.key || !lifetime_ok(live, stored) {
+            return false;
+        }
+        if live.hidden || live.iconic || live.frame.is_none() {
+            return false;
+        }
+        live.facts.is_some_and(|facts| !facts.cloaked)
+    }
+    let mut required = 0usize;
+    for row in &reply.windows {
+        if row.output.0 != out || row.workspace != ws {
+            continue;
+        }
+        required += 1;
+        let token = row.lifetime.0.as_str();
+        let Some(base) = fresh.baseline.get(token) else {
+            return false;
+        };
+        let Some(live) = ops.read_window(token) else {
+            return false;
+        };
+        if !live_arrival_ok(&live, base, &fresh.stored_tags) {
+            return false;
+        }
+        if ops
+            .read_homing(token)
+            .is_none_or(|(home_out, home_ws)| home_out != out || home_ws != ws)
+        {
+            return false;
+        }
+        if let Some(target) = row.effective_frame
+            && ops.read_frame(token).is_none_or(|frame| frame != target)
+        {
+            return false;
+        }
+        // Close the drift window: the homing/frame reads above must sit
+        // between two consistent identity/visibility snapshots.
+        let Some(live) = ops.read_window(token) else {
+            return false;
+        };
+        if !live_arrival_ok(&live, base, &fresh.stored_tags) {
+            return false;
+        }
+    }
+    required > 0
 }
 
 /// Freshness plus racing-input poll before a setter. Consumes at most one
@@ -2111,6 +2354,7 @@ fn actuate_follow_view(
     });
     if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
         stats.view_writes += 1;
+        stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
         FollowOutcome::Dispatched
     } else {
         // Membership is proven but the follow view is not: hold without
@@ -2131,6 +2375,20 @@ fn finalize(stats: &mut ApplyStats) {
     stats.partial = writes > 0 && (stats.held > 0 || stats.stopped_mid_apply);
 }
 
+/// Latest accepted show `ret_mono_ms` in one drained visibility-post
+/// batch: the max return stamp over posted shows (`hide == false` with a
+/// posted verdict). Hides alone, refused shows, and empty batches yield
+/// `None`, so a hides-only pass never stamps the show phase. Clock-only
+/// trace data from the existing rows; no new native query.
+pub(super) fn show_boundary_ret_max(
+    rows: &[crate::product_hide::sys::VisibilityPostDiag],
+) -> Option<u64> {
+    rows.iter()
+        .filter(|row| !row.hide && row.posted)
+        .map(|row| row.ret_mono_ms)
+        .max()
+}
+
 /// Drain executed visibility posts (actual host API per hide/reveal post)
 /// into the pass stats with an honest omitted count. The source
 /// accumulator already capped storage with its own unbounded total, so
@@ -2140,6 +2398,18 @@ fn finalize(stats: &mut ApplyStats) {
 fn drain_visibility_posts(stats: &mut ApplyStats, ops: &mut dyn NativeOps) {
     let (rows, total) = ops.take_visibility_posts();
     let returned = rows.len();
+    // All-show post boundary: the latest accepted show return stamp in
+    // this drain. Monotonic max across drains, so the value is the
+    // boundary after every show issued this pass. No posted show means
+    // no stamp (empty arrival and hides-only stays N/A, never
+    // fabricated). No new native query.
+    if let Some(latest) = show_boundary_ret_max(&rows) {
+        stats.show_posts_done_mono_ms = Some(
+            stats
+                .show_posts_done_mono_ms
+                .map_or(latest, |prev| prev.max(latest)),
+        );
+    }
     for row in rows {
         stats.note_visibility_post(row);
     }
@@ -2388,6 +2658,12 @@ pub(super) fn apply_world_reply(
     // Outputs whose pure view took the nonactivating lane; only effects
     // homed there take the identity guard.
     let mut na_views: HashSet<(String, String)> = HashSet::new();
+    // Staged explicit-selection arrivals revealed this pass
+    // `(output, workspace, operation)`: arrival-ready focus may dispatch
+    // while departures are still visible; departures hide only after the
+    // staged focus proves foreground. Per-pass only: nothing carries across
+    // revisions, so a superseding intent starts from live reads.
+    let mut staged_views: Vec<(String, String, String)> = Vec::new();
 
     // 1. Window rows: per-property authority against FRESH proof.
     for row in &reply.windows {
@@ -3101,12 +3377,6 @@ pub(super) fn apply_world_reply(
         }
         let pre = ops.read_view(&out);
         let baseline = fresh.views.get(&out).cloned();
-        // Arm the view phase immediately before dispatch; late proofs
-        // cannot rearm it, so a possibly-executed switch never repeats.
-        if !effects.mark_view_spent(&op) {
-            stats.held += 1;
-            continue;
-        }
         // The nonactivating lane only for a pure view matching a focus
         // target's proven live homing. Everything else stays pumped.
         let na = reply.effects.iter().any(|effect| {
@@ -3115,6 +3385,70 @@ pub(super) fn apply_world_reply(
                     .read_homing(&effect.target.0)
                     .is_some_and(|(o, w)| o == out && w == ws)
         });
+        // Staged explicit-selection lane: a pure NA view whose arrival
+        // focus effect rides the fresh accepted selection grant. Only an
+        // exact grant-bound effect stages; every other NA view keeps the
+        // single-shot switch below. Empty targets never stage (no arrival
+        // means no arrival-ready authority, see `staged_arrival_ready`).
+        let staged = na
+            && reply.effects.iter().any(|effect| {
+                effect.kind == EffectKind::Focus
+                    && ops
+                        .read_homing(&effect.target.0)
+                        .is_some_and(|(o, w)| o == out && w == ws)
+                    && ops.selection_arrival_allows(&effect.id, &effect.target.0)
+            });
+        if staged {
+            // Reveal arrivals first without hiding departures: the focus
+            // below dispatches on arrival-ready proof while departures are
+            // still visible, and departures hide only after proven
+            // foreground (section 4b). No ViewAttempt row here: the
+            // departure-hide attempt is the single completing row for this
+            // operation, exactly like the single-shot path below. A
+            // possibly-executed reveal never repeats: later passes re-prove
+            // from live reads instead of re-actuating.
+            if effects.is_reveal_spent(&op) {
+                if staged_arrival_ready(ops, reply, fresh, &out, &ws) {
+                    na_views.insert((out.clone(), ws.clone()));
+                    staged_views.push((out.clone(), ws.clone(), op.clone()));
+                    // Pre-focus all-arrivals-visible proof: clock-only stamp
+                    // after the existing re-reads prove every required arrival
+                    // visible. Last view wins, so multi-view switches report
+                    // when all arrivals proved. No new native query.
+                    stats.arrivals_visible_mono_ms = Some(super::trace::log_mono_ms());
+                } else {
+                    stats.held += 1;
+                }
+                continue;
+            }
+            if !effects.mark_reveal_spent(&op) {
+                stats.held += 1;
+                continue;
+            }
+            let revealed = ops.reveal_view_nonactivating(&out, &ws);
+            if revealed.is_ok() && staged_arrival_ready(ops, reply, fresh, &out, &ws) {
+                stats.staged_reveals += 1;
+                na_views.insert((out.clone(), ws.clone()));
+                staged_views.push((out, ws, op));
+                stats.arrivals_visible_mono_ms = Some(super::trace::log_mono_ms());
+            } else {
+                // Setter refusal, throw, or unproven arrivals: no focus, no
+                // hide, no re-actuation. The spent reveal re-proves on a
+                // later pass; the core holds from its retained desire.
+                stats.held += 1;
+            }
+            if gate.current_obs != entry_obs {
+                stats.stopped_mid_apply = true;
+                break;
+            }
+            continue;
+        }
+        // Arm the view phase immediately before dispatch; late proofs
+        // cannot rearm it, so a possibly-executed switch never repeats.
+        if !effects.mark_view_spent(&op) {
+            stats.held += 1;
+            continue;
+        }
         let result = if na {
             ops.switch_view_nonactivating(&out, &ws)
         } else {
@@ -3139,6 +3473,7 @@ pub(super) fn apply_world_reply(
         });
         if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
             stats.view_writes += 1;
+            stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
             if na {
                 na_views.insert((out.clone(), ws.clone()));
             }
@@ -3366,6 +3701,7 @@ pub(super) fn apply_world_reply(
             if proof.as_deref() == Some(ws.as_str()) {
                 if result.is_ok() {
                     stats.view_writes += 1;
+                    stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
                 }
             } else {
                 stats.held += 1;
@@ -3430,6 +3766,7 @@ pub(super) fn apply_world_reply(
                 if proof.as_deref() == Some(refill_ws.as_str()) {
                     if result.is_ok() {
                         stats.view_writes += 1;
+                        stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
                     }
                 } else {
                     stats.held += 1;
@@ -3477,6 +3814,7 @@ pub(super) fn apply_world_reply(
                         api: None,
                         call_mono_ms: None,
                         ret_mono_ms: None,
+                        fg_proof_mono_ms: None,
                         gui_dispatch: None,
                         gui_landing: None,
                         primitive_called: false,
@@ -3579,7 +3917,9 @@ pub(super) fn apply_world_reply(
         // Switch-before-focus liveness: the CURRENT live homing (not the
         // observation preimage) must name a controlled live scope whose
         // exact-output view is shown. A moved lifetime focuses only where
-        // it actually lives.
+        // it actually lives. The staged lane below relaxes only the
+        // shown-view half under arrival-ready proof.
+        let mut arrival_ready_lane = false;
         let Some((live_out, live_ws)) = ops.read_homing(&effect.target.0) else {
             push_focus!(false, "skipped", false, Some("unknown-homing"));
             stats.held += 1;
@@ -3591,11 +3931,26 @@ pub(super) fn apply_world_reply(
             continue;
         }
         if ops.read_view(&live_out).as_deref() != Some(live_ws.as_str()) {
-            // The live workspace is not shown on its output: focusing now
-            // would steal focus from the wrong view. Hold for the view.
-            push_focus!(false, "skipped", false, Some("view-not-shown"));
-            stats.held += 1;
-            continue;
+            // Staged explicit-selection lane: the arrival reveal proved
+            // every required arrival visible under this exact grant-bound
+            // effect, so this one-shot focus may dispatch while departures
+            // are still visible. The full `read_view` proof (inactive
+            // hidden) still gates the departure hide and the final view:
+            // this authorizes only this focus, never the switch. Anything
+            // else holds for the view exactly as before.
+            let staged_ready = staged_views
+                .iter()
+                .any(|(o, w, _)| o == &live_out && w == &live_ws)
+                && ops.selection_arrival_allows(&effect.id, &effect.target.0)
+                && staged_arrival_ready(ops, reply, fresh, &live_out, &live_ws);
+            if !staged_ready {
+                // The live workspace is not shown on its output: focusing now
+                // would steal focus from the wrong view. Hold for the view.
+                push_focus!(false, "skipped", false, Some("view-not-shown"));
+                stats.held += 1;
+                continue;
+            }
+            arrival_ready_lane = true;
         }
         // NA-only foreground identity guard: a changed or unreadable
         // foreground during the nonactivating switch vetoes unless the
@@ -3697,6 +4052,7 @@ pub(super) fn apply_world_reply(
                             api: None,
                             call_mono_ms: None,
                             ret_mono_ms: None,
+                            fg_proof_mono_ms: None,
                             gui_dispatch: None,
                             gui_landing: None,
                             primitive_called: false,
@@ -3730,6 +4086,9 @@ pub(super) fn apply_world_reply(
             push_focus!(false, "skipped", false, Some("already-spent"));
             continue;
         }
+        if arrival_ready_lane {
+            stats.staged_focus += 1;
+        }
         // Foreground read-back is authoritative even if the setter throws:
         // a throwing call that still landed proves focus. The per-call
         // record rides the trace on the shared log `mono_ms` basis with
@@ -3749,6 +4108,10 @@ pub(super) fn apply_world_reply(
             Err(()) => "threw",
         };
         let foreground = ops.is_foreground(&effect.target.0);
+        // Owner-clock proof stamp immediately after the existing read-back:
+        // result context only, never a setter-return-as-proof claim. No
+        // native reread, no authority or product logic change.
+        let fg_proof_mono_ms = Some(super::trace::log_mono_ms());
         let gui_landing = if foreground {
             gui_resolution_label(ops, base.key.hwnd)
         } else {
@@ -3838,6 +4201,7 @@ pub(super) fn apply_world_reply(
                 },
                 call_mono_ms: call_diag.call_mono_ms,
                 ret_mono_ms: call_diag.ret_mono_ms,
+                fg_proof_mono_ms,
                 gui_dispatch: call_diag.gui_before.as_ref().map(gui_trace_label),
                 gui_landing,
                 primitive_called: call_diag.primitive_called,
@@ -3866,6 +4230,111 @@ pub(super) fn apply_world_reply(
             stats.effects += 1;
             fg_baseline = ops.foreground_state();
         } else {
+            stats.held += 1;
+        }
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+    }
+
+    // 4b. Staged departure hides: for every arrival revealed above, hide
+    // current departures only after the staged focus proves foreground.
+    // The spent one-shot effect is the dispatch proof (same-pass dispatch
+    // or a previously accepted setter whose landing only now proves); the
+    // live foreground read is the landing proof. Latest desire, safety and
+    // foreground revalidate at this boundary exactly like the single-shot
+    // view switch: a changed foreground invalidates the
+    // no-foreground-hide premise and holds instead of hiding an obsolete
+    // foreground. The hide attempt is the single completing ViewAttempt
+    // row for the operation; the view phase arms before dispatch so a
+    // possibly-executed hide never repeats, and refusal/throw holds the
+    // operation truthfully pending. No timers, waits, retries, replay, or
+    // recursive redispatch: later passes converge event-driven on the next
+    // reply, re-proving (never re-actuating) the spent reveal and the
+    // spent focus.
+    for (out, ws, op) in std::mem::take(&mut staged_views) {
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+        // The staged focus effect for this view: an exact grant-bound
+        // one-shot focus effect homed there whose setter already ran.
+        let staged_effect = reply.effects.iter().find(|effect| {
+            effect.kind == EffectKind::Focus
+                && ops
+                    .read_homing(&effect.target.0)
+                    .is_some_and(|(home_out, home_ws)| home_out == out && home_ws == ws)
+                && ops.selection_arrival_allows(&effect.id, &effect.target.0)
+                && effects.spent_effects.contains(&effect.id)
+        });
+        let Some(staged_effect) = staged_effect else {
+            // Focus never dispatched (held or vetoed above): departures
+            // stay visible and the operation stays pending with no
+            // actuation and no spent view.
+            stats.held += 1;
+            continue;
+        };
+        if !ops.is_foreground(&staged_effect.target.0) {
+            // Setter ran but foreground is unproven (async landing still in
+            // flight, refusal, or supersession): never hide while another
+            // window may hold foreground. A later pass hides without
+            // re-focusing once the landing proves.
+            stats.held += 1;
+            continue;
+        }
+        if !scope_actuatable(reply, ops, &out, &ws) {
+            stats.held += 1;
+            continue;
+        }
+        if !ensure_fresh(reply, gate, entry_obs, ops) {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+        if reply
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == op && t.held)
+            || effects.is_view_spent(&op)
+        {
+            // Held or already hidden: a possibly-executed hide never
+            // repeats. The core holds from its retained raw evidence.
+            stats.held += 1;
+            continue;
+        }
+        let pre = ops.read_view(&out);
+        let baseline = fresh.views.get(&out).cloned();
+        // Arm the view phase immediately before dispatch; late proofs
+        // cannot rearm it.
+        if !effects.mark_view_spent(&op) {
+            stats.held += 1;
+            continue;
+        }
+        let result = ops.hide_view_nonactivating(&out, &ws);
+        let proof = ops.read_view(&out);
+        // Mechanical facts only: the setter boolean is never proof, and no
+        // outcome is claimed here. The core settles from this attempt plus
+        // the next staged echo.
+        view_out.push(ViewAttempt {
+            operation_id: op,
+            target_output: OutputId(out.clone()),
+            target_workspace: ws.clone(),
+            setter: frame_setter(result.as_ref().ok().copied()),
+            pre,
+            post: proof.clone(),
+            baseline,
+            native_pre: None,
+            native_post: None,
+            native_baseline: None,
+            attempt_ms,
+        });
+        if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
+            stats.view_writes += 1;
+            stats.staged_hides += 1;
+            stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
+        } else {
+            // Setter refusal, throw, or unreadable proof: the reported raw
+            // attempt holds the core without re-actuation.
             stats.held += 1;
         }
         if gate.current_obs != entry_obs {

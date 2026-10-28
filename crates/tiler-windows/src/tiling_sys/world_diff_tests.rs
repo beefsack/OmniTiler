@@ -12,7 +12,7 @@ use super::rmax03_adapter_tests::test_state;
 use super::world_capture::{capture_world, resolve_cursor_hit};
 use super::world_diff::{
     ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, GuiFocusState, HostDiff,
-    MAX_CLEAR_HOLD_DIAG, NativeOps, apply_world_reply,
+    MAX_CLEAR_HOLD_DIAG, NativeOps, SelectionArrivalGrant, apply_world_reply,
 };
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
@@ -7051,4 +7051,409 @@ fn born_clear_uncontrolled_scope_vetoes_with_refusal_like_directional() {
     assert_eq!(clear_out[0].setter, FrameSetter::Refused);
     assert_eq!(clear_out[0].pre_maximized, Some(true));
     assert!(native.clear_calls.is_empty(), "vetoes never dispatch");
+}
+
+// --- staged workspace switch prototype (explicit-selection arrival-ready) ---
+
+/// Occupied -> occupied return rig: `w1` visible on `ws1` holding the
+/// foreground, `w2` hidden on `ws2`. The reply selects `ws2` with an
+/// explicit `fx-7` arrival focus effect for `w2`.
+struct StagedRig {
+    out: String,
+    ws2: String,
+    reply: WorldReply,
+}
+
+fn staged_shapes() -> (Rig, FreshHost, FakeNative, StagedRig) {
+    let rig = rig();
+    let ws2 = "ws2".to_owned();
+    let (diff_probe, fresh_base, _) = converted(&rig);
+    let _ = diff_probe;
+    let mut fresh = fresh_base;
+    // Departure stays homed/visible; arrival starts hidden on the target.
+    if let Some(base) = fresh.baseline.get_mut("w2") {
+        base.workspace = ws2.clone();
+        base.hidden = true;
+    }
+    fresh.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut native = FakeNative::seeded(&fresh);
+    if let Some(live) = native.windows.get_mut("w2") {
+        live.workspace = ws2.clone();
+        live.hidden = true;
+    }
+    native.windows.get_mut("w1").expect("live w1").frame = Some(rect(0, 0, 800, 600));
+    native.windows.get_mut("w2").expect("live w2").frame = Some(rect(0, 0, 800, 600));
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    native.foreground = Some("w1".to_owned());
+    let mut reply = reply_shell(
+        7,
+        1,
+        &[
+            (rig.out.as_str(), rig.ws.as_str()),
+            (rig.out.as_str(), ws2.as_str()),
+        ],
+    );
+    reply
+        .windows
+        .push(tiled_row(&rig.out, &rig.ws, "w1", rect(0, 0, 800, 600)));
+    reply
+        .windows
+        .push(tiled_row(&rig.out, &ws2, "w2", rect(0, 0, 800, 600)));
+    reply
+        .transfers
+        .push(view_transfer("op-view-9", &rig.out, &ws2));
+    reply.effects.push(OneShotEffect {
+        id: "fx-7".to_owned(),
+        kind: EffectKind::Focus,
+        target: WindowId("w2".to_owned()),
+        issued_revision: 1,
+    });
+    let staged = StagedRig {
+        out: rig.out.clone(),
+        ws2,
+        reply,
+    };
+    (rig, fresh, native, staged)
+}
+
+fn staged_grant(staged: &StagedRig) -> SelectionArrivalGrant {
+    let command = WorldCommand::SelectWorkspace {
+        output: OutputId(staged.out.clone()),
+        workspace: staged.ws2.clone(),
+    };
+    SelectionArrivalGrant::for_accepted(Some(&command), Some(7), &staged.reply, "accepted")
+        .expect("select must mint the arrival grant")
+}
+
+fn staged_apply(
+    diff: &mut HostDiff,
+    reply: &WorldReply,
+    fresh: &FreshHost,
+    native: &mut FakeNative,
+) -> (
+    ApplyStats,
+    Vec<tiler_core::world_report::MemberAttempt>,
+    Vec<tiler_core::world_report::ViewAttempt>,
+) {
+    apply(diff, reply, fresh, native)
+}
+
+/// Full staged order: reveal arrivals -> arrival-ready focus while the
+/// departure is still visible -> proven foreground -> hide departures.
+#[test]
+fn staged_switch_reveals_focuses_then_hides() {
+    let (_rig, fresh, mut native, staged) = staged_shapes();
+    native.arrival_grant = Some(staged_grant(&staged));
+    let mut diff = diff_at(7);
+    let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(
+        native.reveal_calls,
+        vec![(staged.out.clone(), staged.ws2.clone())],
+        "arrivals reveal first"
+    );
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(row.dispatched, "arrival-ready focus dispatches");
+    assert!(row.foreground, "foreground proves before departures hide");
+    assert_eq!(
+        native.hide_calls,
+        vec![(staged.out.clone(), staged.ws2.clone())],
+        "departures hide only after proven foreground"
+    );
+    assert_eq!(native.views.get(&staged.out), Some(&staged.ws2));
+    assert!(
+        native.windows.get("w1").expect("w1").hidden,
+        "departure hidden at the end"
+    );
+    assert!(
+        !native.windows.get("w2").expect("w2").hidden,
+        "arrival visible at the end"
+    );
+    assert_eq!(
+        views.len(),
+        1,
+        "one completing hide attempt, never a reveal row"
+    );
+    assert_eq!(views[0].post.as_deref(), Some(staged.ws2.as_str()));
+    assert_eq!(stats.staged_reveals, 1);
+    assert_eq!(stats.staged_focus, 1);
+    assert_eq!(stats.staged_hides, 1);
+    // Settled: a second pass issues no new native work.
+    let (restats, _, _) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1, "no reveal replay");
+    assert_eq!(native.hide_calls.len(), 1, "no hide replay");
+    assert_eq!(restats.staged_reveals, 0);
+    assert_eq!(restats.staged_hides, 0);
+}
+
+/// Without the explicit-selection grant the legacy single-shot path runs:
+/// no split reveal/hide calls, the view still switches under full proof.
+#[test]
+fn staged_switch_without_grant_keeps_legacy_path() {
+    let (_rig, fresh, mut native, staged) = staged_shapes();
+    // The combined single-shot switch reveals synchronously in production;
+    // the offline stand-in scripts that live visibility directly.
+    native.windows.get_mut("w2").expect("live w2").hidden = false;
+    let mut diff = diff_at(7);
+    let (stats, _, _) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert!(
+        native.reveal_calls.is_empty(),
+        "no staged reveal without a grant"
+    );
+    assert!(
+        native.hide_calls.is_empty(),
+        "no staged hide without a grant"
+    );
+    assert_eq!(stats.staged_reveals, 0);
+    assert_eq!(stats.staged_hides, 0);
+    assert_eq!(native.views.get(&staged.out), Some(&staged.ws2));
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    assert!(stats.focus_dispatch[0].dispatched);
+}
+
+/// A stuck arrival never declares ready: focus holds unspent with no
+/// hide, and the healed pass converges without re-dispatching reveal.
+#[test]
+fn staged_switch_partial_arrival_holds_focus_without_hide() {
+    let (_rig, fresh, mut native, staged) = staged_shapes();
+    native.arrival_grant = Some(staged_grant(&staged));
+    native.skip_reveal.insert("w2".to_owned());
+    let mut diff = diff_at(7);
+    let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert!(!row.dispatched);
+    assert_eq!(row.hold, Some("hidden-or-unreadable"));
+    assert!(
+        native.hide_calls.is_empty(),
+        "no departure hide without arrival proof"
+    );
+    assert!(views.is_empty());
+    assert!(stats.held > 0);
+    // Healed: no reveal replay, focus dispatches, departures hide.
+    native.skip_reveal.clear();
+    // The spent reveal's show lands through the host: the next pass
+    // re-proves arrival-ready from live reads without re-actuating.
+    native.windows.get_mut("w2").expect("live w2").hidden = false;
+    let (restats, _, _) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(
+        native.reveal_calls.len(),
+        1,
+        "possibly-executed reveal never repeats"
+    );
+    assert_eq!(restats.focus_dispatch.len(), 1);
+    assert!(restats.focus_dispatch[0].dispatched);
+    assert!(restats.focus_dispatch[0].foreground);
+    assert_eq!(native.hide_calls.len(), 1);
+    assert_eq!(native.views.get(&staged.out), Some(&staged.ws2));
+}
+
+/// Two-arrival staged rig: a healthy focus target `w2` plus a second
+/// required arrival `w3` on the same target view. The focus effect still
+/// targets only `w2`, so the effect-target pre-gates pass while the
+/// second arrival exercises the arrival-ready bracket alone.
+fn staged_shapes_two_arrivals() -> (FreshHost, FakeNative, StagedRig) {
+    let (_rig, mut fresh, mut native, mut staged) = staged_shapes();
+    let key3 = win_key(1003, 2003, "proc-3");
+    let frame = rect(0, 0, 800, 600);
+    fresh.baseline.insert(
+        "w3".to_owned(),
+        FreshWindow {
+            key: key3,
+            token: "w3".to_owned(),
+            frame: Some(frame),
+            observed_frame: Some(frame),
+            facts: Some(plain_facts()),
+            output: staged.out.clone(),
+            workspace: staged.ws2.clone(),
+            iconic: false,
+            hidden: true,
+            sticky: false,
+            floating: false,
+            fit_excluded: false,
+            live_tag: Some("member-tag-1".to_owned()),
+        },
+    );
+    fresh
+        .stored_tags
+        .insert("w3".to_owned(), "member-tag-1".to_owned());
+    native.windows.insert(
+        "w3".to_owned(),
+        fresh.baseline.get("w3").expect("baseline w3").clone(),
+    );
+    let out = staged.out.clone();
+    let ws2 = staged.ws2.clone();
+    staged
+        .reply
+        .windows
+        .push(tiled_row(&out, &ws2, "w3", frame));
+    (fresh, native, staged)
+}
+
+/// A cloaked second arrival never proves ready: the healthy focus target
+/// still holds unspent with no departure hide while any required arrival
+/// reads cloaked.
+#[test]
+fn staged_switch_second_arrival_cloaked_holds_all() {
+    let (fresh, mut native, staged) = staged_shapes_two_arrivals();
+    native.arrival_grant = Some(staged_grant(&staged));
+    // Cloak only the second arrival: the reveal clears hidden but its
+    // live facts still name a cloaked window.
+    let live = native.windows.get_mut("w3").expect("live w3");
+    let mut cloaked = live.facts.expect("live facts");
+    cloaked.cloaked = true;
+    live.facts = Some(cloaked);
+    let mut diff = diff_at(7);
+    let (cstats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1);
+    assert_eq!(cstats.focus_dispatch.len(), 1);
+    assert!(!cstats.focus_dispatch[0].dispatched);
+    assert_eq!(cstats.focus_dispatch[0].hold, Some("view-not-shown"));
+    assert!(
+        native.hide_calls.is_empty(),
+        "no departure hide while the arrival reads cloaked"
+    );
+    assert!(views.is_empty());
+    assert!(cstats.held > 0);
+}
+
+/// A recycled second-arrival identity never proves ready: a live key
+/// that no longer equals its baseline key holds the whole target view
+/// with no focus and no departure hide.
+#[test]
+fn staged_switch_second_arrival_recycled_key_holds_all() {
+    let (fresh, mut native, staged) = staged_shapes_two_arrivals();
+    native.arrival_grant = Some(staged_grant(&staged));
+    // Recycled HWND behind the second arrival token.
+    native.windows.get_mut("w3").expect("live w3").key = win_key(9003, 2003, "proc-3b");
+    let mut diff = diff_at(7);
+    let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    assert!(!stats.focus_dispatch[0].dispatched);
+    assert_eq!(stats.focus_dispatch[0].hold, Some("view-not-shown"));
+    assert!(
+        native.hide_calls.is_empty(),
+        "no departure hide on a recycled arrival identity"
+    );
+    assert!(views.is_empty());
+    assert!(stats.held > 0);
+}
+
+/// A rotated second-arrival lifetime tag never proves ready: the live
+/// tag no longer matches the stored tag, so the whole target view holds
+/// with no focus and no departure hide.
+#[test]
+fn staged_switch_second_arrival_rotated_tag_holds_all() {
+    let (fresh, mut native, staged) = staged_shapes_two_arrivals();
+    native.arrival_grant = Some(staged_grant(&staged));
+    native.windows.get_mut("w3").expect("live w3").live_tag = Some("rotated-tag".to_owned());
+    let mut diff = diff_at(7);
+    let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    assert!(!stats.focus_dispatch[0].dispatched);
+    assert_eq!(stats.focus_dispatch[0].hold, Some("view-not-shown"));
+    assert!(
+        native.hide_calls.is_empty(),
+        "no departure hide on a rotated arrival tag"
+    );
+    assert!(views.is_empty());
+    assert!(stats.held > 0);
+}
+
+/// A factless second arrival never proves ready: a missing live read
+/// fails the whole target view closed with no focus and no hide.
+#[test]
+fn staged_switch_second_arrival_factless_holds_all() {
+    let (fresh, mut native, staged) = staged_shapes_two_arrivals();
+    native.arrival_grant = Some(staged_grant(&staged));
+    native.windows.get_mut("w3").expect("live w3").facts = None;
+    let mut diff = diff_at(7);
+    let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    assert!(!stats.focus_dispatch[0].dispatched);
+    assert_eq!(stats.focus_dispatch[0].hold, Some("view-not-shown"));
+    assert!(
+        native.hide_calls.is_empty(),
+        "no departure hide without arrival facts"
+    );
+    assert!(views.is_empty());
+    assert!(stats.held > 0);
+}
+
+/// An unproven foreground never hides departures: the refused focus
+/// holds truthfully and no later pass re-dispatches or invents proof.
+#[test]
+fn staged_switch_unproven_foreground_never_hides() {
+    let (_rig, fresh, mut native, staged) = staged_shapes();
+    native.arrival_grant = Some(staged_grant(&staged));
+    native.fail_focus.insert("w2".to_owned());
+    let mut diff = diff_at(7);
+    let (stats, _, _) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1);
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    assert!(stats.focus_dispatch[0].dispatched, "setter ran but refused");
+    assert!(!stats.focus_dispatch[0].foreground);
+    assert!(
+        native.hide_calls.is_empty(),
+        "no hide without proven foreground"
+    );
+    assert!(stats.held > 0);
+    assert!(
+        !native.windows.get("w1").expect("w1").hidden,
+        "departure stays visible while pending"
+    );
+    // A later pass still hides nothing and re-dispatches nothing: the
+    // spent effect never steals focus and proof is never fabricated.
+    let (restats, _, reviews) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert!(native.hide_calls.is_empty());
+    assert_eq!(native.reveal_calls.len(), 1);
+    assert_eq!(native.foreground.as_deref(), Some("w1"));
+    assert_eq!(restats.focus_dispatch.len(), 1);
+    assert_eq!(restats.focus_dispatch[0].hold, Some("already-spent"));
+    assert!(reviews.is_empty());
+}
+
+/// P1 paired hide path: a refused departure hide keeps the transfer
+/// pending with the phase spent, so no pass repeats a possibly-executed
+/// hide and none drops the outstanding operation.
+#[test]
+fn staged_switch_refused_hide_stays_pending_without_replay() {
+    let (_rig, fresh, mut native, staged) = staged_shapes();
+    native.arrival_grant = Some(staged_grant(&staged));
+    native
+        .fail_hide
+        .insert(format!("{}/{}", staged.out, staged.ws2));
+    let mut diff = diff_at(7);
+    let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert!(stats.focus_dispatch[0].dispatched);
+    assert!(stats.focus_dispatch[0].foreground);
+    assert_eq!(native.hide_calls.len(), 1);
+    assert!(stats.held > 0, "refused hide holds truthfully");
+    assert!(
+        views
+            .iter()
+            .all(|v| v.post.as_deref() != Some(staged.ws2.as_str())),
+        "no proven view attempt leaves the pass"
+    );
+    let (restats, _, reviews) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(
+        native.hide_calls.len(),
+        1,
+        "possibly-executed hide never repeats"
+    );
+    assert_eq!(native.reveal_calls.len(), 1, "reveal never repeats either");
+    assert!(
+        restats.held > 0,
+        "operation stays outstanding, never silently dropped"
+    );
+    assert!(
+        reviews
+            .iter()
+            .all(|v| v.post.as_deref() != Some(staged.ws2.as_str())),
+        "still no proven view"
+    );
 }
