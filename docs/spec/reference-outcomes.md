@@ -274,14 +274,23 @@ output's MRU. Workspace-return MRU, local navigation and output selection are
 unchanged; no setting for now. Existing
 [R-OUT-03](reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs)
 has a sole destination tile and cannot discriminate these rules.
-D2 (candidate ranking, equal-distance ties, perpendicular overlap, nesting),
-D3 (no-focus origins), D4 (exception,
-fullscreen, maximized, floating and empty destinations) and D5 (macOS
-integration) remain open; no implementation started.
+D2 user decision 2026-10-28: among linked tiled leaves (including nested)
+touching the entry edge in canonical projected allocation, choose the most
+recently focused candidate; without candidate history choose largest
+perpendicular overlap with the source tile, then DFS child order. Gaps/insets
+use the extreme projected tile edge, never observed native frames.
+Delivered offline. Tentative D3 uses source usable-area span for no-focus
+origins (all four directions, no local recovery); tentative D4 retains
+fullscreen/maximized tiled allocation, unchanged safety fences, local-only
+float origin and empty/ineligible no-op; tentative D5 defers macOS hotkeys
+whose crossing flag is disabled. Physical acceptance remains TBD.
 
 | Minimal action sequence | Discriminator |
 | --- | --- |
 | Equal aligned touching outputs: `O1=W1`, `O2=H[W2 W3]`; ordinary tiles, same workspaces/layouts. Focus W3, then directly W1; verify O2 MRU is W3; prevent hover changes; press focus-right once (Omni `Win+Right`; COSMIC `Focus(Right)`, Hyprland `movefocus r`, i3/sway `focus right`) | Edge-nearest selects W2; destination MRU selects W3 |
+| Replace O2 with `V[W2 W3]`; focus W3, then W1; focus-right | OmniTiler W3: both touch the entry edge, candidate MRU wins |
+| No candidate history; source span overlaps W3 more than W2 in `V[W2 W3]`; repeat with equal overlaps | OmniTiler W3, then W2 (DFS first). Pure-selector proof; normal admissions seed core history |
+| Nested `H[V[W2 W3] W4]`; focus W4, then W3, then W1; focus-right | OmniTiler W3: W4 is not an entry-edge candidate; nested W2/W3 are ranked by history |
 
 | Compositor | Target for this sequence shape | Basis |
 | --- | --- | --- |
@@ -289,7 +298,7 @@ integration) remain open; no implementation started.
 | Hyprland | W2 | Source-derived; exact runtime TBD (`NF-X-hyp`) |
 | i3 | W3 | Source-derived; exact runtime TBD (`NF-X-i3`) |
 | sway | W2 | Source-derived; exact runtime TBD (`NF-X-sway`) |
-| OmniTiler (selected D1 2026-10-28) | W2 | Selected, not implemented; exact runtime TBD; no universal edge-nearest consensus (refs split 2:2 on the fixture shape) |
+| OmniTiler (D1/D2 2026-10-28) | W2 | Shared-core regression verified offline; exact native runtime TBD; no universal edge-nearest consensus (refs split 2:2 on the fixture shape). [Evidence](../changes/archive/cross-output-edge-focus.md) |
 
 Relevant knobs and defaults: COSMIC workspace layout Vertical default
 (Horizontal changes Right to `NextWorkspace`), `OutputBound` default;

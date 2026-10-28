@@ -148,10 +148,21 @@ missing facts. Shape:
   the wire), not a remembered window or a local fallback. Encoding is tentative
   (pending user review); behavior is User-approved 2026-10-26. Report genuinely
   absent `focused_global` and normal action-context facts. Core crosses from
-  the current output by existing selection, otherwise no-ops; a contradictory
+  the current output by the shared entry-edge selector, otherwise no-ops; a contradictory
   nonempty observed focus refuses. Missing/null `win` still refuses. Move/send
   still require a subject. Observation-only host focus loss needs no recovery
   command or focus setter. [Decision](../decisions.md#workspaces).
+- Directional output crossing now selects linked destination tiled leaves
+  touching the entry edge in canonical projected allocation (including nested
+  leaves), then candidate MRU, then perpendicular overlap and DFS child order.
+  Workspace-return memory and local focus are unchanged. Tentative extensions:
+  no-focus uses source usable-area span (four directions); retained tiled
+  fullscreen/maximized allocations rank normally; empty/ineligible destinations
+  no-op; float origins stay local-only. Existing native safety/freshness checks
+  remain mandatory. Windows/KDE `FocusDirectional` share this core behavior;
+  no adapter target heuristic is needed. macOS `FocusStep` still disables
+  crossing; hotkey integration is deferred, not delivered by this core change.
+  [Policy and evidence](../decisions.md#cross-output-focus-edge-policy).
 - Workspace return focus now uses one core-owned last-active identity for
   tiled, ordinary floating and sticky windows, then the existing tiled fallback.
   Sticky memory is per intentionally focused workspace, not every visible view.

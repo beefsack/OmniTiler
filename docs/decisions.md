@@ -377,18 +377,37 @@ New decisions:
   not the destination output's MRU; this sides with Hyprland+sway on the
   ordinary-tile fixture. Shared-core policy: applies to all adapters, no
   setting for now. Workspace-return MRU, local navigation and output
-  selection are unchanged. The ordinary-tile fixture demonstrates the rule;
-  float eligibility is not decided here. Open details, implementation not
-  started: D2 candidate ranking, equal-distance ties, perpendicular overlap
-  and nesting; D3 no-focus origins; D4 candidate eligibility for exception,
-  fullscreen, maximized, floating and empty destinations; D5 macOS
-  integration. Separate gap: macOS production
-  hotkeys send `FocusStep` with `cross_output_transfer:false`, which the
-  core routes to a local event
-  (`crates/tiler-macos/src/world_command_map.rs:234-242`,
-  `crates/tiler-core/src/world_operations.rs:93-123,1375-1387`,
-  `crates/tiler-core/src/engine.rs:4307-4312`), so macOS hotkeys cannot
-  cross outputs yet regardless of target policy.
+  selection are unchanged. Delivered offline in the shared core; physical
+  acceptance remains pending.
+  - **D2 user decision (2026-10-28, option a, Hyprland default):** candidates
+    are linked destination tiled leaves, including nested leaves, whose
+    canonical projected allocation touches the entry edge. The most recently
+    focused candidate wins. Without candidate history, choose greatest overlap
+    with the source tile's perpendicular span, then DFS child order. Never use
+    observed native frames. Entry-edge coordinates are the extreme projected
+    tile edges, so gaps/insets do not exclude edge tiles.
+  - History uses the internal destination domain's tiled `last_active` leaf,
+    then its `focus_stack` newest-first; only current linked/homed candidates
+    can win. This preserves the existing last-active-first convention and full
+    tiled MRU order. Closed/floated/moved stale entries miss the candidate set.
+    Admission/convergence already seed this stack; absent history is a fallback,
+    not a reset of existing admission recency. The world workspace-return
+    lifetime slot for tiled/floating/sticky windows is unchanged.
+  - **D3 tentative, user review pending:** no-focus origins use the same
+    selector with source output usable-area span for overlap. Preserve all
+    four crossing directions and never recover a local target. Focused tiled
+    crossing remains horizontal-only.
+  - **D4 tentative, user review pending:** fullscreen/maximized destination
+    members rank by retained tiled allocation; eligibility and safety fences
+    remain unchanged. Float-origin focus stays local-only. Empty/ineligible
+    destinations no-op without clearing state. The internal float-crossing
+    proposal retains its remembered-target behavior; it is not newly enabled.
+  - **D5 tentative, user review pending:** macOS hotkey integration is out of
+    scope. Production `FocusStep` still sends `cross_output_transfer:false`
+    (`crates/tiler-macos/src/world_command_map.rs`), so those hotkeys cannot
+    cross regardless of this target policy. See the
+    [macOS port note](porting/macos-port-notes.md#approved-core-changes-and-deferred-questions).
+  [Offline evidence](changes/archive/cross-output-edge-focus.md).
   [Discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator).
 
 ## Active-drag preview continuity (2026-10-27)
@@ -4619,9 +4638,9 @@ platform API behavior.
   remembered eligible tiled focus, otherwise retain. This deliberately differs
   from COSMIC's configured workspace-axis then output navigation. A float-only
   source can cross. Local tiles are never floating-search targets. The
-  remembered cross-output target in this bullet is superseded for directional
-  crossing by D1 2026-10-28 (destination window nearest the crossed edge
-  wins); float-eligibility details pending D4; implementation unchanged.
+  remembered cross-output target in this historical bullet is superseded for
+  tiled-origin crossing by D1/D2 2026-10-28. Tentative D4 leaves World
+  float-origin focus local-only and the internal float-cross proposal unchanged.
 - User decision D1 2026-10-28 (sides with Hyprland+sway) supersedes the
   remembered cross-output target above and the Engine proposal in R-OUT-03
   for directional crossing: crossing an output boundary focuses the window
@@ -4631,8 +4650,8 @@ platform API behavior.
   No retained in-repo per-window trace proves W3 was O2's MRU, so bug versus
   working-as-designed is unproven; external raw logs were not inspected.
   [Discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator),
-  [policy](#cross-output-focus-edge-policy). No implementation change or
-  reference consensus is inferred.
+  [policy](#cross-output-focus-edge-policy). The shared-core implementation is
+  now verified offline; no reference consensus or physical acceptance is inferred.
 - Local selection and explicit native half-snaps stay host-synchronous in the
   KWin adapter. Rust keeps remembered cross-output focus authority through the
   minimal internal `focus.float_subject` flag, leafless `from_leaf: null`, and
@@ -5120,8 +5139,9 @@ platform API behavior.
   adjacent-output remembered/last-focused target; shared-core policy, no
   setting for now. Workspace-return MRU, local navigation and output
   selection are unchanged. This supersedes only the focus target: R4
-  movement behavior above is unaffected (whole-target wrap stays). Open
-  D2-D5 details; implementation not started.
+  movement behavior above is unaffected (whole-target wrap stays). D2's
+  entry-edge/history/overlap/DFS selector is delivered offline; D3-D5 extensions
+  are tentative pending user review, with macOS hotkey integration deferred.
   [Policy](#cross-output-focus-edge-policy),
   [discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator).
 - The public portable per-domain ownership/session-query API is removed

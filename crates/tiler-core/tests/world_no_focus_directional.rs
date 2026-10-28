@@ -1,7 +1,7 @@
 //! World acceptance for directional focus with no focused window (User
 //! 2026-10-26): full multi-report journeys through the public engine API.
 //! With no focused window, direction-only focus starts at the current
-//! workspace/output and crosses to the adjacent output by the existing
+//! workspace/output and crosses to the adjacent output by the entry-edge
 //! selection, otherwise it stays quiet and never picks a
 //! current-workspace window. Host-caused focus loss on observation-only
 //! reports emits no forced focus, and the crossing converges without a
@@ -144,9 +144,13 @@ fn four_windows() -> Vec<WindowFact> {
 fn no_focus_journey_focuses_remembered_then_converges() {
     // Focus win-a2 and win-b1, lose focus to the desktop (observation
     // only, no forced refocus), then cross right from out-a: the effect
-    // names the remembered out-b selection, never a current-workspace
-    // window. The follow-up observation of the new focus converges
-    // without minting another effect.
+    // names the entry-edge selection, never a current-workspace window.
+    // The 40x90 facts admit the out-b pair side by side (H group, DFS
+    // [win-b2, win-b1]), so only the left leaf win-b2 touches the Right
+    // entry edge; the coherent win-b1 history (last-active plus MRU, both
+    // naming win-b1 after report 3) cannot win because win-b1 is filtered
+    // as a non-edge candidate. The follow-up observation of the new focus
+    // converges without minting another effect.
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let screens = two_outputs();
     accepted(
@@ -203,13 +207,13 @@ fn no_focus_journey_focuses_remembered_then_converges() {
     );
     assert_eq!(
         focus_targets(&crossed),
-        vec!["win-b1".to_owned()],
-        "existing destination selection: {:?}",
+        vec!["win-b2".to_owned()],
+        "entry-edge destination selection: {:?}",
         crossed.effects
     );
     let arrival = accepted(
         &mut engine,
-        &report(6, screens, four_windows(), "win-b1", None, None, None),
+        &report(6, screens, four_windows(), "win-b2", None, None, None),
     );
     assert!(
         focus_targets(&arrival).is_empty(),

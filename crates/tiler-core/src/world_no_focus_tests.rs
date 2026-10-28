@@ -1,10 +1,13 @@
 //! No-focused-window directional focus (User 2026-10-26): with no focused
 //! window, direction-only focus starts at the current workspace/output
 //! resolved from the neutral action context and crosses to the adjacent
-//! output by the existing cross-output selection (the destination domain's
-//! remembered tiled leaf), otherwise it is a no-op. Never selects a
-//! current-workspace window. Companion proof that host-caused focus loss
-//! on an observation-only report emits no forced focus effect.
+//! output by the shared cross-output entry-edge selection (edge-touching
+//! tiled candidates in canonical projected allocation, most-recently
+//! focused candidate first, else largest overlap with the source
+//! usable-area span, else DFS child order), otherwise it is a no-op.
+//! Never selects a current-workspace window. Companion proof that
+//! host-caused focus loss on an observation-only report emits no forced
+//! focus effect.
 
 use crate::directional::{Direction, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
@@ -44,6 +47,13 @@ fn stacked() -> Vec<ScreenReport> {
     ]
 }
 
+fn square_side_by_side() -> Vec<ScreenReport> {
+    vec![
+        screen_sized("out-a", 0, 0, 600, 600, true),
+        screen_sized("out-b", 600, 0, 600, 600, false),
+    ]
+}
+
 fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
@@ -68,6 +78,66 @@ fn unreadable_fact(window: &str, output: &str) -> WindowFact {
         rect: None,
         ..fact(window, output, 0)
     }
+}
+
+fn wide_fact(window: &str, output: &str, x: i32) -> WindowFact {
+    WindowFact {
+        rect: Some(rect(x, 0, 200, 40)),
+        ..fact(window, output, x)
+    }
+}
+
+fn target_tree_shape(
+    engine: &WorldEngine,
+    output: &str,
+) -> (crate::session::DomainKey, Option<crate::directional::Node>) {
+    let view = engine.logical_view(output).expect("view");
+    let key = crate::session::DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(view),
+    };
+    let tree = engine
+        .engine
+        .session(&key)
+        .expect("target session")
+        .snapshot()
+        .domains
+        .iter()
+        .find(|d| d.output == key.output && d.workspace == key.workspace)
+        .and_then(|d| d.tree.clone());
+    (key, tree)
+}
+
+fn dfs_windows_of(
+    tree: &crate::directional::Node,
+    engine: &WorldEngine,
+    key: &crate::session::DomainKey,
+) -> Vec<String> {
+    fn walk(node: &crate::directional::Node, out: &mut Vec<crate::directional::NodeId>) {
+        match node {
+            crate::directional::Node::Leaf { id } => out.push(id.clone()),
+            crate::directional::Node::Group { children, .. } => {
+                for child in children {
+                    walk(child, out);
+                }
+            }
+        }
+    }
+    let mut leaves = Vec::new();
+    walk(tree, &mut leaves);
+    let snap = engine.engine.session(key).expect("session").snapshot();
+    leaves
+        .iter()
+        .map(|leaf| {
+            snap.windows
+                .iter()
+                .find(|l| &l.leaf == leaf)
+                .expect("link")
+                .window
+                .0
+                .clone()
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -244,9 +314,9 @@ fn seeded_history() -> WorldEngine {
 
 #[test]
 fn no_focus_crosses_occupied_origin_to_existing_selection() {
-    // Occupied source with two windows: the crossing still names the
-    // destination's remembered selection, never a current-workspace
-    // window.
+    // Occupied source with two windows: tall facts admit stacked, so
+    // both destination leaves touch the Right entry edge and the seeded
+    // MRU leaf (win-b2) wins. Never a current-workspace window.
     let mut engine = seeded_history();
     let reply = accepted(
         &mut engine,
@@ -269,7 +339,7 @@ fn no_focus_crosses_occupied_origin_to_existing_selection() {
     );
     let focus = focus_effects(&reply);
     assert_eq!(focus.len(), 1, "one focus effect: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "win-b2", "existing selection");
+    assert_eq!(focus[0].target.0, "win-b2", "entry-edge selection");
     assert!(
         focus[0].id.starts_with("fx-"),
         "one-shot id: {}",
@@ -331,6 +401,248 @@ fn no_focus_crosses_empty_origin() {
 }
 
 #[test]
+fn no_focus_wide_target_prefers_edge_leaf_over_mru() {
+    // Wide facts admit side by side: only the left leaf touches the
+    // Right entry edge, so it wins over the seeded MRU right leaf.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = side_by_side();
+    let windows = || {
+        vec![
+            wide_fact("win-a1", "out-a", 10),
+            wide_fact("win-a2", "out-a", 300),
+            wide_fact("win-b1", "out-b", 810),
+            wide_fact("win-b2", "out-b", 1100),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            windows(),
+            vec![],
+            "",
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            windows(),
+            vec![],
+            "win-b1",
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+    let (target_key, tree) = target_tree_shape(&engine, "out-b");
+    let tree = tree.expect("target tree");
+    match &tree {
+        crate::directional::Node::Group { axis, .. } => assert_eq!(
+            *axis,
+            crate::directional::Axis::Horizontal,
+            "wide facts admit side by side: {tree:?}"
+        ),
+        other => panic!("expected H group, got {other:?}"),
+    }
+    assert_eq!(
+        dfs_windows_of(&tree, &engine, &target_key),
+        vec!["win-b2", "win-b1"]
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            screens.clone(),
+            windows(),
+            vec![],
+            "",
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            screens,
+            windows(),
+            vec![],
+            "",
+            Some(11),
+            Some(no_focus_command("right")),
+            Some("out-a"),
+            None,
+        ),
+    );
+    let focus = focus_effects(&reply);
+    assert_eq!(focus.len(), 1, "one focus effect: {:?}", reply.effects);
+    assert_eq!(focus[0].target.0, "win-b2", "edge leaf beats MRU");
+}
+
+#[test]
+fn no_focus_seeded_target_prefers_newer_seeded_leaf() {
+    // Square outputs with tall facts: V-stacked pair, never focused.
+    // Fresh Engine sessions seed per-domain history (newest-first
+    // [win-b1, win-b2] here), so win-b1 wins over DFS-first win-b2.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = square_side_by_side();
+    let windows = || {
+        vec![
+            fact("win-a1", "out-a", 10),
+            fact("win-b1", "out-b", 610),
+            fact("win-b2", "out-b", 620),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            windows(),
+            vec![],
+            "",
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+    let (target_key, tree) = target_tree_shape(&engine, "out-b");
+    let tree = tree.expect("target tree");
+    match &tree {
+        crate::directional::Node::Group { axis, .. } => assert_eq!(
+            *axis,
+            crate::directional::Axis::Vertical,
+            "tall facts admit stacked: {tree:?}"
+        ),
+        other => panic!("expected V group, got {other:?}"),
+    }
+    assert_eq!(
+        dfs_windows_of(&tree, &engine, &target_key),
+        vec!["win-b2", "win-b1"]
+    );
+    let seeded = engine
+        .engine
+        .session(&target_key)
+        .expect("session")
+        .cross_output_history_newest_first(&target_key);
+    assert_eq!(
+        seeded,
+        vec![
+            crate::directional::NodeId("leaf-win-b1".to_owned()),
+            crate::directional::NodeId("leaf-win-b2".to_owned())
+        ],
+        "fresh sessions seed per-domain history"
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens,
+            windows(),
+            vec![],
+            "",
+            Some(11),
+            Some(no_focus_command("right")),
+            Some("out-a"),
+            None,
+        ),
+    );
+    let focus = focus_effects(&reply);
+    assert_eq!(
+        focus.len(),
+        1,
+        "seeded history crosses: {:?}",
+        reply.effects
+    );
+    assert_eq!(focus[0].target.0, "win-b1", "newest seeded leaf");
+}
+
+#[test]
+fn no_focus_down_prefers_mru_among_top_edge_pair() {
+    // Wide facts on the lower output admit side by side: both touch the
+    // Down entry (top) edge, so the seeded MRU leaf wins over DFS-first.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let screens = stacked();
+    let windows = || {
+        vec![
+            wide_fact("win-a1", "out-a", 10),
+            wide_fact("win-c1", "out-c", 10),
+            wide_fact("win-c2", "out-c", 300),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            screens.clone(),
+            windows(),
+            vec![],
+            "",
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            windows(),
+            vec![],
+            "win-c2",
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            screens.clone(),
+            windows(),
+            vec![],
+            "",
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            screens,
+            windows(),
+            vec![],
+            "",
+            Some(11),
+            Some(no_focus_command("down")),
+            Some("out-a"),
+            None,
+        ),
+    );
+    let focus = focus_effects(&reply);
+    assert_eq!(focus.len(), 1, "down crosses: {:?}", reply.effects);
+    assert_eq!(focus[0].target.0, "win-c2", "MRU among edge pair");
+}
+
+#[test]
 fn no_focus_resolves_source_from_cursor_when_foreground_unknown() {
     // No foreground leg: the pointer leg still resolves the current
     // output instead of inventing focus.
@@ -362,8 +674,8 @@ fn no_focus_resolves_source_from_cursor_when_foreground_unknown() {
         reply.effects
     );
     assert_eq!(
-        focus[0].target.0, "win-a2",
-        "left from out-b names out-a selection"
+        focus[0].target.0, "win-a1",
+        "left from out-b names the out-a right-edge leaf (tall facts admit stacked newcomer-first, so the MRU win-a2 does not touch the entry edge)"
     );
 }
 

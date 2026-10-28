@@ -268,15 +268,18 @@ impl super::super::Session {
     /// [`crate::directional::plan_focus`] reports [`FocusPlan::Edge`] in
     /// `direction`, focus crosses to the horizontally adjacent output's
     /// currently selected logical workspace (its domain workspace, which may
-    /// differ from the source workspace), then to that domain's valid
-    /// last-focused tiled leaf/window. No layout/window mutation; only logical
+    /// differ from the source workspace), then to the entry-edge selected
+    /// tiled leaf/window there (edge-touching candidates in canonical
+    /// projected allocation, most-recently-focused candidate first, else
+    /// largest perpendicular overlap with the source allocation, else DFS
+    /// child order). No layout/window mutation; only logical
     /// focus moves on commit via [`Session::verify_focus`].
     ///
     /// Fail-closed before any native action or pending: missing adjacency,
     /// ambiguous duplicate output ids, empty target, exceptional target
     /// window, stale/nonreciprocal target links, changed targets, pending,
-    /// divergence, non-Left/Right directions, or a non-exhausted local edge
-    /// (local focus wins) refuse as [`RefusalKind::Unchanged`]/[`NotTiled`]/
+    /// divergence, non-Left/Right directions, a non-exhausted local edge
+    /// (local focus wins), or no edge-touching eligible target refuse as [`RefusalKind::Unchanged`]/[`NotTiled`]/
     /// [`PartialObservation`]/[`MalformedTopology`] with no plan and no
     /// pending. `Up`/`Down` always refuse [`RefusalKind::Unchanged`] (current
     /// local behavior preserved; no vertical crossing, no workspace cycling).
@@ -334,10 +337,16 @@ impl super::super::Session {
 
     /// Shared cross-output focus implementation. `float_subject` selects the
     /// float-origin subject branch (exception eligibility, leafless source,
-    /// no local-edge check); otherwise the exact tiled
-    /// behavior above. Everything past subject resolution (adjacency,
-    /// reciprocity, remembered target, geometry, dispatch, commit staging)
-    /// is shared so the two origins cannot drift.
+    /// no local-edge check, remembered target with the exact original
+    /// refusal precedence); otherwise the exact tiled behavior above
+    /// (entry-edge selection over canonical allocations). Dispatch and
+    /// commit staging past target selection are shared so the two origins
+    /// cannot drift; every fence applies to both, but in a principled
+    /// split order: float origins resolve the remembered target before the
+    /// capability/projection fences (unchanged legacy order; no geometry
+    /// is needed for the lookup), while tiled origins necessarily project
+    /// first (capability-gated) because ranking consumes the projected
+    /// geometry.
     // Seven-arg proposal signature shared verbatim with the public wrappers
     // plus the origin flag; splitting it would duplicate the fences instead.
     #[allow(clippy::too_many_arguments)]
@@ -488,20 +497,30 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::Unchanged));
         }
         let target_key = target_domain.key();
-        // Target must be non-empty with a valid last-focused tiled leaf.
+        // Target must be non-empty with a selectable tiled leaf.
         let Some(target_tree) = self.trees.get(&target_key).cloned().flatten() else {
             return Err(ProposeError::Refused(RefusalKind::Unchanged));
         };
-        let _ = target_tree;
-        let Some(target_leaf) = self.remembered_leaf(&target_key) else {
-            return Err(ProposeError::Refused(RefusalKind::Unchanged));
+        // Float-origin keeps the exact original refusal precedence: the
+        // remembered tiled target (`Unchanged` when none) and its
+        // eligibility (`NotTiled` when unresolvable or exceptional) precede
+        // the capability and projection fences below. The leaf is retained
+        // for commit after the shared fences; the trailing eligibility
+        // checks re-validate it deterministically.
+        let float_target = if float_subject {
+            let Some(target_leaf) = self.remembered_leaf(&target_key) else {
+                return Err(ProposeError::Refused(RefusalKind::Unchanged));
+            };
+            let Some(target_window) = self.focused_window_for(&target_leaf, &target_key) else {
+                return Err(ProposeError::Refused(RefusalKind::NotTiled));
+            };
+            if self.exceptions.contains_key(&target_window) {
+                return Err(ProposeError::Refused(RefusalKind::NotTiled));
+            }
+            Some(target_leaf)
+        } else {
+            None
         };
-        let Some(target_window) = self.focused_window_for(&target_leaf, &target_key) else {
-            return Err(ProposeError::Refused(RefusalKind::NotTiled));
-        };
-        if self.exceptions.contains_key(&target_window) {
-            return Err(ProposeError::Refused(RefusalKind::NotTiled));
-        }
         if !capabilities.supports(crate::contract::FocusCapability::DirectionalFocus) {
             return Err(ProposeError::Refused(RefusalKind::UnsupportedCapability));
         }
@@ -524,6 +543,89 @@ impl super::super::Session {
         .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(&desired_geometry, &self.windows, &affected) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        // Destination selection per origin. Float subjects keep the
+        // remembered tiled leaf resolved above (unchanged). Tiled subjects
+        // rank the shared entry-edge selector over the canonical
+        // allocations projected above: edge-touching linked leaves in DFS
+        // child order, most-recently-focused candidate first, else largest
+        // perpendicular overlap with the focused source allocation, else
+        // DFS order. The extraction below intentionally duplicates
+        // `select_cross_output_edge_target` instead of calling it: the
+        // focused path already holds the affected-domain geometry projected
+        // with observed hints for dispatch, while that helper is the
+        // read-only no-focus query and re-projects the single target domain
+        // with empty hints (it carries no `SessionObservation`). Same
+        // ranking function, same DFS/edge order; only the projection source
+        // differs. Fullscreen/maximized targets stay tiled links, so they
+        // rank by their retained allocation like any other candidate.
+        let target_leaf = if float_subject {
+            float_target.expect("remembered leaf checked above")
+        } else {
+            let Some(ref focused_id) = focused_leaf else {
+                return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
+            };
+            let Some(source_rect) = desired_geometry.iter().find_map(|entry| {
+                (entry.output == domain.output
+                    && entry.workspace == domain.workspace
+                    && entry.leaf == *focused_id)
+                    .then_some(entry.rect)
+            }) else {
+                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+            };
+            let source_perp = match direction {
+                Direction::Left | Direction::Right => (
+                    source_rect.y,
+                    source_rect
+                        .y
+                        .checked_add(source_rect.h)
+                        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?,
+                ),
+                Direction::Up | Direction::Down => (
+                    source_rect.x,
+                    source_rect
+                        .x
+                        .checked_add(source_rect.w)
+                        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?,
+                ),
+            };
+            let by_leaf: BTreeMap<&NodeId, crate::geometry::Rect> = desired_geometry
+                .iter()
+                .filter(|entry| {
+                    entry.output == target_key.output && entry.workspace == target_key.workspace
+                })
+                .map(|entry| (&entry.leaf, entry.rect))
+                .collect();
+            let mut rects_dfs: Vec<(NodeId, crate::geometry::Rect)> = Vec::new();
+            for leaf in collect_leaves(&target_tree) {
+                let linked = self.windows.values().any(|link| {
+                    link.leaf == leaf
+                        && link.output == target_key.output
+                        && link.workspace == target_key.workspace
+                });
+                if !linked {
+                    continue;
+                }
+                if let Some(rect) = by_leaf.get(&leaf) {
+                    rects_dfs.push((leaf, *rect));
+                }
+            }
+            let history = self.cross_output_history_newest_first(&target_key);
+            let Some(target_leaf) = super::super::world::rank_cross_output_edge_candidates(
+                &rects_dfs,
+                direction,
+                &history,
+                source_perp,
+            ) else {
+                return Err(ProposeError::Refused(RefusalKind::Unchanged));
+            };
+            target_leaf
+        };
+        let Some(target_window) = self.focused_window_for(&target_leaf, &target_key) else {
+            return Err(ProposeError::Refused(RefusalKind::NotTiled));
+        };
+        if self.exceptions.contains_key(&target_window) {
+            return Err(ProposeError::Refused(RefusalKind::NotTiled));
         }
         let intent = FocusIntent {
             domain_output: domain.output.clone(),

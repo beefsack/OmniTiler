@@ -83,6 +83,13 @@ with the fixture-first rules and the signed bundle in
 
 ## Approved core changes and deferred questions
 
+- Shared-core directional crossing now ranks entry-edge tiled leaves by
+  candidate history, then perpendicular overlap and DFS layout order
+  ([D1/D2 policy](../decisions.md#cross-output-focus-edge-policy), offline
+  verified). Production `FocusStep` in `world_command_map.rs` still sends
+  `cross_output_transfer:false`. Tentative D5 defers enabling macOS hotkey
+  crossing to this port; no macOS adapter implementation or native acceptance
+  is included. Reuse the shared selector, not a native target heuristic.
 - Host-owned native adoption (user-approved 2026-10-24, core delivery
   `c7f6af40`, native acceptance separate): macOS reuses the core change the KDE
   port delivers (adopt native Spaces in native order per display,

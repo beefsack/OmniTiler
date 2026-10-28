@@ -52,6 +52,8 @@ pub mod world_tiling_views;
 #[cfg(test)]
 mod capacity_admission_tests;
 #[cfg(test)]
+mod cross_output_edge_tests;
+#[cfg(test)]
 mod fixed_size_admission_tests;
 #[cfg(test)]
 mod focused_fullscreen_presentation_tests;

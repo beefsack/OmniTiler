@@ -1046,6 +1046,95 @@ impl super::Session {
             .then_some(leaf)
     }
 
+    /// Newest-first focus history for cross-output entry-edge ranking on
+    /// `target`: the last-active leaf first, then the domain MRU stack
+    /// newest-first, deduplicated.
+    ///
+    /// Rationale: `last_active` is the latest committed pointer (one leaf
+    /// per domain) while `focus_stack` is the full recency-ordered MRU
+    /// history. Only the stack is pruned: every update drops leaves that no
+    /// longer resolve (leaf in the tree plus a homed window link), while
+    /// `last_active` is a write-only slot that advances solely when a
+    /// commit names a resolving leaf and is never pruned, so its head can
+    /// go stale (closed, floated, or moved leaf). Ranking only considers
+    /// entries present in the candidate set, so a stale head simply misses
+    /// and falls through to recency, overlap, then DFS order; it can never
+    /// win.
+    pub(crate) fn cross_output_history_newest_first(&self, target: &DomainKey) -> Vec<NodeId> {
+        let mut out: Vec<NodeId> = Vec::new();
+        if let Some(leaf) = self.last_active.get(target) {
+            out.push(leaf.clone());
+        }
+        if let Some(stack) = self.focus_stack.get(target) {
+            for leaf in stack.iter().rev() {
+                if !out.contains(leaf) {
+                    out.push(leaf.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Shared cross-output destination selector for tiled and no-focus
+    /// origins: eligible destination tiled leaves (linked window homed in
+    /// the domain, hence non-exception, in DFS child order) projected to
+    /// canonical allocations, ranked by
+    /// [`rank_cross_output_edge_candidates`]. `source_perp` is the source
+    /// span along the perpendicular axis in canonical coordinates (the
+    /// focused source allocation for tiled origins, the source usable
+    /// area for no-focus origins). Returns `None` when the domain is
+    /// unknown or empty, canonical projection fails closed, or no
+    /// eligible leaf touches the entry edge. Pure query: never stages
+    /// state. Float-origin crossing keeps the remembered leaf and never
+    /// calls this selector.
+    ///
+    /// The target domain is re-projected here with empty hints because the
+    /// query carries no `SessionObservation`; the focused cross-output path
+    /// instead ranks over its own affected-domain geometry projected with
+    /// observed hints for dispatch (see the intentional duplication there).
+    /// An empty history is unreachable with live tiles through production
+    /// APIs (lifecycle admission stages newcomer focus; observation
+    /// convergence D8-seeds every admission), so the no-history fallback is
+    /// covered by the pure ranking tests; an empty domain returns `None`
+    /// before ranking.
+    pub(crate) fn select_cross_output_edge_target(
+        &self,
+        target: &DomainKey,
+        direction: Direction,
+        source_perp: (i32, i32),
+    ) -> Option<NodeId> {
+        let domain = self.domains.iter().find(|d| &d.key() == target)?;
+        let tree = self.trees.get(target).cloned().flatten()?;
+        let allow_overlap = self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+            || self.overlap_accepted.contains(target);
+        let projected = crate::session::capacity::project_domain_geometry(
+            domain,
+            &tree,
+            &self.windows,
+            target,
+            &BTreeMap::new(),
+            allow_overlap,
+        )?;
+        let rects: BTreeMap<&NodeId, Rect> = projected
+            .iter()
+            .map(|entry| (&entry.leaf, entry.rect))
+            .collect();
+        let mut rects_dfs: Vec<(NodeId, Rect)> = Vec::new();
+        for leaf in super::collect_leaves(&tree) {
+            let linked = self.windows.values().any(|l| {
+                l.leaf == leaf && l.output == target.output && l.workspace == target.workspace
+            });
+            if !linked {
+                continue;
+            }
+            if let Some(rect) = rects.get(&leaf) {
+                rects_dfs.push((leaf, *rect));
+            }
+        }
+        let history = self.cross_output_history_newest_first(target);
+        rank_cross_output_edge_candidates(&rects_dfs, direction, &history, source_perp)
+    }
+
     /// View-return focus candidates for selecting/showing `target`
     /// (R-WS-09), most-preferred first: the remembered last-active leaf
     /// while still linked there, then the domain-scoped MRU stack in
@@ -2069,6 +2158,85 @@ impl super::Session {
             })
         }
     }
+}
+
+/// Shared cross-output entry-edge candidate ranking over canonical
+/// projected allocations.
+///
+/// `rects_dfs` carries the eligible destination tiled leaves with their
+/// canonical rectangles in DFS child order. The entry edge is the
+/// destination edge the crossing enters through: `Right` enters the left
+/// edge, `Left` the right edge, `Down` the top edge, `Up` the bottom edge.
+/// Touching means matching the extreme coordinate over the set (not the
+/// domain bounds), so outer gaps and insets never exclude a true edge
+/// leaf.
+///
+/// Ranking: the most-recently-focused candidate first
+/// (`history_newest_first`, newest first; stale entries simply miss the
+/// candidate set), else the largest perpendicular overlap with
+/// `source_perp` (`(start, end)` along the perpendicular axis), else DFS
+/// child order (stable: only a strictly larger overlap replaces, so ties
+/// keep the first layout leaf). An empty candidate set returns `None`.
+/// Coordinates need only a consistent frame: the entry extremes are
+/// relative to the candidate set and overlap is span differences, so
+/// globally-offset outputs rank correctly when `source_perp` shares the
+/// canonical frame.
+pub(crate) fn rank_cross_output_edge_candidates(
+    rects_dfs: &[(NodeId, Rect)],
+    direction: Direction,
+    history_newest_first: &[NodeId],
+    source_perp: (i32, i32),
+) -> Option<NodeId> {
+    if rects_dfs.is_empty() {
+        return None;
+    }
+    let min_x = rects_dfs.iter().map(|(_, r)| r.x).min().expect("non-empty");
+    let max_x = rects_dfs
+        .iter()
+        .map(|(_, r)| i64::from(r.x) + i64::from(r.w))
+        .max()
+        .expect("non-empty");
+    let min_y = rects_dfs.iter().map(|(_, r)| r.y).min().expect("non-empty");
+    let max_y = rects_dfs
+        .iter()
+        .map(|(_, r)| i64::from(r.y) + i64::from(r.h))
+        .max()
+        .expect("non-empty");
+    let touches = |rect: &Rect| match direction {
+        Direction::Right => rect.x == min_x,
+        Direction::Left => i64::from(rect.x) + i64::from(rect.w) == max_x,
+        Direction::Down => rect.y == min_y,
+        Direction::Up => i64::from(rect.y) + i64::from(rect.h) == max_y,
+    };
+    let candidates: Vec<&(NodeId, Rect)> =
+        rects_dfs.iter().filter(|(_, rect)| touches(rect)).collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    for remembered in history_newest_first {
+        if candidates.iter().any(|(leaf, _)| leaf == remembered) {
+            return Some(remembered.clone());
+        }
+    }
+    let horizontal = matches!(direction, Direction::Left | Direction::Right);
+    let (source_start, source_end) = (i64::from(source_perp.0), i64::from(source_perp.1));
+    let mut best: Option<(&NodeId, i64)> = None;
+    for (leaf, rect) in candidates {
+        let (start, end) = if horizontal {
+            (i64::from(rect.y), i64::from(rect.y) + i64::from(rect.h))
+        } else {
+            (i64::from(rect.x), i64::from(rect.x) + i64::from(rect.w))
+        };
+        let overlap = (end.min(source_end) - start.max(source_start)).max(0);
+        let replace = match &best {
+            None => true,
+            Some((_, top)) => overlap > *top,
+        };
+        if replace {
+            best = Some((leaf, overlap));
+        }
+    }
+    best.map(|(leaf, _)| leaf.clone())
 }
 
 /// One floating exception record: portable `floating` set, every other flag

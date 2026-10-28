@@ -512,8 +512,11 @@ impl WorldEngine {
 
     /// Direction-only focus with no focused window (empty window): start
     /// from the current workspace/output (neutral action context), cross
-    /// to the strict adjacent output, and focus its existing remembered
-    /// selection. Otherwise a no-op; never selects a current-workspace
+    /// to the strict adjacent output, and focus its shared entry-edge
+    /// selection (edge-touching tiled candidates in canonical projected
+    /// allocation, most-recently-focused candidate first, else largest
+    /// perpendicular overlap with the source usable-area span, else DFS
+    /// child order). Otherwise a no-op; never selects a current-workspace
     /// window. All four directions may cross. Read-only: the explicit
     /// focus effect converges next report. Floating workspaces stop
     /// navigation like the subject path; eligibility otherwise reuses the
@@ -593,7 +596,20 @@ impl WorldEngine {
             .engine
             .session(&target_key)
             .and_then(|session| {
-                let leaf = session.remembered_leaf(&target_key)?;
+                // No focused subject exists, so the perpendicular span is
+                // the source output usable area (canonical staged bounds,
+                // never an observed native frame).
+                let usable =
+                    crate::geometry::inset_bounds(source_staged.bounds, source_staged.outer_gap)
+                        .ok()?;
+                let source_perp = match direction {
+                    Direction::Left | Direction::Right => {
+                        (usable.y, usable.y.checked_add(usable.h)?)
+                    }
+                    Direction::Up | Direction::Down => (usable.x, usable.x.checked_add(usable.w)?),
+                };
+                let leaf =
+                    session.select_cross_output_edge_target(&target_key, direction, source_perp)?;
                 session.focused_window_for(&leaf, &target_key)
             })
             .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
