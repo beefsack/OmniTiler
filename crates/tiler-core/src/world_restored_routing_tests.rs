@@ -2225,3 +2225,438 @@ fn operation_routes_preserve_distinct_outer_gaps() {
         }
     }
 }
+
+#[test]
+fn explicit_output_send_uses_output_route() {
+    // Explicit Operation(SendToOutput) cross-output must use the
+    // cross-output builder (SendToOutput/MoveToOutput), not the
+    // same-output workspace builder: distinct gaps plus non-full work
+    // areas with exact inset layout, follow honored, and logical parity
+    // with the directional output-send route. Table-driven over follow.
+    let source_inset = rect(8, 28, 784, 544);
+    let dest_inset = rect(822, 22, 756, 546);
+    for follow in [true, false] {
+        let (mut engine, screens, view_a, view_b, _) = bootstrap_gapped_pair();
+        let (key_a, key_b) = pair_keys(&view_a, &view_b);
+        let facts = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        let _ = accepted(
+            &mut engine,
+            &report(2, 2, screens.clone(), facts.clone(), "win-s", None, None),
+        );
+        assert_pair_gaps(&engine, &key_a, &key_b);
+        let command = WorldCommand::Operation(CoreCommand::SendToOutput {
+            window: "win-a".to_owned(),
+            target_output: "out-b".to_owned(),
+            target_workspace: view_b.clone(),
+            follow,
+        });
+        let reply = match engine.handle_report(&report(
+            3,
+            3,
+            screens.clone(),
+            facts.clone(),
+            "win-a",
+            Some(11),
+            Some(command),
+        )) {
+            WorldOutcome::Accepted(reply) => reply,
+            WorldOutcome::Rejected { kind, message } => {
+                panic!("follow={follow}: explicit SendToOutput must accept, got {kind} {message}")
+            }
+            other => panic!("follow={follow}: expected accept, got {other:?}"),
+        };
+        let transfer = reply
+            .transfers
+            .iter()
+            .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a"))
+            .expect("explicit output send retains a window transfer");
+        assert_eq!(transfer.target_output.0, "out-b", "follow={follow}");
+        assert_eq!(transfer.target_workspace, view_b, "follow={follow}");
+        assert_eq!(transfer.follow, follow, "follow honored (R-OUT-04)");
+        assert_eq!(transfer.operation_id, "op-11", "follow={follow}");
+        assert_eq!(row_of(&reply, "win-a").output.0, "out-b");
+        assert_eq!(row_of(&reply, "win-a").workspace, view_b);
+        assert_pair_gaps(&engine, &key_a, &key_b);
+        let focus: Vec<_> = reply
+            .effects
+            .iter()
+            .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
+            .collect();
+        if follow {
+            assert_eq!(focus.len(), 1, "follow names one focus effect");
+            assert_eq!(focus[0].target.0, "win-a");
+        } else {
+            // Stay leaves the source selected: the surviving stayer keeps
+            // focus, never the departed mover.
+            assert_eq!(focus.len(), 1, "stay names one focus effect");
+            assert_eq!(focus[0].target.0, "win-s");
+        }
+        // Exact inset layout: every allocated row fills its output's
+        // work-area-derived inset in y/h and stays inside it in x.
+        for window in ["win-a", "win-s", "win-b"] {
+            let row = row_of(&reply, window);
+            let allocation = row.allocation.expect("tiled row has allocated geometry");
+            let inset = if row.output == key_a.output {
+                source_inset
+            } else {
+                dest_inset
+            };
+            assert_eq!(allocation.y, inset.y, "follow={follow}: work-area top");
+            assert_eq!(allocation.h, inset.h, "follow={follow}: work-area height");
+            assert!(
+                allocation.x >= inset.x && allocation.x + allocation.w <= inset.x + inset.w,
+                "follow={follow}: row inside inset: {allocation:?} in {inset:?}"
+            );
+        }
+        // Parity with the working directional output-send route on a
+        // fresh engine: same target cell, follow flag, focus outcome,
+        // transfer shape, and per-window geometry.
+        let (mut parity, pscreens, _, pview_b, _) = bootstrap_gapped_pair();
+        let pfacts = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        let _ = accepted(
+            &mut parity,
+            &report(2, 2, pscreens.clone(), pfacts.clone(), "win-s", None, None),
+        );
+        let preply = accepted(
+            &mut parity,
+            &report(
+                3,
+                3,
+                pscreens,
+                pfacts,
+                "win-a",
+                Some(11),
+                Some(WorldCommand::SendDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "right".to_owned(),
+                    follow,
+                }),
+            ),
+        );
+        let ptransfer = preply
+            .transfers
+            .iter()
+            .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a"))
+            .expect("directional output send retains a window transfer");
+        assert_eq!(ptransfer.target_output.0, "out-b");
+        assert_eq!(ptransfer.target_workspace, pview_b);
+        assert_eq!(ptransfer.target_workspace, view_b, "same destination cell");
+        assert_eq!(ptransfer.follow, follow);
+        assert_eq!(ptransfer.operation_id, transfer.operation_id);
+        assert_eq!(
+            preply.transfers.len(),
+            reply.transfers.len(),
+            "same transfer shape"
+        );
+        let pfocus: Vec<_> = preply
+            .effects
+            .iter()
+            .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
+            .map(|e| e.target.0.clone())
+            .collect();
+        let efocus: Vec<_> = reply
+            .effects
+            .iter()
+            .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
+            .map(|e| e.target.0.clone())
+            .collect();
+        assert_eq!(efocus, pfocus, "same focus outcome");
+        for window in ["win-a", "win-s", "win-b"] {
+            assert_eq!(
+                row_of(&reply, window).allocation,
+                row_of(&preply, window).allocation,
+                "same geometry for {window}"
+            );
+            assert_eq!(
+                row_of(&reply, window).output,
+                row_of(&preply, window).output,
+                "same homing for {window}"
+            );
+            assert_eq!(
+                row_of(&reply, window).workspace,
+                row_of(&preply, window).workspace,
+                "same workspace for {window}"
+            );
+        }
+    }
+    // Explicit target workspace is carried unchanged: a valid
+    // non-current workspace on the destination output lands exactly
+    // there, never re-ranked to the current destination view.
+    {
+        let (mut engine, screens, _, view_b, _) = bootstrap_gapped_pair();
+        let facts = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        let observed = accepted(
+            &mut engine,
+            &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        let mut ring_b: Vec<String> = observed
+            .workspaces
+            .iter()
+            .filter(|row| row.output.0 == "out-b")
+            .map(|row| row.id.clone())
+            .collect();
+        ring_b.sort();
+        let target_ws = ring_b
+            .iter()
+            .find(|id| *id != &view_b)
+            .cloned()
+            .expect("destination output names a non-current workspace");
+        let reply = accepted(
+            &mut engine,
+            &report(
+                3,
+                3,
+                screens,
+                facts,
+                "win-a",
+                Some(11),
+                Some(WorldCommand::Operation(CoreCommand::SendToOutput {
+                    window: "win-a".to_owned(),
+                    target_output: "out-b".to_owned(),
+                    target_workspace: target_ws.clone(),
+                    follow: true,
+                })),
+            ),
+        );
+        let transfer = reply
+            .transfers
+            .iter()
+            .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a"))
+            .expect("non-current explicit send retains a window transfer");
+        assert_eq!(transfer.target_output.0, "out-b");
+        assert_eq!(transfer.target_workspace, target_ws);
+        assert_ne!(
+            transfer.target_workspace, view_b,
+            "no re-rank to current view"
+        );
+        assert_eq!(row_of(&reply, "win-a").workspace, target_ws);
+    }
+}
+
+#[test]
+fn explicit_output_send_fences_match_output_route() {
+    // Sticky, fit-excluded, same-window in-flight, and
+    // migration-destination fences: identical vocabulary to the output
+    // builder. Refusal probes run under both follow flags.
+    for follow in [true, false] {
+        let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
+        let mut sticky = fact_rect("win-a", "out-a", rect(10, 40, 40, 90));
+        sticky.sticky = true;
+        let facts = vec![
+            sticky,
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        let _ = accepted(
+            &mut engine,
+            &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        let refused = report(
+            3,
+            3,
+            screens.clone(),
+            facts,
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
+                window: "win-a".to_owned(),
+                target_output: "out-b".to_owned(),
+                target_workspace: view_b.clone(),
+                follow,
+            })),
+        );
+        match engine.handle_report(&refused) {
+            WorldOutcome::Rejected { kind, .. } => {
+                assert_eq!(kind, "send-refused", "follow={follow}: sticky")
+            }
+            other => panic!("follow={follow}: sticky must refuse, got {other:?}"),
+        }
+        let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
+        let mut excluded = fact_rect("win-a", "out-a", rect(10, 40, 40, 90));
+        excluded.fit_excluded = true;
+        let facts = vec![
+            excluded,
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        let _ = accepted(
+            &mut engine,
+            &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        let refused = report(
+            3,
+            3,
+            screens.clone(),
+            facts,
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
+                window: "win-a".to_owned(),
+                target_output: "out-b".to_owned(),
+                target_workspace: view_b.clone(),
+                follow,
+            })),
+        );
+        match engine.handle_report(&refused) {
+            WorldOutcome::Rejected { kind, .. } => {
+                assert_eq!(kind, "send-refused", "follow={follow}: fit-excluded")
+            }
+            other => panic!("follow={follow}: fit-excluded must refuse, got {other:?}"),
+        }
+    }
+    // In-flight fence: a second same-window explicit output send
+    // refuses while the first flight is outstanding, under both flags.
+    for follow in [true, false] {
+        let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
+        let facts = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+        ];
+        let _ = accepted(
+            &mut engine,
+            &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        let first = report(
+            3,
+            3,
+            screens.clone(),
+            facts.clone(),
+            "win-a",
+            Some(11),
+            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
+                window: "win-a".to_owned(),
+                target_output: "out-b".to_owned(),
+                target_workspace: view_b.clone(),
+                follow,
+            })),
+        );
+        let reply = match engine.handle_report(&first) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("follow={follow}: first send must accept, got {other:?}"),
+        };
+        assert!(
+            reply
+                .transfers
+                .iter()
+                .any(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a")),
+            "follow={follow}: first send retains the flight"
+        );
+        let again = report(
+            4,
+            4,
+            screens,
+            facts,
+            "win-a",
+            Some(12),
+            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
+                window: "win-a".to_owned(),
+                target_output: "out-b".to_owned(),
+                target_workspace: view_b,
+                follow,
+            })),
+        );
+        match engine.handle_report(&again) {
+            WorldOutcome::Rejected { kind, .. } => {
+                assert_eq!(kind, "transfer-in-flight", "follow={follow}")
+            }
+            other => panic!("follow={follow}: second send must fence, got {other:?}"),
+        }
+    }
+    // Migration-destination fence: a retained whole-workspace migration
+    // owns its destination cell, so an explicit output send onto that
+    // cell refuses as send-target without double-booking, under both
+    // flags, while the migration flight survives.
+    for follow in [true, false] {
+        let (mut engine, screens, view_a, _view_b, ring) = bootstrap_gapped_pair();
+        assert!(ring.len() >= 2, "pioneer needs a second workspace");
+        let mut pioneer = fact_rect("win-x", "out-a", rect(200, 40, 40, 90));
+        pioneer.observed_workspace = Some(ring[1].clone());
+        let facts = vec![
+            fact_rect("win-a", "out-a", rect(10, 40, 40, 90)),
+            fact_rect("win-s", "out-a", rect(100, 40, 40, 90)),
+            fact_rect("win-b", "out-b", rect(850, 60, 40, 90)),
+            pioneer,
+        ];
+        let _ = accepted(
+            &mut engine,
+            &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        let migrated = accepted(
+            &mut engine,
+            &report(
+                3,
+                3,
+                screens.clone(),
+                facts.clone(),
+                "win-a",
+                Some(11),
+                Some(WorldCommand::MigrateWorkspace {
+                    source_output: OutputId("out-a".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    workspace: view_a.clone(),
+                }),
+            ),
+        );
+        let cell = migrated
+            .transfers
+            .iter()
+            .find(|t| matches!(&t.kind, TransferKind::Migration))
+            .expect("migration retains its destination cell");
+        assert_eq!(cell.target_output.0, "out-b");
+        assert_eq!(cell.target_workspace, view_a);
+        let probe = report(
+            4,
+            4,
+            screens,
+            facts,
+            "win-x",
+            Some(12),
+            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
+                window: "win-x".to_owned(),
+                target_output: "out-b".to_owned(),
+                target_workspace: view_a.clone(),
+                follow,
+            })),
+        );
+        match engine.handle_report(&probe) {
+            WorldOutcome::Rejected { kind, .. } => {
+                // KIND_SEND_TARGET is "send-target-unknown"; the
+                // migration-destination fence runs before the
+                // mapping/staged checks, so with the matching cell
+                // retained this refusal is necessarily that fence.
+                assert_eq!(
+                    kind, "send-target-unknown",
+                    "follow={follow}: migration cell"
+                )
+            }
+            other => panic!("follow={follow}: send onto migration cell must refuse, got {other:?}"),
+        }
+        assert!(
+            engine
+                .retained_transfers()
+                .iter()
+                .any(|t| matches!(&t.kind, TransferKind::Migration) && t.operation_id == "op-11"),
+            "follow={follow}: migration flight survives the refused send"
+        );
+        assert!(
+            engine
+                .retained_transfers()
+                .iter()
+                .all(|t| !matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-x")),
+            "follow={follow}: refused send retains no window flight"
+        );
+    }
+}

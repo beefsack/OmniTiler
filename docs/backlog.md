@@ -406,7 +406,9 @@ Prioritise by return toward these goals
     Execution-time implicit output targeting is closed by `a68036b3`.
   - **DONE (2026-10-29):** operation-pair outer-gap investigation: corrected
     operation drag preview/drop gap fields; directional and send routes pinned.
-    Separate explicit-operation output-send dispatch finding awaits triage.
+    Explicit-operation output-send dispatch also **DONE (2026-10-29)**:
+    output builder preserves target workspace/follow and existing fences;
+    tentative, pending user review. Offline regressions and gates pass.
     [Outcome](changes/kde-world-v2-port.md#operation-pair-outer-gap-bookkeeping-2026-10-29).
   - User physical checks 2026-10-28 pass: directional focus (local then
     cross-output), send/follow both directions, close/reflow on each output,

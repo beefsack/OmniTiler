@@ -53,13 +53,22 @@ impl WorldEngine {
                 target_output,
                 target_workspace,
                 follow,
-            }
-            | CoreCommand::SendToOutput {
+            } => self.start_send(
+                report,
+                command_seq,
+                &WindowId(window.clone()),
+                &OutputId(target_output.clone()),
+                target_workspace,
+                *follow,
+                by_id,
+                held_scopes,
+            ),
+            CoreCommand::SendToOutput {
                 window,
                 target_output,
                 target_workspace,
                 follow,
-            } => self.start_send(
+            } => self.start_output_send(
                 report,
                 command_seq,
                 &WindowId(window.clone()),

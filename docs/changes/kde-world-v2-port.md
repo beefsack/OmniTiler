@@ -1844,12 +1844,19 @@
   Workspace migration is a source-session rekey, not a directional pair.
   Dynamic gap-setting policy and general pair-route refactors remain outside
   this repair.
-- Separate finding, not fixed: `execute_operation` dispatches explicit
-  `CoreCommand::SendToOutput` through `start_send`, which builds
-  `SendToWorkspace`; an explicit cross-output target therefore refuses with
-  `cross-domain-mismatch`. Directional sends use the working output-send
-  route. Correcting explicit-operation dispatch needs separate triage; no
-  regression codifies the refusal as desired behavior.
+- **DONE (2026-10-29):** explicit-operation output-send dispatch repaired.
+  `execute_operation` now routes `CoreCommand::SendToOutput` through
+  `start_output_send` / `execute_output_send`, not the workspace-send builder.
+  Decision is tentative, pending user review: match the existing R-OUT-04
+  output-transfer route, carrying the explicit target workspace unchanged
+  and honoring follow/stay; no protocol, wire or command-shape change.
+  Two failing-first regressions reproduced `cross-domain-mismatch` before
+  the repair. They now cover directional-route geometry/focus/transfer parity,
+  distinct gaps and non-full work areas, a non-current explicit workspace,
+  and unchanged sticky, automatic-fixed, same-window-flight and migration-cell
+  refusals under both follow flags. Review accepted the dispatch and fence
+  coverage; geometry assertions also require allocations, preventing vacuous
+  parity. All seven offline gates below pass for the completed repair.
 - Offline gates pass: core/Windows/protocol tests, workspace strict clippy
   excluding macOS, workspace fmt, portable boundary, KWin tests (855/855),
   KWin typecheck and whitespace. An initial test-only clippy range-pattern
