@@ -187,7 +187,14 @@ Prioritise by return toward these goals
   shelved 2026-10-28 pending redogfood); physical burst
   ingress remains the separate keyboard item below
   ([Windows outcome](changes/archive/platform-neutral-stress-acceptance.md)).
-- P1 | Keyboard stress runner | Raised from P2 2026-10-28: first deliver the
+- P1 | Keyboard stress runner | Offline `-KeyboardCoverage` map delivered
+  (`6c850ae0`, [outcome](changes/archive/windows-keyboard-stress.md)): 100 of
+  102 commands per case are default-bound; the two stay-sends are unbound by
+  default. Burst baseline BLOCKED: the product hook intentionally rejects
+  injected shortcuts (filter unchanged). Parked user question: run a
+  user-driven physical shortcut burst baseline, or defer until a separately
+  reviewed route preserves the injection boundary.
+  Raised from P2 2026-10-28: first deliver the
   current-order keyboard-burst baseline, which supplies the data for wider
   coalescing. User 2026-10-27: share definitions and oracles
   with the existing deterministic-correctness CLI mode; use injected real
