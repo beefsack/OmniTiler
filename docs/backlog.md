@@ -1558,7 +1558,9 @@ Prioritise by return toward these goals
   disappears when the last native Space is empty; direct core projection with a
   separate trailing segment selected 2026-10-28; optional core trailing
   designation delivered offline with publication/wire regressions; macOS
-  projection pending; lazy backing retained), first-float
+  projection locally reviewed but parked pending eight independently reproduced
+  baseline macOS test failures after native completeness fencing; full gate not
+  waived ([record](changes/macos-core-trailing-pager.md)); lazy backing retained), first-float
   placement decision, `just dev`
   log-follower leak, `just launch` exit code; (3) targeted redogfood, including
   trailing send-follow (3a) and direct-wake feel; (4) fullscreen

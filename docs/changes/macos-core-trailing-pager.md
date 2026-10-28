@@ -39,6 +39,15 @@
   pins Defi ADR 0004 (populated trailing becomes ordinary) and paneru (stable query
   slots, no guaranteed trailing spare). Reuse the former invariant, not a new
   workspace store or paneru's optional reaping behavior.
+- Tentative macOS projection details, implemented but parked: every core row is
+  visible in core order; unbound non-trailing rows remain ordinary pending rows,
+  disabled until backed. Current-only mode retains current plus the designated
+  spare. Unbound rows use Unknown native occupancy styling, not a '+' label.
+  Empty/unavailable core pager content hides the item without native inference.
+- Exact-id clicks use existing `SelectWorkspace`, including the spare; keyboard
+  numbered/trailing actions are unchanged. Coherent presentation/desire/generation
+  snapshots and render/topology/binding/designation fences precede submission.
+  Bound trailing rows remain ordinary clickable rows across marker changes.
 
 ## Evidence and status
 
@@ -54,12 +63,44 @@
   bound-tail regressions. These are added, including a corrected bound test that
   asserts an actual published native binding. Review permits landing after that
   test-only correction; its focused six tests and full gates pass.
-- Locked core/protocol/macOS build passes. Latest full tests: core 998 library,
+- Locked core/protocol/macOS build passes. Pre-publication full tests: core 998 library,
   protocol 30 library, macOS 1,385 library, plus 630 integration tests across 31
   suites; zero failures. Strict all-target clippy, workspace format and whitespace
   checks pass. Host Windows test targets compile; no native Windows/KDE run.
 - KDE parser regressions are added but not executed: the available environment
   lacks its installed test dependencies and TypeScript compiler. Old exact-shape
   readers must upgrade with core; omission is not forward compatibility.
-- macOS projection pending. Native pixels and physical feel remain untested; no
-  live leg is needed for this offline change.
+- Shared marker published in `e422f59f`. The publication pull incorporated native
+  completeness fencing (`ae073de9`); subsequent targeted checks passed, but full
+  macOS checks below expose previously untested baseline regressions.
+- macOS projection is independently accepted locally, but parked, not published.
+  Review corrections enforce disabled-row refusal, exact-id/freshness fences and
+  actual engine-issued spare ids. The exact-id spare test drives a real engine
+  flight through creation desire and plan binding without native creation.
+- A final source review found bound trailing clicks incorrectly compared the raw
+  marker with unbound-spare eligibility. The correction compares effective spare
+  predicates after binding equality; a bound-marker-flip regression and renewed
+  independent review pass (57 focused tests). Full checks below precede this last
+  narrow correction; no full rerun of that corrected candidate is claimed.
+- Full candidate evidence: core 1,032 library + 469 integration, protocol 30
+  library + 35 codec pass. macOS library: 1,392 pass / 4 fail; integration:
+  146 pass / 4 fail. All eight failures reproduce on clean `e422f59f`, not just
+  the candidate. Build, strict all-target clippy, format and whitespace pass.
+  Composite cargo testing timed out; per-target execution covered the targets,
+  with four core suites executed directly from freshly built test binaries.
+- Baseline library failures: `cg_alive_unreadable_membership_holds_target_scope`,
+  `cg_unreadable_oracle_holds_target_scope`,
+  `first_transition_same_report_focus_never_restores_hidden`,
+  `unreadable_scope_holds_without_write_authority`. The first two expect
+  `Unreadable` but receive `IncompleteInventory` after `ae073de9`; the others
+  involve completeness/hidden-focus expectations. No shared semantics changed here.
+- Baseline integration failures: `skipped_display_parks_layout_then_resumes_exact`,
+  `hidden_space_roundtrip_preserves_per_window_slots_across_blind_interval`,
+  `skip_then_actual_removal_releases`,
+  `space_type_gap_retains_hidden_layout_without_release`. Exact trigger remains
+  unknown; no assertion weakening or timeout/retry workaround was applied.
+- Overall full gate remains red, not waived. Reconcile those baseline expectations
+  with native completeness semantics, then restore the parked projection and run
+  full gates before publication. The source was preserved and removed from the
+  working tree; this record remains active. Native pixels and physical feel remain
+  untested; no live leg was run.
