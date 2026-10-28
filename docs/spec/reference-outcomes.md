@@ -6278,6 +6278,13 @@ commits; PaperWM.spoon stays corroboration only, never a separate profile.
 | Managed tiled A; readable adjacent output; default follow row | Hold Win+Ctrl+Alt+Right through down, repeat, release; fresh reset with Shift also held | Live repeats dispatch; release is consumed without dispatch; default shifted follow refuses. Modifier drift ends repeat dispatch while preserving paired release verdict | Windows physical suppression/repeat and KDE/reference held-key outcomes TBD |
 | Stay row rebound to Win+Ctrl+Alt+Shift+F6 | Down, repeat, release with exact modifiers; fresh reset without Shift | Only exact rebound arm dispatches stay, using the directional letter hold slot; source MRU/null focus and visible target membership retained | Physical rebound adoption/containment and KDE/reference modifier outcomes TBD |
 
+<a id="native-empty-workspace-retirement"></a>
+### Native empty-workspace retirement (2026-10-29)
+
+| Minimal action sequence | Current evidence | Decision / unsupported outcomes |
+| --- | --- | --- |
+| Repeat [R-WS-10](reference-outcomes/workspaces.md#r-ws-10-send-b-away-empty-middle-retained-vs-removed) in each workspace mode on two outputs: send the sole member of middle WS2 to WS1, then select WS3; keep WS2 empty and unshown on both outputs, above the two-workspace floor and without trailing/pin claims | Tier 1 source outcomes in R-WS-10 remove the emptied middle. Current v2 core retains native-bound rows and emits no removal eligibility; user physical 2026-10-28 reports no removals, but mode and exact sequence were not specified | Reconcile older managed-native cleanup with tentative native-bound retention before changing code. Exact per-mode native outcome, adopted-desktop deletion authority and non-managed-occupant/padding cases remain TBD. [Investigation and single parked decision](../changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29) |
+
 ## 2026-10-24 port discriminator stubs
 
 Minimal rows for the user-approved 2026-10-24 port decisions in

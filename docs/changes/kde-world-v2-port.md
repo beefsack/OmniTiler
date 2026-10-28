@@ -3306,3 +3306,51 @@ Two outputs, ordinary tiled windows.
   on demand by Meta+number/Meta+0 at the next missing index, but empty ones
   are never removed. Per-mode independent/linked switching was not reported.
 - Label finding resolved: KDE now uses the tentative user-approved own-set/swap qualifiers ([2026-10-28 refinement](../decisions.md#workspace-vocabulary-2026-10-24)); exporter tests 14/14 and generated-artifact freshness check pass; no workspace behavior changes.
+
+### Empty native workspace lifecycle investigation (2026-10-29)
+
+- Classification **(b): deliberate recorded v2 behavior**, not a missing KDE
+  removal call. The [tentative adoption record](../decisions.md#native-adoption-2026-10-24)
+  states that native-bound empties retain identity and explicitly selects no new
+  native deletion policy. Thus the reported absence of removal is expected from
+  this implementation, not acceptance of permanent retention as product intent.
+  The user did not identify the affected mode(s).
+- Source: `world_native.rs:77-81` defines native bindings as retained even when
+  empty. `world_model.rs:98-112,172-192` passes that retention to
+  `workspace.rs:35-65`, which otherwise removes eligible invisible empties while
+  preserving the trailing spare and minimum two. This applies in shared and
+  separate-view modes. `world_model.rs:216-258` only pads shorter rings for
+  `equal_workspace_count`; padding does not explain retention of every bound row.
+  Paths here are under `crates/tiler-core/src/`.
+- Core `world_publish.rs:1050-1099` publishes only `existence: true`. KDE
+  `kwin/src/world-apply.ts:1553-1629` requires explicit `exist: false` before
+  its fresh occupant/view/pin/minimum-count gates can call removal;
+  `kwin/src/world-native.ts:1346-1363` already implements that native call.
+  Omission alone never deletes. External native deletions are instead observed
+  by `world_native.rs:295-315`. The unbound ordinary spare requests backing only
+  when needed (`world_native.rs:350-390`), explaining on-demand creation without
+  eager native spare creation. Numbered selection can target an existing logical
+  spare without implying arbitrary missing-number creation.
+- Contract tension remains: the older [workspace rules](../decisions.md#workspaces)
+  select managed-empty cleanup with global emptiness, no trailing/view/protection
+  claim and the two-workspace floor. [R-WS-10](../spec/reference-outcomes/workspaces.md#r-ws-10-send-b-away-empty-middle-retained-vs-removed)
+  records removal in COSMIC, Hyprland, i3 and sway; REQ-WS-10 remains OPEN.
+  The 2026-10-24 vocabulary decision expects equal-count empty padding and says
+  not to overspecify lifecycle beyond existing rules. Neither padding nor the
+  tentative adoption record settles the adopted/user-created desktop deletion
+  authority conflict. Desktops with non-managed occupants must not be treated
+  as empty.
+- **Parked decision:** should v2 restore core-directed retirement of eligible
+  managed native desktops, including adopted desktops, instead of retaining all
+  native bindings? **Recommendation:** restore the existing Tier 1-aligned
+  cleanup target, preserving required equal-count padding and protecting every
+  desktop with any native occupant (including non-managed windows), any output's
+  view/trailing/protection claim, unknown facts, or the minimum-two floor;
+  unmapped desktops remain outside management. Core owns eligibility and KDE
+  applies mechanically. This is a recommendation, not a new selected policy.
+- Documentation only: corrected stale current-behavior claims and added the
+  [minimal discriminator](../spec/reference-outcomes.md#native-empty-workspace-retirement).
+  No code or tentative product decision added. Source inspection and
+  `git diff --check` pass; executable gates were not run for this documentation-only
+  change. This is not a new regression or mode-specific physical result. Native
+  desktop add/remove acceptance remains user-owned; no live test performed.

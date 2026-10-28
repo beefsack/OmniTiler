@@ -640,15 +640,18 @@ verb inventory); selected intent and doc assertions are never evidence.
 - Then paneru: retained at shipped defaults (`reap_empty_workspaces`
   defaults off and index 0 is never reaped; enabling it despawns empty
   non-active rows). `S(S-pan-ws)`.
-- Then Ours KDE: the adapter adopts backing desktops as managed and removes
-  eligible non-trailing invisible empties, protecting occupied, visible,
-  flight-pinned, displaced and unmapped desktops and the minimum count;
-  it ensures a structural trailing spare. This is the selected
-  [workspace lifecycle](../../decisions.md#workspaces),
-  implemented by `kwin/src/workspace-native.ts` and covered by its lifecycle
-  fixtures. The exact send-then-select native outcome remains TBD; the
+- Then Ours KDE: current v2 core deliberately retains native-bound empties
+  (`crates/tiler-core/src/world_native.rs:77-81`,
+  `world_model.rs:98-112,172-192`) and publishes only existence=true
+  (`world_publish.rs:1050-1099`); KDE's guarded native removal actuator therefore
+  receives no eligibility. The older selected managed-empty cleanup target is
+  not current v2 behavior. Reconciliation with tentative native-adoption
+  retention is [parked](../../changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29),
+  not a new permanent-retention decision. User physical 2026-10-28 reports no
+  removals on two outputs, mode(s) unspecified; this exact send-then-select
+  native sequence remains TBD. The historical
   [partial two-output pass](../../changes/kde-dual-output-live.md) observed
-  startup retirement, not this action sequence. `S(S-ours-ws)`.
+  startup retirement before v2, not this action sequence. `S(S-ours-ws)`.
 - Then Ours Windows: emptied-middle removal route exists (corrected
   2026-10-08 at `db31234`): `crates/tiler-windows/src/workspace.rs:508`
   `apply_cleanup` removes stable IDs, invoked from retirement cleanup at

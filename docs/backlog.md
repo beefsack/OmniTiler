@@ -406,8 +406,15 @@ Prioritise by return toward these goals
     rapid A/B drags (no stale paint, correct drop), Stage 6 cursor/border/
     colours/pager, Virtual Desktops quick fix. Open findings, to triage:
     Meta+G and Meta+M are dropped on a fullscreen window; the two separate-mode
-    labels are identical; KDE workspaces are created on demand but never
-    removed; border still hides during drag (strict coverage, known).
+    labels are identical; border still hides during drag (strict coverage,
+    known). Workspace non-removal is deliberate v2 native-bound retention, not
+    a missing KDE actuator; mode(s) unspecified. **Parked decision:** restore
+    core-directed retirement of eligible managed native desktops, including
+    adopted desktops? Recommend the existing Tier 1 cleanup target with global
+    native-occupancy/view/trailing/protection checks, readable facts, required
+    equal-count padding and the minimum-two floor; unmapped desktops stay outside
+    management. No policy/code change selected.
+    [Investigation](changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29).
     [Results](changes/kde-world-v2-port.md#user-physical-checks-2026-10-28).
   - Fullscreen float/maximize (user 2026-10-28, from
     [R-MAX-10/11](spec/reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen)):
