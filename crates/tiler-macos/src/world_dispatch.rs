@@ -2339,6 +2339,7 @@ mod tests {
             topology: None,
             display_inputs: None,
             select_wake: None,
+            main_wake: None,
             topology_revision: 9,
             native_context: None,
             native_cell: crate::runtime_shared::NativeContextCell::new(),

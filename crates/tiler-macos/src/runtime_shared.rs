@@ -317,8 +317,19 @@ pub(crate) struct Shared {
     /// wake); cleared whenever the slot is claimed, dropped, or settled
     /// away, so a reconciled claim never causes a spurious extra cadence
     /// run. Never a timer, never a new thread: one bool checked on the
-    /// existing 50 ms pump under the same short lock as the slot itself.
+    /// host-woken main loop under the same short lock as the slot itself.
     pub(crate) select_claim_pending: bool,
+    /// Shareable host event-driven wake for the main-thread tile
+    /// controller (`None` until the main thread publishes it — engine and
+    /// test publishers that race publication only set the sticky flags,
+    /// which the main loop takes before its first park, so nothing is
+    /// lost). The engine signals this after setting
+    /// `select_claim_pending` (flag-set then signal), and
+    /// [`RuntimeHandle::release_select_after_drain`](crate::select_feedback::release_select_after_drain)
+    /// signals it when re-arming with queued entries, so the parked main
+    /// thread returns immediately instead of waiting out the cadence. The
+    /// flags stay the work truth; the generation only shortens the wait.
+    pub(crate) main_wake: Option<crate::ffi::MainWakeSignal>,
     /// Deferred selection focus bound at engine-reply dispatch (see
     /// [`DeferredSelectionFocus`]): at most one, latest-wins. Keyed by
     /// operation identity so only the matching select completion can

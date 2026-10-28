@@ -191,9 +191,9 @@ fn serialized_admission_frees_only_on_poll() {
 
 #[test]
 fn settle_wake_sets_once_clears_on_poll_and_covers_refusals() {
-    // A staged terminal completion wakes the main pump (early cadence
-    // run) instead of waiting for the next 250 ms tick: worst case
-    // settle-to-reconcile drops to one 50 ms pump quantum. The wake is
+    // A staged terminal completion wakes the host-woken main loop (early
+    // cadence run) instead of waiting for the next 250 ms tick: the wake
+    // poke behind each stage returns the park on the event. The wake is
     // coalesced (one bit, not a count), consumed at most once, and
     // cleared by the poll take - so steady state never quickens and a
     // promptly reconciled settle causes no spurious extra run. Ambiguous
@@ -254,6 +254,57 @@ fn settle_wake_sets_once_clears_on_poll_and_covers_refusals() {
         !thread.take_settled(),
         "poll take clears even a refused settle"
     );
+}
+
+#[test]
+fn terminal_finish_pokes_installed_main_wake() {
+    // Production terminal publisher through the real owner thread: with
+    // the main wake installed, the owner's terminal `finish` bumps the
+    // shared generation exactly once (flag-set then signal), so the
+    // parked main thread returns on the completion. Generation snapshot
+    // precedes submit, so no interleaving can skew the count; the sticky
+    // settle flag stages regardless. Deterministic: state only, no timing.
+    let wake = SpaceSelectWake::new();
+    let published = displays();
+    let script = Script::new(vec![ScriptedOutcome {
+        result: Ok(effect(1001, 1002)),
+        proof: None,
+    }]);
+    let thread = SelectThread::spawn_with(script.executor());
+    let signal = crate::ffi::MainWakeSignal::detached();
+    thread.set_wake(signal.clone());
+    let before = signal.generation();
+    let job = SelectJob {
+        claim: tap_claim(InputSemanticAction::WorkspaceSelect { index: 2 }, "op-wake"),
+        display_index: 0,
+        pinned_cgid: 7,
+        pinned_uuid: FIX_UUID.to_owned(),
+        published_displays: published.clone(),
+        published_separate: Some(true),
+        trailing_enabled: true,
+        fixture_gate: None,
+        latch: Arc::new(wake.subscribe()),
+        wake: wake.clone(),
+        cancel: Arc::new(AtomicBool::new(false)),
+        submitted_at: Instant::now(),
+    };
+    thread.submit(job).expect("submits");
+    // Causal wait on the installed main wake (flag-set then signal):
+    // the owner's terminal `finish` advances the generation, so this
+    // returns on the completion instead of a sleep quantum. The bound
+    // only fails a wedged owner, never proves promptness.
+    assert!(
+        signal.wait_for_advance(before, Duration::from_secs(10)),
+        "owner settle never staged"
+    );
+    assert!(thread.take_settled(), "sticky settle flag staged");
+    assert_eq!(
+        signal.generation(),
+        before + 1,
+        "terminal finish pokes the installed wake exactly once"
+    );
+    let done = thread.poll_completion().expect("completion staged");
+    assert_eq!(done.operation_id.as_deref(), Some("op-wake"));
 }
 
 #[test]

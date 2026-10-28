@@ -892,13 +892,18 @@ struct Lane {
 pub struct SendEffectHandoff {
     inner: Mutex<Lane>,
     /// Main-thread wake hint: set once when the owner stages a terminal
-    /// completion, consumed once by the main pump (`take_settled`) to run
+    /// completion, consumed once by the main loop (`take_settled`) to run
     /// the cadence body early instead of waiting for the next 250 ms tick.
     /// Coalesced (bursts merge into one wake); cleared whenever a poll
     /// takes the staged completion, so a promptly reconciled settle never
     /// causes a spurious extra cadence run. Never a timer, never a new
-    /// thread: one atomic checked on the existing 50 ms pump.
+    /// thread: one atomic checked on the host-woken main loop.
     settled: std::sync::Arc<AtomicBool>,
+    /// Shareable host event-driven main wake: signalled on every terminal
+    /// stage (flag-set then signal) so the parked main thread returns
+    /// immediately. Set by the controller before first submit; detached
+    /// until then (sticky `settled` stays the truth).
+    wake: Mutex<crate::ffi::MainWakeSignal>,
     /// Local pending native creation receipts: one per attempted trailing
     /// desire whose post-order is not yet readable. Same seam as the select
     /// lane ([`crate::workspace_select::SelectionState`]): the owner
@@ -914,6 +919,27 @@ impl SendEffectHandoff {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install the shareable host event-driven main wake (controller calls
+    /// this before first submit; safe any time — mutex-protected,
+    /// uncontended). Detached until then (the sticky `settled` stays the
+    /// truth, so nothing is lost).
+    pub(crate) fn set_wake(&self, wake: crate::ffi::MainWakeSignal) {
+        *self
+            .wake
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = wake;
+    }
+
+    /// Poke the installed main wake without staging work (owner-thread
+    /// exit path: the shutdown wait parks on the wake, and the exit
+    /// itself is the event — no completion stages here).
+    pub(crate) fn signal_wake(&self) {
+        self.wake
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .signal();
     }
 
     /// Nonblocking engine-side submission. Refuses busy while a request is
@@ -970,22 +996,33 @@ impl SendEffectHandoff {
     /// terminal finish also resolves a pending stop request: it is the
     /// completion — not the cancel — that frees the active lane.
     pub fn finish(&self, completion: SendCompletion) -> bool {
-        let mut lane = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let Some(inflight) = lane.inflight.as_ref() else {
-            lane.stale_dropped += 1;
-            return false;
+        let wake = {
+            let mut lane = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(inflight) = lane.inflight.as_ref() else {
+                lane.stale_dropped += 1;
+                return false;
+            };
+            if !inflight.settled_by(&completion) {
+                lane.stale_dropped += 1;
+                return false;
+            }
+            lane.inflight = None;
+            lane.completion = Some(completion);
+            lane.cancel_requested = false;
+            self.settled.store(true, Ordering::SeqCst);
+            self.wake
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone()
         };
-        if !inflight.settled_by(&completion) {
-            lane.stale_dropped += 1;
-            return false;
-        }
-        lane.inflight = None;
-        lane.completion = Some(completion);
-        lane.cancel_requested = false;
-        self.settled.store(true, Ordering::SeqCst);
+        // Staged then signalled (race-closed with the main park: the main
+        // thread re-takes the settle flag after every park return, so a
+        // parked main returns immediately instead of waiting out the
+        // backstop). Stale finishes (nothing staged) signal nothing.
+        wake.signal();
         true
     }
 
@@ -1550,9 +1587,9 @@ mod tests {
 
     #[test]
     fn handoff_settle_wake_sets_once_and_clears_on_poll() {
-        // The main pump runs the cadence body early on a staged terminal
-        // completion instead of waiting for the next 250 ms tick (worst
-        // case settle-to-reconcile drops to one 50 ms pump quantum).
+        // The host-woken main loop runs the cadence body early on a staged
+        // terminal completion instead of waiting for the next 250 ms tick
+        // (the installed wake poke returns the park on the event).
         let lane = SendEffectHandoff::new();
         assert!(!lane.take_settled(), "idle lane wakes nothing");
         let pinned = target();
@@ -1618,6 +1655,49 @@ mod tests {
         )));
         assert!(lane.cancel(), "completed cancels");
         assert!(!lane.take_settled(), "cancelled completion wakes nothing");
+    }
+
+    #[test]
+    fn finish_pokes_installed_main_wake_once_on_stage() {
+        // Production terminal publisher through the real handoff: with the
+        // main wake installed, a staging `finish` bumps the shared
+        // generation exactly once (flag-set then signal). A stale finish
+        // stages nothing and bumps nothing — the sticky `settled` flag
+        // stays the truth either way. Deterministic: state only, no timing.
+        let lane = SendEffectHandoff::new();
+        let signal = crate::ffi::MainWakeSignal::detached();
+        lane.set_wake(signal.clone());
+        let pinned = target();
+        lane.submit(pinned.clone()).expect("submits");
+        lane.take_for_owner().expect("takes");
+        let before = signal.generation();
+        assert!(
+            lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Accepted,
+                SendEffectOutcome::Applied
+            )),
+            "matching finish stages"
+        );
+        assert_eq!(
+            signal.generation(),
+            before + 1,
+            "staging finish pokes the installed wake exactly once"
+        );
+        assert!(lane.take_settled(), "sticky flag stages regardless");
+        assert!(
+            !lane.finish(completion_for(
+                &pinned,
+                FrameSetter::Accepted,
+                SendEffectOutcome::Applied
+            )),
+            "no inflight refuses"
+        );
+        assert_eq!(
+            signal.generation(),
+            before + 1,
+            "stale finish pokes nothing"
+        );
     }
 
     #[test]

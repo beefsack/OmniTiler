@@ -5177,7 +5177,9 @@ native acceptance still separate:
   stays now. Selected next work is a latency unit that measures native
   before/after numbers, then replaces the pump with a direct event-driven
   main-thread completion wake per Efficiency events-over-polling. No native
-  improvement numbers are claimed.
+  improvement numbers are claimed. Measure-first requirement superseded
+  2026-10-28; direct-wake direction stands (see follow-up review decisions
+  below).
 - Confirmed T3: same-state holds retain the last applied authorized geometry;
   a changed-source queued selection refuses before any select effect or
   creation auth spend. Fresh rows always win; invalidation and safety gates
@@ -5244,6 +5246,12 @@ User-confirmed 2026-10-28
   retained, never busy-dropped (delivered `3d64b5c5`).
 - The stale live baseline receipt is retired (archived, not deleted) and a
   fresh read-only baseline is captured before the next fixture leg.
+- Native before/after latency measurements are no longer a prerequisite for
+  the direct main-thread event-driven claim/completion wake. This supersedes
+  only the T2 measure-first requirement; the direct-wake direction stands.
+  Deterministic offline proof is accepted, plus a later re-dogfood feel check.
+- The native latency harness and tracing stay parked/shelved. The retained new
+  live receipt stays untouched.
 
 ## Native adoption 2026-10-24
 

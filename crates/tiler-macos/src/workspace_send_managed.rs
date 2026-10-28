@@ -2035,6 +2035,10 @@ impl ManagedSendThread {
                         Err(_) => break,
                     }
                 }
+                // Owner exit is itself a wake event: the shutdown wait parks
+                // on the shared wake (the exit stages no completion, so the
+                // flag take alone would miss it).
+                thread_handoff.signal_wake();
             })
             .expect("managed send effect thread spawns");
         Self {
@@ -2072,6 +2076,13 @@ impl ManagedSendThread {
     #[must_use]
     pub fn handoff(&self) -> Arc<SendEffectHandoff> {
         Arc::clone(&self.handoff)
+    }
+
+    /// Install the shareable host event-driven main wake (controller calls
+    /// this before first submit and on an already-spawned owner; safe any
+    /// time — forwarded under the handoff lock, uncontended).
+    pub fn set_wake(&self, wake: crate::ffi::MainWakeSignal) {
+        self.handoff.set_wake(wake);
     }
 
     /// Nonblocking request-to-stop (delegates to the lane) plus an owner

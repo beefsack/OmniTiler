@@ -740,14 +740,33 @@ mod native {
         Ok(build_snapshot(&ns, &rows, separate))
     }
 
-    /// One bounded main-thread pump for the cooperative select drain below:
-    /// service application events plus the runloop without entering `run`
-    /// (the same pump as the main loop above; no windows open here).
-    fn pump_once(app: &objc2_app_kit::NSApplication) {
+    /// Idle wait for gate-held iterations (locked/unknown session,
+    /// loginwindow foreground, unreadable foreground): park in the host
+    /// runloop until a publisher signals past the top-of-loop `seen` or
+    /// one cadence elapses, then recheck the gate. `seen` is carried from
+    /// the loop top (before the sticky takes): a publisher landing between
+    /// the takes and this park advances past `seen`, so the park returns
+    /// immediately instead of swallowing a known signal until the
+    /// backstop. Never resnapshots here. The deadline is the existing
+    /// idle backstop, never a new timer.
+    fn park_held(wake: &crate::ffi::MainRunloopWake, seen: u64) {
+        wake.park_until(seen, Instant::now() + CADENCE);
+    }
+
+    /// Event-driven shutdown wait: service application events, then park in
+    /// the host runloop until a publisher signals past `seen` or
+    /// `deadline` elapses. Owner finish/exit pokes wake this; the bound is
+    /// the shutdown failure backstop, never a poll quantum.
+    fn park_shutdown(
+        app: &objc2_app_kit::NSApplication,
+        wake: &crate::ffi::MainRunloopWake,
+        seen: u64,
+        deadline: Instant,
+    ) {
         objc2::rc::autoreleasepool(|_| {
             crate::ffi::drain_app_events(app);
-            crate::ffi::pump_runloop_once(50);
         });
+        wake.park_until(seen, deadline);
     }
 
     /// Adopt one terminal selection completion into lifecycle ownership on
@@ -1648,9 +1667,8 @@ mod native {
 
     /// Minimum interval between publisher-woken border-only joins: AX
     /// notification bursts re-join at most this often (never topology or
-    /// tiling at AX frequency). The runloop pump below already quantizes
-    /// wakeups to roughly its own period, so this throttle only caps
-    /// pathological bursts.
+    /// tiling at AX frequency). The event-driven park below wakes per
+    /// event, so this throttle only caps pathological bursts.
     const BORDER_FAST_MIN: Duration = Duration::from_millis(33);
     /// Pure border fast-path gate over explicit inputs (fake-clock
     /// testable): enabled runs re-join only on publisher dirt with the
@@ -1673,18 +1691,19 @@ mod native {
     /// Main-thread cadence gate over explicit inputs (pure, testable): the
     /// 250 ms cadence stays the idle backstop, but a pending display/Space
     /// notification, a staged effect completion, or a published engine claim
-    /// (each stashed before the gate, so the 50 ms app pump never loses it)
+    /// (each stashed before the gate, so the flag take never loses it)
     /// runs the cadence body early - topology, the send/select completion
     /// polls, and the claim drain settle on the event instead of the next
     /// cadence. The early run resets the cadence clock, so idle polling
     /// never permanently quickens.
     ///
-    /// Scheduling truth: the settle/claim flags are plain takes checked once
-    /// per 50 ms `pump_runloop_once(50)` iteration - an event-to-reconcile
-    /// bound of one pump quantum, NOT an immediate CF runloop wake. No
-    /// `CFRunLoopWakeUp` cross-thread handle is installed (that would need
-    /// `unsafe` plus a new wake architecture for a bounded gain of at most
-    /// one 50 ms quantum); the fixed 50 ms quantization stays.
+    /// Scheduling truth: the settle/claim flags are plain takes checked
+    /// every iteration, and the idle park behind this gate is an immediate
+    /// host runloop wake (self-pipe source: the publisher's poke returns
+    /// the park on the event, while native sources keep servicing). No
+    /// pump quantum stands between an event and its reconcile — a claim
+    /// stored, a completion staged, or a notification delivered wakes the
+    /// park directly.
     fn cadence_due(elapsed: Duration, event_pending: bool) -> bool {
         elapsed >= CADENCE || event_pending
     }
@@ -1695,7 +1714,7 @@ mod native {
     /// refusal - never filtered by outcome. The caller bumps the existing
     /// shared invalidation generation
     /// ([`crate::runtime::RuntimeHandle::request_owner_reread`]), so every
-    /// per-app tile owner rereads once on its next pump even when the
+    /// per-app tile owner rereads once on its next pass even when the
     /// snapshot revision is unchanged (the `arrival` trigger covers any
     /// unchanged-revision bump; the backstop recovers silence). Never a
     /// native retry, never a guessed completion: the terminal stands as
@@ -1705,7 +1724,7 @@ mod native {
     }
 
     /// Whether a terminal settlement re-arms one early cadence body
-    /// (pure, testable): exactly one extra body on the next pump, consumed
+    /// (pure, testable): exactly one extra body on the next iteration,
     /// once (a body with no new terminal clears it again). Reason: the
     /// post-terminal native topology re-read plus the creation-receipt
     /// observe plus the reread-bump propagation must not wait out the
@@ -2226,9 +2245,22 @@ mod native {
                 .unwrap_or_default(),
             )
         })?;
+        // Host event-driven main wake (self-pipe runloop source, installed
+        // on this main thread): engine claim stores, effect-owner terminal
+        // finishes, owner exits, and the display/Space observer below poke
+        // it, so the main park returns on the event instead of a tick. The
+        // sticky flags stay the work truth; the wake (plus its generation)
+        // only shortens the wait. Lives until the end of this function —
+        // owners join and the runtime shuts down before it drops, so no
+        // signal races teardown.
+        let main_wake = crate::ffi::MainRunloopWake::install()
+            .map_err(|reason| (1, format!("main wake refused: {reason}")))?;
+        let wake_signal = main_wake.signal_handle();
+        handle.publish_main_wake(wake_signal.clone());
         // Display/Space-change observer (events trigger resnapshot;
-        // bounded fallback polling below covers a missed event).
-        let (guard, display_flag) = crate::ffi::install_display_change_guard()
+        // the wake poke above returns a parked main thread immediately —
+        // the sticky flag stays the resnapshot truth).
+        let (guard, display_flag) = crate::ffi::install_display_change_guard(&wake_signal)
             .map_err(|reason| (1, format!("display guard refused: {reason}")))?;
         // The guard owns the active-Space observer for the run lifetime;
         // its shared wake settles off-main Dock-swipe selects event-driven.
@@ -2316,6 +2348,12 @@ mod native {
         .map_err(|reason| (2, reason))?;
         select_controller.set_fixture_gate(fixture_gate.clone());
         send_controller.set_fixture_gate(fixture_gate.clone());
+        // Install the host wake on both effect owners now that they exist:
+        // terminal finishes and owner exits poke the parked main thread.
+        // Order never loses a poke (flag-set then signal; the main loop
+        // takes flags before its first park).
+        select_controller.set_wake(wake_signal.clone());
+        send_controller.set_wake(wake_signal.clone());
         // Bounded runs end at the soft deadline (the watchdog above is the
         // hard lifetime); unbounded product runs loop until owner exit or
         // exact-PID stop.
@@ -2329,20 +2367,19 @@ mod native {
             .checked_sub(CADENCE)
             .unwrap_or_else(Instant::now);
         // Pending display/Space notification stashed before the cadence
-        // gate: the 50 ms app pump takes the guard flag every iteration so
-        // no event waits for the 250 ms cadence, and the stash (never the
-        // raw flag) drives the early run below - a skipped early run keeps
-        // its wakeup instead of losing it. Cleared when the cadence body
-        // consumes it.
+        // gate: the flag take every iteration means no event waits for the
+        // 250 ms cadence, and the stash (never the raw flag) drives the
+        // early run below - a skipped early run keeps its wakeup instead of
+        // losing it. Cleared when the cadence body consumes it.
         let mut display_pending = false;
         // Staged effect-completion wake stashed the same way: either
         // effect owner (select or send) stages its terminal completion
-        // off-main, and the next 50 ms pump notices via the handoff flag
+        // off-main, and the next flag take notices via the handoff flag
         // instead of waiting for the 250 ms tick. Same keep-on-skip rule:
         // a body skipped at the lock/secure gates keeps the wakeup.
         let mut effects_pending = false;
         // Published-claim wake stashed the same way: the engine stored an
-        // actionable claim off-main, and the next 50 ms pump notices via the
+        // actionable claim off-main, and the next flag take notices via the
         // shared slot flag instead of waiting for the 250 ms tick. Same
         // keep-on-skip rule: a body skipped at the lock/secure gates keeps
         // the wakeup. Consumed at the drain site below (the slot itself is
@@ -2350,7 +2387,7 @@ mod native {
         // or the backstop, never a retained stash loop.
         let mut claim_pending = false;
         // Last publisher-woken border-only join (fast path below throttles
-        // against this; starts at first-pump so an early burst joins).
+        // against this; starts at loop entry so an early burst joins).
         let mut last_border_fast = Instant::now();
         let mut launched = 0u64;
         let mut launch_refused = 0u64;
@@ -2407,16 +2444,25 @@ mod native {
         }
 
         while deadline.is_none_or(|d| Instant::now() < d) {
-            // Bounded main-thread pump: service application events plus the
-            // runloop without entering `run`. No windows open here.
+            // Event-driven host park: service application events plus
+            // already-ready runloop sources (nonblocking, zero timeout:
+            // display/Space notifications and the self-pipe wake source
+            // stay serviced even across sustained active iterations that
+            // never reach the idle park below — never a periodic pump,
+            // never a timer), snapshot the wake generation, then take
+            // every sticky flag. Publishers set their flag before
+            // signalling and the park below rechecks the generation, so an
+            // event landing anywhere in this sequence runs the cadence body
+            // on the gate below — or wakes the idle park immediately.
             objc2::rc::autoreleasepool(|_| {
                 crate::ffi::drain_app_events(&app);
-                crate::ffi::pump_runloop_once(50);
+                crate::ffi::pump_runloop_once(0);
             });
+            let seen = wake_signal.generation();
             // Event stash for the cadence gate below: take the guard flag
-            // on every 50 ms pump so a display/Space notification never
-            // waits for the 250 ms cadence, and stash it (never act here)
-            // so a skipped early run keeps its wakeup. The cadence body
+            // every iteration so a display/Space notification never waits
+            // for the 250 ms cadence, and stash it (never act here) so a
+            // skipped early run keeps its wakeup. The cadence body
             // consumes the stash with the same lock/secure gates as ever.
             if display_flag.take_changed() {
                 display_pending = true;
@@ -2425,21 +2471,22 @@ mod native {
             // settlement, send forward/return effects, including ambiguous
             // `Threw` outcomes): notice them here so the cadence body below
             // reconciles on the event instead of the next 250 ms tick.
-            // Two atomics per pump (the polls themselves clear the flags
-            // when they take, so steady state stays quiet). Truthfully a
-            // flag checked at the fixed 50 ms quantum - NOT an immediate
-            // runloop wake (see `cadence_due`): settle-to-reconcile waits
-            // at most one pump quantum, never a full cadence.
+            // Two flag takes per iteration (the polls themselves clear the
+            // flags when they take, so steady state stays quiet). The wake
+            // poke behind each stage returns a parked main thread on the
+            // event (see `cadence_due`): settle-to-reconcile waits on the
+            // signal, never a full cadence.
             let select_settled = select_controller.take_settled();
             let send_settled = send_controller.take_settled();
             if select_settled || send_settled {
                 effects_pending = true;
             }
-            // Engine-published claim: take the shared slot wake every 50 ms
-            // pump so the cadence body below drains on the event instead of
-            // the next 250 ms tick. The take (not the slot read) is what
-            // wakes: the slot itself stays the drain-site truth, so a claim
-            // stored between this take and the drain still drains there.
+            // Engine-published claim: take the shared slot wake every
+            // iteration so the cadence body below drains on the event
+            // instead of the next 250 ms tick. The take (not the slot read)
+            // is what wakes: the slot itself stays the drain-site truth, so
+            // a claim stored between this take and the drain still drains
+            // there.
             if handle.take_select_claim_pending() {
                 claim_pending = true;
             }
@@ -2448,7 +2495,7 @@ mod native {
             // topology, no tiling, no AX) - throttled so AX-frequency
             // publishes never spin the join. Idle runs never set the flag
             // (unchanged snapshots don't republish), so this costs two
-            // atomic loads per pump. The take happens only on a joining
+            // atomic loads per iteration. The take happens only on a joining
             // tick, so a throttled burst keeps its wakeup; the 250 ms
             // cadence below stays the backstop (slow polls, heartbeats,
             // stop file).
@@ -2476,11 +2523,16 @@ mod native {
             ) {
                 last_cadence = Instant::now();
             } else {
-                // The app pump still took the guard flag above (stashed in
-                // `display_pending`), the settle flags above (stashed in
-                // `effects_pending`), and the claim flag above (stashed in
+                // Idle: park in the host runloop until a publisher signals
+                // past `seen` or the cadence backstop elapses. The takes
+                // above already stashed the guard flag (in
+                // `display_pending`), the settle flags (in
+                // `effects_pending`), and the claim flag (in
                 // `claim_pending`), so an early run skipped here keeps all
-                // wakeups for the next pump - nothing is lost by waiting.
+                // wakeups for the next iteration — nothing is lost by
+                // waiting. Native main-loop sources (display/Space
+                // notifications, app events) keep servicing while parked.
+                main_wake.park_until(seen, last_cadence + CADENCE);
                 continue;
             }
             // Consume the stashed notification at the topology site below
@@ -2606,9 +2658,15 @@ mod native {
                         tracked.remove(&pid);
                         terminated += 1;
                     }
+                    // Gate-held: wait event-driven (a display/claim/settle
+                    // poke returns early; the backstop rechecks the gate).
+                    park_held(&main_wake, seen);
                     continue;
                 }
-                crate::ffi::SessionLock::Unknown => continue,
+                crate::ffi::SessionLock::Unknown => {
+                    park_held(&main_wake, seen);
+                    continue;
+                }
             }
             match crate::ffi::frontmost_app() {
                 Some((_, bundle)) if crate::focus::is_loginwindow_bundle(&bundle) => {
@@ -2640,9 +2698,15 @@ mod native {
                         tracked.remove(&pid);
                         terminated += 1;
                     }
+                    // Gate-held: wait event-driven (same backstop shape as
+                    // the lock gate above).
+                    park_held(&main_wake, seen);
                     continue;
                 }
-                None => continue,
+                None => {
+                    park_held(&main_wake, seen);
+                    continue;
+                }
                 Some(_) => {}
             }
             if matches!(crate::ffi::secure_input_known(), Some(true)) {
@@ -2857,7 +2921,7 @@ mod native {
                 // accepted-with-drift, unproven deadline, `Threw`, or proven
                 // refusal - requests one whole-owner reread even at an
                 // unchanged snapshot revision (the pre-poll snapshot in this
-                // body predates the settlement; the owners' next pump must
+                // body predates the settlement; the owners' next pass must
                 // re-observe rather than trust the backstop alone). The
                 // terminal itself stands as staged; this only bumps the
                 // existing generation, never retries native work.
@@ -2993,7 +3057,7 @@ mod native {
             // The settle polls above took whatever staged (each take clears
             // its handoff wake): the wake that ran this body early is spent.
             // A settle landing after the polls re-arms through `finish` and
-            // wakes the next pump. When this body itself settled a terminal,
+            // wakes the next iteration. When this body itself settled a terminal,
             // re-arm exactly one early body (`post-terminal-reread`) so the
             // post-settlement native topology re-read, the pending creation
             // receipt observe, and the reread-bump propagation above never
@@ -3413,9 +3477,8 @@ mod native {
         // stopped with the loop exit above - no claim is submitted past
         // this point. An already-staged completion settles inline exactly
         // like the live poll; otherwise the inflight job is cancelled and
-        // the main thread keeps pumping its runloop while polling
-        // nonblocking until the terminal completion stages or the bound
-        // expires. The proof adopts exactly like the live poll on BOTH
+        // the main thread parks event-driven while polling nonblocking
+        // until the terminal completion stages or the bound expires. The proof adopts exactly like the live poll on BOTH
         // outcomes, so a late append is never silently lost. Only then is
         // the owner stop-signalled and reaped once finished, and only then
         // does the preexisting main-thread trailing cleanup below run.
@@ -3440,9 +3503,16 @@ mod native {
         if select_controller.is_busy() {
             select_controller.cancel();
             while select_controller.is_busy() && Instant::now() < drain_deadline {
-                pump_once(&app);
+                let seen = wake_signal.generation();
                 if let Some((completion, reaped)) = select_controller.poll() {
                     settle_select_at_shutdown(&handle, &mut trailing_lifecycle, completion, reaped);
+                }
+                if select_controller.is_busy() {
+                    // Wait event-driven: the owner's terminal `finish`
+                    // pokes the wake (flag-set then signal), so this
+                    // returns on the completion instead of a quantum. The
+                    // bound stays the shutdown failure backstop.
+                    park_shutdown(&app, &main_wake, seen, drain_deadline);
                 }
             }
             if select_controller.is_busy() {
@@ -3454,7 +3524,11 @@ mod native {
         }
         select_controller.request_shutdown();
         while !select_controller.is_finished() && Instant::now() < drain_deadline {
-            pump_once(&app);
+            // Wait event-driven: the owner exit pokes the wake, so this
+            // returns on the joinable exit instead of a quantum. The bound
+            // stays the shutdown failure backstop (a wedged owner retains
+            // the lane and reports unclean below).
+            park_shutdown(&app, &main_wake, wake_signal.generation(), drain_deadline);
         }
         match select_controller.try_reap() {
             Some(_) => {}
@@ -3852,9 +3926,9 @@ mod native {
             assert!(cadence_due(Duration::from_millis(50), true));
             // A staged effect completion wakes the same gate: the settle
             // flags (`effects_pending`) OR into the event arm, so a
-            // verified arrival reconciles on the next 50 ms pump instead
+            // verified arrival reconciles on the next flag take instead
             // of the next 250 ms tick. Worst case settle-to-reconcile
-            // drops from one full cadence to one pump quantum; steady
+            // drops from one full cadence to the wake itself; steady
             // state (no event) never quickens.
             let settle_at_ms = [0u64, 10, 125, 249];
             for at in settle_at_ms {
@@ -3873,49 +3947,27 @@ mod native {
         }
 
         #[test]
-        fn published_claim_schedule_bound_is_one_pump_quantum() {
-            // Deterministic schedule math for the claim->drain wait (NOT a
-            // runtime hard bound: a busy drain defers the claim to a later
-            // tick by design, and lock/secure gates drop it). Pumps tick
-            // every 50 ms; the cadence backstop is 250 ms; the claim publishes
-            // at `phase` ms after the last body. Before the claim wake, the
-            // drain waits for the backstop (`250 - phase`). After, the first
-            // pump takes the shared flag and the gate runs the body early.
-            const PUMP_MS: u64 = 50;
-            const CADENCE_MS: u64 = 250;
-            let phases = [0u64, 10, 125, 249];
-            let mut worst_before = 0u64;
-            let mut worst_after = 0u64;
-            for phase in phases {
-                let before = CADENCE_MS - phase;
-                worst_before = worst_before.max(before);
-                let first_tick = (phase / PUMP_MS + 1) * PUMP_MS;
-                let after = first_tick - phase;
-                worst_after = worst_after.max(after);
-                // The early run at that tick is flag-driven (gates passing):
-                // with no event the same tick stays shut, so the backstop
-                // alone would have waited. At the backstop tick itself both
-                // arms agree, so only the early ticks prove the flag.
-                let elapsed = Duration::from_millis(first_tick);
+        fn published_claim_runs_body_on_take_not_on_a_quantum() {
+            // Event-driven schedule (no pump quantum): a published claim —
+            // like a staged settle or a display notification — runs the body
+            // on the next flag take at whatever phase it lands, with no
+            // deadline advance and no periodic pump. The gate fires with the
+            // event arm at every sub-cadence phase (0, mid, and backstop
+            // edge alike) and stays shut without one; the 250 ms backstop
+            // still fires with no event.
+            for phase in [0u64, 10, 49, 50, 125, 249] {
+                let elapsed = Duration::from_millis(phase);
                 assert!(
                     cadence_due(elapsed, true),
-                    "claim at +{phase}ms must run the body at +{first_tick}ms"
+                    "claim at +{phase}ms must run the body at +{phase}ms, not a later quantum"
                 );
-                if first_tick < CADENCE_MS {
-                    assert!(
-                        !cadence_due(elapsed, false),
-                        "no claim at +{phase}ms must wait past +{first_tick}ms"
-                    );
-                }
+                assert!(
+                    !cadence_due(elapsed, false),
+                    "no claim at +{phase}ms must wait out the cadence"
+                );
             }
-            assert_eq!(
-                worst_before, 250,
-                "before: a claim just after a body waits the full cadence"
-            );
-            assert_eq!(
-                worst_after, 50,
-                "after: the claim wake bounds the wait to one pump quantum"
-            );
+            assert!(cadence_due(CADENCE, false), "backstop still fires idle");
+            assert!(cadence_due(Duration::from_secs(10), false));
         }
 
         #[test]
@@ -3932,11 +3984,461 @@ mod native {
             // existing 1 s owner backstop
             // (`SCOPED_BACKSTOP_INTERVAL`) plus the 250 ms cadence already
             // bound silence, and this one-shot only shortens the post-terminal
-            // topology re-read to one 50 ms pump quantum.
+            // topology re-read to the next woken body.
             assert!(terminal_settlement_requests_reread(true));
             assert!(!terminal_settlement_requests_reread(false));
             assert!(post_terminal_early_body_due(true));
             assert!(!post_terminal_early_body_due(false));
+        }
+    }
+
+    #[cfg(test)]
+    mod direct_wake_tests {
+        use super::*;
+        use std::collections::{BTreeMap, VecDeque};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        struct StubAx;
+        impl crate::runtime_backend::AxBackendFactory for StubAx {
+            fn create(
+                &self,
+                _pid: u32,
+            ) -> Result<Box<dyn crate::runtime_backend::AxBackend>, String> {
+                Err("test stub creates nothing".to_owned())
+            }
+        }
+
+        fn test_handle() -> crate::runtime::RuntimeHandle {
+            let shared = Arc::new(std::sync::Mutex::new(crate::runtime::Shared {
+                config: RuntimeConfig::default(),
+                handles_live: 0,
+                generation_counter: 0,
+                log_counter: 0,
+                start: Instant::now(),
+                apps: BTreeMap::new(),
+                clock: Arc::new(crate::world_sequencer::ObservationClock::new()),
+                midflight_hook: std::sync::Mutex::new(None),
+                post_accept_hook: std::sync::Mutex::new(None),
+                topology: None,
+                display_inputs: None,
+                select_wake: None,
+                main_wake: None,
+                topology_revision: 0,
+                native_context: None,
+                native_cell: crate::runtime_shared::NativeContextCell::new(),
+                select_pending: VecDeque::new(),
+                select_busy: false,
+                select_claim_pending: false,
+                selection_focus_pending: None,
+                selection_focus_floor_seq: 0,
+                focus_evidence: None,
+                zombies: Vec::new(),
+                engine_handle: None,
+                input_handle: None,
+                logger_handle: None,
+                input_thread: None,
+                terminal: None,
+                admission_closed: false,
+                stop_engine: Arc::new(AtomicBool::new(false)),
+                stop_input: Arc::new(AtomicBool::new(false)),
+                stop_logger: Arc::new(AtomicBool::new(false)),
+                log_tx: None,
+                diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
+                log: VecDeque::new(),
+                last_desired: Vec::new(),
+                test_wake: None,
+                test_seq: 0,
+                last_geometry_key: None,
+                last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
+                last_pager_bindings: Vec::new(),
+                presentation_style: crate::active_border::PresentationStylePx::default(),
+            }));
+            crate::runtime::RuntimeHandle {
+                shared: Arc::clone(&shared),
+                inbox: Arc::new(crate::runtime_thread::Inbox::new(16)),
+                focus_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
+                ax_factory: Arc::new(StubAx),
+            }
+        }
+
+        /// One active main-loop iteration without parking (the live loop's
+        /// non-idle path): service already-ready runloop sources
+        /// nonblocking, snapshot the generation, take every sticky flag.
+        /// Returns the observed generation plus whether the sticky flag
+        /// was set. Never parks, never sleeps.
+        fn active_iteration(signal: &crate::ffi::MainWakeSignal, flag: &AtomicBool) -> (u64, bool) {
+            crate::ffi::pump_runloop_once(0);
+            let seen = signal.generation();
+            let taken = flag.swap(false, Ordering::SeqCst);
+            (seen, taken)
+        }
+
+        fn active_loop_observes_without_parking(signal: &crate::ffi::MainWakeSignal) {
+            // Phase 1 — signal-before-work (fully deterministic): three
+            // publisher events (flag-set then signal, the production
+            // protocol) land before sustained work starts; the next active
+            // takes must resolve all three with no park and no sleep.
+            let flag = Arc::new(AtomicBool::new(false));
+            let base = signal.generation();
+            for _ in 0..3 {
+                flag.store(true, Ordering::SeqCst);
+                signal.signal();
+            }
+            let mut took = 0u32;
+            let mut seen = base;
+            for _ in 0..100 {
+                let (at, taken) = active_iteration(signal, &flag);
+                seen = at;
+                if taken {
+                    took += 1;
+                }
+                if seen == base + 3 {
+                    break;
+                }
+            }
+            assert_eq!(
+                seen,
+                base + 3,
+                "sustained claim work observes every prior wake without parking"
+            );
+            assert!(
+                (1..=3).contains(&took),
+                "coalesced sticky takes observe the burst, got {took}"
+            );
+
+            // Phase 2 — signal-during-work (causal handshake, no sleep):
+            // the driver publishes one event while this thread stays in
+            // sustained active work, then waits for the acknowledgement;
+            // the active loop acknowledges through its normal takes. No
+            // timing oracle: the 10 s bounds only fail wedged threads,
+            // never prove promptness. Snapshot before spawn so the
+            // driver's single signal is the only advance past `phase`.
+            let phase = signal.generation();
+            let ack = Arc::new(AtomicBool::new(false));
+            let driver_flag = Arc::clone(&flag);
+            let driver_signal = signal.clone();
+            let driver_ack = Arc::clone(&ack);
+            let driver = std::thread::spawn(move || {
+                driver_flag.store(true, Ordering::SeqCst);
+                driver_signal.signal();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !driver_ack.load(Ordering::SeqCst) {
+                    if Instant::now() >= deadline {
+                        panic!("active loop never acknowledged the during-work event");
+                    }
+                    std::hint::spin_loop();
+                }
+            });
+            let mut acked = false;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                crate::ffi::pump_runloop_once(0);
+                if flag.swap(false, Ordering::SeqCst) {
+                    ack.store(true, Ordering::SeqCst);
+                    acked = true;
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            assert!(
+                acked,
+                "active loop takes the during-work event without parking"
+            );
+            let _ = driver.join();
+            assert_eq!(
+                signal.generation(),
+                phase + 1,
+                "during-work event advances the wake exactly once"
+            );
+        }
+
+        #[test]
+        fn sustained_claim_work_takes_wake_without_parking() {
+            // Real offline source: the installed self-pipe runloop wake on
+            // this test thread's runloop (pure CF plus the pipe — no
+            // AppKit, no desktop). Sustained claim work services ready
+            // sources every iteration and takes every wake without parking.
+            let wake = crate::ffi::MainRunloopWake::install_for_test()
+                .expect("test wake installs without a desktop");
+            active_loop_observes_without_parking(&wake.signal_handle());
+            // Fake offline source: the detached generation-only signal
+            // (same protocol, no host poke). The same active loop resolves
+            // it identically — the sticky flags stay the work truth either
+            // way.
+            active_loop_observes_without_parking(&crate::ffi::MainWakeSignal::detached());
+        }
+
+        fn tap_claim() -> crate::runtime_types::ClaimedSelect {
+            crate::runtime_types::ClaimedSelect::tap(
+                crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 2 },
+            )
+        }
+
+        fn select_script(
+            executed: Arc<std::sync::Mutex<Vec<String>>>,
+        ) -> crate::select_owner::SelectExecutor {
+            Box::new(
+                move |job: &crate::select_owner::SelectJob,
+                      _state: &mut crate::workspace_select::SelectionState| {
+                    executed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(job.claim.operation_id.clone().unwrap_or_default());
+                    crate::select_owner::SelectCompletion {
+                        operation_id: job.claim.operation_id.clone(),
+                        result: Ok(crate::workspace_select::SelectSuccess {
+                            effect: crate::workspace_select::SelectionEffect {
+                                from: 1001,
+                                target: 1002,
+                                created: None,
+                                changed: true,
+                                baseline: None,
+                            },
+                            setter: tiler_core::world_report::FrameSetter::Accepted,
+                            pre: Some(1001),
+                            post: Some(1002),
+                            creation: None,
+                            attempt_ms: 0,
+                        }),
+                        proof: None,
+                        base: job.submitted_at,
+                    }
+                },
+            )
+        }
+
+        fn send_target(op: &str) -> crate::workspace_send_effect::ManagedSendTarget {
+            let source = tiler_core::session::DomainKey {
+                output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
+                workspace: tiler_core::directional::WorkspaceId("space-20".to_owned()),
+            };
+            crate::workspace_send_effect::ManagedSendTarget::bind(4242, 7, 1, source, 3, 9, op)
+                .expect("fixture target binds")
+        }
+
+        #[test]
+        fn queued_claims_drain_fifo_on_completion_events_at_fixed_time() {
+            // Integrated offline coverage at fixed logical time (every
+            // scheduler gate below reads `Duration::ZERO`: no cadence
+            // advance, no clock read decides anything):
+            // - actual claim publication via the production engine path
+            //   (`store_select_claim`: FIFO queue, sticky flag, wake poke,
+            //   diagnostics — never the test-only queue push);
+            // - real completion publishers (scripted select owner thread
+            //   `finish` plus direct send handoff `finish`);
+            // - production scheduler event-taking and gating
+            //   (`take_select_claim_pending` / `take_settled` /
+            //   `cadence_due`);
+            // - serialized FIFO drain/release
+            //   (`claim_select_for_drain` /
+            //   `release_select_after_drain`).
+            // Interleavings: a claim published before any drain, a claim
+            // published during a held drain, a completion staged before
+            // its release, and a completion staged after its release. No
+            // sleeps; causal condvar waits only (bounds fail wedged
+            // owners, never prove promptness).
+            const LOGICAL: Duration = Duration::ZERO;
+            let handle = test_handle();
+            let signal = crate::ffi::MainWakeSignal::detached();
+            crate::runtime::lock_shared(&handle.shared).main_wake = Some(signal.clone());
+            let base = signal.generation();
+            let enqueued_base = handle.diagnostics().input_select_enqueued;
+
+            // Signal BEFORE any drain: two engine publications queue FIFO
+            // behind one coalesced wake.
+            crate::runtime_thread::store_select_claim(&handle.shared, tap_claim(), Some("op-1"));
+            crate::runtime_thread::store_select_claim(&handle.shared, tap_claim(), Some("op-2"));
+            assert_eq!(signal.generation(), base + 2, "each publication pokes once");
+            assert_eq!(
+                handle.diagnostics().input_select_enqueued,
+                enqueued_base + 2,
+                "real publication path counts both"
+            );
+            assert!(
+                handle.take_select_claim_pending(),
+                "publication wakes the scheduler"
+            );
+            assert!(
+                cadence_due(LOGICAL, true),
+                "stashed claim runs the body at fixed time"
+            );
+            assert!(
+                !cadence_due(LOGICAL, false),
+                "no stashed event stays shut at the same fixed time"
+            );
+
+            // Serialized drain: the oldest claim drains first while a
+            // second claim attempt refuses (single drain, never parallel).
+            let first = handle
+                .claim_select_for_drain()
+                .expect("oldest claim drains first");
+            assert_eq!(first.operation_id.as_deref(), Some("op-1"));
+            assert!(
+                handle.claim_select_for_drain().is_none(),
+                "held drain serializes: no second claim while busy"
+            );
+
+            // Signal DURING the held drain: a third publication re-arms
+            // the wake while the first drain is still held.
+            crate::runtime_thread::store_select_claim(&handle.shared, tap_claim(), Some("op-3"));
+            assert_eq!(
+                signal.generation(),
+                base + 3,
+                "during-drain publication pokes"
+            );
+            assert!(
+                handle.take_select_claim_pending(),
+                "during-drain publication wakes the scheduler"
+            );
+            assert!(cadence_due(LOGICAL, true), "during-drain wake runs early");
+
+            // Completion BEFORE release (select lane): the real owner
+            // thread stages op-1's terminal completion through `finish`
+            // (flag-set then signal); the scheduler takes it at fixed
+            // time and the drain polls it exactly once.
+            let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let thread =
+                crate::select_owner::SelectThread::spawn_with(select_script(Arc::clone(&executed)));
+            thread.set_wake(signal.clone());
+            let select_wake = crate::ffi::SpaceSelectWake::new();
+            let published = vec![crate::topology::DisplayGeometry {
+                cg_id: 7,
+                uuid: Some("550E8400-E29B-41D4-A716-446655440000".to_owned()),
+                cg_bounds: None,
+                visible: None,
+                scale: 2.0,
+            }];
+            let settled_before = signal.generation();
+            thread
+                .submit(crate::select_owner::SelectJob {
+                    claim: first.clone(),
+                    display_index: 0,
+                    pinned_cgid: 7,
+                    pinned_uuid: "550E8400-E29B-41D4-A716-446655440000".to_owned(),
+                    published_displays: published,
+                    published_separate: Some(true),
+                    trailing_enabled: false,
+                    fixture_gate: None,
+                    latch: Arc::new(select_wake.subscribe()),
+                    wake: select_wake.clone(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    submitted_at: Instant::now(),
+                })
+                .expect("owner takes the drained claim");
+            assert!(
+                signal.wait_for_advance(settled_before, Duration::from_secs(10)),
+                "select completion wakes on its event"
+            );
+            assert!(thread.take_settled(), "select settle flag stages");
+            assert!(cadence_due(LOGICAL, true), "select settle runs early");
+            let done = thread
+                .poll_completion()
+                .expect("select completion polls exactly once");
+            assert_eq!(done.operation_id.as_deref(), Some("op-1"));
+            assert!(
+                thread.poll_completion().is_none(),
+                "select completion never replays"
+            );
+            assert_eq!(
+                executed.lock().unwrap().as_slice(),
+                ["op-1"],
+                "owner executed the drained claim only"
+            );
+            // Release re-arms for the queued remainder and pokes (queued
+            // op-2/op-3 keep the next drain event-driven).
+            let released_before = signal.generation();
+            handle.release_select_after_drain();
+            assert_eq!(
+                signal.generation(),
+                released_before + 1,
+                "release with queued remainder pokes once"
+            );
+            assert!(
+                handle.take_select_claim_pending(),
+                "release re-arms the sticky wake"
+            );
+            assert!(cadence_due(LOGICAL, true));
+
+            // FIFO order: op-2 drains next with op-3 still queued behind
+            // the held drain.
+            let second = handle
+                .claim_select_for_drain()
+                .expect("second claim drains next");
+            assert_eq!(second.operation_id.as_deref(), Some("op-2"));
+            assert!(
+                handle.claim_select_for_drain().is_none(),
+                "held drain still serializes"
+            );
+
+            // Completion AFTER release (send lane): the drain releases
+            // op-2 first, then the real send handoff stages its terminal
+            // completion — the take still observes it (flag-set then
+            // signal) and the gate still fires at fixed time. Nothing is
+            // lost by the order.
+            handle.release_select_after_drain();
+            assert!(
+                handle.take_select_claim_pending(),
+                "op-3 remainder re-arms again"
+            );
+            let send = crate::workspace_send_effect::SendEffectHandoff::new();
+            send.set_wake(signal.clone());
+            let pinned = send_target("op-2");
+            send.submit(pinned.clone()).expect("send submits");
+            send.take_for_owner().expect("send owner takes");
+            let send_before = signal.generation();
+            assert!(
+                send.finish(crate::workspace_send_effect::SendCompletion {
+                    operation_id: pinned.operation_id().to_owned(),
+                    app_generation: pinned.app_generation(),
+                    revision: pinned.revision(),
+                    follow: pinned.follow(),
+                    setter: tiler_core::world_report::FrameSetter::Accepted,
+                    outcome: crate::workspace_send_effect::SendEffectOutcome::Applied,
+                    trailing: None,
+                    pre_member: None,
+                    post_member: None,
+                    pre_view: None,
+                    post_view: None,
+                }),
+                "matching send finish stages"
+            );
+            assert_eq!(
+                signal.generation(),
+                send_before + 1,
+                "send staging pokes exactly once"
+            );
+            assert!(send.take_settled(), "send settle flag stages");
+            assert!(cadence_due(LOGICAL, true), "late send settle runs early");
+            assert!(
+                send.poll_completion_for(&pinned)
+                    .is_some_and(|completion| completion.operation_id == "op-2"),
+                "send completion polls under its identity"
+            );
+
+            // Final FIFO position: op-3 drains last; an empty release
+            // re-arms nothing and pokes nothing (no replay, no phantom
+            // wake).
+            let third = handle
+                .claim_select_for_drain()
+                .expect("oldest remaining claim drains last");
+            assert_eq!(third.operation_id.as_deref(), Some("op-3"));
+            let drained = signal.generation();
+            handle.release_select_after_drain();
+            assert_eq!(signal.generation(), drained, "empty release pokes nothing");
+            assert!(
+                !handle.take_select_claim_pending(),
+                "empty queue re-arms nothing"
+            );
+            assert!(
+                handle.claim_select_for_drain().is_none(),
+                "drained queue stays empty: no replay"
+            );
+            assert!(
+                !cadence_due(LOGICAL, false),
+                "quiet scheduler stays shut at fixed time"
+            );
         }
     }
 }

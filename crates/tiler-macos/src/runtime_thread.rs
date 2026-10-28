@@ -761,7 +761,7 @@ use crate::runtime_native::handle_scoped_observation;
 /// the drain settles (see [`claim_select_for_drain`](crate::runtime::RuntimeHandle::claim_select_for_drain)),
 /// so a burst of admitted commands drains oldest-first with no loss, no
 /// duplication, and no reordering.
-fn store_select_claim(
+pub(crate) fn store_select_claim(
     shared: &Arc<Mutex<Shared>>,
     claim: crate::runtime_types::ClaimedSelect,
     operation_id: Option<&str>,
@@ -788,8 +788,15 @@ fn store_select_claim(
     // instead of silent, while immediate (depth-1) stores read delivered.
     let depth = guard.select_pending.len() as u64;
     guard.select_claim_pending = true;
+    // Flag-set then signal (race-closed with the main park: the main
+    // thread re-takes the sticky flag after every park return, so a parked
+    // main returns immediately here instead of waiting out the cadence).
+    let wake = guard.main_wake.clone();
     guard.diagnostics.input_select_enqueued += 1;
     drop(guard);
+    if let Some(wake) = wake {
+        wake.signal();
+    }
     emit(shared, 0, 0, 0, "input", token, depth);
 }
 
@@ -2651,6 +2658,7 @@ mod trailing_join_tests {
             topology: None,
             display_inputs: None,
             select_wake: None,
+            main_wake: None,
             topology_revision: ctx.revision,
             native_context: Some(Arc::clone(&ctx)),
             native_cell: crate::runtime_shared::NativeContextCell::new(),
@@ -2681,6 +2689,49 @@ mod trailing_join_tests {
             last_pager_bindings: Vec::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
+    }
+
+    #[test]
+    fn engine_claim_store_sets_flag_then_signals_wake() {
+        // Production engine publisher: `store_select_claim` appends the
+        // claim in admission order, sets the sticky slot flag, then signals
+        // the published main wake (flag-set then signal) — the exact
+        // protocol the parked main thread relies on. Deterministic: no
+        // threads, no timing; queue, flag, and generation state are the
+        // assertions.
+        let wake = crate::ffi::MainWakeSignal::detached();
+        let shared = test_shared(ctx());
+        lock_shared(&shared).main_wake = Some(wake.clone());
+        let before = wake.generation();
+        store_select_claim(
+            &shared,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 }),
+            None,
+        );
+        let guard = lock_shared(&shared);
+        assert!(
+            guard.select_claim_pending,
+            "claim store sets the sticky flag"
+        );
+        assert_eq!(guard.select_pending.len(), 1, "claim store enqueues FIFO");
+        assert_eq!(
+            wake.generation(),
+            before + 1,
+            "claim store signals exactly once"
+        );
+        drop(guard);
+        // A store racing publication (wake not yet published) still sets
+        // the flag and enqueues: the main loop takes the flag before its
+        // first park, so nothing is lost.
+        let bare = test_shared(ctx());
+        store_select_claim(
+            &bare,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 3 }),
+            None,
+        );
+        let guard = lock_shared(&bare);
+        assert!(guard.select_claim_pending);
+        assert_eq!(guard.select_pending.len(), 1);
     }
 
     fn session() -> WorldSession {
@@ -5286,6 +5337,7 @@ mod drag_gesture_handoff_tests {
             topology: None,
             display_inputs: None,
             select_wake: None,
+            main_wake: None,
             topology_revision: ctx.revision,
             native_context: Some(Arc::clone(&ctx)),
             native_cell: crate::runtime_shared::NativeContextCell::new(),

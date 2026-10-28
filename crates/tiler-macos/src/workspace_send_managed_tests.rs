@@ -3678,6 +3678,7 @@ mod send_join_tests {
             topology: None,
             display_inputs: None,
             select_wake: None,
+            main_wake: None,
             topology_revision: ctx.revision,
             native_context: Some(Arc::clone(&ctx)),
             native_cell: crate::runtime_shared::NativeContextCell::new(),

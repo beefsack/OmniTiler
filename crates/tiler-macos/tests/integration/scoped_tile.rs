@@ -787,12 +787,36 @@ fn native_plans_land_inside_actual_work_areas_divided_per_domain() {
         APP_A,
         scripted(vec![win(1)], vec![vec![11]], None),
     );
+    fixture.handle.launch_app(APP_A).expect("launch A");
+    // Causal startup fence (no sleep): the two workers publish
+    // concurrently, and the engine's emission-coherence gate refuses the
+    // first dispatch as stale when the second observation is already
+    // queued (`spend_if_coherent`/`will_incorporate`). Fencing A's dispatch
+    // before B publishes pins startup-then-startup order so each
+    // observation dispatches independently (the `>= 2` oracle below).
+    // Parks on the shared condition; the WAIT bound only fails wedges.
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.observations_published >= 1,
+        "first startup observation published",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    wait_diagnostics(
+        &fixture.handle,
+        |d| {
+            d.core_replies
+                .get("reconcile-accepted")
+                .copied()
+                .unwrap_or(0)
+                >= 1
+        },
+        "first observation dispatches",
+    );
     install(
         &fixture,
         APP_B,
         scripted(vec![win(2)], vec![vec![21]], None),
     );
-    fixture.handle.launch_app(APP_A).expect("launch A");
     fixture.handle.launch_app(APP_B).expect("launch B");
     assert!(fixture.handle.flush(FLUSH));
 

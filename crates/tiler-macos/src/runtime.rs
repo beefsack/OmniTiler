@@ -280,6 +280,7 @@ impl Runtime {
                 topology: None,
                 display_inputs: None,
                 select_wake: None,
+                main_wake: None,
                 topology_revision: 0,
                 native_context: None,
                 select_pending: VecDeque::new(),
@@ -337,6 +338,7 @@ impl Runtime {
             topology: None,
             display_inputs: None,
             select_wake: None,
+            main_wake: None,
             topology_revision: 0,
             native_context: None,
             select_pending: VecDeque::new(),
@@ -979,6 +981,15 @@ impl RuntimeHandle {
     /// refuse honestly). Brief lock clone only.
     pub fn select_wake(&self) -> Option<crate::ffi::SpaceSelectWake> {
         lock_shared(&self.shared).select_wake.clone()
+    }
+
+    /// Publish the shareable host event-driven main wake. Call once from
+    /// the tile main thread after installing it (the engine signals it on
+    /// every claim store; the release path signals it on re-arm). Brief
+    /// lock. Publishers that race publication only set sticky flags, which
+    /// the main loop takes before its first park — never lost.
+    pub fn publish_main_wake(&self, wake: crate::ffi::MainWakeSignal) {
+        lock_shared(&self.shared).main_wake = Some(wake);
     }
 
     /// True when the send display slot holds a publication. The tile

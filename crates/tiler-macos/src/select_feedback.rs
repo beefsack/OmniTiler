@@ -48,8 +48,8 @@ impl RuntimeHandle {
 
     /// Consume the published-claim wake hint once: true when the engine
     /// stored an actionable claim since the last take (or the last claim,
-    /// drop, or settle that cleared it). The main pump checks this on its
-    /// existing 50 ms iteration to run the cadence body early; the drain
+    /// drop, or settle that cleared it). The host-woken main loop checks
+    /// this on every iteration to run the cadence body early; the drain
     /// site clears it by claiming. Coalesced across bursts; never blocks.
     /// Steady state (no publication) stays quiet, so idle polling never
     /// quickens.
@@ -60,17 +60,26 @@ impl RuntimeHandle {
     /// Release the select claim after the main-thread drain settles
     /// (success, gate refusal, drift, or no effect - every path releases
     /// exactly once; a sent press is never replayed). When entries are
-    /// still queued, the publish wake re-arms so the next drain runs
-    /// through the existing pump instead of waiting out the cadence:
-    /// FIFO dequeue on causal completion. Pair with
+    /// still queued, the publish wake re-arms plus the shared main wake
+    /// signals (flag-set then signal), so the next drain runs on the
+    /// completion event instead of waiting out the cadence: FIFO dequeue
+    /// on causal completion. Pair with
     /// [`RuntimeHandle::report_select_attempt`]: the drain reports its
     /// proven native outcome under the claim's operation identity so the
     /// core settles the planner-owned view target (never replayed).
     pub fn release_select_after_drain(&self) {
-        let mut guard = lock_shared(&self.shared);
-        guard.select_busy = false;
-        if !guard.select_pending.is_empty() {
-            guard.select_claim_pending = true;
+        let wake = {
+            let mut guard = lock_shared(&self.shared);
+            guard.select_busy = false;
+            if guard.select_pending.is_empty() {
+                None
+            } else {
+                guard.select_claim_pending = true;
+                guard.main_wake.clone()
+            }
+        };
+        if let Some(wake) = wake {
+            wake.signal();
         }
     }
 
@@ -322,6 +331,7 @@ mod tests {
             topology: None,
             display_inputs: None,
             select_wake: None,
+            main_wake: None,
             topology_revision: 0,
             native_context: None,
             native_cell: crate::runtime_shared::NativeContextCell::new(),
@@ -405,6 +415,45 @@ mod tests {
         // A later publication re-arms (no stuck latch).
         publish(&handle, "op-2");
         assert!(handle.take_select_claim_pending());
+    }
+
+    #[test]
+    fn release_rearm_pokes_installed_main_wake() {
+        // Production completion publisher: releasing the claim after the
+        // drain re-arms the sticky flag AND pokes the installed main wake
+        // (flag-set then signal) when entries stay queued, so the next
+        // drain runs on the completion event. An empty queue re-arms
+        // nothing and pokes nothing. Deterministic: state only, no timing.
+        let handle = test_handle();
+        let signal = crate::ffi::MainWakeSignal::detached();
+        lock_shared(&handle.shared).main_wake = Some(signal.clone());
+        publish(&handle, "op-1");
+        publish(&handle, "op-2");
+        assert!(handle.take_select_claim_pending());
+        handle
+            .claim_select_for_drain()
+            .expect("oldest claim drains first");
+        let before = signal.generation();
+        handle.release_select_after_drain();
+        assert!(
+            lock_shared(&handle.shared).select_claim_pending,
+            "queued remainder re-arms the sticky flag"
+        );
+        assert_eq!(
+            signal.generation(),
+            before + 1,
+            "re-arm pokes the installed wake exactly once"
+        );
+        handle
+            .claim_select_for_drain()
+            .expect("second claim drains next");
+        let drained = signal.generation();
+        handle.release_select_after_drain();
+        assert!(
+            !lock_shared(&handle.shared).select_claim_pending,
+            "empty queue re-arms nothing"
+        );
+        assert_eq!(signal.generation(), drained, "empty release pokes nothing");
     }
 
     #[test]

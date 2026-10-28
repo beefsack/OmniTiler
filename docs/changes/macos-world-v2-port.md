@@ -1292,6 +1292,31 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   Retire the inspected receipt (archived outside the repository, not deleted)
   and capture a fresh read-only baseline of the current state before the next
   fixture leg. No automatic restoration of unrelated windows.
+- Retirement completed: the baseline, residue, empty lock and inert run directory
+  were moved to an external evidence archive. The pre-move no-lock-holder check
+  is transcript-only. Independent post-move SHA-256 verification corrected two
+  erroneous digest transcriptions. The user confirmed that the corrected hashes
+  match the earlier pre-retirement record; original raw pre-move output is absent.
+- Fresh read-only capture contains 40 title-free protected windows, all nine
+  shortcut holders, resolved accent, protected processes and native topology.
+  An immediate second capture is byte-identical with zero comparator mismatches.
+  Session lock and AX trust were not directly captured; this is category stability,
+  not a fixture-leg restoration proof. No fixture/input/window/Space effects ran.
+- At the retirement checkpoint, latency measurement lacked guarded pacing and
+  per-command completion attribution. The instrumentation and first native proof
+  below supersede that harness checkpoint, not the missing native measurements.
+  The 50 ms pump is unchanged; no improvement is claimed.
+
+### Guarded latency instrumentation and first proof (2026-10-28)
+
+- Native latency harness/tracing parked/shelved by user decision 2026-10-28;
+  implementation detail retired from this record.
+- First current native proof failed before any chord: the fixture caller could
+  not be joined to a native window. Cause unresolved; no native latency samples
+  exist. At that proof checkpoint, the coalesced 50 ms pump was unchanged.
+- The new receipt remains untouched and no new live work runs. Offline-only
+  direct-wake acceptance was approved at this checkpoint; implementation status
+  is recorded under Direct event-driven wake below.
 
 ## Test iteration speed (2026-10-27)
 
@@ -1416,6 +1441,44 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   focus-walk timeout did not reproduce in this gate and remains unresolved.
   No native FIFO acceptance, latency distribution or direct event-driven wake
   is claimed.
+
+## Direct event-driven wake (2026-10-28)
+
+- Scope: queued native drains wake directly from claim/completion events. A
+  real CFFileDescriptor self-pipe source carries the signals; a sticky
+  generation plus flag-set-before-signal keeps the main native runloop parked
+  until work arrives. Active loop iterations service ready sources with a zero
+  timeout. Signals fire directly on claim, terminal outcome, release and owner
+  exit. Serialized FIFO/T3/auth gates are unchanged.
+- No 50 ms periodic claim/completion pump, new timer or retry is added; the
+  existing unrelated 250 ms recovery/observation cadence remains.
+- Status, accepted offline: two source-proven test-side corrections close the
+  prior blockers; production code is unchanged by the fixes. The prior
+  failure receipt is retained here, not erased.
+  - Sustained-source race (`tile.rs` `active_loop_observes_without_parking`
+    phase 2): the driver spawn preceded the phase snapshot, so the driver's
+    signal could land before the snapshot and flake the final phase+1
+    assertion. Fixed by snapshotting the generation before spawning the
+    driver; the driver's single signal is then the only advance past `phase`.
+  - `scoped_tile::native_plans_land_inside_actual_work_areas_divided_per_domain`
+    previously read accepted 1 with refused-stale-observation 1 while geometry
+    passed: preexisting concurrent-startup coalescing, not a wake defect. Both
+    startup observations published before the first emission, so the
+    emission-coherence gate refused the first dispatch as stale and the next
+    dispatch emitted both frames. The test fixture neither installs nor uses
+    the main wake. Fixed with a narrow causal fence (A published -> engine
+    flush -> accepted-A -> launch B); the 2-launch, geometry and `>= 2`
+    accepted oracles are unchanged. No sleeps, new timeouts or retries. The
+    old failure is not a native-effect or latency issue.
+  - Independent fresh review accepted the corrected tests.
+- Gates after the fixes, each run once: with-scaffold locked library 1,397
+  pass / 0 failed plus integration 150 pass / 0 failed; exact no-scaffold
+  copy (absolute-manifest metadata proof; only the 3 scaffold wiring lines
+  plus the untracked scaffold absent) locked library 1,385 pass / 0 failed
+  plus integration 150 pass / 0 failed. Both trees pass locked build, strict
+  all-target clippy (`-D warnings`), workspace fmt and whitespace; bins/docs
+  0. The focus-walk startup flake was not observed. No native work, native
+  latency or feel claim; a later re-dogfood feel check remains.
 
 ## Offline focus-walk startup race diagnosis (2026-10-28)
 

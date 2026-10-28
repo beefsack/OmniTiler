@@ -37,6 +37,8 @@
 //! `sls_display_spaces`); elements are indexed within `len().min(...)`
 //! rather than materialized unbounded. No custom `unsafe impl Send/Sync` anywhere.
 
+#[cfg(target_os = "macos")]
+use std::os::unix::io::{AsFd, AsRawFd, OwnedFd};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Condvar, Mutex, atomic::Ordering, mpsc::SyncSender};
@@ -688,6 +690,183 @@ impl SpaceSelectLatch {
     }
 }
 
+/// Outcome of one main-thread host park: a publisher signalled since the
+/// snapshot, or the deadline elapsed with no signal. Portable (returned by
+/// the macOS runloop park and the stub condvar park alike).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainPark {
+    Signaled,
+    TimedOut,
+}
+
+/// Host event-driven main-thread wake generation shared between native
+/// publishers (engine claim stores, effect-owner terminal finishes, owner
+/// thread exits, display/Space observer callbacks) and the main-thread
+/// tile controller.
+///
+/// Race-closed protocol (causal identity, never timing): every publisher
+/// sets its sticky work flag FIRST (claim slot, settle atomic, display
+/// dirty) and calls [`MainWakeSignal::signal`] SECOND; the main thread
+/// snapshots [`MainWakeSignal::generation`] FIRST, takes the sticky flags
+/// SECOND, and parks only when no work is pending. The park rechecks the
+/// generation before entering the host runloop, so a signal-before-park
+/// never sleeps; a signal during the park arrives as a ready runloop
+/// source (self-pipe byte on macOS) and returns promptly; a signal after
+/// the park returns is caught by the next flag take. Sticky flags stay
+/// the work truth — the generation only shortens the wait, and the pipe
+/// byte is only the runloop poke (best-effort, never correctness).
+///
+/// Portable: `std` atomics plus a condition variable for the non-macOS
+/// stub park and offline protocol tests. No timers, no polling, no
+/// retries. `Clone` shares the one wake (production publishers and
+/// fixtures drive signals deterministically through a clone while the
+/// waiter parks on the original); `Send + Sync` by construction (only
+/// `std` atomics, containers, and an owned-pipe handle cross threads — no
+/// custom `unsafe impl`, no foreign pointer; the macOS self-pipe write
+/// end is a shared `Arc<OwnedFd>` whose last drop closes it, so a
+/// concurrent signal can never write a closed or reused fd).
+#[derive(Debug, Clone, Default)]
+pub struct MainWakeSignal {
+    inner: Arc<MainWakeInner>,
+}
+
+#[derive(Debug, Default)]
+struct MainWakeInner {
+    generation: AtomicU64,
+    parked: Mutex<()>,
+    cvar: Condvar,
+    /// Shared ownership of the macOS self-pipe write end (`None` =
+    /// detached): installed once by `MainRunloopWake`, cleared at
+    /// teardown. The installing wake keeps its own clone, so the fd stays
+    /// open (and every in-flight `signal` stays valid) until the last
+    /// clone drops — no writer can race the reader's close, and a write
+    /// after the read end closed fails closed as `EPIPE` (never `SIGPIPE`:
+    /// the write end is created `NOSIGPIPE`), ignored by construction.
+    #[cfg(target_os = "macos")]
+    poke: Mutex<Option<Arc<OwnedFd>>>,
+}
+
+impl MainWakeSignal {
+    /// Detached signal: generation bookkeeping only, no host poke. Handoff
+    /// default until the tile controller installs the real wake; portable
+    /// protocol tests use this directly.
+    #[must_use]
+    pub fn detached() -> Self {
+        Self::default()
+    }
+
+    /// Current wake generation (monotonic; every [`MainWakeSignal::signal`]
+    /// advances it by exactly one).
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.inner.generation.load(Ordering::SeqCst)
+    }
+
+    /// Record one publisher event: bump the generation, poke the host
+    /// runloop (macOS installed wake only), and pulse portable parkers.
+    /// Minimal by construction (atomic bump, one nonblocking byte, notify;
+    /// never blocks on OS reads). Call only AFTER setting the sticky work
+    /// flag — the flag is the truth, this only shortens the wait (see the
+    /// protocol on [`MainWakeSignal`]).
+    pub fn signal(&self) {
+        self.inner.generation.fetch_add(1, Ordering::SeqCst);
+        #[cfg(target_os = "macos")]
+        {
+            // The shared clone keeps the write end alive across this write:
+            // the installing wake's teardown can neither close nor reuse
+            // the fd under us. The byte is best-effort (full pipe during a
+            // burst, or no reader after teardown, fails closed as EPIPE —
+            // never SIGPIPE); the generation above is the truth.
+            let pipe: Option<Arc<OwnedFd>> = self
+                .inner
+                .poke
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone();
+            if let Some(pipe) = pipe {
+                // SAFETY: `as_raw_fd` borrows the live owned pipe end for
+                // the call only; a 1-byte pipe write touches no caller
+                // memory and never blocks (nonblocking end).
+                unsafe {
+                    let buf = [1u8];
+                    libc::write(pipe.as_fd().as_raw_fd(), buf.as_ptr().cast(), 1);
+                }
+            }
+        }
+        // Portable parkers (stub/offline waits) pulse under the park
+        // mutex: a waiter holding it across its generation check can never
+        // miss this notify (see `wait_for_advance`).
+        let _guard = self
+            .inner
+            .parked
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        self.inner.cvar.notify_all();
+    }
+
+    /// Share ownership of the self-pipe write end at install (macOS only);
+    /// [`MainWakeSignal::detach_pipe`] clears it again at teardown. Either
+    /// side may drop first: the fd closes with the last clone.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn attach_pipe(&self, pipe: Arc<OwnedFd>) {
+        *self
+            .inner
+            .poke
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(pipe);
+    }
+
+    /// Release the shared write end (macOS teardown only). In-flight
+    /// `signal` calls hold their own clone, so they stay valid; later
+    /// signals degrade to generation-only.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn detach_pipe(&self) {
+        *self
+            .inner
+            .poke
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+    }
+
+    /// Portable wait until the generation moves past `from` or `timeout`
+    /// elapses (stub park plus offline protocol tests; the macOS main
+    /// thread parks in the host runloop instead so native sources keep
+    /// servicing). Spurious wakeups re-wait within the remaining slice.
+    /// Returns true on signal, false on timeout.
+    pub fn wait_for_advance(&self, from: u64, timeout: std::time::Duration) -> bool {
+        let mut guard = self
+            .inner
+            .parked
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if self.inner.generation.load(Ordering::SeqCst) != from {
+            return true;
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return self.inner.generation.load(Ordering::SeqCst) != from;
+            }
+            let (next, res) = self
+                .inner
+                .cvar
+                .wait_timeout(guard, deadline - now)
+                .unwrap_or_else(|poison| {
+                    let (next, res) = poison.into_inner();
+                    (next, res)
+                });
+            guard = next;
+            if self.inner.generation.load(Ordering::SeqCst) != from {
+                return true;
+            }
+            if res.timed_out() {
+                return self.inner.generation.load(Ordering::SeqCst) != from;
+            }
+        }
+    }
+}
+
 /// Outcome of one bounded per-app AX observation run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AxObserveOutcome {
@@ -1150,14 +1329,15 @@ unsafe fn macho_scan_symtab(
 mod macos {
     use super::*;
     use std::ffi::CString;
+    use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
     use std::ptr::NonNull;
-    use std::sync::OnceLock;
+    use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
 
     use objc2_application_services::{AXError, AXObserver, AXUIElement, AXValue, AXValueType};
     use objc2_core_foundation::{
-        CFArray, CFDictionary, CFNumber, CFRetained, CFRunLoop, CFString, CFType, CGPoint, CGSize,
-        kCFRunLoopDefaultMode,
+        CFArray, CFDictionary, CFFileDescriptor, CFNumber, CFOptionFlags, CFRetained, CFRunLoop,
+        CFString, CFType, CGPoint, CGSize, kCFFileDescriptorReadCallBack, kCFRunLoopDefaultMode,
     };
 
     /// AX status codes bound to the maintained
@@ -5702,6 +5882,237 @@ mod macos {
 
     // -- Owned probe window (AppKit boundary; main thread only) --
 
+    /// Main-thread-owned host runloop wake (self-pipe runloop source).
+    /// `!Send + !Sync` via the retained CF objects (no `unsafe impl`):
+    /// install, park, and drop on the main thread only. Off-main
+    /// publishers never touch this — they hold the shareable
+    /// [`super::MainWakeSignal`] clone from
+    /// [`MainRunloopWake::signal_handle`] and call `signal()`.
+    ///
+    /// Host contract (Apple `CFRunLoop`, `CFFileDescriptor` docs): a pipe
+    /// byte makes the file-descriptor source ready, and `run_in_mode` with
+    /// `return_after_source_handled` returns promptly when a source is
+    /// handled — so the parked main thread wakes immediately on signal
+    /// while native main-loop sources (display/Space notifications, app
+    /// events, AX legs on this runloop) keep servicing during the park.
+    /// `CFRunLoopGetMain`/`CFRunLoopWakeUp`-style cross-thread sharing is
+    /// deliberately avoided: no CF object crosses threads, so no `Send` /
+    /// `Sync` impl is needed — only a shared owned pipe handle crosses
+    /// (see [`super::MainWakeSignal`]).
+    pub struct MainRunloopWake {
+        signal: super::MainWakeSignal,
+        read_fd: std::os::unix::io::OwnedFd,
+        // Retained (never read): keeps the write end open for the whole
+        // installed lifetime, so mid-run writes never hit EPIPE and the
+        // reader never sees EOF. Shared with the signal, which keeps its
+        // own clone for the same reason across teardown.
+        #[allow(dead_code)]
+        write_pipe: std::sync::Arc<std::os::unix::io::OwnedFd>,
+        fd_ref: CFRetained<CFFileDescriptor>,
+        source: CFRetained<CFRunLoopSource>,
+    }
+
+    /// One-shot self-pipe callback: intentionally empty. The byte stays
+    /// queued until the main thread's post-park
+    /// [`MainRunloopWake::service_wake`] drains and re-arms; keeping the
+    /// callback minimal (no reads, no log, no panic) matches the observer
+    /// callback policy (callback bodies never panic).
+    unsafe extern "C-unwind" fn main_wake_callback(
+        _fd: *mut CFFileDescriptor,
+        _flags: CFOptionFlags,
+        _info: *mut std::ffi::c_void,
+    ) {
+    }
+
+    /// `F_SETNOSIGPIPE` from xnu `sys/fcntl.h` (value 73; absent from the
+    /// pinned libc): marks a pipe fd so writes with no reader fail closed
+    /// as `EPIPE` instead of raising `SIGPIPE`.
+    const F_SETNOSIGPIPE: libc::c_int = 73;
+
+    /// Set nonblocking (plus `NOSIGPIPE`, so a post-teardown write fails
+    /// closed as `EPIPE` instead of killing the process) on an owned fd.
+    /// Fails closed, closing nothing; the caller owns cleanup on error.
+    fn set_nonblocking(fd: libc::c_int) -> Result<(), String> {
+        // SAFETY: `fcntl` flag twiddle on a just-created owned pipe end;
+        // checked returns, no memory access.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 {
+                return Err("main wake pipe flags unreadable".to_owned());
+            }
+            if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                return Err("main wake pipe nonblocking refused".to_owned());
+            }
+            if libc::fcntl(fd, F_SETNOSIGPIPE, 1) < 0 {
+                return Err("main wake pipe nosigpipe refused".to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    impl MainRunloopWake {
+        /// Install the self-pipe plus its runloop source on the calling
+        /// (main) thread. Fails closed before touching notification or
+        /// runloop state on any other thread, or when the pipe/CF setup
+        /// refuses.
+        pub fn install() -> Result<Self, String> {
+            Self::install_inner(true)
+        }
+
+        /// Test-only install on the calling thread's runloop (pure CF plus
+        /// the pipe — no AppKit, no notification center — so headless test
+        /// threads can prove the signal-to-park round trip without a main
+        /// thread or a desktop).
+        #[cfg(test)]
+        pub(crate) fn install_for_test() -> Result<Self, String> {
+            Self::install_inner(false)
+        }
+
+        fn install_inner(require_main: bool) -> Result<Self, String> {
+            use objc2::MainThreadMarker;
+            if require_main && MainThreadMarker::new().is_none() {
+                return Err("main wake requires the main thread".to_owned());
+            }
+            let mut fds = [0 as libc::c_int; 2];
+            // SAFETY: `pipe` writes two fresh fds into the stack array on
+            // success; checked return before any other use.
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                return Err("main wake pipe refused".to_owned());
+            }
+            // SAFETY: `pipe` succeeded, so both entries are fresh owned
+            // fds; `OwnedFd` takes closes on every path below.
+            let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+            let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+            if set_nonblocking(read_fd.as_raw_fd()).is_err()
+                || set_nonblocking(write_fd.as_raw_fd()).is_err()
+            {
+                return Err("main wake pipe nonblocking refused".to_owned());
+            }
+            // SAFETY: maintained wrappers; `read_fd` is a valid owned pipe
+            // end borrowed for the call only (`closeOnInvalidate=false`, so
+            // CF never owns it); no context pointer; the callback never
+            // panics.
+            let fd_ref = unsafe {
+                CFFileDescriptor::new(
+                    None,
+                    read_fd.as_raw_fd(),
+                    false,
+                    Some(main_wake_callback),
+                    std::ptr::null(),
+                )
+            }
+            .ok_or_else(|| "main wake descriptor refused".to_owned())?;
+            fd_ref.enable_call_backs(kCFFileDescriptorReadCallBack);
+            let Some(source) = CFFileDescriptor::new_run_loop_source(None, Some(&fd_ref), 0) else {
+                return Err("main wake source refused".to_owned());
+            };
+            let signal = super::MainWakeSignal::detached();
+            let write_pipe = Arc::new(write_fd);
+            signal.attach_pipe(Arc::clone(&write_pipe));
+            let Some(rl) = CFRunLoop::current() else {
+                signal.detach_pipe();
+                return Err("main wake runloop unavailable".to_owned());
+            };
+            // SAFETY: extern-static default-mode read (same pattern as
+            // `pump_runloop_once`); the static is a framework constant.
+            let mode = unsafe { kCFRunLoopDefaultMode };
+            rl.add_source(Some(&source), mode);
+            Ok(Self {
+                signal,
+                read_fd,
+                write_pipe,
+                fd_ref,
+                source,
+            })
+        }
+
+        /// Shareable publisher signal for off-main threads (engine claim
+        /// stores, effect-owner terminal finishes, observer callbacks).
+        #[must_use]
+        pub fn signal_handle(&self) -> super::MainWakeSignal {
+            self.signal.clone()
+        }
+
+        /// Current wake generation (see [`super::MainWakeSignal`]).
+        #[must_use]
+        pub fn generation(&self) -> u64 {
+            self.signal.generation()
+        }
+
+        /// Park the main thread in the host runloop until a publisher
+        /// signals past `seen` or `deadline` elapses. Signal-before-park
+        /// returns [`super::MainPark::Signaled`] without entering the
+        /// runloop (deterministic fast path); a signal during the park
+        /// returns promptly via the self-pipe source. Native sources keep
+        /// servicing while parked; the caller re-takes its sticky flags
+        /// after every return, so spurious native-source wakes only cost
+        /// a flag recheck. Never a condvar wait (that would stop servicing
+        /// main-runloop native notifications).
+        pub fn park_until(&self, seen: u64, deadline: std::time::Instant) -> super::MainPark {
+            if self.signal.generation() != seen {
+                return super::MainPark::Signaled;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return super::MainPark::TimedOut;
+            }
+            objc2::rc::autoreleasepool(|_| {
+                // SAFETY: extern-static default-mode read (same pattern as
+                // `pump_runloop_once`); the static is a framework constant.
+                let mode = unsafe { kCFRunLoopDefaultMode };
+                CFRunLoop::run_in_mode(mode, (deadline - now).as_secs_f64(), true);
+            });
+            self.service_wake();
+            if self.signal.generation() != seen {
+                super::MainPark::Signaled
+            } else {
+                super::MainPark::TimedOut
+            }
+        }
+
+        /// Re-arm the one-shot descriptor callback, then drain every
+        /// pending poke byte (coalesced bursts collapse here). Runs on the
+        /// main thread after every park return. Correctness never depends
+        /// on the byte — the generation is the truth — so a drain/re-arm
+        /// race only ever costs a redundant immediate park return and can
+        /// never lose work.
+        fn service_wake(&self) {
+            self.fd_ref.enable_call_backs(kCFFileDescriptorReadCallBack);
+            let mut buf = [0u8; 256];
+            loop {
+                // SAFETY: nonblocking read of the owned pipe end into a
+                // stack buffer; `0`/negative ends the drain (EAGAIN when
+                // empty, never EOF while a writer clone lives).
+                let n = unsafe {
+                    libc::read(self.read_fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len())
+                };
+                if n <= 0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    impl Drop for MainRunloopWake {
+        fn drop(&mut self) {
+            // Teardown order: publishers join before the tile main function
+            // returns (owner threads reaped, runtime shut down), so no new
+            // signals race this close. Either side may still drop first by
+            // construction: the signal's shared write clone keeps every
+            // in-flight write valid, detaching here only stops future
+            // pokes, and a write after the read end closes fails closed as
+            // EPIPE (NOSIGPIPE, ignored).
+            if let Some(rl) = CFRunLoop::current() {
+                // SAFETY: extern-static default-mode read (same pattern as
+                // `pump_runloop_once`); removal is best-effort teardown.
+                let mode = unsafe { kCFRunLoopDefaultMode };
+                rl.remove_source(Some(&self.source), mode);
+            }
+            self.fd_ref.invalidate();
+            self.signal.detach_pipe();
+        }
+    }
+
     /// Pump the current thread's runloop once, bounded, via the maintained
     /// `objc2-core-foundation` wrapper. The single `unsafe` is the
     /// extern-static default-mode read.
@@ -9359,6 +9770,7 @@ mod macos {
     struct DisplayChangeIvars {
         dirty: Arc<AtomicU64>,
         wake: SpaceSelectWake,
+        main_wake: super::MainWakeSignal,
     }
 
     // SAFETY: opaque observer state passed through the `initWith:` shape
@@ -9385,16 +9797,22 @@ mod macos {
         impl DisplayChangeObserver {
             #[unsafe(method(displayParametersDidChange:))]
             fn display_parameters_did_change(&self, _notif: &objc2_foundation::NSNotification) {
-                // Minimal callback: bump only. No snapshot, no AX, no log.
+                // Minimal callback: bump dirty plus the host-wake poke so a
+                // main thread parked in the runloop returns immediately (the
+                // sticky `dirty` stays the truth; the poke only shortens the
+                // wait). No snapshot, no AX, no log.
                 self.ivars().dirty.fetch_add(1, Ordering::SeqCst);
+                self.ivars().main_wake.signal();
             }
 
             #[unsafe(method(activeSpaceDidChange:))]
             fn active_space_did_change(&self, _notif: &objc2_foundation::NSNotification) {
-                // Minimal callback: bump dirty plus the select wake only. No
+                // Minimal callback: bump dirty plus the select wake and the
+                // host-wake poke (same truth/poke split as above). No
                 // snapshot, no AX, no log.
                 self.ivars().dirty.fetch_add(1, Ordering::SeqCst);
                 self.ivars().wake.notify();
+                self.ivars().main_wake.signal();
             }
         }
     }
@@ -9448,10 +9866,13 @@ mod macos {
     /// (default center, nil object — rift shape) and
     /// `NSWorkspaceActiveSpaceDidChangeNotification` (workspace center,
     /// workspace object — glide/rift shape). Returns the main-thread guard
-    /// plus the shareable flag. Any other thread fails closed before
-    /// touching notification state.
-    pub fn install_display_change_guard() -> Result<(DisplayChangeGuard, DisplayChangeFlag), String>
-    {
+    /// plus the shareable flag. `main_wake` is poked by both callbacks so a
+    /// parked main thread returns immediately (the sticky flag stays the
+    /// truth). Any other thread fails closed before touching notification
+    /// state.
+    pub fn install_display_change_guard(
+        main_wake: &super::MainWakeSignal,
+    ) -> Result<(DisplayChangeGuard, DisplayChangeFlag), String> {
         use objc2::MainThreadMarker;
         use objc2_app_kit::NSWorkspace;
         use objc2_foundation::NSNotificationCenter;
@@ -9464,6 +9885,7 @@ mod macos {
         let ivars = DisplayChangeIvars {
             dirty: flag.dirty.clone(),
             wake: flag.select_wake(),
+            main_wake: main_wake.clone(),
         };
         // Ivars set directly, then the superclass `init` (the `define_class!`
         // doc shape): avoids an `initWith:` round-trip through `msg_send!`.
@@ -9510,33 +9932,34 @@ pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
     AxHitDetail, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
     DisplayChangeGuard, DisplayRect, DockExitWatch, DragMouseHit, DragMouseKind, DragTapSource,
-    GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
-    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
-    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
-    TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
-    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
-    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
-    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
-    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
-    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
-    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read,
-    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
-    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
-    sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
-    sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
-    sls_window_at_point, terminate_process, warp_cursor_position,
+    GroupUnderlayCarrier, HotkeySpi, KeyCounts, MainRunloopWake, MouseCounts, NsAppIdentity,
+    NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback,
+    SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
+    TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
+    activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
+    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_hit_test_detail, ax_hit_test_owner, ax_identifier,
+    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
+    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
+    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
+    drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
+    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
+    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
+    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
+    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_bridged,
+    sls_move_windows_direct, sls_order_available, sls_order_below, sls_order_below_txn,
+    sls_order_txn_available, sls_space_front_available, sls_space_set_front_psn, sls_space_type,
+    sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point, terminate_process,
+    warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -9838,6 +10261,55 @@ mod stub {
     pub fn install_display_change_guard() -> Result<(DisplayChangeGuard, DisplayChangeFlag), String>
     {
         Err("macOS-only".to_owned())
+    }
+
+    /// Stub main-thread wake (macOS-only runloop; never constructed here):
+    /// mirrors the macOS [`super::MainPark`] contract over the portable
+    /// [`super::MainWakeSignal`] so scheduling logic compiles and its
+    /// protocol tests run on every host. Production tile runs are macOS.
+    pub struct MainRunloopWake {
+        signal: super::MainWakeSignal,
+    }
+
+    impl MainRunloopWake {
+        /// Stub install: always succeeds with a detached signal (no host
+        /// runloop off-macOS; the generation protocol still applies).
+        pub fn install() -> Result<Self, String> {
+            Ok(Self {
+                signal: super::MainWakeSignal::detached(),
+            })
+        }
+
+        /// Shareable publisher signal (same shape as macOS).
+        #[must_use]
+        pub fn signal_handle(&self) -> super::MainWakeSignal {
+            self.signal.clone()
+        }
+
+        /// Current wake generation (same shape as macOS).
+        #[must_use]
+        pub fn generation(&self) -> u64 {
+            self.signal.generation()
+        }
+
+        /// Stub park: signal-before-park returns
+        /// [`super::MainPark::Signaled`] without waiting (same fast path
+        /// as macOS); otherwise waits on the portable signal condvar until
+        /// `deadline` (no host runloop off-macOS).
+        pub fn park_until(&self, seen: u64, deadline: std::time::Instant) -> super::MainPark {
+            if self.signal.generation() != seen {
+                return super::MainPark::Signaled;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return super::MainPark::TimedOut;
+            }
+            if self.signal.wait_for_advance(seen, deadline - now) {
+                super::MainPark::Signaled
+            } else {
+                super::MainPark::TimedOut
+            }
+        }
     }
 
     pub fn cg_display_uuid(_display_id: u32) -> Option<String> {
@@ -10605,32 +11077,33 @@ pub use stub::{
     AX_ATTRIBUTE_UNSUPPORTED, AxElement, AxFrame, AxHitDetail, BorderCarrier, BorderCarrierFlags,
     CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, DockExitWatch,
     DragMouseHit, DragMouseKind, DragTapSource, GroupUnderlayCarrier, HotkeySpi, KeyCounts,
-    MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
-    SegmentReadback, SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols,
-    TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
-    activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
-    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_hit_test_detail, ax_hit_test_owner, ax_identifier,
-    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
-    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app, hotkey_read,
-    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
-    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
-    sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
-    sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
-    sls_window_at_point, terminate_process, warp_cursor_position,
+    MainRunloopWake, MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer,
+    SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
+    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
+    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
+    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
+    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
+    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
+    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
+    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
+    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
+    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
+    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
+    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_bridged,
+    sls_move_windows_direct, sls_order_available, sls_order_below, sls_order_below_txn,
+    sls_order_txn_available, sls_space_front_available, sls_space_set_front_psn, sls_space_type,
+    sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point, terminate_process,
+    warp_cursor_position,
 };
 
 #[cfg(test)]
@@ -11463,6 +11936,108 @@ mod tests {
         assert!(flag.take_changed());
     }
 
+    #[test]
+    fn main_wake_signal_generation_coalesces() {
+        // Portable protocol: the generation starts at zero, every signal
+        // advances it by exactly one, and clones share it (production
+        // publisher handoff shape). Bursts coalesce by construction: the
+        // waiter compares generations, never counts signals.
+        let signal = MainWakeSignal::detached();
+        assert_eq!(signal.generation(), 0);
+        signal.signal();
+        assert_eq!(signal.generation(), 1);
+        let shared = signal.clone();
+        shared.signal();
+        shared.signal();
+        assert_eq!(signal.generation(), 3);
+    }
+
+    #[test]
+    fn main_wake_wait_advances_and_times_out() {
+        // Portable wait, causal (no sleeps, no elapsed asserts): a
+        // pre-advanced generation returns true without waiting; a signal
+        // from another thread — racing before or during the wait — always
+        // reports true (the fast path covers before, the notify covers
+        // during, so the interleaving needs no control); a wait against an
+        // already-reached deadline reports false without blocking. The
+        // bounded timeouts below are failure bounds only, never proof of
+        // promptness.
+        let signal = MainWakeSignal::detached();
+        signal.signal();
+        assert!(signal.wait_for_advance(0, std::time::Duration::from_secs(5)));
+        let waiter = signal.clone();
+        let from = signal.generation();
+        let driver = std::thread::spawn(move || waiter.signal());
+        assert!(signal.wait_for_advance(from, std::time::Duration::from_secs(10)));
+        let _ = driver.join();
+        assert!(!signal.wait_for_advance(signal.generation(), std::time::Duration::ZERO));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn test_wake() -> MainRunloopWake {
+        // Test threads are never the main thread: install on the calling
+        // thread's runloop (pure CF plus the pipe — headless-safe).
+        MainRunloopWake::install_for_test().expect("wake installs without a desktop")
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn test_wake() -> MainRunloopWake {
+        MainRunloopWake::install().expect("wake installs without a desktop")
+    }
+
+    #[test]
+    fn main_wake_park_returns_signal_before_wait() {
+        // Race closure, signal-before-park half (deterministic, no timing):
+        // a signal that lands before the park snapshot never enters the
+        // host wait — the park returns Signaled against a far-future
+        // deadline (no tick, no deadline advance needed). A quiet park with
+        // an already-reached deadline reports TimedOut without blocking.
+        let wake = test_wake();
+        let signal = wake.signal_handle();
+        let seen = wake.generation();
+        signal.signal();
+        assert_eq!(
+            wake.park_until(
+                seen,
+                std::time::Instant::now() + std::time::Duration::from_secs(30)
+            ),
+            MainPark::Signaled
+        );
+        assert_eq!(
+            wake.park_until(signal.generation(), std::time::Instant::now()),
+            MainPark::TimedOut
+        );
+    }
+
+    #[test]
+    fn main_wake_park_wakes_on_signal_during_wait() {
+        // Host round trip, causal (no sleeps, no elapsed asserts): the
+        // driver signals immediately from another thread — landing before
+        // or during the park — and the park must report Signaled either
+        // way (fast path covers before, the self-pipe source covers
+        // during, so the interleaving needs no control). The deadline is a
+        // failure bound only, never proof of promptness.
+        let wake = test_wake();
+        let signal = wake.signal_handle();
+        let seen = signal.generation();
+        let driver = std::thread::spawn(move || signal.signal());
+        assert_eq!(
+            wake.park_until(
+                seen,
+                std::time::Instant::now() + std::time::Duration::from_secs(10)
+            ),
+            MainPark::Signaled
+        );
+        let _ = driver.join();
+        // The burst coalesces: servicing the wake leaves the generation
+        // advanced exactly once per signal, so a quiet re-park with a
+        // reached deadline reports TimedOut without blocking.
+        assert_eq!(
+            wake.park_until(wake.generation(), std::time::Instant::now()),
+            MainPark::TimedOut
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn display_guard_install_requires_main_thread() {
@@ -11470,7 +12045,7 @@ mod tests {
         // here without touching notification state. (If this ever ran on the
         // main thread, install would be a harmless read-only observer.)
         if objc2::MainThreadMarker::new().is_none() {
-            assert!(install_display_change_guard().is_err());
+            assert!(install_display_change_guard(&MainWakeSignal::detached()).is_err());
         }
         // Off-main display reads fail closed too.
         assert!(ns_display_snapshot().is_err());

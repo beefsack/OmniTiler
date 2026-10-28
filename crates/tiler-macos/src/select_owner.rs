@@ -108,13 +108,18 @@ impl SelectLane {
 pub(crate) struct SelectHandoff {
     lane: std::sync::Mutex<SelectLane>,
     /// Main-thread wake hint: set once when the owner stages a terminal
-    /// completion, consumed once by the main pump (`take_settled`) to run
+    /// completion, consumed once by the main loop (`take_settled`) to run
     /// the cadence body early instead of waiting for the next 250 ms tick.
     /// Coalesced (bursts merge into one wake); cleared whenever a poll
     /// takes the staged completion, so a promptly reconciled settle never
     /// causes a spurious extra cadence run. Never a timer, never a new
-    /// thread: one atomic checked on the existing 50 ms pump.
+    /// thread: one atomic checked on the host-woken main loop.
     settled: Arc<AtomicBool>,
+    /// Shareable host event-driven main wake: signalled on every terminal
+    /// stage (flag-set then signal) so the parked main thread returns
+    /// immediately. Set by the controller before first submit; detached
+    /// until then (sticky `settled` stays the truth).
+    wake: std::sync::Mutex<crate::ffi::MainWakeSignal>,
     pending_creations: std::sync::Mutex<Vec<crate::workspace_select::PendingCreation>>,
 }
 
@@ -127,8 +132,22 @@ impl SelectHandoff {
                 completion: None,
             }),
             settled: Arc::new(AtomicBool::new(false)),
+            wake: std::sync::Mutex::new(crate::ffi::MainWakeSignal::detached()),
             pending_creations: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Install the shareable main wake (controller calls this before first
+    /// submit; safe any time — mutex-protected, uncontended).
+    pub(crate) fn set_wake(&self, wake: crate::ffi::MainWakeSignal) {
+        *self.wake.lock().unwrap_or_else(|e| e.into_inner()) = wake;
+    }
+
+    /// Poke the installed main wake without staging work (owner-thread
+    /// exit path: the shutdown wait parks on the wake, and the exit
+    /// itself is the event — no completion stages here).
+    pub(crate) fn signal_wake(&self) {
+        self.wake.lock().unwrap_or_else(|e| e.into_inner()).signal();
     }
 
     /// Consume the settle wake hint once: true when the owner staged a
@@ -158,13 +177,19 @@ impl SelectHandoff {
     }
 
     fn finish(&self, completion: SelectCompletion) -> Result<(), &'static str> {
-        let mut lane = self.lane.lock().unwrap_or_else(|e| e.into_inner());
-        if lane.inflight.is_none() {
-            return Err("select-lane-idle");
-        }
-        lane.inflight = None;
-        lane.completion = Some(completion);
-        self.settled.store(true, Ordering::SeqCst);
+        let wake = {
+            let mut lane = self.lane.lock().unwrap_or_else(|e| e.into_inner());
+            if lane.inflight.is_none() {
+                return Err("select-lane-idle");
+            }
+            lane.inflight = None;
+            lane.completion = Some(completion);
+            self.settled.store(true, Ordering::SeqCst);
+            self.wake.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+        // Staged then signalled (race-closed with the main park: the main
+        // thread re-takes the settle flag after every park return).
+        wake.signal();
         Ok(())
     }
 
@@ -341,6 +366,10 @@ impl SelectThread {
                         Err(_) => break,
                     }
                 }
+                // Owner exit is itself a wake event: the shutdown wait parks
+                // on the shared wake (the exit stages no completion, so the
+                // flag take alone would miss it).
+                thread_handoff.signal_wake();
             })
             .expect("dock-swipe select thread spawns");
         Self {
@@ -376,10 +405,17 @@ impl SelectThread {
 
     /// Consume the owner settle wake hint once (see
     /// [`SelectHandoff::take_settled`]): true when a terminal completion
-    /// staged since the last take. The main pump checks this to run the
-    /// cadence body early; the cadence poll clears it by taking.
+    /// staged since the last take. The host-woken main loop takes this to
+    /// run the cadence body early; the cadence poll clears it by taking.
     pub fn take_settled(&self) -> bool {
         self.handoff.take_settled()
+    }
+
+    /// Install the shareable host event-driven main wake (controller calls
+    /// this before first submit; safe any time — forwarded under the
+    /// handoff lock, uncontended).
+    pub fn set_wake(&self, wake: crate::ffi::MainWakeSignal) {
+        self.handoff.set_wake(wake);
     }
 
     /// Nonblocking request-to-cancel plus an owner wake so an idle owner
@@ -460,6 +496,11 @@ pub struct SelectController {
     thread: Option<SelectThread>,
     inflight: Option<SelectInflight>,
     awake: Option<crate::mc_lifecycle::live::CaffeinateGuard>,
+    /// Shareable host event-driven main wake, installed on the handoff at
+    /// submit time (and on an already-spawned owner at set time). Detached
+    /// until the tile controller installs the real wake; the sticky settle
+    /// flag stays the truth either way.
+    main_wake: Option<crate::ffi::MainWakeSignal>,
     /// Development-only fixture-owned Space gate, stored at the adapter
     /// controller constructor boundary (never core): carried into each
     /// submitted job and enforced on the reply-resolved SID at execution.
@@ -511,6 +552,16 @@ impl SelectController {
         self.fixture_gate = gate;
     }
 
+    /// Install the shareable host event-driven main wake (tile controller
+    /// calls this once after install, before first submit; also applies to
+    /// an already-spawned owner, so call order never loses the poke).
+    pub fn set_wake(&mut self, wake: crate::ffi::MainWakeSignal) {
+        if let Some(thread) = self.thread.as_ref() {
+            thread.set_wake(wake.clone());
+        }
+        self.main_wake = Some(wake);
+    }
+
     /// Whether a select is inflight (submitted, completion unpolled).
     #[must_use]
     pub fn is_busy(&self) -> bool {
@@ -529,6 +580,9 @@ impl SelectController {
         }
         if self.thread.is_none() {
             self.thread = Some(SelectThread::spawn());
+        }
+        if let (Some(thread), Some(wake)) = (self.thread.as_ref(), self.main_wake.as_ref()) {
+            thread.set_wake(wake.clone());
         }
         let held = crate::mc_lifecycle::live::CaffeinateGuard::spawn(60)
             .map_err(|e| format!("product select refuses: caffeinate unspawnable ({e})"))?;
@@ -586,8 +640,8 @@ impl SelectController {
 
     /// Consume the owner settle wake hint once (see
     /// [`SelectThread::take_settled`]): true when a terminal completion
-    /// staged since the last take. The main pump checks this to run the
-    /// cadence body early; the cadence poll clears it by taking.
+    /// staged since the last take. The host-woken main loop takes this to
+    /// run the cadence body early; the cadence poll clears it by taking.
     pub fn take_settled(&self) -> bool {
         self.thread
             .as_ref()

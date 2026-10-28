@@ -857,6 +857,11 @@ pub const fn should_note_history(outcome: SendDrainOutcome, follow: bool) -> boo
 pub struct LiveSendController {
     thread: Option<crate::workspace_send_managed::ManagedSendThread>,
     inflight: Option<SendInflight>,
+    /// Shareable host event-driven main wake, installed on the handoff at
+    /// submit time (and on an already-spawned owner at set time). Detached
+    /// until the tile controller installs the real wake; the sticky settle
+    /// flag stays the truth either way.
+    main_wake: Option<crate::ffi::MainWakeSignal>,
     /// Development-only fixture-owned Space gate, stored at the adapter
     /// controller constructor boundary (never core). Pinned submits are
     /// refused here when their reply-bound target SID is unowned (before
@@ -921,6 +926,16 @@ impl LiveSendController {
         self.fixture_gate = gate;
     }
 
+    /// Install the shareable host event-driven main wake (tile controller
+    /// calls this once after install, before first submit; also applies to
+    /// an already-spawned owner, so call order never loses the poke).
+    pub fn set_wake(&mut self, wake: crate::ffi::MainWakeSignal) {
+        if let Some(thread) = self.thread.as_ref() {
+            thread.set_wake(wake.clone());
+        }
+        self.main_wake = Some(wake);
+    }
+
     /// Whether a target is inflight (submitted, completion unpolled).
     #[must_use]
     pub fn is_busy(&self) -> bool {
@@ -973,6 +988,9 @@ impl LiveSendController {
             self.thread = Some(crate::workspace_send_managed::ManagedSendThread::spawn(
                 factory,
             ));
+        }
+        if let (Some(thread), Some(wake)) = (self.thread.as_ref(), self.main_wake.as_ref()) {
+            thread.set_wake(wake.clone());
         }
         let Some(thread) = self.thread.as_ref() else {
             return Err("send-effect-busy: no effect owner; refusing".to_owned());
@@ -1034,6 +1052,9 @@ impl LiveSendController {
             self.thread = Some(crate::workspace_send_managed::ManagedSendThread::spawn(
                 factory,
             ));
+        }
+        if let (Some(thread), Some(wake)) = (self.thread.as_ref(), self.main_wake.as_ref()) {
+            thread.set_wake(wake.clone());
         }
         let Some(thread) = self.thread.as_ref() else {
             return Err("send-effect-busy: no effect owner; refusing".to_owned());
