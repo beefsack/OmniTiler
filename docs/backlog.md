@@ -120,8 +120,13 @@ Prioritise by return toward these goals
   [record](changes/archive/windows-host-test-flakes.md)). Remaining:
   `panic_diag::tests::scoped_guard_installs_restores_and_delegates` failed once
   on 2026-10-28; its output was not retained, the foreign-panic hypothesis is
-  disproved and 200 ordered repeats pass. Watch only: capture the assertion
-  and output if it recurs, then diagnose without weakening assertions.
+  disproved and 200 ordered repeats pass. Recurrence captured 2026-10-29:
+  `guard_drop_while_panicking_never_sets_hook` failed at `panic_diag.rs:295`,
+  `assert!(text.contains("\"event\":\"panic\""), "hook logged: {text}")`,
+  with `hook logged:` followed by garbled JSON (verbatim message in the
+  [record](changes/archive/windows-host-test-flakes.md#captured-recurrence-2026-10-29)).
+  `scoped_guard_installs_restores_and_delegates` failed at `:210` with
+  `hook test lock: PoisonError { .. }`. Cause unresolved; no further diagnosis.
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies (now owned by the KDE v2 port item
   below); (3) KDE Settings core-catalog

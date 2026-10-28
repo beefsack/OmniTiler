@@ -49,6 +49,33 @@
   captured failure). The change record that first reported the failure names
   only the test, not its assertion.
 
+### Captured recurrence (2026-10-29)
+
+- During `mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-windows`,
+  the Windows library reported 1205 passed, two failed, one ignored. The exact
+  failure messages survive in the retained tool-output preview; the saved raw
+  output file is no longer available. This is recurrence evidence, not recovery
+  of the original 2026-10-28 assertion or proof of its cause.
+- `panic_diag::tests::guard_drop_while_panicking_never_sets_hook` failed at
+  `crates/tiler-windows/src/panic_diag.rs:295:9`. Source inspection identifies
+  the assertion as
+  `assert!(text.contains("\"event\":\"panic\""), "hook logged: {text}")`.
+  Exact retained message (garbled text preserved, not normalized):
+
+```text
+hook logged: {{""columncolumn":":1313,,""component"component:""owner:""owner,"",event""event:"":panic""panic,"",file"file""::""core_tests.rspanic_diag.rs"",,""lineline"":284:,"602payload_type,"":payload_type""str:"",str"",thread_role""thread_role:"":other""other}
+"}
+```
+
+- `panic_diag::tests::scoped_guard_installs_restores_and_delegates` failed at
+  `crates/tiler-windows/src/panic_diag.rs:210:45`, with exact message
+  `hook test lock: PoisonError { .. }`. Source inspection identifies the
+  expression as `HOOK_TEST_LOCK.lock().expect("hook test lock")`.
+- The existing isolated six-test run passed; the unchanged full command then
+  passed, including after integration. No diagnostic code or assertions were
+  changed. This follow-up records retained evidence only; cause remains
+  unresolved and no further diagnosis was performed.
+
 ## Verification
 
 - Passed: `mise exec -- cargo test --locked -p tiler-core -p tiler-protocol
