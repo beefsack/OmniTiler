@@ -1438,6 +1438,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
         }
+        try {
+            native.cancelPendingNativeState(cause);
+        } catch (error) {
+            void error;
+        }
     };
 
     // Dead-generation intent drop: queued intents belong to the superseded
@@ -3104,7 +3109,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // lane already fenced generation/revision/input staleness).
                     // Only a maximize result on a command-carrying flight
                     // actuates, against the exact result window under fresh
-                    // native fences inside.
+                    // native fences inside. Pending native settlement polls
+                    // BEFORE issuance so the same accepted capture never
+                    // confirms the attempt it just armed: only the next
+                    // fresh accepted boundary settles it.
+                    try {
+                        native.pollPendingNativeState(fresh, gestureActive());
+                    } catch (error) {
+                        void error;
+                    }
                     try {
                         if (flight.clientCmd !== null && takeResult !== null && takeResult.op === "maximize") {
                             if (!native.applyAuthorizedMaximize(takeResult)) {
@@ -4510,6 +4523,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
         }
+        try {
+            native.cancelPendingNativeState("newer-input");
+        } catch (error) {
+            void error;
+        }
     };
     registerWorldShortcuts({
         readProp,
@@ -4521,7 +4539,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         submitMigration,
         submitFloat: (label) => native.submitFloat(label),
         setStickyNative: (ref, id, sticky) => native.setStickyNative(ref, id, sticky),
-        setFullscreenNative: (ref, fullscreen) => native.setFullscreenNative(ref, fullscreen),
+        setFullscreenNative: (ref, fullscreen, label) => native.setFullscreenNative(ref, fullscreen, label ?? "toggle-fullscreen"),
         activeOutputName,
         activeWindowId,
         activeWindowRef,
@@ -4616,6 +4634,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             try {
                 native.cancelPendingUnfloat();
+            } catch (error) {
+                void error;
+            }
+            try {
+                native.cancelPendingNativeState();
             } catch (error) {
                 void error;
             }
@@ -4716,6 +4739,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             } catch (error) {
                 void error;
             }
+            try {
+                native.cancelPendingNativeState("newer-input");
+            } catch (error) {
+                void error;
+            }
             const stickyRaw = readProp(ref, "onAllDesktops");
             const want = (typeof stickyRaw === "boolean" ? stickyRaw : readNativeAlias(readProp, ref, "sticky")) !== true;
             if (!native.setStickyNative(ref, id, want)) {
@@ -4730,6 +4758,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             try {
                 native.cancelPendingUnfloat("newer-input");
+            } catch (error) {
+                void error;
+            }
+            try {
+                native.cancelPendingNativeState("newer-input");
             } catch (error) {
                 void error;
             }
@@ -4748,9 +4781,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             } catch (error) {
                 void error;
             }
+            try {
+                native.cancelPendingNativeState("newer-input");
+            } catch (error) {
+                void error;
+            }
             const fsRaw = readProp(ref, "fullScreen");
             const want = (typeof fsRaw === "boolean" ? fsRaw : readNativeAlias(readProp, ref, "fullscreen") === true) !== true;
-            if (!native.setFullscreenNative(ref, want)) {
+            if (!native.setFullscreenNative(ref, want, "fullscreen")) {
                 shortcutFailed("fullscreen");
             }
         },

@@ -57,10 +57,17 @@ function makeWin(over: Partial<FakeWin> = {}): { ref: FakeWin; order: string[] }
     return { ref, order };
 }
 
-// Minimal fresh capture for the single-observation boundary: only the
-// domains the B9 poll reads (win homing for the scope fence).
-const freshWith = (win: string, out: string, ws: string): { domains: Array<{ id: string; windows: Array<{ win: string; ws: string }> }> } => ({
-    domains: [{ id: out, windows: [{ win, ws }] }],
+// Minimal fresh capture for the single-observation boundary: the native
+// settlement poll reads complete/topology plus the domain homing
+// (readable/hold/complete) for the scope fence; B9 ignores the extras.
+const freshWith = (win: string, out: string, ws: string): {
+    complete: boolean;
+    topology: Array<{ out: string; complete: boolean }>;
+    domains: Array<{ id: string; readable: boolean; hold: string; complete: boolean; windows: Array<{ win: string; ws: string }> }>;
+} => ({
+    complete: true,
+    topology: [{ out, complete: true }],
+    domains: [{ id: out, readable: true, hold: "", complete: true, windows: [{ win, ws }] }],
 });
 
 interface Harness {
@@ -72,6 +79,7 @@ interface Harness {
     env: {
         setBusy: (busy: boolean) => void;
         setFloating: (floating: boolean) => void;
+        setActiveRef: (ref: object | null) => void;
     };
 }
 
@@ -81,6 +89,7 @@ function setup(win: FakeWin, order: string[], readLiveRect?: () => { x: number; 
     let invalidations = 0;
     let busy = false;
     let floating = false;
+    let activeRef: object | null = win as object;
     const surface = { windowList: () => [win] };
     const toggles = createWorldNativeToggles({
         surface: surface as object,
@@ -116,7 +125,7 @@ function setup(win: FakeWin, order: string[], readLiveRect?: () => { x: number; 
         noteFloating: () => undefined,
         clearFloating: () => undefined,
         activeWindowId: () => "win-a",
-        activeWindowRef: () => win as object,
+        activeWindowRef: () => activeRef,
         liveRefById: (id) => (id === "win-a" ? (win as object) : null),
         readLiveRect: (ref) => {
             if (readLiveRect !== undefined) {
@@ -134,6 +143,7 @@ function setup(win: FakeWin, order: string[], readLiveRect?: () => { x: number; 
         env: {
             setBusy: (b) => { busy = b; },
             setFloating: (f) => { floating = f; },
+            setActiveRef: (r) => { activeRef = r; },
         },
     };
 }
@@ -341,16 +351,21 @@ describe("world native toggles", () => {
         assert.equal(max.ref.onAllDesktops, false);
     });
 
-    it("maximizes through setMaximize and proves through maximizeMode", () => {
+    it("maximizes through setMaximize and confirms at the next accepted boundary", () => {
         const { ref } = makeWin();
         const h = setup(ref, []);
-        assert.equal(h.toggles.setMaximizedNative(ref as object, true), true);
-        assert.equal(ref.maximizeMode, 3);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true), true, "issuance pends, never same-stack confirms");
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending") && l.includes("outcome=issued")));
+        assert.equal(h.calls.length, 0);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=maximized")));
+        assert.ok(!h.logs.some((l) => l.startsWith("failed:")));
         assert.equal(h.toggles.setMaximizedNative(ref as object, false), true);
-        assert.equal(ref.maximizeMode, 0);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=restored")));
     });
 
-    it("fails closed without setMaximize and on readback mismatch", () => {
+    it("fails closed without setMaximize; a silent no-op refuses once at the boundary", () => {
         const { ref } = makeWin();
         ref.setMaximize = undefined;
         const h = setup(ref, []);
@@ -358,16 +373,201 @@ describe("world native toggles", () => {
         const lying = makeWin();
         lying.ref.setMaximize = () => undefined;
         const hl = setup(lying.ref, []);
-        assert.equal(hl.toggles.setMaximizedNative(lying.ref as object, true), false);
+        assert.equal(hl.toggles.setMaximizedNative(lying.ref as object, true), true, "issued, pends for the boundary");
+        assert.equal(hl.calls.length, 0);
+        hl.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(hl.logs.some((l) => l.includes("maximize-refused") && l.includes("silent-refusal")));
+        assert.ok(hl.logs.some((l) => l.includes("failed:maximize")));
+        // Consumed exactly once: a later settled report admits nothing new.
+        hl.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(hl.logs.filter((l) => l.includes("failed:maximize")).length, 1);
     });
 
-    it("toggles fullscreen through fullScreen with readback", () => {
+    it("toggles fullscreen through fullScreen with boundary confirmation", () => {
         const { ref } = makeWin();
         const h = setup(ref, []);
         assert.equal(h.toggles.setFullscreenNative(ref as object, true), true);
-        assert.equal(ref.fullScreen, true);
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-pending") && l.includes("outcome=issued")));
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-applied") && l.includes("target=fullscreen")));
         assert.equal(h.toggles.setFullscreenNative(ref as object, false), true);
-        assert.equal(ref.fullScreen, false);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-applied") && l.includes("target=restored")));
+    });
+
+    it("refuses a silent fullscreen no-op once at the boundary with the caller label", () => {
+        const { ref } = makeWin();
+        Object.defineProperty(ref, "fullScreen", { configurable: true, get: () => false, set: () => true });
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setFullscreenNative(ref as object, true, "toggle-fullscreen"), true, "issued, pends");
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-refused") && l.includes("silent-refusal")));
+        assert.ok(h.logs.some((l) => l.includes("failed:toggle-fullscreen")));
+    });
+
+    it("supersedes a pending maximize with newer fullscreen input silently", () => {
+        const { ref } = makeWin();
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true, "maximize"), true);
+        assert.equal(h.toggles.setFullscreenNative(ref as object, true, "toggle-fullscreen"), true);
+        assert.ok(h.logs.some((l) => l.includes("native-pending-superseded")));
+        assert.ok(!h.logs.some((l) => l.includes("failed:maximize")), "superseded press never fails the old label");
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-applied")));
+    });
+
+    it("fences a pending maximize on scope, focus, busy, and gesture without confirming", () => {
+        const scoped = makeWin();
+        const hs = setup(scoped.ref, []);
+        assert.equal(hs.toggles.setMaximizedNative(scoped.ref as object, true, "maximize"), true);
+        hs.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-2") as never, false);
+        assert.ok(hs.logs.some((l) => l.includes("scope-raced")), "scope race logged");
+        assert.ok(hs.logs.some((l) => l.includes("failed:maximize")), "scope race fails the label");
+
+        const busy = makeWin();
+        const hb = setup(busy.ref, []);
+        assert.equal(hb.toggles.setMaximizedNative(busy.ref as object, true, "maximize"), true);
+        hb.env.setBusy(true);
+        hb.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(hb.logs.some((l) => l.includes("reason=busy")), "busy logged");
+        assert.ok(hb.logs.some((l) => l.includes("failed:maximize")), "busy fails the label");
+
+        const gest = makeWin();
+        const hg = setup(gest.ref, []);
+        assert.equal(hg.toggles.setMaximizedNative(gest.ref as object, true, "maximize"), true);
+        hg.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, true);
+        assert.ok(hg.logs.some((l) => l.includes("gesture-raced")), "gesture logged");
+        assert.ok(hg.logs.some((l) => l.includes("failed:maximize")), "gesture fails the label");
+    });
+
+    it("refuses a held domain once at the first boundary with no retry", () => {
+        const { ref } = makeWin();
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true, "maximize"), true);
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")), "pending at issuance");
+        assert.ok(!h.logs.some((l) => l.startsWith("failed:")), "no failure before the boundary");
+        const fresh = freshWith("win-a", "out-1", "ws-1") as unknown as Record<string, unknown>;
+        ((fresh["domains"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["hold"] = "unreadable";
+        h.toggles.pollPendingNativeState(fresh as never, false);
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("observation-held")), "held refused");
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1, "exactly one terminal failure");
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1, "consumed once, no replay");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "never confirms");
+    });
+
+    it("refuses unreadable and incomplete domains once at the first boundary", () => {
+        const unread = makeWin();
+        const hu = setup(unread.ref, []);
+        assert.equal(hu.toggles.setMaximizedNative(unread.ref as object, true, "maximize"), true);
+        assert.ok(!hu.logs.some((l) => l.startsWith("failed:")), "no failure before the boundary");
+        const fu = freshWith("win-a", "out-1", "ws-1") as unknown as Record<string, unknown>;
+        ((fu["domains"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["readable"] = false;
+        hu.toggles.pollPendingNativeState(fu as never, false);
+        assert.ok(hu.logs.some((l) => l.includes("maximize-refused") && l.includes("observation-held")), "unreadable refused");
+        assert.equal(hu.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+        hu.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(hu.logs.filter((l) => l.includes("failed:maximize")).length, 1, "no replay");
+
+        const incompl = makeWin();
+        const hi = setup(incompl.ref, []);
+        assert.equal(hi.toggles.setMaximizedNative(incompl.ref as object, true, "maximize"), true);
+        const fi = freshWith("win-a", "out-1", "ws-1") as unknown as Record<string, unknown>;
+        ((fi["domains"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["complete"] = false;
+        hi.toggles.pollPendingNativeState(fi as never, false);
+        assert.ok(hi.logs.some((l) => l.includes("maximize-refused") && l.includes("observation-held")), "incomplete refused");
+        assert.equal(hi.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+    });
+
+    it("refuses an incomplete capture once at the first boundary", () => {
+        const { ref } = makeWin();
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true, "maximize"), true);
+        assert.ok(!h.logs.some((l) => l.startsWith("failed:")), "no failure before the boundary");
+        const fresh = freshWith("win-a", "out-1", "ws-1") as unknown as Record<string, unknown>;
+        fresh["complete"] = false;
+        h.toggles.pollPendingNativeState(fresh as never, false);
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("observation-held")), "incomplete capture refused");
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1, "no replay");
+    });
+
+    it("refuses missing and incomplete topology once at the first boundary", () => {
+        const missing = makeWin();
+        const hm = setup(missing.ref, []);
+        assert.equal(hm.toggles.setMaximizedNative(missing.ref as object, true, "maximize"), true);
+        assert.ok(!hm.logs.some((l) => l.startsWith("failed:")), "no failure before the boundary");
+        const fm = freshWith("win-a", "out-1", "ws-1") as unknown as Record<string, unknown>;
+        fm["topology"] = [];
+        hm.toggles.pollPendingNativeState(fm as never, false);
+        assert.ok(hm.logs.some((l) => l.includes("maximize-refused") && l.includes("observation-held")), "missing topology refused");
+        assert.equal(hm.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+        hm.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(hm.logs.filter((l) => l.includes("failed:maximize")).length, 1, "no replay");
+
+        const incompl = makeWin();
+        const hi = setup(incompl.ref, []);
+        assert.equal(hi.toggles.setMaximizedNative(incompl.ref as object, true, "maximize"), true);
+        const fi = freshWith("win-a", "out-1", "ws-1") as unknown as Record<string, unknown>;
+        ((fi["topology"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["complete"] = false;
+        hi.toggles.pollPendingNativeState(fi as never, false);
+        assert.ok(hi.logs.some((l) => l.includes("maximize-refused") && l.includes("observation-held")), "incomplete topology refused");
+        assert.equal(hi.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+    });
+
+    it("rejects a moved live scope at settlement even when the capture matches", () => {
+        const { ref } = makeWin();
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true, "maximize"), true);
+        assert.ok(!h.logs.some((l) => l.startsWith("failed:")), "no failure before the boundary");
+        ref.desktops = [{ id: "ws-2" }];
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("scope-raced")), "moved live scope rejected");
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1, "no replay");
+    });
+
+    it("rejects an unreadable live scope at settlement", () => {
+        const { ref } = makeWin();
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true, "maximize"), true);
+        assert.ok(!h.logs.some((l) => l.startsWith("failed:")), "no failure before the boundary");
+        ref.output = undefined;
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("observe-missing")), "unreadable live scope refused");
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+    });
+
+    it("rejects a focus-ref mismatch at settlement like the authorized fence", () => {
+        const { ref } = makeWin();
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true, "maximize"), true);
+        assert.ok(!h.logs.some((l) => l.startsWith("failed:")), "no failure before the boundary");
+        const other = makeWin({ internalId: "win-b" });
+        h.env.setActiveRef(other.ref as object);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("focus-raced")), "focus-ref mismatch refused");
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.logs.filter((l) => l.includes("failed:maximize")).length, 1, "no replay");
+    });
+
+    it("cancels a pending maximize on stop and generation-style terminal causes", () => {
+        const { ref } = makeWin();
+        const h = setup(ref, []);
+        assert.equal(h.toggles.setMaximizedNative(ref as object, true, "maximize"), true);
+        h.toggles.cancelPendingNativeState();
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied") || l.startsWith("failed:")), "silent stop drop settles nothing");
+
+        const { ref: ref2 } = makeWin();
+        const h2 = setup(ref2, []);
+        assert.equal(h2.toggles.setMaximizedNative(ref2 as object, true, "maximize"), true);
+        h2.toggles.cancelPendingNativeState("generation-mismatch");
+        assert.ok(h2.logs.some((l) => l.includes("generation-mismatch")), "terminal cause logged");
+        assert.ok(h2.logs.some((l) => l.includes("failed:maximize")), "terminal cause fails the label");
     });
 });
 
@@ -524,57 +724,68 @@ describe("world authorized maximize", () => {
         });
     };
 
-    it("applies an ordinary maximize through setMaximize only", () => {
+    it("applies an ordinary maximize through setMaximize only, confirmed at the boundary", () => {
         const { ref, order } = makeWin();
         const h = setup(ref, order);
-        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, false, false)), true);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, false, false)), true, "issuance pends");
         assert.deepEqual(order, ["invalidate", "setMaximize:true,true"]);
         assert.equal(ref.maximizeMode, 3);
-        assert.equal(ref.fullScreen, false);
         assert.equal(h.calls.length, 0);
-        assert.ok(h.logs.some((m) => m.includes("maximize-applied")));
+        assert.ok(h.logs.some((m) => m.includes("maximize-pending") && m.includes("outcome=issued")));
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((m) => m.includes("maximize-applied") && m.includes("target=maximized")));
+        assert.ok(!h.logs.some((m) => m.startsWith("failed:")));
     });
 
-    it("applies an ordinary restore through setMaximize only", () => {
+    it("applies an ordinary restore through setMaximize only, confirmed at the boundary", () => {
         const { ref, order } = makeWin({ maximizeMode: 3 });
         const h = setup(ref, order);
         assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", false, false, true)), true);
         assert.deepEqual(order, ["invalidate", "setMaximize:false,false"]);
-        assert.equal(ref.maximizeMode, 0);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((m) => m.includes("maximize-applied") && m.includes("target=restored")));
     });
 
-    it("clears fullscreen first then maximizes back-to-back", () => {
+    it("clears fullscreen first then maximizes back-to-back, confirmed at the boundary", () => {
         const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 0 });
         withRecordingFullscreen(ref, order, false);
         const h = setup(ref, order);
-        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), true);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), true, "issuance pends");
         assert.deepEqual(order, ["invalidate", "fullScreen:false", "setMaximize:true,true"]);
         assert.equal(ref.maximizeMode, 3);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
         assert.ok(h.logs.some((m) => m.includes("maximize-applied") && m.includes("clear=fullscreen")));
+        assert.ok(!h.logs.some((m) => m.startsWith("failed:")));
     });
 
-    it("clears fullscreen and retains max on the both-flags result", () => {
+    it("clears fullscreen and retains max on the both-flags result, confirmed at the boundary", () => {
         const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 3 });
         withRecordingFullscreen(ref, order, false);
         const h = setup(ref, order);
         assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, true)), true);
         assert.deepEqual(order, ["invalidate", "fullScreen:false", "setMaximize:true,true"]);
-        assert.equal(ref.maximizeMode, 3);
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((m) => m.includes("maximize-applied") && m.includes("clear=fullscreen")));
     });
 
-    it("reports unconfirmed when applied flags stay pending after the setters", () => {
+    it("reports silent refusal once at the boundary when applied flags stay pending after the setters", () => {
         const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 0 });
         withRecordingFullscreen(ref, order, true);
         ref.setMaximize = (v: boolean, hv: boolean): void => {
             order.push(`setMaximize:${v},${hv}`);
         };
         const h = setup(ref, order);
-        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), false);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), true, "issuance pends");
         // The clear is still requested FIRST: no applied readback is
         // required between the setters (Wayland keeps applied-full true
         // until the client acks), and nothing is retried.
         assert.deepEqual(order, ["invalidate", "fullScreen:false", "setMaximize:true,true"]);
-        assert.ok(h.logs.some((m) => m.includes("maximize-unconfirmed")));
+        assert.ok(h.logs.some((m) => m.includes("maximize-pending")));
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.ok(h.logs.some((m) => m.includes("maximize-refused") && m.includes("silent-refusal")));
+        assert.ok(h.logs.some((m) => m.includes("failed:maximize")), "silent no-op fails the maximize label once");
+        h.toggles.pollPendingNativeState(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.logs.filter((m) => m.includes("failed:maximize")).length, 1, "exactly once");
     });
 
     it("refuses a refused clear write without invoking maximize", () => {

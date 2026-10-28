@@ -368,16 +368,17 @@
 - B1 failed its diagnostic acceptance: one maximize callback logged
   `maximize-refused` and `shortcut-failed`, but native read-back showed maximized.
   An exact native restore likewise read the old maximize state synchronously and
-  cleared later. `world-native.ts` calls the maximize setter then decides success
+  cleared later. `world-native.ts` then called the maximize setter and decided success
   from same-stack `maximizeMode`; this reproduces the asynchronous false-refusal
   class already observed for fullscreen. No geometry-fighting defect is inferred.
-- Parked correction options: confirm once at a fresh accepted observation boundary
-  (recommended), or distinguish issuance from final outcome in diagnostics.
-  Preserve one native attempt per activation, no replay/retry, truthful genuine
-  refusal, and lifetime/scope/focus/generation/supersession fences. Add
-  producer-shaped tests with delayed maximizeMode settlement, renewed wrappers,
-  QML array-likes, silent refusal and intervening command/restart races. Adapter
-  source was not changed. Remaining B1 orderings and physical held keys are pending.
+- The subsequent [offline adapter correction](archive/kde-native-state-settlement.md)
+  confirms once at the next fresh accepted observation boundary, with one native
+  attempt, no replay/retry, truthful refusal and lifetime/scope/focus/generation/
+  supersession fences. Producer-shaped regressions cover delayed maximize/restore,
+  fullscreen enter/exit, silent refusal, intervening commands and restart races
+  using renewed wrappers, QML array-likes and native properties. KDE tests (835)
+  and typecheck pass. No renewed live diagnostic acceptance is claimed; remaining
+  B1 orderings and physical held keys are pending.
 - After explicit native restore/read-back, sticky-on/native-unstick/sticky-on
   passed as a bounded callback/state signal. Two back-to-back directional focus
   callbacks showed busy suppression of the second input. These are not physical
@@ -418,7 +419,7 @@
 | Both Settings identities | Source-built native shell plus targeted AT-SPI tabs/Status, draft/save/reopen, Cancel, Defaults, both post-switch draft read-backs and unchanged Apply endpoints | Physical traversal/buddies/visual UX and transient-operation isolation |
 | Restart / unavailable Planner | Sampled native pass, no old-command replay; fixed override survives Planner-only replacement after workspace re-enable | Clean controller-restart intent coverage and broader race/error permutations |
 | Transport | Exact request limit, oversize/count refusal and large reply delivered | Exact reply-limit delivery and broader latency acceptance |
-| Ordinary actions / lifecycle | Sampled native pass; sticky/native-change and busy-suppression functional signals | Clean remaining permutations; maximize false-refusal correction and B1 repeats |
+| Ordinary actions / lifecycle | Sampled native pass; sticky/native-change and busy-suppression functional signals; maximize/fullscreen settlement correction passes offline regressions | Renewed live diagnostic acceptance, clean remaining permutations and B1 repeats |
 | Safety states / workspace enable | Prior samples plus genuine fixed D5 born/prior-float exit, D6 enable/control and D7 Planner-only restart | Clean D7 controller restart, non-fixed born exit, remaining predicates/controls, games and refused/raced variants |
 | Workspace paths | Callback/state selection/history, floating-boundary numbered/relative follow/stay, one tiled numbered follow | Held-scope diagnosis; clean tiled return/stay/relative, append, lifecycle races and migration partial refusal |
 | Drag / client clamp | Controller-free setter observations only; no acceptance | Safe genuine drag route; continuous preview/drop/resize, late-reply cancel and bounded native clamp |
@@ -434,6 +435,7 @@
   and tiled return remain pending. A later clean fixture needs retained child
   exit status, explicit workspace re-enable after replacement and immediate
   teardown on the first unexpected refusal.
-- Maximize/fullscreen asynchronous outcome diagnostics need the parked adapter
-  correction and regressions. Native-maximize notification quietness and the
-  isolated tile-order observation remain separate unclassified follow-ups.
+- Maximize/fullscreen asynchronous outcome diagnostics now have the offline
+  correction and regressions above; renewed live acceptance remains pending.
+  Native-maximize notification quietness and the isolated tile-order observation
+  remain separate unclassified follow-ups.

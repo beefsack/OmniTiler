@@ -10,8 +10,11 @@
 // the core owns membership beneath the retained overlay, and D5 forbids
 // every subject write (native state, geometry, focus, stacking) while
 // fullscreen holds. Setters use the exact KWin names (`setMaximize`,
-// `fullScreen`, `onAllDesktops`, `maximizeMode` readback); success is the
-// truthful readback, never the setter boolean. No workspace policy: core
+// `fullScreen`, `onAllDesktops`, `maximizeMode` readback); a successful
+// maximize/fullscreen issuance arms a pending attempt confirmed at the
+// first fresh accepted observation (never the setter boolean, never a
+// same-stack readback). Sticky stays synchronous with immediate readback.
+// No workspace policy: core
 // converges the tiling consequences from the next full report.
 
 import type { WorldCommand, WorldReplyResult } from "./world-report";
@@ -58,11 +61,13 @@ export interface WorldNativeEnv {
 export interface WorldNativeToggles {
     readonly submitFloat: (label: string) => boolean;
     readonly setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
-    readonly setMaximizedNative: (ref: object, maximized: boolean) => boolean;
-    readonly setFullscreenNative: (ref: object, fullscreen: boolean) => boolean;
-    // Authorized maximize for a Planner toggle-maximize result. True only
-    // on readback-confirmed application; pending/unconfirmed is never
-    // claimed applied and never retried. No geometry/focus/stack writes.
+    readonly setMaximizedNative: (ref: object, maximized: boolean, label?: string) => boolean;
+    readonly setFullscreenNative: (ref: object, fullscreen: boolean, label?: string) => boolean;
+    // Authorized maximize for a Planner toggle-maximize result. True on
+    // successful issuance (pending the first fresh accepted observation
+    // boundary); false on genuine pre-write fences and on genuine
+    // invocation failure. Never same-stack readback, never retried. No
+    // geometry/focus/stack writes.
     readonly applyAuthorizedMaximize: (result: Extract<WorldReplyResult, { op: "maximize" }>) => boolean;
     // B9 pending-unfloat settlement probe (entry-driven, exactly once on
     // the first accepted full-state report after the issued clear): the
@@ -76,6 +81,17 @@ export interface WorldNativeToggles {
     // "newer-input" logs a supersede outcome without failing the old
     // label; any other cause fails that label narrowly.
     readonly cancelPendingUnfloat: (cause?: string) => void;
+    // Pending native-state settlement (maximize/fullscreen): each setter
+    // issues exactly once, then confirms exactly once at the first fresh
+    // accepted observation boundary after issuance, never on the capture
+    // that issued it. Successful issuance returns pending-compatible
+    // true; genuine invocation failure returns false. A settled boundary
+    // logs applied; a silent no-op refusal fails the caller label once.
+    // One native attempt only, no retries/replay/timers. Stable
+    // canonical ids only, scope from real output/desktops, accepted
+    // observation authoritative. New commands supersede silently.
+    readonly pollPendingNativeState: (fresh: WorldObservation, gesture: boolean) => void;
+    readonly cancelPendingNativeState: (cause?: string) => void;
     // Automatic fixed-size float stacking (option A): project-owned
     // keepAbove above tiles, driven per accepted report with the fresh
     // observation. No geometry or focus writes, never a keepBelow write.
@@ -252,6 +268,20 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
     // (wrappers renew per enumeration).
     let pendingUnfloat: { win: string; label: string; scope: string } | null = null;
 
+    // Pending native-state settlement (maximize/fullscreen/authorized):
+    // the same first-fresh-boundary discipline as B9 above. Armed after
+    // successful issuance with the caller label plus the wanted flags;
+    // the entry polls on the first accepted full-state report AFTER the
+    // arming capture (poll runs before new issuance there, so the same
+    // capture never confirms). Scope fences to the arming capture.
+    let pendingNative: {
+        win: string;
+        label: string;
+        wantMaximized: boolean | null;
+        wantFullscreen: boolean | null;
+        scope: string;
+    } | null = null;
+
     // Live scope (`out/ws`) of a ref through the exact KWin names,
     // mirroring the apply host: null when unreadable (arm refuses).
     const readScopeOf = (ref: object): string | null => {
@@ -412,6 +442,209 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         cancelPending(cause);
     };
 
+    // Pending native-state settlement helpers. Supersession is silent
+    // (the newer press owns its own outcome); terminal/lifecycle
+    // failures fail the arming label once, exactly like B9 above.
+    const dropPendingNative = (): void => {
+        pendingNative = null;
+    };
+
+    const supersedePendingNative = (): void => {
+        const pending = pendingNative;
+        if (pending === null) {
+            return;
+        }
+        dropPendingNative();
+        log(`omnitiler:world:native-pending-superseded window=${token(pending.win)} outcome=newer-input-superseded`);
+    };
+
+    const cancelPendingNativeState = (cause?: string): void => {
+        const pending = pendingNative;
+        if (pending === null) {
+            return;
+        }
+        if (cause === undefined) {
+            dropPendingNative();
+            return;
+        }
+        if (cause === "newer-input") {
+            supersedePendingNative();
+            return;
+        }
+        dropPendingNative();
+        const target = pending.wantFullscreen !== null && pending.wantMaximized !== null
+            ? "maximized"
+            : pending.wantFullscreen !== null
+                ? (pending.wantFullscreen ? "fullscreen" : "restored")
+                : (pending.wantMaximized === true ? "maximized" : "restored");
+        const kind = pending.wantFullscreen !== null && pending.wantMaximized === null
+            ? "fullscreen"
+            : "maximize";
+        log(`omnitiler:world:${kind}-refused target=${target} window=${token(pending.win)} reason=${cause}`);
+        env.shortcutFailed(pending.label);
+    };
+
+    // First-report settlement boundary for an issued native setter.
+    // Consumes exactly once; every fence terminates narrowly with the
+    // arming label failed once, except supersession (which never reaches
+    // here: newer input drops silently before the boundary).
+    const pollPendingNativeState = (fresh: WorldObservation, gesture: boolean): void => {
+        const pending = pendingNative;
+        if (pending === null) {
+            return;
+        }
+        const win = pending.win;
+        const label = pending.label;
+        dropPendingNative();
+        const kind = pending.wantFullscreen !== null && pending.wantMaximized === null
+            ? "fullscreen"
+            : "maximize";
+        const target = pending.wantFullscreen !== null && pending.wantMaximized !== null
+            ? "maximized"
+            : pending.wantFullscreen !== null
+                ? (pending.wantFullscreen ? "fullscreen" : "restored")
+                : (pending.wantMaximized === true ? "maximized" : "restored");
+        const refuse = (cause: string): void => {
+            log(`omnitiler:world:${kind}-refused target=${target} window=${token(win)} reason=${cause}`);
+            env.shortcutFailed(label);
+        };
+        if (env.isWorldBusy()) {
+            refuse("busy");
+            return;
+        }
+        if (gesture) {
+            refuse("gesture-raced");
+            return;
+        }
+        if (env.activeWindowId() !== win) {
+            refuse("focus-raced");
+            return;
+        }
+        // Live focus ref must resolve to the same canonical win (mirrors
+        // the applyAuthorizedMaximize focus fence); a probe failure fails
+        // closed with no writes.
+        let focused: object | null = null;
+        try {
+            focused = env.activeWindowRef();
+        } catch (error) {
+            void error;
+            focused = null;
+        }
+        if (focused === null || liveWindowId(readProp, focused) !== win) {
+            refuse("focus-raced");
+            return;
+        }
+        let live: object | null = null;
+        try {
+            live = env.liveRefById(win);
+        } catch (error) {
+            void error;
+            live = null;
+        }
+        if (live === null || liveWindowId(readProp, live) !== win || !isListed(live)) {
+            refuse("observe-missing");
+            return;
+        }
+        // A held or incomplete capture is never authoritative: consume
+        // once and refuse narrowly, never wait or retry.
+        if (fresh.complete !== true) {
+            refuse("observation-held");
+            return;
+        }
+        let scope: string | null = null;
+        let domainHeld = false;
+        for (const domain of fresh.domains) {
+            for (const entry of domain.windows) {
+                if (entry.win === win) {
+                    scope = `${domain.id}/${entry.ws}`;
+                    domainHeld = domain.hold !== "" || domain.readable !== true || domain.complete !== true;
+                    break;
+                }
+            }
+            if (scope !== null) {
+                break;
+            }
+        }
+        if (scope === null) {
+            refuse("observe-missing");
+            return;
+        }
+        if (domainHeld) {
+            refuse("observation-held");
+            return;
+        }
+        if (scope !== pending.scope) {
+            refuse("scope-raced");
+            return;
+        }
+        // Topology must completely cover the target output; a missing or
+        // incomplete topology entry is held, never authoritative.
+        let topoOk = false;
+        for (const t of fresh.topology) {
+            if (t.out === scope.slice(0, scope.indexOf("/"))) {
+                topoOk = t.complete === true;
+                break;
+            }
+        }
+        if (!topoOk) {
+            refuse("observation-held");
+            return;
+        }
+        // Re-read the live scope at settlement: applyWorldReply may have
+        // moved the window after issuance. Unreadable or mismatched live
+        // scope rejects in addition to the capture scope above.
+        const liveScope = readScopeOf(live);
+        if (liveScope === null) {
+            refuse("observe-missing");
+            return;
+        }
+        if (liveScope !== pending.scope) {
+            refuse("scope-raced");
+            return;
+        }
+        const liveFullscreen = readFullscreen(readProp, live);
+        const liveMaximized = readMaximized(readProp, live);
+        if (pending.wantFullscreen !== null && pending.wantMaximized !== null) {
+            if (liveFullscreen === null || liveMaximized === null) {
+                refuse("observe-missing");
+                return;
+            }
+            if (liveFullscreen === pending.wantFullscreen && liveMaximized === pending.wantMaximized) {
+                log(`omnitiler:world:maximize-applied target=maximized window=${token(win)} clear=fullscreen`);
+                return;
+            }
+            refuse("silent-refusal");
+            return;
+        }
+        if (pending.wantFullscreen !== null) {
+            if (liveFullscreen === null) {
+                refuse("observe-missing");
+                return;
+            }
+            if (liveFullscreen === pending.wantFullscreen) {
+                log(`omnitiler:world:fullscreen-applied target=${target} window=${token(win)} outcome=applied`);
+                return;
+            }
+            refuse("silent-refusal");
+            return;
+        }
+        if (liveMaximized === null) {
+            refuse("observe-missing");
+            return;
+        }
+        // An ordinary maximize racing into fullscreen is a race, not a
+        // silent host no-op: report it narrowly like the B9 guard.
+        if (liveFullscreen === true) {
+            refuse("fullscreen-raced");
+            return;
+        }
+        if (liveMaximized === pending.wantMaximized) {
+            log(`omnitiler:world:maximize-applied target=${target} window=${token(win)} outcome=applied`);
+            return;
+        }
+        refuse("silent-refusal");
+    };
+
     // Float toggle with B9 maximized-unfloat parity (native only). Fence
     // order is load-bearing: busy fence, then the maximize clear (when a
     // floating maximized non-fullscreen window needs it), and only then
@@ -436,6 +669,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
             }
+            supersedePendingNative();
             env.shortcutFailed(label);
             return false;
         }
@@ -443,6 +677,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
             }
+            supersedePendingNative();
             env.shortcutFailed(label);
             return false;
         }
@@ -453,6 +688,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
             }
+            supersedePendingNative();
             log(`omnitiler:world:float-unfloat-maximize-clear window=${token(w)} outcome=issued`);
             env.invalidate();
             let invoked = false;
@@ -482,6 +718,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         if (pendingUnfloat !== null) {
             cancelPendingSilent("newer-input-superseded");
         }
+        supersedePendingNative();
         // Unfloat carries the live frame, except a fullscreen subject
         // carries no rect (D5: the observed fullscreen frame is never the
         // retained float frame); float carries no rect (session retained
@@ -511,6 +748,10 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
 
     const setStickyNative = (ref: object, id: string, sticky: boolean): boolean => {
         try {
+            // Newer direct input supersedes a pending native settlement
+            // even when this press later refuses (registered shortcuts
+            // bypass the entry cancel hook).
+            supersedePendingNative();
             if (worldApplyFenced("sticky")) {
                 return false;
             }
@@ -605,61 +846,83 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         }
     };
 
-    const setMaximizedNative = (ref: object, maximized: boolean): boolean => {
+    const setMaximizedNative = (ref: object, maximized: boolean, label = "maximize"): boolean => {
         try {
+            // Newer direct input supersedes any pending settlement first
+            // (the new press owns its own outcome below).
+            supersedePendingNative();
             if (worldApplyFenced("maximize")) {
                 return false;
             }
             if (!isListed(ref) || readFullscreen(readProp, ref) === true) {
                 return false;
             }
+            const win = liveWindowId(readProp, ref);
+            if (win === null) {
+                return false;
+            }
             // Synchronous invalidation BEFORE the first setter.
             env.invalidate();
             if (!invokeMaximize(readProp, ref, maximized)) {
-                log(`omnitiler:world:maximize-refused target=${maximized ? "maximized" : "restored"} outcome=refused`);
+                log(`omnitiler:world:maximize-refused target=${maximized ? "maximized" : "restored"} window=${token(win)} reason=native-write-refused`);
+                return false;
+            }
+            // Arm scope fences the continuation to the current capture:
+            // an unreadable scope refuses immediately (unobserved). No
+            // same-stack readback: async settlement arrives after return.
+            const scope = readScopeOf(ref);
+            if (scope === null) {
+                log(`omnitiler:world:maximize-refused target=${maximized ? "maximized" : "restored"} window=${token(win)} reason=observe-missing`);
                 return false;
             }
             env.scheduleDispatch();
-            // Truthful readback through maximizeMode.
-            if (readMaximized(readProp, ref) === maximized) {
-                log(`omnitiler:world:maximize-applied target=${maximized ? "maximized" : "restored"} outcome=applied`);
-                return true;
-            }
-            log(`omnitiler:world:maximize-refused target=${maximized ? "maximized" : "restored"} outcome=refused`);
-            return false;
+            pendingNative = { win, label, wantMaximized: maximized, wantFullscreen: null, scope };
+            log(`omnitiler:world:maximize-pending target=${maximized ? "maximized" : "restored"} window=${token(win)} outcome=issued`);
+            return true;
         } catch (error) {
             void error;
             return false;
         }
     };
 
-    const setFullscreenNative = (ref: object, fullscreen: boolean): boolean => {
+    const setFullscreenNative = (ref: object, fullscreen: boolean, label = "toggle-fullscreen"): boolean => {
         try {
+            supersedePendingNative();
             if (worldApplyFenced("fullscreen")) {
                 return false;
             }
             if (!isListed(ref)) {
                 return false;
             }
+            const win = liveWindowId(readProp, ref);
+            if (win === null) {
+                return false;
+            }
             // Synchronous invalidation BEFORE the first setter.
             env.invalidate();
+            let invoked = false;
             try {
                 if (readProp(ref, "fullScreen") === undefined) {
                     return false;
                 }
-                Reflect.set(ref, "fullScreen", fullscreen);
+                invoked = Reflect.set(ref, "fullScreen", fullscreen);
             } catch (error) {
                 void error;
                 return false;
             }
-            env.scheduleDispatch();
-            // Truthful readback: the setter boolean alone is not proof.
-            if (readFullscreen(readProp, ref) === fullscreen) {
-                log(`omnitiler:world:fullscreen-applied target=${fullscreen ? "fullscreen" : "restored"} outcome=applied`);
-                return true;
+            if (!invoked) {
+                log(`omnitiler:world:fullscreen-refused target=${fullscreen ? "fullscreen" : "restored"} window=${token(win)} reason=native-write-refused`);
+                return false;
             }
-            log(`omnitiler:world:fullscreen-refused target=${fullscreen ? "fullscreen" : "restored"} outcome=refused`);
-            return false;
+            const scope = readScopeOf(ref);
+            if (scope === null) {
+                log(`omnitiler:world:fullscreen-refused target=${fullscreen ? "fullscreen" : "restored"} window=${token(win)} reason=observe-missing`);
+                return false;
+            }
+            env.scheduleDispatch();
+            pendingNative = { win, label, wantMaximized: null, wantFullscreen: fullscreen, scope };
+            log(`omnitiler:world:fullscreen-pending target=${fullscreen ? "fullscreen" : "restored"} window=${token(win)} outcome=issued`);
+            return true;
         } catch (error) {
             void error;
             return false;
@@ -722,8 +985,11 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
                 return false;
             }
             if (!result.clearFullscreen) {
-                return setMaximizedNative(live, result.maximized);
+                return setMaximizedNative(live, result.maximized, "maximize");
             }
+            // A newer authorized result supersedes any pending settlement;
+            // the old press ends silently, the new one arms below.
+            supersedePendingNative();
             if (worldApplyFenced("maximize")) {
                 return false;
             }
@@ -751,17 +1017,26 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
                 log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=native-write-refused`);
                 return false;
             }
-            env.scheduleDispatch();
-            // Truthful final readback (script names read APPLIED flags):
-            // confirmed claims applied, anything else logs unconfirmed
-            // (pending ack or host-rules refusal, indistinguishable here)
-            // with no retry; the next full report observes the truth.
-            if (readMaximized(readProp, live) === true && readFullscreen(readProp, live) === false) {
-                log(`omnitiler:world:maximize-applied target=maximized window=${token(result.win)} clear=fullscreen`);
-                return true;
+            // Arm scope fences the continuation to the current capture;
+            // unreadable scope refuses immediately. NO applied-fullscreen
+            // gate between the back-to-back setters above (requested vs
+            // applied flags), and NO same-stack final readback here: the
+            // first fresh accepted boundary settles the attempt.
+            const scope = readScopeOf(live);
+            if (scope === null) {
+                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=observe-missing`);
+                return false;
             }
-            log(`omnitiler:world:maximize-unconfirmed target=maximized window=${token(result.win)} outcome=unconfirmed`);
-            return false;
+            env.scheduleDispatch();
+            pendingNative = {
+                win: result.win,
+                label: "maximize",
+                wantMaximized: result.maximized,
+                wantFullscreen: false,
+                scope,
+            };
+            log(`omnitiler:world:maximize-pending target=${target} window=${token(result.win)} clear=fullscreen outcome=issued`);
+            return true;
         } catch (error) {
             void error;
             return false;
@@ -1058,7 +1333,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         }
     };
 
-    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, applyAuthorizedMaximize, pollPendingUnfloat, cancelPendingUnfloat, syncAutomaticFloatStacking, releaseAutomaticFloat, releaseAllAutomaticFloats };
+    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, applyAuthorizedMaximize, pollPendingUnfloat, cancelPendingUnfloat, pollPendingNativeState, cancelPendingNativeState, syncAutomaticFloatStacking, releaseAutomaticFloat, releaseAllAutomaticFloats };
 }
 
 function readAutoAboveBelow(readProp: WorldNativeEnv["readProp"], ref: object): { above: boolean; below: boolean } | null {

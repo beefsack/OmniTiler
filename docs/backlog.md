@@ -640,14 +640,14 @@ Prioritise by return toward these goals
   or unsupported transfer/remap inferred from shared core. Native acceptance
   remains separately required.
 - P1 | KDE maximize/fullscreen asynchronous-settlement false refusals | Native
-  callbacks logged refusal/shortcut failure before the requested state settled
-  successfully. Replace same-stack final-outcome inference: confirm once at a
-  fresh accepted observation boundary (recommended), or distinguish issuance
-  from final outcome. Preserve lifetime/scope/focus/generation/supersession
-  fences, one setter attempt, no retry/replay and truthful genuine refusal.
-  Add producer-shaped delayed-settlement, silent-refusal and intervening-command/
-  restart regressions with renewed wrappers, QML array-likes and native properties.
-  No correction delivered; [coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
+  correction delivered: confirm once at the next fresh accepted observation,
+  preserving lifetime/scope/focus/generation/supersession fences and one setter
+  attempt without retry/replay. Producer-shaped delayed maximize/restore,
+  fullscreen enter/exit, silent refusal, intervening-command and restart
+  regressions pass with renewed wrappers, QML array-likes and native properties;
+  KDE tests/typecheck pass. Renewed live diagnostic/B1 acceptance remains pending.
+  [Record](changes/archive/kde-native-state-settlement.md);
+  [coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
 - P1 | KDE D7 controller-restart precondition: exact-site reproduction |
   A stable fixed-client explicit-tile request refused `partial-observation`
   before controller replacement. Fail-closed behavior is expected; product vs

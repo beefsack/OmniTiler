@@ -63,6 +63,10 @@ function makeHarness(initial: LiveSpec[]) {
     const focusWrites: string[] = [];
     const aboveWrites: string[] = [];
     const nativeStateWrites: string[] = [];
+    // Queue/take lane generation: the fake broker binds its replies to
+    // this generation (default gen-1); generation-mismatch tests advance
+    // it so a rebound press files on the new generation.
+    let queueGen = "gen-1";
     // Applied-flag lag hook: a stuck window records requested native
     // setters in call order but its script getters keep returning the
     // pre-write applied values (Wayland client-ack lag).
@@ -270,15 +274,15 @@ function makeHarness(initial: LiveSpec[]) {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: queueGen,
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: queueGen, globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: queueGen }));
                 }
             }
         },
@@ -381,6 +385,9 @@ function makeHarness(initial: LiveSpec[]) {
         },
         stickApplied: (bare: string): void => {
             appliedStuck.add(`{${bare}}`);
+        },
+        setQueueGen: (gen: string): void => {
+            queueGen = gen;
         },
         liveFrame: (bare: string): [number, number, number, number] => {
             const spec = live.get(`{${bare}}`);
@@ -694,11 +701,14 @@ describe("world maximize toggle", () => {
         acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, false));
         // Realistic setter order: exact KWin `fullScreen` clear first,
         // then `setMaximize(true, true)` back-to-back with no applied
-        // readback between them.
+        // readback between them. Issuance pends; the next fresh accepted
+        // boundary confirms.
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
             `{${WIN_A}}@fullScreen=false`,
             `{${WIN_A}}@setMaximize:true,true`,
         ]);
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending") && l.includes("outcome=issued")), "issuance pends");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "same capture never confirms");
         const spec = h.live.get(`{${WIN_A}}`);
         assert.equal(spec?.fullScreen, false, "native fullscreen cleared");
         assert.equal(spec?.maximizeMode, 3, "native maximize applied");
@@ -706,7 +716,17 @@ describe("world maximize toggle", () => {
         assert.deepEqual(h.subjectWrites(`{${WIN_A}}`), [], "no geometry write to the cleared subject");
         assert.deepEqual(h.geometryWrites, [], "slots retained, no reflow writes");
         assert.deepEqual(h.focusWrites.filter((f) => f.includes(WIN_A)), [], "no focus write");
-        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("clear=fullscreen")), "applied clear log");
+        h.fire("windowActivated");
+        h.runTimers();
+        {
+            const call = h.lastCall("DescribeWorld");
+            const body = JSON.parse(call.payload) as Record<string, unknown>;
+            call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
+                windows: tiledWindows(),
+                result: null,
+            }));
+        }
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("clear=fullscreen")), "next boundary confirms the clear");
     });
 
     it("second maximize restores the plain original tile", () => {
@@ -740,6 +760,18 @@ describe("world maximize toggle", () => {
         assert.equal(spec?.maximizeMode, 0, "plain original tile restored");
         assert.deepEqual(h.liveFrame(WIN_A), FULLSCREEN_FRAME, "native frame untouched by the adapter");
         assert.deepEqual(h.liveFrame(WIN_B), TILE_B_HALF);
+        h.fire("windowActivated");
+        h.runTimers();
+        {
+            const call = h.lastCall("DescribeWorld");
+            const body = JSON.parse(call.payload) as Record<string, unknown>;
+            call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "3", {
+                windows: tiledWindows(),
+                result: null,
+            }));
+        }
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=restored")), "next boundary confirms the restore");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "superseded first attempt never fails");
     });
 
     it("floating fullscreen stays floated under maximize and restores the float", () => {
@@ -787,6 +819,20 @@ describe("world maximize toggle", () => {
         const spec = h.live.get(`{${WIN_A}}`);
         assert.equal(spec?.maximizeMode, 0, "maximize restored");
         assert.equal(spec?.fullScreen, false);
+        h.fire("windowActivated");
+        h.runTimers();
+        {
+            const call = h.lastCall("DescribeWorld");
+            const body = JSON.parse(call.payload) as Record<string, unknown>;
+            call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "4", {
+                windows: [
+                    winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                    winRow(WIN_B, TILE_B_FULL, "controlled"),
+                ],
+                result: null,
+            }));
+        }
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=restored")), "next boundary confirms the restore");
     });
 
     it("both flags clears full and retains max", () => {
@@ -897,7 +943,7 @@ describe("world maximize toggle", () => {
         assert.equal(dup.subjectNativeWrites(`{${WIN_A}}`).length, 2, "duplicate never replays");
     });
 
-    it("applied lag still orders clear before maximize and reports unconfirmed", () => {
+    it("applied lag pends ordered writes then confirms at the next accepted boundary", () => {
         const h = makeHarness([
             termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
             termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
@@ -916,10 +962,439 @@ describe("world maximize toggle", () => {
             `{${WIN_A}}@fullScreen=false`,
             `{${WIN_A}}@setMaximize:true,true`,
         ], "no applied readback between the setters, clear stays first");
-        assert.ok(h.logs.some((l) => l.includes("maximize-unconfirmed")), "pending ack logs unconfirmed, never retried");
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending") && l.includes("outcome=issued")), "issuance pends, never same-stack confirms");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "same capture never confirms its own issuance");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "pending issuance never fails the shortcut");
         const spec = h.live.get(`{${WIN_A}}`);
         assert.equal(spec?.fullScreen, true, "applied fullscreen still pending");
         assert.equal(spec?.maximizeMode, 0, "applied maximize still pending");
         assert.deepEqual(h.subjectWrites(`{${WIN_A}}`), [], "no geometry write while pending");
+
+        // Client ack lands before the next report: the first fresh
+        // accepted boundary after issuance settles the attempt.
+        h.setFullscreen(WIN_A, false);
+        h.setMaximized(WIN_A, 3);
+        h.fire("windowActivated");
+        h.runTimers();
+        const call = h.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
+            windows: tiledWindows(),
+            result: null,
+        }));
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("clear=fullscreen")), "next boundary confirms both flags");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "confirmed settlement never fails");
+        assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 2, "confirmation reads, never re-issues");
+    });
+
+    it("silent no-op refusal fails the maximize label once at the next boundary", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        h.stickApplied(WIN_A);
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")));
+        // The host never acts: applied flags stay put through the next
+        // report, so the boundary reports the silent refusal truthfully.
+        h.fire("windowActivated");
+        h.runTimers();
+        const call = h.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
+            windows: tiledWindows(),
+            result: null,
+        }));
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("silent-refusal")), "silent no-op refused once");
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed") && l.includes("maximize")), "caller label failed once");
+        assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 2, "one attempt only, never retried");
+    });
+
+    it("intervening fullscreen input supersedes a pending maximize silently", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, false, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")));
+        // Newer direct input supersedes before the boundary: the old
+        // maximize ends silently, the fullscreen arms its own attempt.
+        entry.requestFullscreen();
+        assert.ok(h.logs.some((l) => l.includes("native-pending-superseded")), "superseded silently");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "supersession never fails the old label");
+        h.fire("windowActivated");
+        h.runTimers();
+        const call = h.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
+            windows: tiledWindows(),
+            result: null,
+        }));
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "superseded maximize never confirms");
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-applied")), "newer fullscreen confirms instead");
+    });
+
+    it("focus race at the boundary fails the pending maximize narrowly", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, false, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")));
+        h.setActive(WIN_B);
+        h.fire("windowActivated");
+        h.runTimers();
+        const call = h.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
+            windows: tiledWindows(),
+            result: null,
+        }));
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("focus-raced")), "focus race refused");
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed") && l.includes("maximize")), "label failed once");
+    });
+
+    it("departed lifetime at the boundary never confirms the pending maximize", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, false, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")));
+        h.live.delete(`{${WIN_A}}`);
+        h.fire("windowActivated");
+        h.runTimers();
+        const call = h.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
+            windows: tiledWindows(),
+            result: null,
+        }));
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "departed window never confirms");
+        // The entry resolves focus against the live list, so a departed
+        // window surfaces as a focus race (still a narrow terminal
+        // failure, never a confirmation).
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("focus-raced")), "departure refused");
+    });
+});
+
+describe("world native pending settlement", () => {
+    const maximizeResult = (maximized: boolean, clearFullscreen: boolean, wasMaximized: boolean): Record<string, unknown> => ({
+        op: "maximize", win: WIN_A, maximized, clearFullscreen, wasMaximized,
+    });
+    const tiledOrdinary = (): Array<Record<string, unknown>> => [
+        winRow(WIN_A, TILE_A, "controlled"),
+        winRow(WIN_B, TILE_B_HALF, "controlled"),
+    ];
+    const acceptMaximizeGen = (
+        h: ReturnType<typeof makeHarness>,
+        gen: string,
+        rev: string,
+        windows: Array<Record<string, unknown>>,
+        result: Record<string, unknown> | null,
+    ): void => {
+        const call = h.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(h.accepted(gen, body["source"] as string, body["nativeInvalid"] as string, rev, {
+            windows, result,
+        }));
+    };
+    const acceptNullGen = (h: ReturnType<typeof makeHarness>, gen: string, rev: string): void => {
+        acceptMaximizeGen(h, gen, rev, tiledOrdinary(), null);
+    };
+    const tiledPair = (): LiveSpec[] => [
+        termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
+        termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+    ];
+    const BOOTSTRAP_PRESENTATION = {
+        foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null },
+        underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [],
+    };
+
+    it("delayed ordinary maximize confirms at the next boundary, then restore confirms", () => {
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        // Freeze applied flags so issuance records the requested writes
+        // while the script getters keep returning the pre-write values
+        // until the client acks (Wayland applied lag).
+        h.stickApplied(WIN_A);
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximizeGen(h, "gen-1", "1", tiledOrdinary(), maximizeResult(true, false, false));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [`{${WIN_A}}@setMaximize:true,true`]);
+        assert.equal(h.live.get(`{${WIN_A}}`)?.maximizeMode, 0, "applied maximize still pending after issuance");
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending") && l.includes("outcome=issued")), "issuance pends");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "same capture never confirms");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no refusal before the boundary");
+
+        // Client ack lands before the next report: the first fresh
+        // accepted boundary after issuance settles the attempt.
+        h.setMaximized(WIN_A, 3);
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "2");
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=maximized")), "next boundary confirms");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "confirmation never fails");
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [`{${WIN_A}}@setMaximize:true,true`], "confirmation reads, never re-issues");
+
+        // The restore preimage reads the freshly acked native state.
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximizeGen(h, "gen-1", "3", tiledOrdinary(), maximizeResult(false, false, true));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@setMaximize:true,true`,
+            `{${WIN_A}}@setMaximize:false,false`,
+        ]);
+        assert.equal(h.live.get(`{${WIN_A}}`)?.maximizeMode, 3, "applied restore still pending after issuance");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no refusal before the restore boundary");
+        h.setMaximized(WIN_A, 0);
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "4");
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=restored")), "restore confirms delayed");
+        assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 2, "one attempt each, never retried");
+    });
+
+    it("direct fullscreen enter confirms delayed, then exit confirms delayed", () => {
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        // Freeze applied flags so issuance records the requested write
+        // while the script getter keeps returning the pre-write value
+        // until the client acks.
+        h.stickApplied(WIN_A);
+        entry.requestFullscreen();
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-pending") && l.includes("outcome=issued")), "enter pends");
+        assert.ok(!h.logs.some((l) => l.includes("fullscreen-applied")), "no same-stack confirm");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no refusal before the boundary");
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [`{${WIN_A}}@fullScreen=true`]);
+        assert.equal(h.live.get(`{${WIN_A}}`)?.fullScreen, false, "applied fullscreen still pending after issuance");
+        // Client ack lands before the next report.
+        h.setFullscreen(WIN_A, true);
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "1");
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-applied") && l.includes("target=fullscreen")), "enter confirms delayed");
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [`{${WIN_A}}@fullScreen=true`], "no setter replay");
+
+        entry.requestFullscreen();
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=true`,
+            `{${WIN_A}}@fullScreen=false`,
+        ]);
+        assert.equal(h.live.get(`{${WIN_A}}`)?.fullScreen, true, "applied exit still pending after issuance");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no refusal before the exit boundary");
+        h.setFullscreen(WIN_A, false);
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "2");
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-applied") && l.includes("target=restored")), "exit confirms delayed");
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=true`,
+            `{${WIN_A}}@fullScreen=false`,
+        ], "one attempt each, never retried");
+    });
+
+    it("silent direct fullscreen refusal fails the caller label once with no replay", () => {
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        h.stickApplied(WIN_A);
+        entry.requestFullscreen();
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-pending")), "issuance pends");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "pending issuance never fails the shortcut");
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "1");
+        assert.ok(h.logs.some((l) => l.includes("fullscreen-refused") && l.includes("silent-refusal")), "silent no-op refused once");
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed") && l.includes("fullscreen")), "caller label failed once");
+        assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 1, "one attempt only, never retried");
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "2");
+        assert.equal(h.logs.filter((l) => l.includes("failed:fullscreen") || (l.includes("shortcut-failed") && l.includes("fullscreen"))).length, 1, "exactly once");
+        assert.ok(!h.logs.some((l) => l.includes("fullscreen-applied")), "later reports never succeed after cancel");
+    });
+
+    it("an intervening queued core command supersedes a pending maximize silently", () => {
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximizeGen(h, "gen-1", "1", tiledOrdinary(), maximizeResult(true, false, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")), "maximize pends");
+        entry.requestFocus("left");
+        assert.ok(h.logs.some((l) => l.includes("native-pending-superseded")), "queued input supersedes silently");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "supersession never fails the old label");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "2");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "superseded maximize never confirms");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "superseded maximize never fails");
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [`{${WIN_A}}@setMaximize:true,true`], "no reissue");
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "3");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "later reports never confirm the dead attempt");
+    });
+
+    it("a rejected reply fails the pending maximize once with no reissue", () => {
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximizeGen(h, "gen-1", "1", tiledOrdinary(), maximizeResult(true, false, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")), "maximize pends");
+        h.fire("windowActivated");
+        h.runTimers();
+        h.lastCall("DescribeWorld").callback(JSON.stringify({
+            v: 2, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            source: "", nativeInvalid: "0", clock: "0",
+        }));
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("reason=busy")), "busy kills the pending attempt");
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed") && l.includes("maximize")), "caller label failed once");
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [`{${WIN_A}}@setMaximize:true,true`], "rejection reissues nothing");
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "2");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "later accepts never confirm the dead attempt");
+        assert.equal(h.logs.filter((l) => l.includes("shortcut-failed") && l.includes("maximize")).length, 1, "exactly once");
+        assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 1, "never replayed");
+    });
+
+    it("a stale-req reply settles nothing and the next fresh boundary confirms", () => {
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximizeGen(h, "gen-1", "1", tiledOrdinary(), maximizeResult(true, false, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")), "maximize pends");
+        h.fire("windowActivated");
+        h.runTimers();
+        const flight = h.lastCall("DescribeWorld");
+        const body = JSON.parse(flight.payload) as Record<string, unknown>;
+        const staleReply = h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "9", {
+            windows: tiledOrdinary(),
+            result: null,
+        });
+        flight.callback(JSON.stringify({ ...(JSON.parse(staleReply) as Record<string, unknown>), req: "req-999", source: "req-999" }));
+        assert.ok(h.logs.some((l) => l.includes("stale reason=stale-req")), "wrong-req reply goes stale");
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "stale reply confirms nothing");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "stale reply fails nothing");
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [`{${WIN_A}}@setMaximize:true,true`], "stale reply writes nothing");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "2");
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=maximized")), "next fresh boundary confirms");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "confirmation never fails");
+        assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 1, "never replayed");
+    });
+
+    it("a generation mismatch kills the pending attempt and a fresh press flows on gen-2", () => {
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximizeGen(h, "gen-1", "1", tiledOrdinary(), maximizeResult(true, false, false));
+        assert.ok(h.logs.some((l) => l.includes("maximize-pending")), "maximize pends");
+        h.fire("windowActivated");
+        h.runTimers();
+        h.lastCall("DescribeWorld").callback(JSON.stringify({
+            v: 2, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            source: "", nativeInvalid: "0", clock: "0",
+        }));
+        assert.ok(h.logs.some((l) => l.includes("generation-mismatch recovery=rediscover")), "mismatch rediscovers");
+        assert.ok(h.logs.some((l) => l.includes("maximize-refused") && l.includes("generation-mismatch")), "pending killed");
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed") && l.includes("maximize")), "caller label failed once");
+        assert.equal(h.calls.filter((c) => c.method === "DiscoverWorld").length, 2, "fresh handshake issued");
+        const redisc = h.calls.filter((c) => c.method === "DiscoverWorld").pop() as { payload: string; callback: (reply: unknown) => void };
+        const rediscBody = JSON.parse(redisc.payload) as Record<string, unknown>;
+        redisc.callback(JSON.stringify({
+            v: 2, adapter: "broker-1", gen: "gen-2", req: rediscBody["req"], obs: "0", rev: "0",
+            ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
+            gestureSettled: null,
+            operationSettled: [], nativeCreations: [],
+            warpCursor: null,
+            presentation: BOOTSTRAP_PRESENTATION,
+            windows: [], transfers: [], effects: [], result: null,
+        }));
+        {
+            const auto = h.lastCall("DescribeWorld");
+            const autoBody = JSON.parse(auto.payload) as Record<string, unknown>;
+            auto.callback(h.accepted("gen-2", autoBody["source"] as string, autoBody["nativeInvalid"] as string, "0"));
+        }
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied")), "dead attempt never confirms through rediscovery");
+        // The rebound generation rebinds the fake broker lanes too.
+        h.setQueueGen("gen-2");
+        // The first attempt left the fake maximized; a fresh restore press
+        // flows on the rebound generation and confirms delayed.
+        entry.requestMaximize();
+        h.runTimers();
+        const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        acceptMaximizeGen(h, "gen-2", "1", tiledOrdinary(), maximizeResult(false, false, true));
+        assert.ok(!h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=restored")), "same capture never confirms");
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-2", "2");
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=restored")), "fresh press confirms on gen-2");
+        assert.equal(h.logs.filter((l) => l.includes("shortcut-failed") && l.includes("maximize")).length, 1, "old failure exactly once");
+    });
+
+    it("stop isolates the entry: a fresh harness flows unaffected", () => {
+        const staleH = makeHarness(tiledPair());
+        staleH.discover();
+        staleH.nonNullHandle.requestMaximize();
+        staleH.runTimers();
+        acceptMaximizeGen(staleH, "gen-1", "1", tiledOrdinary(), maximizeResult(true, false, false));
+        assert.ok(staleH.logs.some((l) => l.includes("maximize-pending")), "first entry pends");
+        const callsBefore = staleH.calls.length;
+        staleH.nonNullHandle.stop();
+        staleH.fire("windowActivated");
+        staleH.runTimers();
+        assert.equal(staleH.calls.length, callsBefore, "stopped entry files nothing");
+        assert.ok(!staleH.logs.some((l) => l.includes("maximize-applied")), "stopped entry confirms nothing");
+
+        const h = makeHarness(tiledPair());
+        h.discover();
+        const entry = h.nonNullHandle;
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximizeGen(h, "gen-1", "1", tiledOrdinary(), maximizeResult(true, false, false));
+        h.fire("windowActivated");
+        h.runTimers();
+        acceptNullGen(h, "gen-1", "2");
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("target=maximized")), "fresh entry confirms");
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "fresh entry never fails");
     });
 });
