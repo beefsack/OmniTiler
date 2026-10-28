@@ -1459,6 +1459,17 @@ Legend:
   (no refusal branch) and sway/desktop/xdg_shell.c:395-424 +
   sway/desktop/xwayland.c:608-620 (client fullscreen converges on the same
   mode path) @1652c54b73f67df17b7b4ab0b0f7048204aa8104
+- `S-sway-fullscreen-float` sway:sway/commands/floating.c:14-59 (float
+  toggle, no fullscreen guard) and sway/tree/container.c:955-1030 (detach
+  plus floating add with default size, focus retained) and :1200-1226
+  (fullscreen entry focuses B) and :1260-1310 (disable clears fullscreen,
+  restoring the saved pre-full frame when floating) and :1423-1440
+  (same-workspace reparent retains the fullscreen pointer) and
+  sway/tree/arrange.c:310-322 (fullscreen overlay, else tiling/floating)
+  and sway/commands/fullscreen.c:12-58 (native enable/disable)
+  @1652c54b73f67df17b7b4ab0b0f7048204aa8104
+  (float applies immediately with fullscreen retained; exit leaves B
+  floating with no reserved tile slot)
 - `S-sway-max` sway:sway/commands.c:118-129 (command inventory: `exit`/
   `reload`, no maximize verb) and sway/desktop/xdg_shell.c:385-393
   (maximize request only schedules a configure, no mode change) and
@@ -1997,6 +2008,32 @@ Legend:
   (`misc:on_focus_under_fullscreen` defaults 2 `exit_fullscreen`: a
   newcomer map clears the covering fullscreen/maximized window)
   @19fb395d45314960e6f79f17994a84094f1cd4f6
+- `S-hyp-fullscreen-toggles`
+  Hyprland:src/config/shared/actions/ConfigActions.cpp:236-267
+  (`floatWindow` changes mode plus raise) and :338-348 (mode-specific
+  fullscreen toggle) and src/layout/LayoutManager.cpp:32-53
+  (`changeFloatingMode` saves the FS mode, clears, float-toggles, then
+  re-applies) and src/layout/space/Space.cpp:117-125 (float toggle invokes
+  the algorithm `setFloating` plus recalc) and
+  src/layout/algorithm/Algorithm.cpp:84-94 (removes the target, sets
+  floating, moves it) and
+  src/managers/fullscreen/handler/FullscreenHandler.cpp:93-148 (default
+  request and mode
+  overwrite) and :191-217 (monitor versus workArea versus NONE geometry) and
+  :59 (mode-specific equality) and
+  src/managers/fullscreen/FullscreenController.cpp:292-421 (mode sets) and
+  :472-481 (exit plus recalc plus recenter) plus
+  src/config/lua/bindings/LuaBindingsDispatchers.cpp:469-505,674-730
+  (`hl.window.float` and `hl.window.fullscreen` with mode/action arguments),
+  src/layout/algorithm/ModeAlgorithm.cpp:21-25 and
+  src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.hpp:28-77
+  (Dwindle inherits the default fullscreen handler),
+  src/managers/fullscreen/handler/FullscreenHandler.hpp:87 (DEFAULT type)
+  and src/managers/fullscreen/FullscreenController.cpp:538-557 (routing)
+  @19fb395d45314960e6f79f17994a84094f1cd4f6
+  (float applies now with full retained via transient clear/reapply; a
+  maximize toggle replaces fullscreen with MAXIMIZED, never a generic
+  isFullscreen clear)
 - `S-bsp-min` bspwm:src/tree.c:101-134,150-170 and src/window.c:699-701
   @e11eff4cb3333216ad03c815609a4ed79e08929c
   (opt-in leaf `apply_size_hints` minimum clamp on every reflow; internal fence clamp is 32-based constraint minima when the sum fits, not hint-driven)
@@ -2467,7 +2504,17 @@ Legend:
   workspace level) and src/commands.c:1431-1481 (criteria `focus` via
   `con_activate_unblock`) and src/con.c:302-330 (unblock disables covering
   fullscreen, then activates) @903bcd518df32b0e055b17f5da3f988a0187fd3d
-- `S-i3-max` i3:parser-specs/commands.spec:226-262 (fullscreen/sticky/
+- `S-i3-fullscreen-float` i3:src/commands.c:1142-1168 (float toggle
+  dispatch, no fullscreen guard) and src/floating.c:232-418,456-472
+  (dock/already-floating/workspace guards, detach plus floating wrapper,
+  focused B reactivated; no fullscreen clear) and src/con.c:1268-1287
+  (fullscreen focus/enable) and :1295-1309 (disable clears the mode only) and
+  src/render.c:126-145 (fullscreen overlay) and :253-268 (floating-fullscreen
+  rendering) @903bcd518df32b0e055b17f5da3f988a0187fd3d
+  (float applies immediately with fullscreen retained; exit leaves B
+  floating with no reserved tile slot)
+- `S-i3-max` i3:parser-specs/commands.spec:12-46,226-262 (command inventory;
+  fullscreen/sticky/
   floating verbs, no maximize verb) and src/con.c:428-485 (maximized derived
   from layout) and src/x.c:831-866 (hints written to the client only)
   @903bcd518df32b0e055b17f5da3f988a0187fd3d
@@ -2919,6 +2966,20 @@ Legend:
   set to result) and src/wayland/handlers/xdg_shell/mod.rs:278-304 (client
   fullscreen routes to the same shell request plus focus, pending fallback)
   and src/xwayland.rs:1159-1181 (X11 same) @3d55cba0
+- `S-cos-fullscreen-toggles` cosmic-comp:src/input/actions.rs:918-953,1021-1028
+  (project float/maximize toggles dispatch on focus kind: maximize is
+  Element-only, skipping a Fullscreen target) and
+  src/shell/workspace.rs:1508-1519 (focused float toggle returns while
+  fullscreen is focused) and src/shell/mod.rs:4353-4367 (independent
+  maximize-toggle fullscreen guard) and src/shell/mod.rs:4976-5020
+  (fullscreen entry unmaps B, capturing Tiling restore) and
+  src/shell/workspace.rs:1255-1282 (Fullscreen separate surface) and
+  src/shell/mod.rs:5023-5048 (exit remaps and returns Element(B)) and
+  :2808-2839 (tiling remap with saved state) and
+  src/shell/layout/tiling/mod.rs:438-540 (saved sibling/index/sizes
+  reinsertion) @3d55cba06c9cf6f27609cdefb520f7857dba20af
+  (no deferred toggle state; B stays full through either toggle; a
+  monitor-only exit restores the original tiled H[A,B*] with focus B)
 - `S-cos-admit` cosmic-comp:src/shell/mod.rs:2886-2913 (admission consumes
   pending protocol flags; fullscreen iff flag present) and :2960-2999
   (flagged fullscreen maps fullscreen; dialog/exception/tiling-disabled maps
@@ -5879,15 +5940,17 @@ Legend:
 
 ## Coverage accounting
 
-- 158 scenarios: 58 historical plus 67 expansion additions (125), 14
+- 160 scenarios: 58 historical plus 67 expansion additions (125), 14
   discriminators for USER selections 2026-10-07 (items 1-5, including 1.5;
   R-WS-15..20, R-MOV-09..13, R-LAY-05/06, R-OUT-07), 8 Q2 discriminators
   R-SPC-06..13, 2 Q3 restart research discriminators, 6 Q4 migration
   discriminators R-WS-21..26, and R-WS-27 two-candidate migration selection
   (User decision 2026-10-09, reference outcomes TBD), plus 2
   admission-geometry evidence rows (R-MIN-04, R-INS-09; D1-D10 selected
-  2026-10-17, core/KDE delivered offline, native outcomes TBD):
-  58+67+14+8+2+6+1+2 = 158.
+  2026-10-17, core/KDE delivered offline, native outcomes TBD), plus 2
+  fullscreen-toggle discriminators R-MAX-10/11 (source-only Tier 1 legs,
+  Ours OPEN pending user decision):
+  58+67+14+8+2+6+1+2+2 = 160.
   Their 196 Then bullets distinguish selected targets (with delivery evidence where available)
   from reference outcomes that were TBD at addition. Established source-fill
   legs now vote under the ordinary evidence rule; current counts are in the
@@ -5912,11 +5975,11 @@ Legend:
 - 522 historical wide-table cells at baseline `e160894` (eight references
   plus combined Ours per row) are migrated to GWT without retrospectively
   assigning the new status classes. Present form: 58 historical scenarios
-  x 14 profiles = 812 Then bullets; 158 scenarios x 14 = 2212 Then bullets
+  x 14 profiles = 812 Then bullets; 160 scenarios x 14 = 2240 Then bullets
   (+28 explicit-swap-leg bullets). Expansion record's total coverage count
   remains 1720 as baseline provenance; baseline assessed cells were not a
   uniform 125x14 grid. Baseline semantic-status totals above exclude the 22
-  decision discriminators and the later Q3/Q4/R-WS-27 additions.
+  decision discriminators and the later Q3/Q4/R-WS-27/R-MAX-10/11 additions.
 - [Archived expansion record](../changes/archive/reference-matrix-expansion.md)
   holds final accounting, source/inventory/native-test queue and residual work.
 
@@ -5935,9 +5998,11 @@ only: 125 expansion-baseline scenarios, plus 14 decision discriminators
 discriminators and 6 Q4 workspace migration discriminators 2026-10-08:
 156 scenarios total (R-WS-27 two-candidate migration selection added User
 decision 2026-10-09 with reference outcomes TBD), plus R-MIN-04 and
-R-INS-09 (158 total; D1-D10 selected 2026-10-17, native outcomes TBD).
+R-INS-09 (158 total; D1-D10 selected 2026-10-17, native outcomes TBD),
+plus R-MAX-10/11 fullscreen-toggle discriminators (160 total; source-only
+Tier 1 legs, Ours OPEN pending user decision).
 This index retains purpose, row-addition rule, notation,
-profiles, evidence tags/legend, variant hooks, and deferred. All 158
+profiles, evidence tags/legend, variant hooks, and deferred. All 160
 scenarios use the GWT form below; no wide-table rows remain.
 Areas follow the approved priority order; column mechanics follows, and
 minimum-size stays a supplemental file (not nested in resize).
@@ -5951,7 +6016,7 @@ minimum-size stays a supplemental file (not nested in resize).
 | Layout commands | [layout-commands.md](reference-outcomes/layout-commands.md) | R-LAY-01..06 (6) | R-LAY-01/05/06 KDE implemented offline; Windows item 4 delivered 2026-10-11 (base `755aab8` + delivery commit), native Settings/owner adoption observed, physical toggle/OS suppression pending; reference source legs filled, unsupported legs TBD |
 | Workspaces | [workspaces.md](reference-outcomes/workspaces.md) | R-WS-01..27 (27) | KDE items 1/2 delivered, item 1 single-output user-confirmed, item 2 offline only; Q4 R-WS-12/21..26 implemented offline under user-selected NORMATIVE D1-D9; R-WS-27 selection delivered offline in shared/KDE and Windows. Windows local R-WS-12/21..27 including D8/G-37 delivered offline 2026-10-14 ([record](../changes/archive/windows-workspace-output-migration.md)); non-local item 12 including mode-aware hotplug offline-complete 2026-10-15, single-output native CLI regression passed in all modes ([record](../changes/archive/windows-workspace-scope-hotplug.md)); physical two-output journeys and unsupported outcomes TBD |
 | Minimize | [minimize.md](reference-outcomes/minimize.md) | R-MNZ-01..03 (3) | none (landed) |
-| Maximise / fullscreen | [maximize-fullscreen.md](reference-outcomes/maximize-fullscreen.md) | R-MAX-01..09 (9) | none (landed with scrolling backfill) |
+| Maximise / fullscreen | [maximize-fullscreen.md](reference-outcomes/maximize-fullscreen.md) | R-MAX-01..11 (11) | R-MAX-10/11 fullscreen-toggle discriminators added 2026-10-28 (source-only Tier 1 legs, Ours OPEN pending user decision); remainder landed with scrolling backfill |
 | Groups / stacks | [groups-stacks.md](reference-outcomes/groups-stacks.md) | R-GRP-01..03 (3) | none (R-GRP-02..03 landed with scrolling backfill) |
 | Floating | [floating.md](reference-outcomes/floating.md) | R-FLT-01..14 (14) | none (R-FLT-12..14 landed with scrolling backfill) |
 | Close / reflow | [close.md](reference-outcomes/close.md) | R-CLOSE-01..05 (5) | none (R-CLOSE-03..05 landed with scrolling backfill) |
@@ -5962,6 +6027,24 @@ minimum-size stays a supplemental file (not nested in resize).
 | Restart / persistence | [restart-persistence.md](reference-outcomes/restart-persistence.md) | R-START-01..03 + R-CTL-01..07 + R-RST-01..04 (14) | Q3 KDE intentional membership implemented offline under user-selected NORMATIVE D1-D4 (User 2026-10-08; fixed-window tile-override persistence pending); R-RST-03/04 cover frame drift and automatic-vs-intent origin; startup-vs-restart-vs-reload discriminator table added (no new scenario); native, Windows and unsupported reference legs TBD |
 | Column mechanics | [column-mechanics.md](reference-outcomes/column-mechanics.md) | R-COL-01..10 (10) | none (landed) |
 | Minimum-size (supplemental) | [minimum-size.md](reference-outcomes/minimum-size.md) | R-MIN-01..04 (4) | R-MIN-04 geometric best effort selected D1-D10, core/KDE delivered offline, B6 unchanged; native outcomes TBD; R-MIN-01..03 piece B4; R-MNZ icon-minimize is separate |
+
+### Fullscreen-toggle index discriminators (R-MAX-10/11)
+
+Source-only Tier 1 legs; Tier 2/3 TBD (combined sequences not audited at
+their pins). Ours cells record current refusal policy; both rows are OPEN
+pending user decision with no normative selection.
+
+| Leg | Minimal action sequence | Tier 1 split | Tier-rule read / status |
+| --- | --- | --- | --- |
+| [R-MAX-10](reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen) float toggle on fullscreen | Tile `H[A,B*]`; project-fullscreen B; toggle float; observe; exit monitor fullscreen only if still active; observe slot/state/focus | Hyprland/i3/sway apply floating while preserving fullscreen; COSMIC refuses | Rule would suggest apply-while-preserving with the float revealed on exit; OPEN pending user decision, D5 tension unresolved |
+| [R-MAX-11](reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen) maximize toggle on fullscreen | Reset `H[A,B*]`; project-fullscreen B; toggle maximize; observe; exit monitor fullscreen only if still active; observe slot/state/focus | COSMIC ignores; Hyprland replaces fullscreen with MAXIMIZED; i3/sway have no counterpart (non-voting, never no-op votes) | No consensus; tier default remains COSMIC absent a new user decision; OPEN |
+
+Game safety tension: Hyprland's transient fullscreen clear/reapply and native
+floating/configure changes during fullscreen are not proven safe for games;
+D5 remains unchanged. Settled final geometry/focus visuals are TBD
+(source-only) in every leg. Keys `S(S-cos-fullscreen-toggles)`,
+`S(S-hyp-fullscreen-toggles)`, `S(S-i3-fullscreen-float)`,
+`S(S-sway-fullscreen-float)`.
 
 ## macOS drag/drop discriminators
 

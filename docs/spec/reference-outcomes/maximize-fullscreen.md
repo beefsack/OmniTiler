@@ -604,3 +604,154 @@ rectangles where geometry is load-bearing.
   follow/stay view semantics are honoured. Record flag, membership, view/focus
   and visible/input state. Native outcome TBD, must-pass; stop and return to
   the user if KWin drops or corrupts fullscreen during native observation.
+
+<a id="r-max-10-float-toggle-on-fullscreen"></a>
+### R-MAX-10: float toggle on fullscreen
+
+- Given (tree profiles): `H[A,B*]`, ordinary tiled windows on one output,
+  B focused, no rules/sticky/fixed bounds/client-initiated state requests;
+  no intervening pointer motion or unrelated focus/input; separate fresh start.
+
+- Given (column profiles): `COL[C1[A],C2[B*]]` at shipped defaults with the
+  same fixture conditions. This is a lifecycle projection, not an exact
+  H-tree allocation.
+
+- When: project-fullscreen B; toggle float once; record base/state/focus
+  immediately; explicitly exit monitor fullscreen only if it remains active
+  (conditional exit, never a blind toggle); observe final base/state/slot/focus.
+
+- Observe: float applied now/deferred versus refusal or fullscreen exit;
+  final base (tiled/floating), state, slot and focus.
+
+- Native verbs (Tier 1): COSMIC `Fullscreen` then `ToggleWindowFloating`;
+  Hyprland `hl.window.fullscreen {mode="fullscreen"}` then `hl.window.float`;
+  i3/sway `fullscreen enable` then `floating toggle`. Cleanup is COSMIC's
+  fullscreen exit, Hyprland `hl.window.fullscreen {mode="fullscreen", action="unset"}`,
+  or i3/sway `fullscreen disable`, only while monitor fullscreen remains.
+
+- Then COSMIC: Float toggle is refused while fullscreen is focused (focused
+  dispatch returns); B stays fullscreen with no deferred toggle state; the
+  conditional monitor-fullscreen exit remaps from the saved Tiling restore,
+  returning `H[A,B*]` with focus B. `S(S-cos-fullscreen-toggles)`; settled
+  geometry/native timing TBD (source-only).
+- Then Hyprland/Dwindle: Float toggle applies immediately (mode change plus
+  raise) with fullscreen transiently cleared and re-applied around the
+  toggle, so B stays fullscreen; the conditional exit to `NONE` leaves B
+  floating (old tile slot removed, A refills on recalc) with focus B and no
+  focus write on the path. `S(S-hyp-fullscreen-toggles)`; settled
+  geometry/native timing TBD (source-only).
+- Then bspwm: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then i3: Float toggle has no fullscreen guard: B detaches to a floating
+  wrapper immediately with the fullscreen mode retained and focused B
+  reactivated; the conditional disable clears the mode only, leaving B
+  floating with no reserved tile slot, A the sole tile, focus B.
+  `S(S-i3-fullscreen-float)`; settled geometry/native timing TBD (source-only).
+- Then xmonad/Tall+Navigation2D: TBD: combined sequence not audited at pin
+  (source-only; no runtime proof claimed).
+- Then sway: Float toggle has no fullscreen guard: B detaches to floating
+  immediately with the mode and focus retained; same-workspace reparenting
+  retains the fullscreen pointer. Conditional
+  disable clears fullscreen, restoring the saved pre-full frame when floating;
+  final B floating, A sole tile, focus B. `S(S-sway-fullscreen-float)`;
+  settled geometry/native timing TBD (source-only).
+- Then qtile/Columns: TBD: combined sequence not audited at pin (source-only;
+  no runtime proof claimed).
+- Then awesome/tile: TBD: combined sequence not audited at pin (source-only;
+  no runtime proof claimed).
+- Then niri: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then PaperWM: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then karousel/Lazy: TBD: combined sequence not audited at pin (source-only;
+  no runtime proof claimed).
+- Then paneru: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then Ours KDE: Current recorded policy refuses float on a fullscreen target
+  (`float-refused-fullscreen`); no writes to B during fullscreen (D5);
+  slot restore follows the retained-slot
+  R-MAX-02 path. `UT(2026-10-28)`: Meta+G appears dropped and Meta+F11
+  exit tiles; exact slot/share/focus not measured, TBD. `D(D-dec-ww)` +
+  `D(D-dec-max)` (window-state decisions: refusal tokens at :4528-4529,
+  D5 at :2321-2325); requirement OPEN pending user decision, current
+  decisions stand.
+- Then Ours Windows: Recorded fullscreen float refusal, no deferred float;
+  retained tile/share remains beneath fullscreen, revealed on project exit
+  (R-MAX-02); refusal preserves focus by policy. `D(D-dec-ww)` +
+  `D(D-dec-max)`; this exact sequence's native slot/state/focus outcome TBD.
+  OPEN pending user decision; current decisions stand.
+- Variant hook: V-FS-SLOT; no new REQ row, no normative selection.
+
+<a id="r-max-11-maximize-toggle-on-fullscreen"></a>
+### R-MAX-11: maximize toggle on fullscreen
+
+- Given (tree profiles): `H[A,B*]`, ordinary tiled windows on one output,
+  B focused, no rules/sticky/fixed bounds/client-initiated state requests;
+  no intervening pointer motion or unrelated focus/input; separate fresh start.
+
+- Given (column profiles): `COL[C1[A],C2[B*]]` at shipped defaults with the
+  same fixture conditions. This is a lifecycle projection, not an exact
+  H-tree allocation.
+
+- When: project-fullscreen B; toggle maximize once; record base/state/focus
+  immediately; explicitly exit monitor fullscreen only if it remains active
+  (conditional exit, never a blind toggle); observe final base/state/slot/focus.
+
+- Observe: maximize applied now/deferred versus refusal; retained versus
+  replaced fullscreen; final base (tiled/floating), state, slot and focus.
+
+- Native verbs (Tier 1): COSMIC `Fullscreen` then `Maximize`; Hyprland
+  `hl.window.fullscreen {mode="fullscreen"}` then
+  `hl.window.fullscreen {mode="maximized"}` (toggle, not a client request).
+  Cleanup is monitor-fullscreen-only as in R-MAX-10: Hyprland's `unset`
+  with `mode="fullscreen"` must not clear a resulting `MAXIMIZED` state.
+  i3/sway have no native maximize action to substitute.
+
+- Then COSMIC: Maximize toggle ignores a Fullscreen target (Element-only
+  project dispatch; the independent maximize-toggle fullscreen guard is a
+  no-op); B stays fullscreen with no deferred toggle state; the conditional
+  monitor-fullscreen exit remaps from the saved Tiling restore, returning
+  `H[A,B*]` with focus B. `S(S-cos-fullscreen-toggles)`; settled
+  geometry/native timing TBD (source-only).
+- Then Hyprland/Dwindle: Maximize toggle replaces the monitor fullscreen with
+  `MAXIMIZED` work-area state on the same retained tiled node (mode
+  overwrite, never a generic isFullscreen clear); a monitor-fullscreen-only
+  conditional exit does not clear `MAXIMIZED`; final B tiled-maximized with
+  focus B, original node retained underneath. `S(S-hyp-fullscreen-toggles)`;
+  settled geometry/native timing TBD (source-only).
+- Then bspwm: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then i3: no-counterpart (no maximize verb; maximize is derived client hints
+  only); the maximize step cannot run, not an agreeing refusal. `S(S-i3-max)`.
+- Then xmonad/Tall+Navigation2D: TBD: combined sequence not audited at pin
+  (source-only; no runtime proof claimed).
+- Then sway: no-counterpart (no maximize verb; a maximize request only
+  schedules a configure); the maximize step cannot run, not an agreeing
+  refusal. `S(S-sway-max)`.
+- Then qtile/Columns: TBD: combined sequence not audited at pin (source-only;
+  no runtime proof claimed).
+- Then awesome/tile: TBD: combined sequence not audited at pin (source-only;
+  no runtime proof claimed).
+- Then niri: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then PaperWM: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then karousel/Lazy: TBD: combined sequence not audited at pin (source-only;
+  no runtime proof claimed).
+- Then paneru: TBD: combined sequence not audited at pin (source-only; no
+  runtime proof claimed).
+- Then Ours KDE: Current recorded policy refuses Meta+M while fullscreen
+  first; no writes to B during fullscreen (D5); slot restore follows the
+  retained-slot R-MAX-02 path. `UT(2026-10-28)`: Meta+M appears dropped and
+  Meta+F11 exit tiles; exact slot/share/focus not measured, TBD.
+  `D(D-dec-ww)` + `D(D-dec-max)`
+  (window-state decisions: Meta+M refuses while fullscreen at :4654-4655,
+  D5 no writes during fullscreen at :2321-2325); requirement OPEN pending
+  user decision, current decisions stand.
+- Then Ours Windows: Recorded fullscreen-subject maximize refusal
+  (decisions.md:4799-4800), no deferred maximize; retained tile/share remains
+  beneath fullscreen and project exit restores it (R-MAX-02); refusal
+  preserves focus by policy. `D(D-dec-ww)` + `D(D-dec-max)`; this exact
+  sequence's native slot/state/focus outcome TBD. OPEN pending user decision;
+  current decisions stand.
+- Variant hook: V-FS-SLOT; no new REQ row, no normative selection.

@@ -100,7 +100,7 @@ defaults; selected D26 (b) lists cross-login intentional-float memory loss as a
 outcomes remain pending.
 Windows wiring and item-2/3/4/5/Q4 native journeys
 pending. The macOS
-adapter gap counts once platform-wide. Coverage: 158 scenarios (R-WS-27 added User decision 2026-10-09; R-MIN-04 and R-INS-09 added as OPEN evidence rows, nothing selected), 24 Table A predicates.
+adapter gap counts once platform-wide. Coverage: 160 scenarios (R-WS-27 added User decision 2026-10-09; R-MIN-04 and R-INS-09 added as OPEN evidence rows, nothing selected; R-MAX-10/11 added 2026-10-28 as OPEN evidence rows, nothing selected), 24 Table A predicates.
 
 Windows verification-only evidence, 2026-10-13 (D27 updated 2026-10-14)
 ([record and exact physical journeys](../changes/archive/windows-item22-verification.md)):
@@ -286,6 +286,20 @@ zero-bit metadata stays fail-closed without a restoration witness; Win+F11 owned
 toggle exit remains its release path. This policy is decided. Offline delivery
 is separate from the user physical owned-exit results below
 ([record](../changes/archive/windows-fullscreen-exit-acceptance.md)).
+
+Fullscreen-toggle evidence ([R-MAX-10](reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen)
+float toggle, [R-MAX-11](reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen)
+maximize toggle) is OPEN pending user decision: Tier 1 source-only legs show
+Hyprland/i3/sway applying float beneath retained fullscreen against COSMIC
+refusal (R-MAX-10), and COSMIC ignoring maximize against Hyprland replacing
+fullscreen with MAXIMIZED with i3/sway non-voting (R-MAX-11). Tier-rule reads
+are info only (float would suggest apply-while-preserving; maximize has no
+consensus so the default remains COSMIC). Game-safety D5 tension is
+unresolved: transient fullscreen clear/reapply and native changes during
+fullscreen are not proven safe for games. Current Ours refusal policy
+(float-refused-fullscreen, Meta+M refuses while fullscreen, no writes to the
+fullscreen subject) stands until the user selects. No new REQ rows and no normative
+selection here; no existing row status changed.
 
 | Req | Scenario | Requirement / current | KDE | Win | macOS | Status | Source |
 |---|---|---|---|---|---|---|---|
