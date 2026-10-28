@@ -177,6 +177,57 @@ startup:
   bytes and modes, pointer, and complete protected-window state. Compare the
   actual inventories afterward and retain the capture commands and nonempty
   correlated reply bodies, not placeholder extracts.
+- The test-only checker at `kwin/tests/baseline-check/` is accepted for complete
+  baseline capture/compare (2026-10-28): 28/28 hermetic tests and a fresh
+  capture/capture/compare dry run pass, with zero inventory mismatches, exact
+  helper absence and unchanged loaded/active effects and scripting introspection.
+  The rejected `live-audit/` draft has been removed. The shortcut destination is
+  service `org.kde.kglobalaccel`, distinct from the root interface
+  `org.kde.KGlobalAccel` at `/kglobalaccel`; component replies use
+  `org.kde.kglobalaccel.Component` at the enumerated object paths. It uses one
+  nonce-named read-only script, runs only the collision-checked
+  returned object, unloads by name once and verifies name/object absence against
+  the original KWin owner. Any unexpected reply stops the capture without retry.
+  A later leg must not start without a complete passing capture from an accepted
+  checker. Fixture attribution is a separate gate.
+- Checker interface (from the repository root, with fresh output directories
+  outside the checkout):
+  `devenv shell --impure -- node kwin/tests/baseline-check/baseline.mjs capture BASE_DIR`,
+  then `capture FRESH_DIR`, then
+  `devenv shell --impure -- node kwin/tests/baseline-check/baseline.mjs compare BASE_DIR FRESH_DIR`.
+  Capture requires the full KGlobalAccel roster and all component bodies,
+  loaded/active effects, configuration/store bytes and modes, and complete
+  window/workspace inventories. It writes `manifest.json` only after validation
+  and verified teardown. Failure retains `failure.json` and `commands.jsonl`,
+  never a complete manifest. Compare validates both captures, reports per-item
+  differences, exits nonzero on mismatch and never repairs state. There is no
+  standalone `validate` CLI command: `compare` validates both captures, and
+  `validateDir` is an exported function for offline artifact inspection.
+- Fixture attribution at `kwin/tests/fixture-attribution/` now joins each exact
+  fixture sentinel and PID one-to-one to a native KWin UUID/frame. Missing,
+  duplicate or ambiguous joins fail closed; UUID uniqueness is checked across
+  the full native roster. It reuses baseline validation and introspection parsing
+  and follows the checker's nonce-named, collision-checked, single-unload helper
+  lifecycle. Independent read-only review accepts the offline tool; direct
+  hermetic checks pass **11/11**:
+  `node --test kwin/tests/fixture-attribution/tests/run-tests.mjs`.
+  A live dry run passed both exact joins, helper teardown and full baseline
+  restoration comparison. Both fixtures landed on one output, so the requested
+  one-per-output dry-run coverage remains incomplete; no reposition or retry
+  followed. This is a staging gap, not an observed attribution/API failure.
+  Existing runtime packaging and product-loading exclusions remain unchanged.
+- Attribution interface:
+  `devenv shell --impure -- node kwin/tests/fixture-attribution/attribution.mjs --announcement ANN_FILE --baseline BASE_DIR --out ATTR_DIR --nonce NONCE`.
+  `ANN_FILE` is the fixture's exact announcement; `BASE_DIR` must validate as
+  complete; `ATTR_DIR` must be fresh and outside the checkout. Use a fresh
+  32-hex helper nonce, distinct from the fixture's announced nonce. Success
+  retains helper source, raw commands and `attribution.json`, writing
+  `attribution.complete` last; failure retains receipts without that marker.
+  By user decision (2026-10-28), attribution and the upcoming Stage 8
+  focus/send/both-output/close leg do not use a compositor visibility probe.
+  No effect is installed, linked or loaded, and no compositor environment is
+  read. The existing `kwin/tests/visibility-probe/` remains unchanged for later
+  hide/reveal work; accepted hide/reveal compositor evidence is not withdrawn.
 - Enable correlated complete request/reply capture before each leg and prove
   capture with a positive marker. At the first unexpected refusal or baseline
   mismatch, stop the leg, retain its gating evidence and restore before retrying.
