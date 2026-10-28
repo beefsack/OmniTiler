@@ -295,6 +295,21 @@ predicates stay in core too. Native role/type, ownership/modal relationships,
 controllability and client size hints must be grounded before normalization;
 app identity for rules stays truthful, not a policy verdict fabricated by JS.
 
+Windows already follows this boundary: `tiling/classification.rs` projects
+native facts and translates refusal vocabulary; `tiling/float.rs` calls shared
+focus classification; native admission/restart code calls the shared overlay,
+born-fullscreen, slotless-maximized and maximize-clear predicates. Testing a
+shared classifier's result with `.is_ok()` is not a local policy copy. Its
+ordered refusals also matter: geometry reports fullscreen before maximized,
+then no-activate, while focus ignores both overlays. Preserve that distinction
+when selecting a boolean helper. Admission maximize-clear passes lifetime-bound
+born/retile overlay latches, not the current born setting. Identity, scope,
+native query budgets, UIPI and last-moment actuation/recovery proofs remain
+adapter responsibilities. The exhaustive Windows normalization test in
+`crates/tiler-windows/tests/tiling.rs` crosses all 512 safety shapes with both
+overlay flags against an independent ordered oracle and shared boolean gates;
+the shared conformance vectors remain unchanged.
+
 Tentative shared classification A (2026-10-25) adds in-process
 `classify_membership(&SafetyFacts, transient)` and `MembershipVerdict` (tile,
 float member, leave unmanaged). The single neutral transient fact describes a

@@ -2,9 +2,10 @@
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIntent, classify_gesture, prefer_modal_move};
 use tiler_core::window_policy::{
-    MembershipVerdict, SafetyFacts, born_keep_latch, classify_membership, float_toggle_refusal,
-    overlay_refusal, should_clear_maximize_at_admission,
-    should_clear_maximize_at_admission_with_mode, should_hold_born_fullscreen,
+    MembershipVerdict, SafetyFacts, admission_clear_eligible, born_keep_latch, classify_membership,
+    float_toggle_refusal, focus_actuation_eligible, geometry_eligible, overlay_refusal,
+    should_clear_maximize_at_admission, should_clear_maximize_at_admission_with_mode,
+    should_hold_born_fullscreen,
 };
 use tiler_windows::tiling::{
     CaptureOptions, DirectionalOp, DirectionalRequest, FrameInsets, FullscreenToggle,
@@ -776,6 +777,130 @@ fn shared_window_policy_fixture_projection_matches_core_order() {
         }
     }
     assert!(covered > 0, "fixture carries classification cases");
+}
+
+#[test]
+fn windows_classifier_normalization_exhaustive_matches_oracle_and_core() {
+    // Independent pre-extraction ordered oracle: hidden, minimized, cloaked,
+    // elevated, shell, tool, owned, dialog, fullscreen, maximized,
+    // no_activate. Focus clears both overlays.
+    let mapped = safety_of(&WindowFacts {
+        visible: false,
+        minimized: true,
+        maximized: false,
+        cloaked: true,
+        elevated: true,
+        shell: true,
+        tool_window: true,
+        owned: true,
+        captionless_fullscreen: false,
+        no_activate: true,
+        dialog: true,
+    });
+    assert_eq!(
+        mapped,
+        SafetyFacts {
+            visible: false,
+            minimized: true,
+            cloaked: true,
+            privileged: true,
+            shell: true,
+            tool: true,
+            owned_dialog: true,
+            dialog: true,
+            no_activate: true,
+        }
+    );
+    for bits in 0..512u32 {
+        for (fullscreen, maximized) in [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let facts = WindowFacts {
+                visible: bits & 1 != 0,
+                minimized: bits & 2 != 0,
+                maximized,
+                cloaked: bits & 4 != 0,
+                elevated: bits & 8 != 0,
+                shell: bits & 16 != 0,
+                tool_window: bits & 32 != 0,
+                owned: bits & 64 != 0,
+                captionless_fullscreen: fullscreen,
+                no_activate: bits & 256 != 0,
+                dialog: bits & 128 != 0,
+            };
+            let geometry_expected = if !facts.visible {
+                Err(SkipReason::Hidden)
+            } else if facts.minimized {
+                Err(SkipReason::Minimized)
+            } else if facts.cloaked {
+                Err(SkipReason::Cloaked)
+            } else if facts.elevated {
+                Err(SkipReason::Elevated)
+            } else if facts.shell {
+                Err(SkipReason::Shell)
+            } else if facts.tool_window {
+                Err(SkipReason::Tool)
+            } else if facts.owned {
+                Err(SkipReason::OwnedDialog)
+            } else if facts.dialog {
+                Err(SkipReason::Dialog)
+            } else if facts.captionless_fullscreen {
+                Err(SkipReason::Fullscreen)
+            } else if facts.maximized {
+                Err(SkipReason::Maximized)
+            } else if facts.no_activate {
+                Err(SkipReason::NoActivate)
+            } else {
+                Ok(())
+            };
+            let focus_expected = if !facts.visible {
+                Err(SkipReason::Hidden)
+            } else if facts.minimized {
+                Err(SkipReason::Minimized)
+            } else if facts.cloaked {
+                Err(SkipReason::Cloaked)
+            } else if facts.elevated {
+                Err(SkipReason::Elevated)
+            } else if facts.shell {
+                Err(SkipReason::Shell)
+            } else if facts.tool_window {
+                Err(SkipReason::Tool)
+            } else if facts.owned {
+                Err(SkipReason::OwnedDialog)
+            } else if facts.dialog {
+                Err(SkipReason::Dialog)
+            } else if facts.no_activate {
+                Err(SkipReason::NoActivate)
+            } else {
+                Ok(())
+            };
+            assert_eq!(
+                classify(&facts),
+                geometry_expected,
+                "bits={bits:09b} fs={fullscreen} max={maximized}"
+            );
+            assert_eq!(
+                classify_focus(&facts),
+                focus_expected,
+                "bits={bits:09b} fs={fullscreen} max={maximized}"
+            );
+            let safety = safety_of(&facts);
+            assert_eq!(
+                classify(&facts).is_ok(),
+                geometry_eligible(&safety, fullscreen, maximized),
+                "bits={bits:09b} fs={fullscreen} max={maximized}"
+            );
+            assert_eq!(
+                classify_focus(&facts).is_ok(),
+                focus_actuation_eligible(&safety),
+                "bits={bits:09b} fs={fullscreen} max={maximized}"
+            );
+            assert_eq!(
+                classify_focus(&facts).is_ok(),
+                admission_clear_eligible(&safety),
+                "bits={bits:09b} fs={fullscreen} max={maximized}"
+            );
+        }
+    }
 }
 
 #[test]
