@@ -1503,6 +1503,12 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   sending the first chord once. Preserve existing timeouts, exact accepted-focus
   count, edge-retention and recovery assertions. Repeatedly sending the command
   until something dispatches would mask the race and is not the repair.
+- Accepted (independent review, 2026-10-28): focus-walk waits for the matching
+  applied startup observation (PID/generation) via the existing log condition
+  wait, then the existing engine fence, then one first chord; existing
+  timeouts/assertions retained. Target plus full gates pass (1,385 lib, 150
+  integration, build, strict clippy, fmt). Original rare race not reproduced;
+  no native claim.
 
 ## User review direction 2026-10-28
 

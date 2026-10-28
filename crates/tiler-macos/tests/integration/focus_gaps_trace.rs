@@ -469,6 +469,24 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     );
     fixture.handle.update_focus_evidence(agreeing(APP_A, 1));
     fixture.handle.launch_app(APP_A).expect("launch");
+    // Causal startup fence (no sleep/retry): `launch_app` readiness only
+    // proves the worker queued `Launch`, not that its startup snapshot
+    // reached the engine. The flush below only fences jobs already queued,
+    // so wait for the engine-applied startup observation for this exact
+    // PID/generation first, then fence before the single first chord.
+    let startup_generation = fixture.handle.app_generation(APP_A).expect("generation");
+    assert!(
+        fixture
+            .handle
+            .wait_log_for_test(WAIT, |log| log.iter().any(|entry| {
+                entry.kind == "observation"
+                    && entry.outcome == "applied"
+                    && entry.pid == APP_A
+                    && entry.generation == startup_generation
+            }))
+            .is_some(),
+        "startup observation never applied for pid {APP_A} generation {startup_generation}"
+    );
     assert!(fixture.handle.flush(FLUSH));
     // Drain initial frames so later applied traffic is focus-driven.
     while fixture.applied_rx.try_recv().is_ok() {}
