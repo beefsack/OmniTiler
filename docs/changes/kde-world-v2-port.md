@@ -1207,6 +1207,172 @@
   captured-shape corpus has 28 rows; actual broker flow tests own rejection,
   command retention and replay. No live/native acceptance is claimed.
 
+### Fixed-size admission consumer inventory and proposed core shape (2026-10-29)
+
+- **Inventory only; implementation parked.** The ownership decision is
+  [User 2026-10-28](../decisions.md#fixed-size-admission): core withholds
+  automatic fixed-size admission activation and publishes a neutral opt-in
+  keep-above-tiles desire; KDE's local consumers go away. The concrete shape
+  below is a recommendation, not an approved API or a new product decision.
+  No product code, protocol or recorded decision changes in this inventory.
+- Evidence is current source inspection, plus reference source at the existing
+  pins below. No live acceptance follows. The priority remains Tier 1
+  compatibility and a correct pre-0.1 core/protocol, not adapter workarounds
+  (`docs/backlog.md:16-25`).
+
+#### Ownership and current consumers
+
+| Consumer / decision | Owner today and exact behavior | Source evidence |
+| --- | --- | --- |
+| KDE local fixed predicate | TypeScript copy consumes declared client min/max and validated predicate; accepts integer bounds 0..16384, rejects missing/full-zero, requires nonzero equality on both axes by default or either axis. Local observation ORs fresh equality with optional recorded origin, carries suppress/tile override, and derives local floating eligibility. This is not the wire classifier. | `kwin/src/world-observe.ts:19-51,1072-1109,1123-1139` |
+| KDE admission activation veto | `af-` effects are spent before dispatch. The float exception permits ordinary/capacity floats only when observation AND reply say floating, excluding `fixedAuto && !fixedSuppress`; automatic fixed targets consequently receive no admission activation. The separate focused-float guard prevents automatic newcomers activating over an already focused float/sticky window (`automatic-active` is only its fixed-origin diagnostic). Explicit `fx-*` commands are separate. Fullscreen/maximized sibling fencing also remains. | `kwin/src/world-apply.ts:2256-2269,2275-2360` |
+| KDE automatic above acquisition | After reply application, sync consumes a fresh observation, not a core stacking desire. It requires automatic, unsuppressed, floating, non-overlay classification; resolves a fresh listed live identity, reads native above/below, and sets only `keepAbove=true` with readback. No geometry, focus or `keepBelow` write. | `kwin/src/world-entry.ts:3140-3145`; `kwin/src/world-native.ts:771-837,1003-1054,1064-1075` |
+| Shared fixed predicate / Rust wire classification | Shared `FixedSizePredicate` has `both-axes-fixed` / `either-axis-fixed`; invalid/missing/negative/sentinel/out-of-range/full-zero hints refuse, zero is unset per axis. KDE's Rust broker uses the shared predicate on raw client hints, separately decorates frame hints, and projects `fixedAuto`, suppress and floating before strict world decode. | `crates/tiler-core/src/size_hints.rs:182-209,229-238,259-299`; `crates/omnitiler/src/kde_raw.rs:443-525`; `crates/omnitiler/src/world_broker.rs:645-671` |
+| Core admission membership | Core retains automatic origin separately from intentional floats. New tiled fixed candidates use the shared predicate; projected floating fixed-origin candidates adopt the automatic marker. Explicit tile/suppress wins; born fullscreen bypasses; predicate changes are subsequent-only. The lifecycle admission plan explicitly preserves focus and geometry. | `crates/tiler-core/src/session/world.rs:858-869,1418-1431,1558-1605`; `crates/tiler-core/src/session/ops/lifecycle.rs:391-408,453-480` |
+| Core world admission focus | A separate world-level path chooses a converged newcomer, including normalized floats, and can mint `af-<window>`. It has bootstrap/inventory, held/floating-scope, transfer, overlay-sibling and gesture fences, but no automatic-fixed veto. Membership-only admission does NOT by itself prove no world focus effect. | `crates/tiler-core/src/world_model.rs:903-1046`; `crates/tiler-core/src/world_engine.rs:1728-1731` |
+| Core stacking / protocol | One-shot kinds already include Focus, Raise and Stack, but are not a persistent keep-above policy. `WindowDesire` has independent frame/membership authority, floating, diagnostic capacity origin, frame/clear operations; no above-tiles desire or above/below facts. Current version is 2. | `crates/tiler-core/src/world_report.rs:35-39,189-219,276-316,683-710`; `crates/tiler-protocol/src/world_protocol.rs:183-184,2037-2051` |
+| Windows automatic fixed admission | Recorded contract is membership-only: no geometry/focus/stacking/keep-above writes. Predicate/origin is shared-core; native hints, lifetime markers and native-effect fences are adapter mechanisms. Current world focus dispatch needs the caveat below. | `docs/changes/archive/windows-fixed-size-admission.md:6-11,30-41`; `docs/changes/windows-0.1-gate-proposal.md:80`; `crates/tiler-windows/src/tiling_sys/admission.rs:342-354` |
+| Windows intentional project floats | Adapter-local explicit float transition raises non-topmost windows into native Topmost, preserving a preimage; pre-existing Topmost uses NoOrderChange. This is not all core floating rows and specifically not automatic fixed admission. World frame writes have a generic float guard, not a keep-above reconciler. | `crates/tiler-windows/src/tiling_sys/float_toggle.rs:130-155,195-223`; `crates/tiler-windows/src/tiling_sys/world_diff.rs:2066-2075,2110-2117,2164-2194` |
+
+- Core also accepts a native top-to-bottom presentation `pager_order` snapshot;
+  this is observed order for rendering, not a stacking desire or native above
+  ownership (`crates/tiler-core/src/world_report.rs:71-73,613-620`;
+  `crates/tiler-protocol/src/world_protocol.rs:1090-1098`).
+- **KDE release and safety details:** `autoOwned` / `autoNoReacquire` are
+  win-keyed (`kwin/src/world-native.ts:215-222`). Pre-existing below gets zero
+  stacking writes; pre-existing above is untouched/unowned (`:1024-1037`).
+  Later below drops ownership without a setter and suppresses reacquisition;
+  external above-clear does the same (`:963-967,996-1000`). Classification loss
+  restores owned above once (`:970-977`); explicit tile/unfloat calls release
+  (`kwin/src/world-entry.ts:2950`; `world-native.ts:846-872`). Close/unresolvable
+  identity drops bookkeeping without writing a stale reference (`:953-957`).
+  Focused fullscreen in the same output/workspace suspends owned above and
+  prevents acquisition, with observation fallback only when live focus is
+  unreadable (`:918-952,980-988,1041-1049`). Every setter, including restoration,
+  rechecks fullscreen/maximized/minimized-or-hidden/sticky; unsafe/unknown
+  subjects get zero writes and refused restores retain ownership (`:794-835`).
+  Explicit stop best-effort restores; actual script unload is NOT covered
+  (`:874-899`). Diagnostic: `omnitiler:world:automatic-keep-above`, including
+  `below-wins` / `external-clear` (`docs/dev-loop.md:388-392`).
+- **Windows release:** restore only a project-raised preimage (`!prior &&
+  current`), on unfloat or graceful stop; no general later-below/external-clear
+  no-reacquire policy is established for intentional floats. Automatic fixed
+  floats have no acquired band to restore under the recorded contract
+  (`crates/tiler-windows/src/tiling/float.rs:172-178`;
+  `crates/tiler-windows/src/tiling_sys/float_toggle.rs:319-343,382-408`;
+  `crates/tiler-windows/src/tiling_sys/run_loop.rs:1461-1501`).
+- **Source/contract conflict, not a native result:** the current Windows world
+  loop iterates reply effects, passes focus through `SetterKind::Membership`
+  (which does not veto floats), then spends and dispatches focus. It has no
+  automatic-fixed or automatic-admission identity veto
+  (`crates/tiler-windows/src/tiling_sys/world_diff.rs:3798,3854-3916,4137-4156`;
+  `:2190-2194`). The explicit-only check at `:378-402` governs the staged
+  selection-arrival exception, not ordinary dispatch; other effects retain
+  ordinary native safety gates (`world_native.rs:2137-2155`). Combined with
+  core `take_admission_focus`, a safe ordinary automatic-fixed newcomer can
+  reach focus dispatch. This conflicts with the recorded Windows D8 no-focus
+  contract and the observed-focus warning in
+  `crates/tiler-core/src/world_report.rs:222-245`. Do not report the old fixed
+  admission fixtures or the generic frame guard as proof of world-route
+  no-focus. A discriminating world-route regression is needed before delivery.
+- **macOS:** carries hints for core admission (`crates/tiler-macos/src/classifier.rs:244-245`);
+  automatic fixed-float focus/keep-above handling is unknown in this inventory.
+
+#### Tier 1 comparison and evidence limits
+
+- Existing R-SPC-04 cells prove classification, explicitly not exact focus
+  (`docs/spec/reference-outcomes/special-windows.md:182-199`). R-FLT-12's
+  Tier 1 cells describe raising floats, not automatic-fixed admission or a
+  complete layer-boundary proof (`docs/spec/reference-outcomes/floating.md:542-585`).
+  The following additional source traces use only those profiles' existing pins
+  in the local reference clones. Source predictions are not native tests.
+- Minimal discriminator for all four: active ordinary workspace with focused
+  tile A; open ordinary, non-transient E with min=max 640x480, no rules,
+  fullscreen, maximize, focus inhibition or startup adoption; observe admission
+  focus, then explicitly refocus A and observe whether E stays above A where
+  they overlap. Step 2 separates a float layer from a one-time focus raise.
+  Pointer focus must not substitute for either step. Native outcomes stay TBD.
+
+| Profile / existing pin | Automatic fixed E focus, bounded case above | Above ordinary tiles after A regains focus | Pinned source evidence |
+| --- | --- | --- | --- |
+| i3 `903bcd518df32b0e055b17f5da3f988a0187fd3d` | Yes, normal map activation; fixed branch does not opt out. `no_focus`, user-time/input-model, invisible workspace and fullscreen conditions qualify it. | Yes: post-tiling floating pass explicitly raises floats above every output's tiling windows. | `src/manage.c:423-444,461-474,621-663`; `src/render.c:281-306`; existing pointers `docs/spec/reference-outcomes.md:2209-2214,2561-2566` |
+| sway `1652c54b73f67df17b7b4ab0b0f7048204aa8104` | Yes, `should_focus` on active workspace, absent no-focus/fullscreen or X11 no-input gates; fixed floating has no special focus veto. | Yes: separate tiling then floating scene layers, with floaters parented to floating, not a one-time focus raise. | `sway/tree/view.c:696-730,944-956`; `sway/tree/root.c:45-49`; `sway/desktop/transaction.c:538,591,608`; existing pointers `docs/spec/reference-outcomes.md:1565-1574,3810-3821` |
+| Hyprland `19fb395d45314960e6f79f17994a84094f1cd4f6` | Yes, normal new-window focus; no-focus/no-initial-focus, silent map, forced focus and input constraints qualify it. Wayland either-axis and X11 both-axis fixed predicates differ. | Yes: tiled passes skip floating; explicit "floating on top" second pass. | `src/desktop/view/window/Window.cpp:1026-1038,1220-1225,1507-1513`; `src/desktop/view/window/X11Backend.cpp:83-95`; `src/render/Renderer.cpp:487-555`; existing pointers `docs/spec/reference-outcomes.md:1083-1085,1299-1305` |
+| COSMIC `3d55cba06c9cf6f27609cdefb520f7857dba20af` | Yes: fixed equality uses dialog/floating admission, then active-workspace map returns a keyboard focus target; minimized/inactive/fullscreen take separate paths. | Separate floating layer and float-first hit testing established. Strict final visual ordering TBD in this bounded trace: floating render precedes tiling render, but final render-list direction was not established. The recorded selected COSMIC layer basis is not new visual evidence. | `src/shell/layout/mod.rs:47-52`; `src/shell/mod.rs:2957-2959,2998-3013,3028-3041`; `src/shell/workspace.rs:873-875,1774-1809`; existing pointers `docs/spec/reference-outcomes.md:1068-1070,2962-2966`; selected basis `docs/decisions.md:2414-2421` |
+
+- These are compositor/WM floating layers, NOT evidence that every platform
+  should set an OS-wide always-on-top bit. Windows Topmost is a broader native
+  mechanism (`crates/tiler-windows/src/tiling_sys/float_toggle.rs:145-155`).
+  The ordinary Tier 1 focus prediction differs from our approved automatic
+  fixed no-focus policy; retain the explicit game-safety decision, do not
+  silently replace it with reference defaults (`docs/decisions.md:2380-2385,2414-2421`).
+
+#### Recommended core shape, alternatives and cutover (all tentative)
+
+- **Recommend a small persistent property, not a generic z-order engine.** Reuse
+  core's retained automatic origin and D3/D5/D8 precedence; withhold and spend
+  automatic-fixed admission focus in `take_admission_focus` itself. Keep
+  explicit user focus separate and preserve focused-float newcomer fencing
+  without consulting a TypeScript size predicate. No new focus wire token is
+  required just to omit an unauthorized `af-` effect.
+- Add a neutral opt-in policy input and per-window above-tiles desire, tentatively
+  `keepAboveTiles: null | false | true`: null grants no new write authority,
+  false releases only project-owned above, true requests the above-tiles layer
+  without activation/geometry. It must never mean clear user above, force below,
+  or take ownership of pre-existing above. Default opt-out preserves other
+  adapters. Field names, null/hold semantics and exact authority representation
+  require review; this is not an existing API.
+- Core decides eligibility, scope suspension, classification-loss release and
+  whether an external override forbids reacquisition. Adapters report neutral
+  native above/below/ownership facts (unknown explicitly), identity-bound setter
+  attempts/readbacks and any provable native override provenance; they resolve
+  live identities, recheck safety, apply the desire and preserve native ownership
+  preimages. Do not infer external intent from a mismatch after an unconfirmed
+  own write. No adapter fixed-size predicate or local fixed-origin policy loop
+  remains. Native lifecycle recovery is still necessary even with core policy.
+- Preserve zero writes to fullscreen subjects, including attempted restoration;
+  retain an owned restoration obligation until safe. Do not cover a focused
+  fullscreen game with project-owned above. Pre-existing below/above remain
+  untouched. Later below/external-clear no-reacquire, stop restoration and actual
+  unload/restart ownership must be explicit in the reviewed contract: the former
+  behaviors are currently tentative and the last is a parked safety problem,
+  not solved by publishing a desire (`docs/decisions.md:2414-2437`;
+  [ownership blocker](kde-automatic-float-stacking.md#blocker-and-exact-next-action)).
+- **Windows impact:** share the desire's codec and mechanical ownership contract,
+  but leave automatic-fixed stacking opt-out under the existing Windows D8
+  decision. Fixing core admission-focus authorization would also close the
+  Windows source/contract gap above. Routing intentional Windows floats through
+  the same desire is preferable to a permanent adapter policy duplicate, but
+  requires separately agreed origin coverage and Topmost/preimage semantics;
+  enabling above for automatic fixed floats would change a recorded decision.
+- Alternative 1: a neutral `normal | above-tiles` layer enum plus independent
+  property authority/ownership receipts. More explicit and extensible than a
+  nullable boolean, but wider schema and validation surface for only one current
+  layer request; do not add lower/raise/focus verbs speculatively.
+- Alternative 2: reuse one-shot Raise/Stack effects for acquisition/release.
+  Smaller-looking delta, but effect kinds lack a persistent layer target and
+  cannot express maintained above, safe suspension/release and override ownership
+  without extra retained machinery. Not recommended; a focus raise is not a
+  floating-layer policy.
+- **Protocol:** the focus omission alone is core-only; a desire plus neutral
+  facts/attempts is a versioned contract change, despite being structurally
+  additive. Current exact version 2 must not gain an optional KDE-only side lane.
+  Coordinate with `520b81dd`'s
+  [visibility design](windows-workspace-return-focus.md#coordinated-visibility-contract-design-2026-10-30),
+  which proposes tentative v3 and a coordinated core/protocol/Windows cutover
+  with KDE/macOS adoption (`:2352-2383,2424-2435,2534-2551`). Prefer including this
+  reviewed property in that not-yet-shipped cutover only if its ownership/recovery
+  decisions are settled in time; doing so explicitly widens its schema, codecs,
+  sizing/digest/replay and adapter acceptance set. Otherwise use a separate next
+  exact-version bump; never assume visibility authority authorizes stacking or
+  block visibility delivery on an unapproved stacking design.
+- **Next decision and acceptance:** return the shape, Windows coverage and
+  ownership/recovery choices for user review before implementation. Future
+  regressions must use the real broker/WorldEngine path: automatic vs intentional
+  float admission, fixed-hint loss, tile override, explicit focus, below/above
+  preimages, later clear/below, fullscreen target/sibling, close/reuse and
+  unload/restart. This inventory does not close Stage 4 or its native checks.
+
 ### Stage 4 evidence and rejected approaches
 
 - Final scoped locked all-target tests pass 2,329/2,329 across 60 suites:

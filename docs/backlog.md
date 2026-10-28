@@ -392,9 +392,10 @@ Prioritise by return toward these goals
     feeds the admission-focus gate (`world-apply.ts`) and automatic keep-above
     (`world-native.ts`). User 2026-10-28: move both to core ownership (core
     withholds admission activation; neutral opt-in keep-above-tiles desire that
-    KDE applies mechanically) and delete the local consumers. First inventory
-    existing core decisions and Windows handling; any core shape returns to the
-    user for approval before implementation.
+    KDE applies mechanically) and delete the local consumers. Inventory and
+    [proposed core shape](changes/kde-world-v2-port.md#fixed-size-admission-consumer-inventory-and-proposed-core-shape-2026-10-29)
+    recorded; Windows world-focus contract gap noted. Shape/ownership choices
+    await user approval before implementation; no product code changed.
   - N5 membership/eligibility split implemented offline; native role/hidden
     checks and Activities remain unverified. Windows/macOS behavior unchanged.
   - Execution-time float toggle: approved, not started; blocked on the open
