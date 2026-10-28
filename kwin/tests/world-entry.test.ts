@@ -6,6 +6,11 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createContext, runInContext } from "node:vm";
 import { startWorldAdapterEntry, mintAdapterIncarnation } from "../src/world-entry";
 import { captureWorldObservation } from "../src/world-observe";
 import { isSeparateWorkspaceMode } from "../src/workspace-native";
@@ -147,7 +152,7 @@ function fakeSignal(): FakeSignal {
     };
 }
 
-function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true): Harness {
+function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown, optionsValue?: unknown, perOutputSeam = true, entryFn: typeof startWorldAdapterEntry = startWorldAdapterEntry, throwOnProbeLog = false): Harness {
     const world = makeWorld();
     const calls: CapturedCall[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -242,7 +247,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             },
         });
     }
-    const handle = startWorldAdapterEntry({
+    const handle = entryFn({
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",
@@ -267,6 +272,9 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             return () => undefined;
         },
         log: (message) => {
+            if (throwOnProbeLog && message.includes("omnitiler:world:trace")) {
+                throw new Error("probe-log-unavailable");
+            }
             logs.push(message);
         },
         gestureActive: () => gesture,
@@ -2814,5 +2822,503 @@ describe("world entry adapter incarnation", () => {
             assert.ok(minted.length <= 128, `incarnation stays bounded: ${minted.length}`);
         }
         assert.notEqual(first, second, "two evaluations mint different tokens");
+    });
+});
+
+describe("world entry trace probe", () => {
+    interface TracedWindow {
+        ref: FakeWindow;
+        frameChanged: FakeSignal;
+        setFrameRaw: (rect: { x: number; y: number; width: number; height: number }) => void;
+    }
+
+    // A live window arriving after bind, instrumented exactly like the
+    // harness natives plus a fake frameGeometryChanged signal for the
+    // probe-only one-shot. setFrameRaw moves the live frame without
+    // recording a production geometry write.
+    function addTracedWindow(h: Harness, id: string): TracedWindow {
+        const home = h.world.desktops[0] as FakeDesktop;
+        assert.ok(home !== undefined);
+        const w = win(id, "out", home, 0);
+        let frame = w.frameGeometry;
+        Object.defineProperty(w, "frameGeometry", {
+            configurable: true,
+            get: () => frame,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                frame = rect;
+                h.world.geometryWrites.push(`${w.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
+                return true;
+            },
+        });
+        const frameChanged = fakeSignal();
+        (w as unknown as Record<string, unknown>)["frameGeometryChanged"] = frameChanged.signal;
+        h.world.wins.push(w);
+        return {
+            ref: w,
+            frameChanged,
+            setFrameRaw: (rect: { x: number; y: number; width: number; height: number }) => {
+                frame = rect;
+            },
+        };
+    }
+
+    function fireWindowAdded(h: Harness, ref: FakeWindow): void {
+        for (const handler of [...(h.signals.windowAdded as FakeSignal).handlers]) {
+            (handler as (payload?: unknown) => void)(ref);
+        }
+    }
+
+    function fireFrameChanged(t: TracedWindow): void {
+        for (const handler of [...t.frameChanged.handlers]) {
+            (handler as () => void)();
+        }
+    }
+
+    function traceLines(h: Harness, id: string): string[] {
+        return h.logs.filter((l) => l.includes(`omnitiler:world:trace win=${id} `));
+    }
+
+    function traceEvs(lines: string[]): string[] {
+        return lines.map((l) => {
+            const ev = l.match(/ ev=([a-z-]+)/);
+            assert.ok(ev !== null, `trace line carries an event: ${l}`);
+            return (ev as RegExpMatchArray)[1] as string;
+        });
+    }
+
+    function replyWithFrame(h: Harness, rev: string, id: string, ws: string, frame: [number, number, number, number]): void {
+        h.runTimers();
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, rev, {
+            windows: [{
+                win: id, out: "out", ws,
+                alloc: frame, frame,
+                frame_auth: "controlled", frame_hold: "",
+                member_auth: "controlled", member_hold: "",
+                frame_op: "", clear_op: "",
+                floating: false, float_origin: "",
+            }],
+        }));
+    }
+
+    // A write-apply reports its attempts, so production arms one follow-up
+    // dispatch while the window is still pending (a second debounce-start).
+    // Flushing it after the observation emits no further probe lines.
+    function flushQuietCycle(h: Harness, rev: string): void {
+        h.runTimers();
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, rev));
+    }
+
+    // Full producer-shaped admission sequence, including the production
+    // write-attempt follow-up dispatch while the window is still pending.
+    const ADMISSION_EVS = ["added", "debounce-start", "debounce-fire", "send", "reply", "write", "debounce-start", "observed"];
+
+    it("emits the ordered admission sequence with match on first observation", () => {
+        const h = makeHarness();
+        discover(h);
+        const added = addTracedWindow(h, "win-c");
+        const ws = h.world.desktops[0] as FakeDesktop;
+        fireWindowAdded(h, added.ref);
+        replyWithFrame(h, "1", "win-c", ws.id, [10, 10, 300, 300]);
+        assert.ok(h.world.geometryWrites.some((w) => w.startsWith("win-c@10,10,300,300")));
+        fireFrameChanged(added);
+        const lines = traceLines(h, "win-c");
+        assert.deepEqual(traceEvs(lines), ADMISSION_EVS);
+        for (const line of lines) {
+            assert.match(line, / t=\d+/);
+        }
+        assert.match(lines[lines.length - 1] as string, /req=10,10,300,300 seen=10,10,300,300 match=1/);
+        // The one-shot detaches on first fire: no second observed line and
+        // no surviving handler.
+        assert.equal(added.frameChanged.handlers.length, 0);
+        const count = traceLines(h, "win-c").length;
+        fireFrameChanged(added);
+        assert.equal(traceLines(h, "win-c").length, count);
+        // Production behavior is unperturbed: exactly one geometry write,
+        // and the flushed follow-up adds no further probe lines.
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            ["win-c@10,10,300,300"],
+        );
+        flushQuietCycle(h, "2");
+        assert.equal(traceLines(h, "win-c").length, lines.length);
+        h.handle?.stop();
+    });
+
+    it("records mismatch without perturbing behavior and never reattributes settled windows", () => {
+        const h = makeHarness();
+        discover(h);
+        const ws = h.world.desktops[0] as FakeDesktop;
+        const first = addTracedWindow(h, "win-c");
+        fireWindowAdded(h, first.ref);
+        replyWithFrame(h, "1", "win-c", ws.id, [10, 10, 300, 300]);
+        fireFrameChanged(first);
+        flushQuietCycle(h, "2");
+        const settled = traceLines(h, "win-c").length;
+        assert.ok(settled > 0);
+        // Second admission: the live frame diverges from the request before
+        // the signal fires, so the first observation reports mismatch.
+        const second = addTracedWindow(h, "win-d");
+        fireWindowAdded(h, second.ref);
+        replyWithFrame(h, "3", "win-d", ws.id, [20, 20, 100, 100]);
+        second.setFrameRaw({ x: 1, y: 2, width: 3, height: 4 });
+        fireFrameChanged(second);
+        const lines = traceLines(h, "win-d");
+        assert.deepEqual(traceEvs(lines), ADMISSION_EVS);
+        assert.match(lines[lines.length - 1] as string, /req=20,20,100,100 seen=1,2,3,4 match=0/);
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-d@")),
+            ["win-d@20,20,100,100"],
+        );
+        // The settled window is never re-emitted for the later flight, and
+        // the flushed follow-up adds nothing for either window.
+        assert.equal(traceLines(h, "win-c").length, settled);
+        flushQuietCycle(h, "4");
+        assert.equal(traceLines(h, "win-c").length, settled);
+        assert.equal(traceLines(h, "win-d").length, lines.length);
+        h.handle?.stop();
+    });
+
+    function frameRow(id: string, ws: string, frame: [number, number, number, number]): Record<string, unknown> {
+        return {
+            win: id, out: "out", ws,
+            alloc: frame, frame,
+            frame_auth: "controlled", frame_hold: "",
+            member_auth: "controlled", member_hold: "",
+            frame_op: "", clear_op: "",
+            floating: false, float_origin: "",
+        };
+    }
+
+    function srcOf(line: string): string {
+        const m = line.match(/ src=([a-z0-9-]+)/);
+        assert.ok(m !== null, `trace line carries a source: ${line}`);
+        return (m as RegExpMatchArray)[1] as string;
+    }
+
+    it("logs no invented start for a window joining an armed timer", () => {
+        const h = makeHarness();
+        discover(h);
+        const ws = h.world.desktops[0] as FakeDesktop;
+        const first = addTracedWindow(h, "win-c");
+        fireWindowAdded(h, first.ref);
+        const second = addTracedWindow(h, "win-d");
+        fireWindowAdded(h, second.ref);
+        // D joined while the admission debounce was still armed: only its
+        // added line exists, and the single real arm belongs to C alone.
+        assert.deepEqual(traceEvs(traceLines(h, "win-d")), ["added"]);
+        assert.deepEqual(traceEvs(traceLines(h, "win-c")), ["added", "debounce-start"]);
+        // One shared flight carries both windows.
+        h.runTimers();
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            windows: [frameRow("win-c", ws.id, [10, 10, 300, 300]), frameRow("win-d", ws.id, [20, 20, 100, 100])],
+        }));
+        assert.ok(h.world.geometryWrites.some((w) => w.startsWith("win-c@10,10,300,300")));
+        assert.ok(h.world.geometryWrites.some((w) => w.startsWith("win-d@20,20,100,100")));
+        fireFrameChanged(first);
+        fireFrameChanged(second);
+        assert.deepEqual(traceEvs(traceLines(h, "win-c")), ADMISSION_EVS);
+        // D never saw the pre-arm start: its first debounce line is the
+        // shared fire, then the real post-write arm.
+        assert.deepEqual(
+            traceEvs(traceLines(h, "win-d")),
+            ["added", "debounce-fire", "send", "reply", "write", "debounce-start", "observed"],
+        );
+        assert.equal(first.frameChanged.handlers.length, 0);
+        assert.equal(second.frameChanged.handlers.length, 0);
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            ["win-c@10,10,300,300"],
+        );
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-d@")),
+            ["win-d@20,20,100,100"],
+        );
+        const settledC = traceLines(h, "win-c").length;
+        const settledD = traceLines(h, "win-d").length;
+        flushQuietCycle(h, "2");
+        assert.equal(traceLines(h, "win-c").length, settledC);
+        assert.equal(traceLines(h, "win-d").length, settledD);
+        h.handle?.stop();
+    });
+
+    it("attributes a flight reply only to windows in the sent snapshot", () => {
+        const h = makeHarness();
+        discover(h);
+        const ws = h.world.desktops[0] as FakeDesktop;
+        const first = addTracedWindow(h, "win-c");
+        fireWindowAdded(h, first.ref);
+        h.runTimers();
+        const req1 = requestOf(h);
+        const src1 = req1["source"] as string;
+        // D arrives while the first flight is still outstanding.
+        const second = addTracedWindow(h, "win-d");
+        fireWindowAdded(h, second.ref);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", src1, req1["nativeInvalid"] as string, "1", {
+            windows: [frameRow("win-c", ws.id, [10, 10, 300, 300])],
+        }));
+        assert.equal(h.world.geometryWrites.length, 0, "native arrival supersedes the first flight, so no setters run");
+        assert.ok(h.logs.some((l) => l.includes("stale reason=superseded-during-flight")));
+        // The late window shares the armed follow-up but never the first
+        // flight's reply: no reply line for D, and the single reply line
+        // for C carries the first flight's source.
+        assert.ok(!traceEvs(traceLines(h, "win-d")).includes("reply"), "late window has no attributed reply");
+        const repliesC = traceLines(h, "win-c").filter((l) => l.includes("ev=reply"));
+        assert.equal(repliesC.length, 1);
+        assert.equal(srcOf(repliesC[0] as string), src1);
+        // D's own flight attributes its reply to the second source only.
+        h.runTimers();
+        const req2 = requestOf(h);
+        const src2 = req2["source"] as string;
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", src2, req2["nativeInvalid"] as string, "2", {
+            windows: [frameRow("win-d", ws.id, [20, 20, 100, 100])],
+        }));
+        fireFrameChanged(second);
+        const repliesD = traceLines(h, "win-d").filter((l) => l.includes("ev=reply"));
+        assert.equal(repliesD.length, 1);
+        assert.equal(srcOf(repliesD[0] as string), src2);
+        assert.notEqual(src2, src1);
+        h.handle?.stop();
+    });
+
+    it("stays silent with no new window and detaches the one-shot on stop", () => {
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1"));
+        assert.ok(!h.logs.some((l) => l.includes("omnitiler:world:trace")), "steady state emits no probe lines");
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:dispatch")), "production dispatch logging is intact");
+        assert.equal(h.world.geometryWrites.length, 0);
+        h.handle?.stop();
+
+        const stopped = makeHarness();
+        discover(stopped);
+        const ws = stopped.world.desktops[0] as FakeDesktop;
+        const pending = addTracedWindow(stopped, "win-e");
+        fireWindowAdded(stopped, pending.ref);
+        replyWithFrame(stopped, "1", "win-e", ws.id, [30, 30, 120, 120]);
+        assert.equal(pending.frameChanged.handlers.length, 1);
+        stopped.handle?.stop();
+        assert.equal(pending.frameChanged.handlers.length, 0);
+        fireFrameChanged(pending);
+        assert.ok(!traceLines(stopped, "win-e").some((l) => l.includes("ev=observed")), "no observation after stop");
+    });
+
+    // Bundled-entry parity: the real src/world-entry.ts through the
+    // production esbuild defines, loaded in a VM and driven through this
+    // same harness. The checked-in test bundle defines TRACE=1, so the
+    // direct import is the trace-enabled producer; trace0 must match it on
+    // every production effect with no probe lines or frame listener, and
+    // trace1 must match it on production effects plus the ordered probe.
+    function loadBundledEntry(trace: boolean): typeof startWorldAdapterEntry {
+        const outDir = mkdtempSync(join(tmpdir(), "omnitiler-world-entry-"));
+        const outFile = join(outDir, "world-entry.js");
+        const args = [
+            "esbuild",
+            "src/world-entry.ts",
+            "--bundle",
+            "--format=iife",
+            "--target=es2017",
+            "--global-name=WorldEntry",
+            `--define:__OMNITILER_TRACE__=${JSON.stringify(trace ? "1" : "0")}`,
+            `--outfile=${outFile}`,
+        ];
+        if (!trace) {
+            args.push("--minify-syntax");
+        }
+        execFileSync("npx", args, { cwd: process.cwd(), stdio: "pipe" });
+        const context = createContext({}) as Record<string, unknown>;
+        runInContext(readFileSync(outFile, "utf8"), context, { filename: outFile });
+        const exported = (context as unknown as { WorldEntry?: { startWorldAdapterEntry: typeof startWorldAdapterEntry } }).WorldEntry;
+        assert.ok(exported !== undefined && typeof exported.startWorldAdapterEntry === "function", "bundled entry exposes startWorldAdapterEntry");
+        runInContext("Date.now = function () { return 1700000000000; }; Math.random = function () { return 0.5; };", context, { filename: "pin-determinism.js" });
+        return exported.startWorldAdapterEntry;
+    }
+
+    function normText(value: string): string {
+        return value
+            .replace(/\b(src|wait|pres)-[0-9a-z]+-[0-9a-z]+/g, "$1-NORM")
+            .replace(/t=\d+/g, "t=NORM");
+    }
+
+    function productionSnapshot(h: Harness): Record<string, unknown> {
+        return JSON.parse(JSON.stringify({
+            calls: h.calls.map((c) => ({ method: c.method, payload: normText(c.payload) })),
+            geometry: [...h.world.geometryWrites],
+            membership: [...h.world.membershipWrites],
+            created: [...h.world.created],
+            removed: [...h.world.removed],
+            focused: [...h.world.focused],
+            timers: h.timers.map((t) => t.delay),
+            shortcuts: [...h.shortcuts.keys()].sort(),
+            signals: Object.fromEntries(Object.entries(h.signals).map(([k, s]) => [k, (s as FakeSignal).handlers.length])),
+            logs: h.logs.filter((l) => !l.includes("omnitiler:world:trace")).map(normText),
+        })) as Record<string, unknown>;
+    }
+
+    function runBundledAdmission(entryFn: typeof startWorldAdapterEntry, throwOnProbeLog = false): { h: Harness; frameHandlers: number } {
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, entryFn, throwOnProbeLog);
+        discover(h);
+        const ws = h.world.desktops[0] as FakeDesktop;
+        const added = addTracedWindow(h, "win-c");
+        fireWindowAdded(h, added.ref);
+        replyWithFrame(h, "1", "win-c", ws.id, [10, 10, 300, 300]);
+        const frameHandlers = added.frameChanged.handlers.length;
+        fireFrameChanged(added);
+        flushQuietCycle(h, "2");
+        assert.equal(added.frameChanged.handlers.length, 0);
+        return { h, frameHandlers };
+    }
+
+    it("trace-off bundle matches direct production behavior with no probe lines or frame listener", () => {
+        const direct = runBundledAdmission(startWorldAdapterEntry);
+        const off = runBundledAdmission(loadBundledEntry(false));
+        direct.h.handle?.stop();
+        off.h.handle?.stop();
+        assert.deepEqual(productionSnapshot(off.h), productionSnapshot(direct.h));
+        assert.deepEqual(traceEvs(traceLines(direct.h, "win-c")), ADMISSION_EVS);
+        assert.equal(traceLines(off.h, "win-c").length, 0);
+        assert.ok(!off.h.logs.some((l) => l.includes("omnitiler:world:trace")), "trace-off emits no probe lines");
+        assert.equal(off.frameHandlers, 0, "trace-off attaches no frame listener");
+        assert.equal(direct.frameHandlers, 1, "direct trace-enabled attaches the one-shot");
+        assert.deepEqual(
+            off.h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            ["win-c@10,10,300,300"],
+        );
+    });
+
+    it("trace-on bundle matches direct production behavior plus the ordered admission probe", () => {
+        const direct = runBundledAdmission(startWorldAdapterEntry);
+        const on = runBundledAdmission(loadBundledEntry(true));
+        direct.h.handle?.stop();
+        on.h.handle?.stop();
+        assert.deepEqual(productionSnapshot(on.h), productionSnapshot(direct.h));
+        assert.deepEqual(traceEvs(traceLines(on.h, "win-c")), ADMISSION_EVS);
+        assert.deepEqual(
+            traceLines(on.h, "win-c").map(normText),
+            traceLines(direct.h, "win-c").map(normText),
+        );
+        assert.equal(on.frameHandlers, 1, "trace-on attaches exactly the one-shot frame listener");
+    });
+
+    it("trace-on probe log failure never perturbs the production geometry write", () => {
+        const { h } = runBundledAdmission(loadBundledEntry(true), true);
+        h.handle?.stop();
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            ["win-c@10,10,300,300"],
+        );
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:dispatch")), "ordinary logs still recorded");
+        assert.ok(!h.logs.some((l) => l.includes("omnitiler:world:trace")), "throwing probe lines are never stored");
+    });
+
+    it("cleans the one-shot when the native setter refuses without a write", () => {
+        const h = makeHarness();
+        discover(h);
+        const added = addTracedWindow(h, "win-c");
+        const ws = h.world.desktops[0] as FakeDesktop;
+        fireWindowAdded(h, added.ref);
+        // Read-only frame: Reflect.set reports false, so production
+        // records a refused attempt with no geometry write.
+        Object.defineProperty(added.ref, "frameGeometry", {
+            configurable: true,
+            value: { x: 1, y: 2, width: 3, height: 4 },
+            writable: false,
+        });
+        replyWithFrame(h, "1", "win-c", ws.id, [10, 10, 300, 300]);
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            [],
+        );
+        assert.ok(traceEvs(traceLines(h, "win-c")).includes("write"), "attempted write is still logged");
+        assert.equal(added.frameChanged.handlers.length, 0, "refused write holds no frame listener");
+        fireFrameChanged(added);
+        assert.ok(!traceEvs(traceLines(h, "win-c")).includes("observed"), "no observation after refusal");
+        h.handle?.stop();
+    });
+
+    it("cleans the one-shot when the native setter throws, holding the attempt ambiguous", () => {
+        const h = makeHarness();
+        discover(h);
+        const added = addTracedWindow(h, "win-c");
+        const ws = h.world.desktops[0] as FakeDesktop;
+        fireWindowAdded(h, added.ref);
+        Object.defineProperty(added.ref, "frameGeometry", {
+            configurable: true,
+            get: () => ({ x: 1, y: 2, width: 3, height: 4 }),
+            set: () => {
+                throw new Error("probe-test-throw");
+            },
+        });
+        replyWithFrame(h, "1", "win-c", ws.id, [10, 10, 300, 300]);
+        // The apply loop catches the throw and holds the attempt
+        // ambiguous: no geometry write fact, reply handling completes.
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            [],
+        );
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied")), "apply completes after a throwing setter");
+        assert.ok(traceEvs(traceLines(h, "win-c")).includes("write"), "attempted write is still logged");
+        assert.equal(added.frameChanged.handlers.length, 0, "thrown write holds no frame listener");
+        fireFrameChanged(added);
+        assert.ok(!traceEvs(traceLines(h, "win-c")).includes("observed"), "no observation after throw");
+        h.handle?.stop();
+    });
+
+    it("holds no pending expectation when the window has no frame signal", () => {
+        const h = makeHarness();
+        discover(h);
+        const added = addTracedWindow(h, "win-c");
+        const ws = h.world.desktops[0] as FakeDesktop;
+        fireWindowAdded(h, added.ref);
+        delete (added.ref as unknown as Record<string, unknown>)["frameGeometryChanged"];
+        replyWithFrame(h, "1", "win-c", ws.id, [10, 10, 300, 300]);
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            ["win-c@10,10,300,300"],
+        );
+        assert.ok(traceEvs(traceLines(h, "win-c")).includes("write"), "attempted write is still logged");
+        assert.equal(added.frameChanged.handlers.length, 0, "no listener attaches without a signal");
+        fireFrameChanged(added);
+        assert.ok(!traceEvs(traceLines(h, "win-c")).includes("observed"), "no observation without a signal");
+        h.handle?.stop();
+    });
+
+    it("captures the first synchronous signal during the setter exactly once", () => {
+        const h = makeHarness();
+        discover(h);
+        const added = addTracedWindow(h, "win-c");
+        const ws = h.world.desktops[0] as FakeDesktop;
+        fireWindowAdded(h, added.ref);
+        // Synchronous native echo: the frame signal fires inside the
+        // production setter, before it returns.
+        let frame = { x: 1, y: 2, width: 3, height: 4 };
+        Object.defineProperty(added.ref, "frameGeometry", {
+            configurable: true,
+            get: () => frame,
+            set: (rect: { x: number; y: number; width: number; height: number }) => {
+                frame = rect;
+                h.world.geometryWrites.push(`${added.ref.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
+                for (const handler of [...added.frameChanged.handlers]) {
+                    (handler as () => void)();
+                }
+                return true;
+            },
+        });
+        replyWithFrame(h, "1", "win-c", ws.id, [10, 10, 300, 300]);
+        assert.deepEqual(
+            h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
+            ["win-c@10,10,300,300"],
+        );
+        const observed = traceLines(h, "win-c").filter((l) => l.includes("ev=observed"));
+        assert.equal(observed.length, 1, "synchronous first signal is captured once before the setter returns");
+        assert.equal(added.frameChanged.handlers.length, 0, "one-shot detaches on the synchronous fire");
+        fireFrameChanged(added);
+        assert.equal(traceLines(h, "win-c").filter((l) => l.includes("ev=observed")).length, 1);
+        h.handle?.stop();
     });
 });

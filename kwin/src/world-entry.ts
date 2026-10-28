@@ -44,6 +44,33 @@ const INTENT_WRITE_METHOD = "WriteFloatIntent";
 // arbitrary data. The world ready log carries it so the release archive's
 // baked-rev grep keeps passing; no transport or behavior effect.
 declare const __OMNITILER_SOURCE_REV__: string | undefined;
+// Compile-time trace gate: trace builds define "1", ordinary builds define
+// "0", so `typeof __OMNITILER_TRACE__ === "string"` folds per bundle and a
+// statically-false gate drops the single probe construction block below.
+declare const __OMNITILER_TRACE__: string | undefined;
+
+interface WorldTraceProbe {
+    noteAdded(added: object): void;
+    noteDebounceStart(): void;
+    noteDebounceFire(): void;
+    noteSend(sourceToken: string, observation: WorldObservation | null): void;
+    noteReply(sourceToken: string): void;
+    setGeometryFor(
+        fresh: WorldObservation,
+        base: {
+            setGeometry: (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
+            readLiveRect: (ref: object) => { x: number; y: number; w: number; h: number } | null;
+        },
+        sourceToken: string,
+    ): (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
+    stop(): void;
+}
+// A weak key preserves per-adapter isolation without leaving an unused local
+// initializer in ordinary bundles; all references below are compile-gated.
+let worldTraceProbes: WeakMap<WorldAdapterState, WorldTraceProbe>;
+if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+    worldTraceProbes = new WeakMap();
+}
 
 const SOURCE_REV_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -427,6 +454,243 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const logicalOfNative = new Map<string, { logical: string; out: string }>();
     const bindingKey = (out: string, native: string): string => `${out}\u0000${native}`;
     const detaches: Array<() => void> = [];
+    // Inline compile gates let ordinary builds strip all probe work; an
+    // imported/shared boolean does not fold at these use sites in esbuild.
+    // Each adapter owns bounded, fail-open trace state. The only added
+    // subscription is a trace-only frameGeometryChanged one-shot attached
+    // before a requested write, detached on fire/supersede/eviction/stop.
+    // Timestamps are wall-clock milliseconds, not native completion proof.
+    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+        const tracePending: string[] = [];
+        const traceSentBySrc = new Map<string, string[]>();
+        const traceRequested = new Map<string, { req: string; ref: object; gen: number; src: string; detach: (() => void) | null }>();
+        let traceGeneration = 0;
+        const traceEmitPending = (ev: string, extra: string): void => {
+            for (const win of [...tracePending]) {
+                log(`omnitiler:world:trace win=${win} ev=${ev} t=${Date.now()}${extra}`);
+            }
+        };
+        const traceDetachRequested = (win: string): void => {
+            const want = traceRequested.get(win) ?? null;
+            if (want === null) {
+                return;
+            }
+            traceRequested.delete(win);
+            const done = want.detach;
+            want.detach = null;
+            if (done !== null) {
+                try {
+                    done();
+                } catch (error) {
+                    void error;
+                }
+            }
+        };
+        const traceRememberSent = (src: string, wins: string[]): void => {
+            traceSentBySrc.delete(src);
+            while (traceSentBySrc.size >= 16) {
+                const oldest = traceSentBySrc.keys().next();
+                if (oldest.done) {
+                    break;
+                }
+                traceSentBySrc.delete(oldest.value as string);
+            }
+            traceSentBySrc.set(src, wins);
+        };
+        worldTraceProbes.set(state, {
+            noteAdded: (added) => {
+                try {
+                    const id = normalizeNativeId(readProp(added, "internalId"));
+                    if (id === null) {
+                        return;
+                    }
+                    if (tracePending.indexOf(id) < 0) {
+                        tracePending.push(id);
+                        while (tracePending.length > 16) {
+                            const evicted = tracePending.shift();
+                            if (evicted !== undefined) {
+                                traceDetachRequested(evicted);
+                            }
+                        }
+                    }
+                    log(`omnitiler:world:trace win=${id} ev=added t=${Date.now()}`);
+                } catch (error) {
+                    void error;
+                }
+            },
+            noteDebounceStart: () => {
+                try {
+                    traceEmitPending("debounce-start", "");
+                } catch (error) {
+                    void error;
+                }
+            },
+            noteDebounceFire: () => {
+                try {
+                    traceEmitPending("debounce-fire", "");
+                } catch (error) {
+                    void error;
+                }
+            },
+            noteSend: (sourceToken, observation) => {
+                try {
+                    let wins: string[];
+                    if (observation !== null) {
+                        // Actual flight truth: only the pending ids carried
+                        // by the transmitted report snapshot correlate to
+                        // this source. The retry path reuses the stored
+                        // snapshot for its source and never falls back to
+                        // live pending.
+                        const inReport = new Set<string>();
+                        for (const fact of observation.windowFacts) {
+                            inReport.add(fact.win);
+                        }
+                        wins = tracePending.filter((id) => inReport.has(id));
+                        traceRememberSent(sourceToken, [...wins]);
+                    } else {
+                        wins = [...(traceSentBySrc.get(sourceToken) ?? [])];
+                    }
+                    for (const win of wins) {
+                        log(`omnitiler:world:trace win=${win} ev=send t=${Date.now()} src=${sourceToken}`);
+                    }
+                } catch (error) {
+                    void error;
+                }
+            },
+            noteReply: (sourceToken) => {
+                try {
+                    // One-shot per flight: only windows in the matching sent
+                    // snapshot are attributed, never a window added while
+                    // the flight was outstanding.
+                    const wins = traceSentBySrc.get(sourceToken) ?? [];
+                    for (const win of [...wins]) {
+                        log(`omnitiler:world:trace win=${win} ev=reply t=${Date.now()} src=${sourceToken}`);
+                    }
+                } catch (error) {
+                    void error;
+                }
+            },
+            setGeometryFor: (fresh, base, sourceToken) => {
+                try {
+                    // Write truth rides the send snapshot: a window added
+                    // after the flight sent is not yet correlated to this
+                    // source, so its writes wait for its own flight.
+                    const snap = traceSentBySrc.get(sourceToken) ?? [];
+                    const winByRef = new Map<object, string>();
+                    for (const domain of fresh.domains) {
+                        for (const w of domain.windows) {
+                            if (!winByRef.has(w.ref)) {
+                                winByRef.set(w.ref, w.win);
+                            }
+                        }
+                    }
+                    for (const m of fresh.minimized) {
+                        if (!winByRef.has(m.ref)) {
+                            winByRef.set(m.ref, m.win);
+                        }
+                    }
+                    return (ref: object, rect: { x: number; y: number; w: number; h: number }): boolean => {
+                        // Armed before the production write so a synchronous
+                        // native signal during the setter still finds its
+                        // generation. Cleaned below on explicit false or
+                        // throw so a refused write never misattributes a
+                        // later unrelated frame change.
+                        let probeWin: string | null = null;
+                        try {
+                            const win = winByRef.get(ref) ?? null;
+                            if (win !== null && snap.indexOf(win) >= 0) {
+                                const req = `${rect.x},${rect.y},${rect.w},${rect.h}`;
+                                log(`omnitiler:world:trace win=${win} ev=write t=${Date.now()} src=${sourceToken} req=${req}`);
+                                traceGeneration += 1;
+                                const gen = traceGeneration;
+                                traceDetachRequested(win);
+                                while (traceRequested.size >= 16) {
+                                    const oldest = traceRequested.keys().next();
+                                    if (oldest.done) {
+                                        break;
+                                    }
+                                    traceDetachRequested(oldest.value as string);
+                                }
+                                const entry = { req, ref, gen, src: sourceToken, detach: null as (() => void) | null };
+                                entry.detach = connectSignal(readSignal(ref, "frameGeometryChanged"), () => {
+                                    try {
+                                        const want = traceRequested.get(win) ?? null;
+                                        if (want === null || want.gen !== gen) {
+                                            return;
+                                        }
+                                        traceRequested.delete(win);
+                                        const done = want.detach;
+                                        want.detach = null;
+                                        if (done !== null) {
+                                            done();
+                                        }
+                                        let seen = "null";
+                                        let match = 0;
+                                        const live = base.readLiveRect(ref);
+                                        if (live !== null) {
+                                            seen = `${live.x},${live.y},${live.w},${live.h}`;
+                                            match = seen === want.req ? 1 : 0;
+                                        }
+                                        log(`omnitiler:world:trace win=${win} ev=observed t=${Date.now()} src=${want.src} req=${want.req} seen=${seen} match=${match}`);
+                                        const at = tracePending.indexOf(win);
+                                        if (at >= 0) {
+                                            tracePending.splice(at, 1);
+                                        }
+                                    } catch (error) {
+                                        void error;
+                                    }
+                                });
+                                // A window without a connectable signal
+                                // keeps its write line but holds no pending
+                                // expectation: nothing could ever observe it.
+                                if (entry.detach !== null) {
+                                    traceRequested.set(win, entry);
+                                    probeWin = win;
+                                }
+                            }
+                        } catch (error) {
+                            void error;
+                        }
+                        let outcome: boolean;
+                        try {
+                            outcome = base.setGeometry(ref, rect);
+                        } catch (error) {
+                            if (probeWin !== null) {
+                                try {
+                                    traceDetachRequested(probeWin);
+                                } catch (cleanup) {
+                                    void cleanup;
+                                }
+                            }
+                            throw error;
+                        }
+                        if (!outcome && probeWin !== null) {
+                            try {
+                                traceDetachRequested(probeWin);
+                            } catch (cleanup) {
+                                void cleanup;
+                            }
+                        }
+                        return outcome;
+                    };
+                } catch (error) {
+                    void error;
+                    return base.setGeometry;
+                }
+            },
+            stop: () => {
+                try {
+                    for (const win of [...traceRequested.keys()]) {
+                        traceDetachRequested(win);
+                    }
+                    tracePending.length = 0;
+                    traceSentBySrc.clear();
+                } catch (error) {
+                    void error;
+                }
+            },
+        });
+    }
     // Explicit close tracking (D5): canonical live-id cache plus
     // event-gated difference (see world-close-tracker). The removal payload
     // is never read; core treats bare absence as minimize, never close.
@@ -715,9 +979,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         debounceArmed = true;
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            worldTraceProbes.get(state)?.noteDebounceStart();
+        }
         dispatchTimerCancel = scheduleOnce(WORLD_DEBOUNCE_MS, () => {
             debounceArmed = false;
             dispatchTimerCancel = null;
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteDebounceFire();
+            }
             void dispatch(false);
         });
     };
@@ -3097,6 +3367,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         takeResult,
                         log,
                         ...applyHostBase,
+                        setGeometry: typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1"
+                            ? (worldTraceProbes.get(state)?.setGeometryFor(fresh, applyHostBase, token(flight.source)) ?? applyHostBase.setGeometry)
+                            : applyHostBase.setGeometry,
                         setMembership: (ref, wsNativeId, wsRef) =>
                             withHomingSuppression(ref, () => applyHostBase.setMembership(ref, wsNativeId, wsRef)),
                         sendToOutput: (ref, outRef) =>
@@ -3339,7 +3612,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 clearTerminalCaptureRetry();
             }
         }
-        transmitCapture(envelope, flight, headOp);
+        transmitCapture(envelope, flight, headOp, observation);
     };
 
     // Bounded same-envelope retry arming for a failed commandless terminal
@@ -3437,7 +3710,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         retryFlight.gesture = {
             instance: saved.gesture.instance, serial: saved.gesture.serial, win: saved.gesture.win,
         };
-        transmitCapture(saved.envelope, retryFlight, null);
+        transmitCapture(saved.envelope, retryFlight, null, null);
     };
     const maybeRetryTerminalCapture = (envelope: string, flight: CaptureFlight): void => {
         if (stopped || flight.clientCmd !== null || flight.gesture === null) {
@@ -3510,7 +3783,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // Transmit one capture envelope with its bound flight: timeout plus the
     // full DescribeWorld reply handling. Shared by fresh sends and by the
     // bounded same-envelope terminal retry above.
-    const transmitCapture = (envelope: string, flight: CaptureFlight, headOp: string | null): void => {
+    const transmitCapture = (envelope: string, flight: CaptureFlight, headOp: string | null, observation: WorldObservation | null): void => {
         if (stopped || state.boundGen === null || state.brokerIncarnation === null) {
             return;
         }
@@ -3534,6 +3807,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         });
         log(`omnitiler:world:dispatch src=${token(flight.source)} nwinv=${flight.watermark} cmd=${headOp === null ? "observe" : token(headOp)}`);
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            worldTraceProbes.get(state)?.noteSend(token(flight.source), observation);
+        }
         try {
             (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
                 WORLD_DBUS_SERVICE, WORLD_DBUS_OBJECT, WORLD_DBUS_INTERFACE,
@@ -3543,6 +3819,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     settled = true;
                     timeoutCancel();
+                    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                        worldTraceProbes.get(state)?.noteReply(token(flight.source));
+                    }
                     if (typeof reply !== "string") {
                         log("omnitiler:world:transport-error recovery=on-next-event");
                         state.noteRejectedOrTransportError();
@@ -4292,7 +4571,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // Subscribe to workspace native signals: every invalidation
     // advances CURRENT obs synchronously, before debounce.
     // Event-driven only; no polling.
-    const attach = (name: string, handler: () => void): void => {
+    const attach = (name: string, handler: (payload?: unknown) => void): void => {
         try {
             const detach = connectSignal(readSignal(surface, name), handler);
             if (detach !== null) {
@@ -4303,7 +4582,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
     for (const name of ["windowAdded", "windowActivated", "desktopsChanged", "screensChanged", "currentDesktopChanged", "activeScreenChanged"] as const) {
-        attach(name, onNativeInvalidation);
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && name === "windowAdded") {
+            // Admission truth lives on the invalidation handler: the probe
+            // records the added window BEFORE the synchronous invalidation
+            // (and its real debounce arm) runs. No synthetic start is
+            // emitted here; only actual scheduleDispatch arms log start.
+            attach(name, (added) => {
+                if (typeof added === "object" && added !== null) {
+                    worldTraceProbes.get(state)?.noteAdded(added);
+                }
+                onNativeInvalidation();
+            });
+        } else {
+            attach(name, onNativeInvalidation);
+        }
     }
     // Explicit close retention (D5): windowRemoved only arms the close
     // tracker; the payload is never read (its QObject may be dead). The
@@ -4620,6 +4912,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             windowHomingDetaches.clear();
             deferredOwnHoming = false;
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.stop();
+                worldTraceProbes.delete(state);
+            }
             // Teardown drops unsent queued intents: no post-stop dispatch
             // may carry them, and later presses refuse on `stopped`.
             pendingQueue.length = 0;

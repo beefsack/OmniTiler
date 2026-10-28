@@ -374,9 +374,10 @@ fixed `omnitiler:` prefix. `just dev` and `just dev verbose` retain
 bounded lifecycle, terminal, refusal, and rejection evidence. `just dev trace`
 additionally enables redacted per-window and hook detail plus the Planner's
 bounded structural request/reply JSON. It does not capture raw native D-Bus
-payloads. No line carries a caption or title. Window-bearing trace lines carry
+payloads. No line carries a caption or title. Most window-bearing trace lines carry
 the stable `resource_class` application identifier as well as the opaque id; it
-is not a caption and cannot contain document or page content.
+is not a caption and cannot contain document or page content. The timing probe
+below carries only the opaque id and frame geometry.
 
 Startup context (exactly one line per successful world entry start, using the
 existing owner/generation provenance plus the compiled-in source revision;
@@ -384,6 +385,98 @@ existing owner/generation provenance plus the compiled-in source revision;
 `local-dev`):
 
 - `omnitiler:world:ready <state> source=<source-rev>`
+
+### KDE open-animation timing probe (trace only)
+
+- Enable through `just dev trace` (the launcher selects `npm run build:trace
+  --prefix kwin`). This uses the existing `KWIN_TRACE_ENABLED` compile switch,
+  `__OMNITILER_TRACE__="1"`; no runtime setting is added. Ordinary and installed
+  builds explicitly disable it and strip probe work with `--minify-syntax`.
+- Production `DescribeWorld` route only; no jump fix, admission delay change,
+  extra capture, native write or timer. Trace builds alone attach a read/log-only
+  `frameGeometryChanged` one-shot before each traced write. It disconnects on
+  first signal, replacement, eviction, refused/thrown write or adapter stop.
+- Format (one line per event, geometry in KWin frame coordinates):
+
+  ```text
+  omnitiler:world:trace win=<id> ev=<event> t=<wall-ms> [src=<source>] [req=<x,y,w,h>] [seen=<x,y,w,h|null> match=<0|1>]
+  ```
+
+| Event | Meaning / extra fields |
+| --- | --- |
+| `added` | Existing workspace `windowAdded` handler received this id |
+| `debounce-start` / `debounce-fire` | Actual admission timer arm / callback |
+| `send` / `reply` | `DescribeWorld` send / callback arrival; same `src`, only ids in that sent snapshot |
+| `write` | Frame setter requested, not completion; `src`, `req` |
+| `observed` | First subsequent frame signal; `src`, `req`, `seen`, exact `match=1` or mismatch/unreadable `match=0` |
+
+- `t` is `Date.now()` wall-clock milliseconds, not monotonic time. Compare
+  intervals only within one capture; an NTP/manual clock step can distort them.
+  Cross-check journal monotonic receipt intervals; rerun negative or implausible
+  intervals. Receipt time includes logging delay, and neither timestamp proves
+  compositor presentation or animation completion.
+- A window joining an already-armed debounce has no new `debounce-start`.
+  Follow-up cycles can repeat debounce/send/reply events. Match flights by `src`;
+  a reply can be malformed/stale and never write. A signal can fire synchronously
+  inside the setter. No `observed` is expected without a write/signal, after a
+  refused/thrown setter, or when already at the requested frame. Tracking is
+  bounded to 16 pending ids and 16 source snapshots; use one window per capture.
+
+#### User-run single-window capture
+
+1. Follow the [live KWin guide](live-kwin-testing.md), including fresh baseline,
+   helper accounting and evaluated readiness. Preserve the current open effect
+   and animation speed; do not change them during a capture. Prepare the
+   [fixture server and `run` helper](../crates/tiler-live-fixture/README.md#smoke-two-terminals-from-the-repo-root-after-an-env-restart)
+   without spawning any windows. Prebuild the fixture to avoid a build pause at
+   spawn. Run these commands from the repository root inside devenv.
+2. In the capture terminal, retain a fresh journal cursor before starting the
+   controller, then start the scoped trace controller in another terminal:
+
+   ```sh
+   CAPTURE_DIR="$(mktemp -d)"
+   CURSOR="$(journalctl --user -n 1 -o json --no-pager | jq -er '.__CURSOR')"
+   just dev-status
+   ```
+
+   ```sh
+   just dev trace --scope-class OmniTilerTestWindow
+   ```
+
+   Stop on refusal or any ownership/readiness surprise; do not restart around
+   an inert instance. Obtain the recorded KWin PID from the controller receipt
+   and start the unfiltered stream in the capture terminal:
+
+   ```sh
+   RECEIPT="$(cat "$XDG_RUNTIME_DIR/omnitiler-dev/controller-receipt-path")"
+   KWIN_PID="$(jq -er '.pid' "$RECEIPT")"
+   journalctl --user --no-pager -f --after-cursor="$CURSOR" _PID="$KWIN_PID" -o short-monotonic | tee "$CAPTURE_DIR/kwin-journal.log"
+   ```
+
+3. Confirm ready/discovered and a matching dispatch/applied pair after the
+   cursor. Start screen recording with the existing desktop recorder, capturing
+   the entire target output, pointer and a visible capture terminal. Record the
+   frame rate. Keep other windows stationary; do not change workspace, drag,
+   resize or press tiling shortcuts. In the prepared fixture command terminal,
+   create exactly one normal resizable window:
+
+   ```sh
+   run '{"v":1,"request_id":"timing-open","op":"spawn","windows":[{"id":"timing-one","size_px":[640,480]}]}'
+   ```
+
+4. Wait until the window settles, then stop recording and journal following
+   with Ctrl+C. Save the video alongside the journal. Identify the single new
+   `win` from `ev=added`; retain all its lines and surrounding dispatch/applied,
+   stale/error and script-engine messages. Record video frame offsets for first
+   visibility, open-effect end and tile jump, plus `added`-to-fire,
+   send-to-reply and write-to-observed deltas. Note `match` and missing events;
+   do not infer native completion from setter acceptance. The visible terminal
+   is only a coarse video/log alignment cue, not a common presentation clock.
+5. Close only `timing-one` with the fixture helper, shut down its server, and
+   Ctrl+C the trace controller for its verified teardown. Follow the live guide's
+   baseline comparison and exact cleanup. Check for script errors in the retained
+   unfiltered current-PID stream. Keep artifacts outside the repository; repeat
+   as a separate one-window capture if clock intervals are implausible.
 
 World-route automatic fixed-float diagnostics:
 

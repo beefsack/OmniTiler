@@ -568,9 +568,11 @@ Prioritise by return toward these goals
   after map. Tiling itself must not animate; goal is final geometry before
   opening. Timing-probe draft removed 2026-10-18: it instrumented only legacy
   `DescribePlan`, not the production `DescribeWorld` route; no native timing
-  evidence was collected. Next: implement a trace-only world-route probe
-  (admission, planner send/reply, requested and signal-observed geometry),
-  then user-run single-window timing capture with a screen recording.
+  evidence was collected. Trace-only world-route probe delivered offline:
+  admission, correlated planner send/reply, requested and first signal-observed
+  frame. Next: user-run single-window timing capture with screen recording
+  ([procedure](dev-loop.md#kde-open-animation-timing-probe-trace-only),
+  [active record](changes/kde-open-animation-timing.md)); no jump fix yet.
 - P1 | Shared settings schema and tabbed Settings | Delivered: core-owned
   settings catalog (tabs, fields, types, defaults, validation) that each
   platform renders natively and persists, so KDE, Windows and macOS do not
