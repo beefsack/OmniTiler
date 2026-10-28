@@ -213,7 +213,10 @@ Tentative index (user review pending; not approved product rules):
   `ToggleFloat` carries no intent-time rectangle. Core resolves floating geometry
   at execution from the remembered float rectangle, else the current frame.
   Explicit rectangles are only for genuine user placement, such as drag drop.
-  Prove Windows float-placement parity.
+  Prove Windows float-placement parity. User 2026-10-29 closes the open macOS
+  question with option A and no macOS exception: macOS first float uses the
+  current frame in place, replacing the centered-60% fallback; implementation
+  work remains.
 - **Output-targeting race audit, option A, implemented offline (2026-10-28):**
   implicit selection/send/move commands leave output unset; core resolves the
   configured cursor/focused output at execution. Explicit outputs require a
@@ -5443,8 +5446,11 @@ User-confirmed 2026-10-28; implementation pending unless noted
   settings shelved; dynamic per-window radius shelved with version-derived
   default staying (supersedes the 2026-10-27 radius follow-up selection).
 - Deferred post-0.1: SkyLight underlay/below-target border experiment.
+  Superseded FOR UNDERLAY 2026-10-29: the SkyLight evaluation and the product
+  underlay attempt are 0.1 scope (see the 0.1 gate approval below).
   Deferred until macOS refuses Dock-swipe: Mission Control AX fallback.
-  Deferred: floor-15 check and indicator icons.
+  Deferred: floor-15 check and indicator icons (subject to the P1 product-scope
+  audit vs Windows 0.1 below).
 - Live receipts: the newer baseline receipt is retired/archived after two
   protected-window mismatches from system-service window churn. Fresh baseline
   required before any next leg.
@@ -5462,12 +5468,13 @@ User-confirmed 2026-10-28; implementation pending unless noted
 - Decision 7 approved 2026-10-28: add an optional explicit trailing-workspace
   designation to core `WorkspaceDesire` and `PagerWorkspace`. This approves only
   the marker, not another core/protocol change.
-- Tentative technical interpretation, 2026-10-29: `trailing: bool` names the
-  existing final empty lifecycle row, independently of binding/view/retention;
-  shared rings use union occupancy, and incomplete/conflicting evidence yields no
-  positive designation. Wire `trailing:true` is optional; missing means false.
+- User-accepted 2026-10-29: `trailing: bool` names the
+  existing final-empty lifecycle row, independently of binding/view/retention;
+  shared rings use union occupancy; parity padding marks the final row only;
+  incomplete/conflicting evidence fails closed with no positive designation.
+  Wire `trailing:true` is optional; missing means false.
   Both publications use one classifier. Mechanical readers accept either shape;
-  older strict readers require coordinated upgrade
+  older strict readers require a coordinated strict-reader upgrade
   ([implementation](changes/macos-core-trailing-pager.md)).
 - User decision 2026-10-28: the macOS pager projects core workspace rows
   directly; when core publishes an unbound trailing workspace identified by
@@ -5478,6 +5485,35 @@ User-confirmed 2026-10-28; implementation pending unless noted
   trailing proof: it also covers pending/migrated rows and the default contract.
 - Backing stays lazy: displaying the spare authorizes no native append; native
   backing is created only on first switch/send targeting it.
+- User-accepted 2026-10-29: the macOS spare is both the explicit designation
+  and no native binding; a bound trailing row remains an ordinary bound
+  native-backed segment. Unbound non-trailing rows stay ordinary pending rows,
+  visible but disabled until backed, with Unknown occupancy styling and no '+'
+  label. Current-only mode retains current plus the designated spare.
+  Empty/unavailable core pager content hides the item without native inference.
+  Bound trailing rows stay clickable across marker changes; unbound-spare marker
+  loss or binding arrival invalidates stale clicks. Reuse the Defi
+  populated-trailing-becomes-ordinary invariant, not paneru reaping.
+
+### macOS 0.1 gate approval and 0.1 scope principle (2026-10-29)
+
+- User-approved 2026-10-29 ([proposal](changes/macos-0.1-gate-proposal.md)):
+  D1, D2 and D3 as written. D4 as amended: the SkyLight underlay evaluation is
+  NOT deferred post-0.1; the other carried limits stay as written. D5 REJECTED:
+  the native macOS Settings window IS 0.1 scope, so check 12 requires native
+  Settings-window acceptance; validated save/read/reload/default/predicate
+  semantics still must-pass. User rationale: Windows/KDE Settings windows and
+  validating shared settings-window elements across platforms. D6 REJECTED: the
+  product group-underlay visual legs (checks 23/44/N4) remain 0.1 scope, attempt
+  before 0.1 (Windows/KDE already have it), reference-first starting from
+  sibling JankyBorders SkyLight-drawn borders. On failure report evidence to the
+  user, not automatic deferral. Effective base: 43 must-pass, 7 K, 7 excluded,
+  MX1-MX8 must-pass.
+- User 0.1 scope principle, 2026-10-29 (recorded here, not in principles):
+  "I don't want to be cutting scope for things we have already put into windows - the only significant feature I've accepted pushing out of scope for 0.1 is the tabbed window groups and that is deferred for all platforms, not just one. Of course, if we hit problems during implementation, this needs to be revisited and some other items can become deferred due to platform capability restrictions."
+  The P1 backlog audit below checks the 2026-10-28 ROI shelving/deferrals and
+  D4 carried limits against shipped Windows 0.1 product scope and reports each
+  macOS cut Windows ships for user decision.
 
 ## Native adoption 2026-10-24
 

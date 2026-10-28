@@ -919,10 +919,12 @@ Prioritise by return toward these goals
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
 - P0 | macOS: propose 0.1 gate exceptions against the shared template |
-  Apply the [shared gate decision](decisions.md#scope-and-platform-goals) for user approval.
-  Drafted 2026-10-28 ([proposal](changes/macos-0.1-gate-proposal.md)): 43
-  must-pass / 7 known-issue-allowed / 7 excluded plus eight macOS extras;
-  D1-D6 await user approval.
+  Approved 2026-10-29 ([proposal](changes/macos-0.1-gate-proposal.md),
+  [approval](decisions.md#macos-01-gate-approval-and-01-scope-principle-2026-10-29)):
+  43 must-pass / 7 known-issue-allowed / 7 excluded plus eight macOS extras
+  (MX1-MX8 must-pass); D1-D3 as written, D4 amended (SkyLight evaluation not
+  deferred), D5/D6 rejected (native Settings window and underlay attempt are
+  0.1 scope). Native/physical acceptance pending.
 - P1 | Ubuntu 26.04/26.10 acceptance | KWin 6.6 floor selected by user
   2026-10-11 and delivered offline; release 6.6.4, updates 6.6.6 and 26.10
   6.7.5 two-package builds and full apt install/upgrade/removal solver acceptance
@@ -1412,14 +1414,36 @@ Prioritise by return toward these goals
   current-view intent rather than an optional-output change to the explicit
   `Send` contract ([audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
   For a Windows session.
-- P1 | macOS: first-float placement under execution-time float toggle (open
-  decision) | The approved option A ([decision](decisions.md#kde-port-and-race-decisions-2026-10-26))
-  resolves float geometry at execution from the remembered float rectangle,
-  else the current frame. macOS sends `float_rect: None` and core currently
-  centers 60% for a first float, which macOS actuates; option A would change
-  that to the current frame. Decide for macOS (accept the change or keep an
-  exception) before the float-toggle package starts. Windows also needs fresh
-  post-placement facts for parity.
+- P1 | macOS: first-float placement under execution-time float toggle
+  (decided 2026-10-29; implementation pending) | User adopts option A for macOS
+  with no exception ([decision](decisions.md#kde-port-and-race-decisions-2026-10-26)):
+  first float floats in place at the current frame, replacing the centered-60%
+  fallback. macOS sends `float_rect: None` and core currently centers 60% for
+  a first float; change that to the current frame before the float-toggle
+  package starts. Windows also needs fresh post-placement facts for parity.
+- P1 | macOS: baseline triage then pager publication (P1 next) | Triage the
+  eight macOS failures (4 lib / 4 integration in
+  [record](changes/macos-core-trailing-pager.md)) reproduced on clean HEAD
+  after `ae073de9` into a stale macOS expectation, a macOS adapter bug (fix in
+  tiler-macos), or a core regression (return to the user; a core change needs
+  user approval and Windows-session coordination). No assertion weakening, no
+  timeout/retry workarounds. Then restore the parked reviewed pager projection,
+  rerun full gates, publish.
+- P1 | macOS: native Settings window for 0.1 | D5 rejected 2026-10-29: check 12
+  requires native Settings-window acceptance before 0.1 ships. Reuse shared
+  settings-window elements; validate save/read/reload/default/predicate
+  semantics across platforms with the Windows/KDE Settings windows.
+- P1 | macOS: SkyLight group-underlay attempt for 0.1 | D6 rejected 2026-10-29:
+  product group-underlay visual legs (checks 23/44/N4) remain 0.1 scope. Attempt
+  before 0.1, reference-first from sibling JankyBorders SkyLight-drawn borders.
+  On failure report evidence to the user; no automatic deferral.
+- P1 | macOS: 0.1 product-scope audit vs Windows 0.1 | Audit the 2026-10-28 ROI
+  shelving/deferrals and D4 carried limits against shipped Windows 0.1 product
+  scope ([principle](decisions.md#macos-01-gate-approval-and-01-scope-principle-2026-10-29)).
+  Report each macOS cut Windows ships (e.g. indicator icons, dynamic corner
+  radius) for user decision. Tooling shelving (stress runner, live keyboard
+  fixture, latency harness) is not product scope unless a gate dependency is
+  found.
 - P1 | macOS fullscreen float integration | User 2026-10-28: wire the shared
   Session's fullscreen base toggle through the adapter, preserving native
   fullscreen and durable float placement; verify zero AX geometry/focus/state
@@ -1559,7 +1583,7 @@ Prioritise by return toward these goals
   (b) delivered offline 2026-10-28: every user command reaches core FIFO, T3
   supersession retained (`3d64b5c5`).
   **ROI review (user 2026-10-28) - macOS order:** (1) propose 0.1 gate
-  exceptions (P0 item below; drafted, awaiting approval); (2) small fixes:
+  exceptions (P0 item below; approved 2026-10-29, D4 amended, D5/D6 rejected); (2) small fixes:
   focus-walk test fence (delivered offline `812eba82`), pager
   core-trailing-workspace check (incomplete projection found: the `+` action
   disappears when the last native Space is empty; direct core projection with a
@@ -1580,7 +1604,9 @@ Prioritise by return toward these goals
   live input harness (3.0 and the live-fixture remainder; physical dogfood
   checks instead); selection/send route settings (3c); dynamic per-window
   corner radius (version-derived default stays). **Deferred:** SkyLight
-  underlay/below-target border experiment (5) to post-0.1; MC AX fallback (3b)
+  underlay/below-target border experiment (5) to post-0.1 (superseded for
+  underlay 2026-10-29: underlay attempt is 0.1 scope, see the P1 underlay
+  item); MC AX fallback (3b)
   until a macOS release refuses Dock-swipe; macOS 15 floor check; indicator
   icons.
   **Workspace model (user 2026-10-28):** native Spaces remain the default; virtual

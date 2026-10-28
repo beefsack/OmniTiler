@@ -19,8 +19,8 @@ trivially different start state.
 
 | Variant | Minimal action sequence | Offline evidence / direction | Unsupported outcome |
 | --- | --- | --- | --- |
-| Unbound ordinary versus spare | Publish a native-bound row, an unbound pending ordinary row and an explicitly designated unbound trailing row; render; click each | Parked projection preserves core order; pending ordinary is tentatively visible-disabled, not a spare; designated spare selects its exact core id and only then receives a native creation desire | Native appearance/arrival and reference-WM outcomes TBD; no eager backing. [Record](../changes/macos-core-trailing-pager.md) |
-| Bound trailing role changes | Render a bound trailing row; clear its trailing marker without changing id/binding; click the original row | Parked verifier keeps it ordinary and selects the same exact id. In contrast, unbound spare marker loss or binding arrival invalidates the old click | Native click/feel TBD; offline evidence only |
+| Unbound ordinary versus spare | Publish a native-bound row, an unbound pending ordinary row and an explicitly designated unbound trailing row; render; click each | User-accepted 2026-10-29: parked projection preserves core order; pending ordinary is visible-disabled, not a spare; designated spare selects its exact core id and only then receives a native creation desire | Native appearance/arrival and reference-WM outcomes TBD; no eager backing. [Record](../changes/macos-core-trailing-pager.md) |
+| Bound trailing role changes | Render a bound trailing row; clear its trailing marker without changing id/binding; click the original row | User-accepted 2026-10-29: parked verifier keeps it ordinary and selects the same exact id. In contrast, unbound spare marker loss or binding arrival invalidates the old click | Native click/feel TBD; offline evidence only |
 
 ### Fixture-driven native state discriminators
 

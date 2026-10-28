@@ -1,9 +1,8 @@
 # macOS 0.1 gate proposal
 
-- Status: PROPOSAL FOR USER APPROVAL. Nothing in this record is approved.
-  User approval of the D1-D6 decisions below, exactly as written, would
-  promote this proposal to the approved macOS 0.1 gate. Native/physical
-  acceptance remains pending either way; this is not release acceptance.
+- Status: APPROVED 2026-10-29 with amendments (D1-D3 as written, D4 amended,
+  D5/D6 rejected; see Proposed decisions and the [durable approval](../decisions.md#macos-01-gate-approval-and-01-scope-principle-2026-10-29)).
+  Native/physical acceptance remains pending; this is not release acceptance.
 - Basis: [shared scope and platform goals](../decisions.md#scope-and-platform-goals)
   (2026-10-17/18) and the approved
   [57-check inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2)
@@ -16,9 +15,11 @@
 
 - Map all 53 original checks and N1-N4 to macOS exactly once, preserving
   their original labels (53 = 39 must-pass / 12 known-issue-allowed / 2
-  Windows-release; with N1-N4, 57 = 43 / 12 / 2). The proposed macOS
+  Windows-release; with N1-N4, 57 = 43 / 12 / 2). The approved macOS
   treatment is 43 must-pass / 7 known-issue-allowed / 7 excluded, plus
-  eight macOS-specific extras and two proposed sub-leg exceptions (D5/D6).
+  eight macOS-specific extras (MX1-MX8, all must-pass). The D5/D6 sub-leg
+  exceptions are rejected: the native Settings window and the product
+  underlay attempt are 0.1 scope.
 - Record approved-to-propose host equivalents, exclusions and grounded
   macOS additions; distinguish existing evidence from outstanding
   acceptance. No runtime, functional specification or principles changes;
@@ -102,7 +103,7 @@
 | 9 | M | D5 born-fullscreen exit, including games | H | On first native fullscreen exit, reclassify using current hints; no fullscreen geometry interference. Fullscreen windows stay untouched by ordinary tiling. Requires REQUIRED USER-RUN REAL GAME leg plus incremental game CPU/frame-time/input cost against tiler-off (idle cost is not a substitute). | **U**: restored-fullscreen outcomes remain TBD discriminators ([classification](macos-window-classification.md)); option A reporting selected, native user-run acceptance pending. |
 | 10 | M | D6 tiling enable with fixed windows | A | Classify all candidates under the current fixed predicate; preserve intentional/explicit-tile intent and no-touch automatic floats. | **O**: [classification delivered offline](macos-window-classification.md); native enable matrix and maximum-hint availability pending. |
 | 11 | M | Q3 R-RST-01/03/04 | H | Restart intent/frame/store through the macOS owner and native Space adoption; no saved-layout restore or new cross-login identity. | **U**: D25/D26 native dogfood assessment pending; no accepted macOS restart matrix located. |
-| 12 | M | D1 settings UI | H | File/CLI route (`settings.json` plus explicit CLI Meta/preset/exclusion overrides) is the proposed D5 named exception for 0.1 versus a native Settings dialog, which remains must-pass product surface pending user approval of D5. Predicate changes affect later admission, not mass reclassification. No waiver of validated save/read/reload/default/predicate semantics is proposed; file/CLI is recommended for ROI with those semantics still must-pass. Native Settings participation stays consumer-driven. | **O**: file/CLI route exists; validated save/read/reload/default/predicate semantics plus external-edit reconcile, live pickup and any native UI pending. |
+| 12 | M | D1 settings UI | H | Native Settings dialog is 0.1 scope (D5 rejected 2026-10-29): check 12 requires native Settings-window acceptance. Predicate changes affect later admission, not mass reclassification. Validated save/read/reload/default/predicate semantics stay must-pass; reuse shared settings-window elements and validate them across platforms with the Windows/KDE Settings windows. | **O**: file/CLI route exists; native Settings dialog plus validated save/read/reload/default/predicate semantics, external-edit reconcile and live pickup pending. |
 | 13 | M | Q2 fixed admission, including borderless game | A | Keep the selected predicate and fixed-origin no geometry/focus/stacking writes on automatic admission. Requires REQUIRED USER-RUN REAL GAME no-touch proof including a game-shaped window plus incremental game CPU/frame-time/input cost against tiler-off (idle cost is not a substitute). | **O**: [classification offline](macos-window-classification.md); no-touch user-run proof pending. |
 | 14 | M | R-WS-08/11 history/ring remainder | H | Project workspace histories/rings over native Spaces; retain scope, hotplug and preset assertions. Native Spaces first; no virtual/parking substitute. | **P**: numbered select plus relative/previous selection pass live on owned windows ([checkpoint](macos-managed-workspaces.md)); trailing lifecycle, presets and two-display legs pending. |
 | 15 | M | R-WS-01/14 follow/stay sends | A | Numbered/relative follow/stay, wrap and trailing fill; preserve native focus gates. Bridged native move is default with synthetic title-bar drag fallback; sends are user-selectable later (shelved 3c). | **P**: numbered send-follow and default-unbound send-stay pass live; inverse/relative/two-display and trailing send-follow focus fix pending ([record](macos-managed-workspaces.md)). |
@@ -113,7 +114,7 @@
 | 20 | M | Tray workspace toggle remainder | H | Actual workspace TILING TOGGLE remains must-pass: current-mode toggle, future-default seeding, and shortcut/menu equivalent. Menu-bar indicator numbers select workspaces but do not substitute for the toggle. Core trailing logical slot is surfaced by the pager without eagerly creating a native Space. | **U**: no accepted macOS toggle journey located; source review found no macOS toggle wiring. Plain-numbers quick check passed historically; toggle, click handling, Space-switch updates, multi-display and icons pending ([record](macos-workspace-indicator.md)). |
 | 21 | M | Active border over applet popups | H | AppKit nonactivating click-through carrier above its verified target replaces the KWin effect; suppress stale border and restore the eligible foreground without stealing focus. | **O**: [implementation plus owned-fixture evidence](macos-active-border.md); appearance, fullscreen suppression and game/context acceptance pending (TBD discriminators). |
 | 22 | M | Host-settings Revert; tray indicator | H | macOS Authentic may take over conflicting shortcuts with explicit Revert and owned preimages; scoped preview changes no native settings. Truthful menu-bar conflict/status indication separately. | **O**: Authentic ownership and Revert rule selected, not natively accepted; per-chord override verification is a smaller item pending ([scope](../decisions.md#scope-and-platform-goals)). |
-| 23 | M | Confirmed-2026-09-29 remainder | H | Carry forward behavior, not KDE build/install steps: validated settings, directional focus/move, gaps and quiet idle; installed launch rides MX8. Underlay visuals are a proposed D6 post-0.1 UNDERLAY FEATURE sub-leg exception (product underlay currently unavailable; see [group underlay](macos-group-underlay.md) and [rendering routes](../research/macos-port/underlay-rendering-routes.md)); border/preview/drag safety is unaffected and the excluded sub-leg does not reduce the M check. | **P**: gaps, directional focus/move and quiet idle pass physically ([hardening](archive/macos-dogfood-hardening.md)); underlay/product-visual, drag and installed-route proof pending under proposed D6. |
+| 23 | M | Confirmed-2026-09-29 remainder | H | Carry forward behavior, not KDE build/install steps: validated settings, directional focus/move, gaps and quiet idle; installed launch rides MX8. Product group underlay is 0.1 scope (D6 rejected 2026-10-29): attempt before 0.1, reference-first from sibling JankyBorders SkyLight-drawn borders; on failure report evidence to the user. Border/preview/drag safety is unaffected. | **P**: gaps, directional focus/move and quiet idle pass physically ([hardening](archive/macos-dogfood-hardening.md)); underlay/product-visual, drag and installed-route proof pending. |
 | 24 | K | Quiet refresh logs | A | Bounded run-log/console summaries; preserve immediate safety/decision/failure evidence. | **P**: quiet idle logging passes physically; long trace-off/release comparison pending. Only listed cosmetic issues may ship. |
 | 25 | M | Same-output drag/preview remainder | H | Native title-bar drag preview/drop agreement, no premature sibling writes, Esc cancellation; no modifier-drag producer required. | **U**: passive producer parked; no accepted native drag journey ([foundation](macos-drag-drop-overlays.md)). |
 | 26 | K | Drop-intent edge leftovers | H | Native title-bar snap-back, Esc timing, size constraints and edge/drop assertions; no KDE-only oracle IDs. | **O**: offline Engine preview/drop plumbing only; exact remaining edge matrix pending. Check 25 safety assertions stay M. |
@@ -134,7 +135,7 @@
 | 41 | K | Correlated observability capture | H | Bounded action correlation, opaque lifecycle tokens and monotonic timings replace KWin multi-endpoint capture; omitted/coalesced history stays explicit. | **O**: offline diagnostics only; overflow/exception/incident and whole-system correlation pending. |
 | 42 | M | Q4 whole-workspace migration | H | Project logical membership/views over host-owned Spaces; retain layout, source refill and fullscreen/maximized carry. No automatic Space relocation beyond the selected send routes. | **O**: executor/desire plumbing offline; native arrival/partial-failure and all-mode integration pending. |
 | 43 | M | R-MOV-03/R-OUT-04 output move/send | A | All four directions, local move first, current destination, proper selection/arrival and follow/stay fences. | **O**: offline fixtures; native two-display/mixed-scale, float-boundary and suppression journeys pending. |
-| 44 | M | K1 visual remap across scales | H | FULL plus visible work-area rectangles with logical-point rounding replace compositor-local mapping; border/preview/pager carriers reanchor, no fullscreen geometry writes. Underlay reanchor is a proposed D6 post-0.1 UNDERLAY FEATURE sub-leg exception (product underlay currently unavailable); the excluded sub-leg does not reduce the M check. | **O**: FULL/work-area report fixtures pass ([topology](archive/macos-full-display-topology.md)); second-display arrangement validation and mixed-scale transitions pending. |
+| 44 | M | K1 visual remap across scales | H | FULL plus visible work-area rectangles with logical-point rounding replace compositor-local mapping; border/preview/pager carriers reanchor, no fullscreen geometry writes. Underlay reanchor is 0.1 scope (D6 rejected 2026-10-29): attempt before 0.1 as in check 23. | **O**: FULL/work-area report fixtures pass ([topology](archive/macos-full-display-topology.md)); second-display arrangement validation and mixed-scale transitions pending. |
 | 45 | M | Born-fullscreen dogfood | A | Real app born fullscreen beside tiles, exit/re-enter and untouched frames; not a helper-only pass. Requires REQUIRED USER-RUN REAL GAME leg plus incremental game CPU/frame-time/input cost against tiler-off (idle cost is not a substitute). | **U**: user-run born-fullscreen/game journey pending. |
 | 46 | M | Directional/shortcut/convergence re-test | H | CGEventTap as sole hotkey route plus saved-settings Apply/Revert replace KGlobalAccel Apply/Force/host Revert; keep actual directional/convergence outcomes. | **P**: directional focus/move pass physically; Carbon retired after 0/3 physical delivery; physical chord delivery/readiness/smoothness pending. |
 | 47 | M | Cross-output drops | A | Native title-bar drag into occupied/empty destination layouts; preview/drop agree, source reflows, failed arrivals never commit membership. | **U**: producer parked; no accepted cross-output drop journey. |
@@ -149,10 +150,10 @@
 
 | ID | Class | Shared check | Map | macOS assertion / host equivalent | Evidence and exact remaining acceptance |
 | --- | --- | --- | --- | --- | --- |
-| N1 | M | Missing/disabled/removed effect | H | macOS has in-process AppKit carriers (border, indicator, preview), not a separately installed KWin effect package; there is no independently removable effect package on macOS. The carrier-creation/refusal/unavailability equivalent is proposed, not approved, under D3: disable visuals and exercise carrier-creation/refusal/unavailability while keeping tiling operational; no stale overlays or silent stop. Package-remove actions are N/A, not the failure-tolerance assertion. Owner loss stays checks 28/30/50 and MX2/MX3. | **U**: visual-unavailable native journey pending; creation-refusal/hide faults offline only. Never claim a killed integrated owner keeps tiling. |
+| N1 | M | Missing/disabled/removed effect | H | macOS has in-process AppKit carriers (border, indicator, preview), not a separately installed KWin effect package; there is no independently removable effect package on macOS. The carrier-creation/refusal/unavailability equivalent is accepted under D3: disable visuals and exercise carrier-creation/refusal/unavailability while keeping tiling operational; no stale overlays or silent stop. Package-remove actions are N/A, not the failure-tolerance assertion. Owner loss stays checks 28/30/50 and MX2/MX3. | **U**: visual-unavailable native journey pending; creation-refusal/hide faults offline only. Never claim a killed integrated owner keeps tiling. |
 | N2 | M | External host configuration | H | External display/Space/menu-bar settings and tiler-file edits replace KWin configuration edits. Reconfigure truthfully; distinguish saved-file reload from owned session restoration; no unintended writes. | **O**: file/CLI route exists offline; outside-change reconcile/ownership roundtrip pending. |
 | N3 | M | Sleep with fullscreen game | A | Sleep/wake with a fullscreen session and tiled windows; game unimpeded, no stuck holds, correct recovery. Requires REQUIRED USER-RUN REAL GAME leg plus incremental game CPU/frame-time/input cost against tiler-off (idle cost is not a substitute). | **U**: never exercised on macOS; user-run acceptance pending. |
-| N4 | M | Scaling with overlays | H | Change display resolution/scale/work area with maximized/fullscreen/fixed-float windows; fresh logical-point conversion and carrier/pager reanchor, no fullscreen geometry writes. Underlay reanchor is a proposed D6 post-0.1 UNDERLAY FEATURE sub-leg exception (product underlay currently unavailable); the excluded sub-leg does not reduce the M check. | **O**: report/geometry fixtures only, not a physical reconfiguration; native matrix pending under proposed D6 for the underlay sub-leg. |
+| N4 | M | Scaling with overlays | H | Change display resolution/scale/work area with maximized/fullscreen/fixed-float windows; fresh logical-point conversion and carrier/pager reanchor, no fullscreen geometry writes. Underlay reanchor is 0.1 scope (D6 rejected 2026-10-29): attempt before 0.1 as in check 23. | **O**: report/geometry fixtures only, not a physical reconfiguration; native matrix pending. |
 
 ## Proposed macOS-specific extras
 
@@ -183,9 +184,9 @@
 | D1: macOS host equivalents and exclusions | Accept the A/H/X matrix, with only seven full-check exclusions: 3, 4 (both originally W, Windows-product journeys) and 5, 35, 38, 40, 53 (all originally K, reference-host or KDE-only surface). Retain all 43 original M checks and the macOS equivalents of their safety assertions. | H is substitution, not reduced rigor. Passive-drag legs stay pending, not excepted; N1 AppKit-carrier steps are applicable only as stated. Reject/adjust individual equivalents explicitly rather than infer blanket host parity. |
 | D2: Original K rows and W treatment | Keep the seven applicable K checks (24, 26, 29, 36, 37, 41, 52) known-issue-allowed only when listed and with no crash or silent tiling stop. Exclude both W checks as Windows-product journeys under D1. | Proposed effective base: 43 must-pass, 7 K, 7 excluded. No current M failure becomes a K issue; package/update-channel selection and installed delivery remain separate dependencies even though indicator polish is K. |
 | D3: macOS companion-failure boundary (N1) | Accept optional visual disable/unavailability and carrier-creation failure as the macOS effect-absent equivalent, with tiling continuing; retain integrated owner/thread-loss recovery separately in checks 28/30/50 and MX2/MX3. | There is no removable KWin-effect package on macOS. If this is insufficient, specify a stronger failure-isolation requirement before claiming N1 equivalence; no architecture change is authorized by this proposal. |
-| D4: macOS extras and limitations carried | Add MX1-MX8 as must-pass, with only already-decided limits carried, not newly approved: dynamic radius shelved with version-derived default staying, SkyLight evaluation deferred post-0.1 (distinct from the proposed D6 underlay-feature sub-leg), route settings and native stress/fixture-harness work shelved, MC fallback deferred until Dock-swipe refusal, floor verification deferred with the macOS 15 support promise retained as explicit unverified risk, indicator icons excluded from this proposal per the existing deferral. No game waiver is proposed. | Shelter/deferral is sequencing, not a safety waiver. No game-safety, recovery or fullscreen-exit failure is proposed as a known issue. First-float placement stays an open decision elsewhere; this gate assumes no outcome for it. |
-| D5: Proposed file/CLI settings exception for 0.1 (proposed, not approved) | For 0.1 only, the validated file/CLI route (`settings.json` plus explicit CLI Meta/preset/exclusion overrides) is the named exception versus the native Settings-dialog must-pass surface in check 12. Recommended for ROI because the route exists; no waiver of validated save/read/reload/default/predicate semantics is proposed, and those semantics stay must-pass. | If the user rejects D5, check 12 requires native Settings-dialog acceptance before 0.1 ships. Approval of D5 does not waive any other settings behavior. |
-| D6: Proposed post-0.1 underlay-feature sub-leg exception (proposed, not approved) | The product group-underlay visual sub-leg in checks 23/44/N4 is deferred post-0.1 as an explicit named sub-leg exception: product underlay is currently unavailable (AppKit ordering failed; SkyLight evaluation only; see [group underlay](macos-group-underlay.md) and [rendering routes](../research/macos-port/underlay-rendering-routes.md)). This is distinct from the already-deferred SkyLight experiment and is the user's choice because underlay is first-class VISION. Recommended for ROI; existing border/preview/drag safety is unaffected. | Full-check M count is unchanged; only the named underlay sub-leg is excepted. No other visual omission is implied or approved. |
+| D4: macOS extras and limitations carried (approved as amended 2026-10-29) | Add MX1-MX8 as must-pass, with only already-decided limits carried, not newly approved: dynamic radius shelved with version-derived default staying, route settings and native stress/fixture-harness work shelved, MC fallback deferred until Dock-swipe refusal, floor verification deferred with the macOS 15 support promise retained as explicit unverified risk, indicator icons excluded from this proposal per the existing deferral. SkyLight underlay evaluation is NOT deferred post-0.1: it is part of the 0.1 underlay attempt (D6 rejected). No game waiver is proposed. | Shelter/deferral is sequencing, not a safety waiver. No game-safety, recovery or fullscreen-exit failure is a known issue. First-float placement is decided for macOS (option A, no exception); the implementation follows. The carried radius/icon limits are subject to the P1 product-scope audit vs Windows 0.1. |
+| D5: file/CLI settings exception for 0.1 (REJECTED 2026-10-29) | Rejected: the native macOS Settings window IS 0.1 scope, so check 12 requires native Settings-window acceptance before 0.1 ships. Validated save/read/reload/default/predicate semantics still must-pass. User rationale: Windows/KDE Settings windows and validating shared settings-window elements across platforms. | The file/CLI route stays, but it does not substitute for the native Settings dialog. |
+| D6: post-0.1 underlay-feature sub-leg exception (REJECTED 2026-10-29) | Rejected: the product group-underlay visual legs in checks 23/44/N4 remain 0.1 scope. Attempt before 0.1 (Windows/KDE already have it), reference-first starting from sibling JankyBorders SkyLight-drawn borders (see [group underlay](macos-group-underlay.md) and [rendering routes](../research/macos-port/underlay-rendering-routes.md)). Existing border/preview/drag safety is unaffected. | On failure report evidence to the user; no automatic deferral. No other visual omission is implied or approved. |
 
 ## Known gaps, unresolved choices and blockers
 
@@ -198,13 +199,13 @@
   reliability/game-safety work (ROI item 6); small fixes first (focus-walk
   fence, pager core-trailing check, `just dev` log-follower leak,
   `just launch` exit code).
-- Unresolved user choices (not decided by this proposal): proposed D5
-  file/CLI settings exception; proposed D6 post-0.1 underlay-feature
-  sub-leg exception; first-float placement under execution-time toggle
-  (accept current-frame change or keep a macOS exception); fullscreen
+- Resolved 2026-10-29: D5 rejected (native Settings window is 0.1 scope),
+  D6 rejected (product underlay attempt is 0.1 scope), first-float adopts
+  option A for macOS with no exception. Still open: fullscreen
   logical-membership design; distribution channel plus paid
   signing/notarization/update decisions; App Store stance. Already-decided
-  MC fallback, floor, icon and route-settings timing is not reopened.
+  MC fallback, floor and route-settings timing is not reopened; the carried
+  icon/radius limits are subject to the P1 product-scope audit vs Windows 0.1.
 - macOS 15 floor: support promise retained; floor-release verification
   deferred as explicit unverified risk.
 - Source ambiguity: macOS classification discriminators (AX-size-only
@@ -232,12 +233,12 @@
 
 - Documentation-only inventory: 57 original IDs mapped exactly once
   (1-53 plus N1-N4); classes preserved from the approved inventory;
-  proposed treatment 43 M / 7 K / 7 X plus eight MX extras.
+  approved treatment 2026-10-29: 43 M / 7 K / 7 X plus eight MX extras
+  (MX1-MX8, all must-pass).
 - Counts: A=20, H=30, X=7 across the base; evidence P=8, O=24, U=18,
   X=7; extras evidence P=4, O=1, U=3; complete gate passes 0.
 - Checks to run after any edit: `git diff --check` and
   `git status --short`. No code or desktop tests performed or claimed.
-- If the user approves D1-D6 exactly as written, this record becomes the
-  approved macOS 0.1 gate and stays active for pending acceptance; any
-  eventual approval must also be recorded in durable decisions; no
-  approval is recorded here.
+- Approved 2026-10-29 (D1-D3 as written, D4 amended, D5/D6 rejected); this
+  record stays active for pending acceptance. The approval is also recorded
+  in durable decisions.

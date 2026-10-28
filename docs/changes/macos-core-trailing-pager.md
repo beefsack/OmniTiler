@@ -25,29 +25,33 @@
 
 - User-approved 2026-10-28: the explicit trailing marker is the only authorized
   shared-contract extension. Existing trailing lifecycle remains authoritative.
-- Tentative technical shape: Rust `trailing: bool`; optional wire key emitted only
-  when true, missing means false. Older strict readers need mechanical acceptance
-  of the new optional key; this is backward reading, not old-reader compatibility.
-- Tentative publication interpretation: the final ring row has the trailing role
-  when empty under the existing lifecycle's non-sticky homed occupancy facts.
-  Visibility, binding and retention do not change that lifecycle role. Shared
-  rings use union occupancy; parity padding leaves only the final row designated.
-  Incomplete/conflicting evidence publishes no positive designation.
-- The macOS spare is the intersection of that explicit designation and no native
-  binding; a bound trailing row remains an ordinary native-backed segment.
-- Prior art: [workspace-model review](../research/macos-port/workspace-model-review.md)
+- User-accepted 2026-10-29: Rust `trailing: bool`; optional wire key emitted only
+  when true, missing means false. Older strict readers need a coordinated
+  strict-reader upgrade to accept the new optional key; this is backward reading,
+  not old-reader compatibility.
+- User-accepted 2026-10-29: the final ring row has the trailing role when empty
+  under the existing lifecycle's final-empty lifecycle-row classification,
+  independently of binding, view and retention. Shared rings use union
+  occupancy; parity padding marks the final row only. Incomplete/conflicting
+  evidence fails closed with no positive designation.
+- User-accepted 2026-10-29: the macOS spare is both the explicit designation
+  and no native binding; a bound trailing row remains an ordinary bound
+  native-backed segment.
+- User-accepted 2026-10-29, prior art: [workspace-model review](../research/macos-port/workspace-model-review.md)
   pins Defi ADR 0004 (populated trailing becomes ordinary) and paneru (stable query
   slots, no guaranteed trailing spare). Reuse the former invariant, not a new
   workspace store or paneru's optional reaping behavior.
-- Tentative macOS projection details, implemented but parked: every core row is
+- User-accepted 2026-10-29 (implemented but parked): every core row is
   visible in core order; unbound non-trailing rows remain ordinary pending rows,
-  disabled until backed. Current-only mode retains current plus the designated
-  spare. Unbound rows use Unknown native occupancy styling, not a '+' label.
-  Empty/unavailable core pager content hides the item without native inference.
-- Exact-id clicks use existing `SelectWorkspace`, including the spare; keyboard
-  numbered/trailing actions are unchanged. Coherent presentation/desire/generation
-  snapshots and render/topology/binding/designation fences precede submission.
-  Bound trailing rows remain ordinary clickable rows across marker changes.
+  visible but disabled until backed, with Unknown native occupancy styling and
+  no '+' label. Current-only mode retains current plus the designated
+  spare. Empty/unavailable core pager content hides the item without native inference.
+- User-accepted 2026-10-29: exact-id clicks use existing `SelectWorkspace`,
+  including the spare; keyboard numbered/trailing actions are unchanged. Coherent
+  presentation/desire/generation snapshots and render/topology/binding/designation
+  fences precede submission. Bound trailing rows remain ordinary clickable rows
+  across marker changes; unbound-spare marker loss or binding arrival invalidates
+  stale clicks.
 
 ## Evidence and status
 
@@ -99,8 +103,12 @@
   `skip_then_actual_removal_releases`,
   `space_type_gap_retains_hidden_layout_without_release`. Exact trigger remains
   unknown; no assertion weakening or timeout/retry workaround was applied.
-- Overall full gate remains red, not waived. Reconcile those baseline expectations
-  with native completeness semantics, then restore the parked projection and run
-  full gates before publication. The source was preserved and removed from the
+- User-approved 2026-10-29 baseline approach: the eight failures above reproduce
+  on clean HEAD after `ae073de9` Windows-workstream native completeness fencing.
+  Triage each into a stale macOS expectation, a macOS adapter bug (fix in
+  tiler-macos), or a core regression (return to the user; a core change needs
+  user approval and Windows-session coordination). No assertion weakening and no
+  timeout/retry workarounds. Then restore the parked reviewed pager projection,
+  rerun full gates, and publish. The source was preserved and removed from the
   working tree; this record remains active. Native pixels and physical feel remain
   untested; no live leg was run.
