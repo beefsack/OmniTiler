@@ -28,10 +28,10 @@ Prioritise by return toward these goals
 
 - Windows order (user 2026-10-28): (1) keyboard stress runner; (2) batched
   physical checks session, including pending Xbox shortcut, launcher geometry
-  and cross-output edge focus acceptance; (3) Windows-host test flakes;
-  (4) staged switch prototype and intermittent incomplete hide, with the
-  coordinated protocol bump; (5) sticky-rehome sampling and pager event
-  coverage (P2).
+  and cross-output edge focus acceptance; (3) staged switch prototype and
+  intermittent incomplete hide, with the coordinated protocol bump;
+  (4) sticky-rehome sampling and pager event coverage (P2); (5) panic_diag
+  flake watch (P3).
 - P1 | Windows staged workspace switch prototype | Approved 2026-10-28
   ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
   arrival shows, prove visible, one-shot focus, prove foreground, then hide
@@ -90,11 +90,15 @@ Prioritise by return toward these goals
   evidence; corrected home-away at 10ms and a separate repeat pass all hide/show
   checkpoints but do not reproduce or disprove the race. Fix without weakening
   lifetime/visibility fences ([record](changes/archive/platform-neutral-stress-acceptance.md)).
-- P2 | Windows-host test flakes | Pre-existing `scripted full
-  row` panic reproduced once in 16 runs and also on parent `68ce0b75`.
+- P3 | Windows-host test flakes | `scripted full row` fixed in `afd5471a`: the
+  macOS space-select latch treated an early condvar timeout as expiry before
+  its monotonic deadline; it now waits the remainder (product wait-contract
+  fix in `tiler-macos`, macOS owner to note; clock-controlled regression,
+  [record](changes/archive/windows-host-test-flakes.md)). Remaining:
   `panic_diag::tests::scoped_guard_installs_restores_and_delegates` failed once
-  in a full locked run 2026-10-28 and has not reproduced since.
-  Diagnose and stabilize without weakening the assertions.
+  on 2026-10-28; its output was not retained, the foreign-panic hypothesis is
+  disproved and 200 ordered repeats pass. Watch only: capture the assertion
+  and output if it recurs, then diagnose without weakening assertions.
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies (now owned by the KDE v2 port item
   below); (3) KDE Settings core-catalog
