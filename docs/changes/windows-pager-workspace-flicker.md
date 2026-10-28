@@ -3,7 +3,8 @@
 ## Goal and scope
 
 - Diagnose the pager disappearing briefly during workspace switches with causal
-  evidence and fix the smallest uncontentious rendering defect.
+  evidence and propose the smallest supported remedy. Presentation behavior
+  remains unchanged during this investigation.
 - Exclude Windows latest-world coalescing and the parked workspace-return focus
   design. Preserve fullscreen/game safety and native authority gates. No timers,
   settle waits or retries as fixes.
@@ -12,12 +13,12 @@
 
 1. Trace workspace switching through pager publication and native presentation;
    distinguish actual hiding from repaint or replacement artifacts.
-2. Add a failing-first offline regression where practical, then implement a
-   bounded fix. Stop at diagnosis if the cause requires coalescing or policy.
-3. Verify fixture-only live behavior under the complete Windows testing guide,
-   including preflight, provenance and recovery.
-4. Review evidence, record material decisions, and archive this record on
-   completion.
+2. Compare workspace switching with focus-only repaint, including native
+   visibility sets, taskbar interaction and surface geometry.
+3. Separate source guarantees and accepted native evidence from unproven
+   compositor-visible explanations; identify the discriminating capture.
+4. Report a proposed remedy and switch-latency implications. Keep the record
+   active while the visible cause and remedy remain unresolved.
 
 ## Current evidence
 
@@ -149,6 +150,183 @@
   (1153 passed, one ignored); targeted pager tests passed (144); package fmt,
   strict all-target Windows clippy and `git diff --check` passed. Diagnostic
   regression was red before the cross-pump retention fix and green after.
+
+## Switch-versus-focus audit (2026-10-28)
+
+### Observation boundary
+
+- Updated dogfood report: one or two frames of apparent disappearance on
+  workspace switches, never on window-focus changes. Disabling the NVIDIA
+  overlay removed the separate notification-bell/tray shift; the remaining
+  micro-flicker is the subject here. Earlier observations may mix the symptoms.
+- This continuation is source analysis, not a new live or physical reproduction.
+  Earlier accepted fixture traces exclude switch-time hide, suppression and
+  recreation in that leg, but contain no accepted pixels of this micro-flicker.
+
+### 1. Erase, paint and presentation
+
+- `ffi/pager.rs:1012-1017` zero-initializes `WNDCLASSW` and never assigns
+  `hbrBackground`: the class brush is NULL. Class flags are
+  `CS_HREDRAW | CS_VREDRAW`, not application double buffering.
+- `ffi/pager.rs:880-884,936` traces `WM_ERASEBKGND`, then calls
+  `DefWindowProcW`; it neither fills nor hides the pager there.
+  `ffi/pager.rs:349-360` calls `SetWindowPos` then
+  `InvalidateRect(hwnd, NULL, TRUE)`. TRUE requests erasure when the update
+  region is processed, not an immediate clear at invalidation. With no class
+  brush, default handling supplies no class-brush background fill. Therefore
+  erase-message counts do not establish a cleared surface or a clear-to-paint
+  time gap. See the Microsoft
+  [erase contract](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-erasebkgnd)
+  and [invalidation contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-invalidaterect).
+- `ffi/pager.rs:899-912` handles `WM_PAINT` by cloning the current frame.
+  `:584-614,618-757` paints directly into the `BeginPaint` DC: each cell's
+  background `FillRect` overwrites its old miniatures/text, then that cell's
+  miniatures, borders and text are drawn. It does not clear the whole strip
+  first in a separate pass. Focus-only repaint runs this same full-cell loop.
+- `ffi/pager.rs:299-312,549-582` creates an opaque popup and blits opaque
+  artwork, with no `WS_EX_LAYERED` or `UpdateLayeredWindow`. No pager-specific
+  DWM attribute, region, reparenting or buffered-paint call was found in the
+  native carrier or Windows source search. DWM's normal redirection still
+  applies: [composition](https://learn.microsoft.com/en-us/windows/win32/dwm/dwm-overview)
+  uses off-screen window surfaces, not literal drawing to the physical screen.
+- Conclusion: the classic separate OS background-erase explanation is not
+  supported. There is no application-owned complete-frame/single-blit boundary
+  around the GDI drawing, so an intermediate drawing presentation cannot be
+  excluded. Native paint entry/exit is not a compositor-present receipt. Paint
+  delay alone should leave the old valid pixels, not prove disappearance.
+
+### 2. What actually differs on a workspace switch
+
+- Both active-index and miniature-focus changes fail `frames_equal`
+  (`pager_sys.rs:234-247`). Both replace the stored frame and call the same
+  `move_show` (`:765-782`): topmost `SetWindowPos` with
+  `SWP_NOACTIVATE | SWP_SHOWWINDOW`, followed by full-client invalidation.
+  Thus neither this call nor full-strip GDI repaint is switch-specific.
+- Width is workspace count times DPI-scaled cell width, with the right edge
+  at `tray_left - gap` (`pager.rs:444-467,610-616`). Active selection alone
+  does not enter that formula. Trailing cleanup can remove invisible empty
+  nonfinal workspaces or append a needed trailing workspace, with a two-slot
+  floor (`tiler-core/src/workspace.rs:3,35-65`); count changes are conditional,
+  not inherent to selecting an existing workspace. Compare x/y/w/h and ids
+  on the actual flickering switches before attributing a resize.
+- The pager is reused by output; removal and DPI change are the recreation
+  conditions (`pager_sys.rs:675-714`). Hide/ensure-show and periodic topmost
+  recovery are separate paths (`ffi/pager.rs:368-405`); the latter is on an
+  existing two-second cadence (`pager_sys.rs:70,818-835`), not a switch phase.
+- A further switch-specific shell call was found: the owner computes the
+  workspace ordinal and updates its tray icon before taskbar-pager sync
+  (`tiling_sys/run_loop_intake.rs:198-204,277`). Ordinal changes rebuild both
+  normal/warning icons and replace the old pair (`ffi/tray.rs:730-765`), then
+  call `Shell_NotifyIconW(NIM_MODIFY)` (`:107-125,169-175`). Same-output focus
+  changes normally leave ordinal/warning/status unchanged and skip this work.
+  Icons stay 32x32 (`:187-211`); ordinary update is MODIFY, not DELETE/ADD.
+  This is independent of the resolved NVIDIA bell, and does not itself prove
+  tray movement or pager occlusion. Ordinary MODIFY is not currently traced.
+
+### 3. Departure-hide membership and cloaking
+
+- `tiling_sys/world_native.rs:1434-1459` builds departures from exact
+  `core_homing` members on this output but outside the destination, excludes
+  sticky keys, and resolves each key's stored identity. Arrivals must have a
+  matching hidden claim. There is no process-wide enumeration/hide in this
+  construction; individual claims address individual HWNDs.
+- Owner-process windows never become observed tiling candidates
+  (`tiling_sys/observe.rs:861-871`). Hide admission independently refuses the
+  owner PID, parented/owned windows, tool windows and no-activate windows
+  (`product_hide/sys/mod.rs:1357-1359,1388-1402`), and binds exact process and
+  member lifetime (`:1475-1511`). Pager creation has NULL parent/owner and
+  TOOLWINDOW/TOPMOST/NOACTIVATE styles (`ffi/pager.rs:299-312`), so it also
+  cannot disappear through an ownership relationship with a departing client.
+- Production hide/reveal chooses claim-based visibility primitives
+  (`tiling_sys/world_native.rs:1277-1292,1351-1363`), not cloak or minimize
+  operations on the pager. Cloaking/ITaskbarList mutation belongs to the
+  experimental test-helper path (`cloak.rs:2-8`; implementation and helper
+  bindings in `ffi/cloak.rs` and `test_window.rs`). Ordinary observation reads
+  the cloak fact (`tiling_sys/observe.rs:1061-1073`).
+- This structural exclusion agrees with the earlier accepted fixture trace;
+  it is not proof of uninterrupted DWM visibility in dogfood.
+
+### 4. Indirect shell and foreground effects
+
+- Current view order is departure hides, then arrival reveals
+  (`tiling_sys/world_native.rs:1467-1499`); the view pass precedes one-shot
+  focus (`tiling_sys/world_diff.rs:3118-3123,3461,3579-3599`). Matching arrivals
+  use the nonactivating lane (`:3110-3122`), which posts per-HWND
+  `SetWindowPos` with ASYNCWINDOWPOS/NOACTIVATE/NOZORDER plus HIDE/SHOW
+  (`product_hide/sys/mod.rs:979-1017`). Other view changes use the pumped
+  `ShowWindowAsync` lane (`:666-703`). Same-view focus does not need this
+  departure/reveal batch; the explicit focus setter itself is common.
+- Hiding/showing application windows can change Explorer's taskbar button
+  presentation. There is no production `ITaskbarList::DeleteTab/AddTab` in
+  this path. The pager is not an Explorer child: it is a separate topmost
+  popup positioned over the taskbar rectangle, immediately left of the tray
+  (`ffi/pager.rs:299-312`; `pager.rs:456-477`). A taskbar repaint underneath
+  an unchanged, above-taskbar opaque pager is not enough to blank it: coverage
+  would require relative z-order/occlusion changes, surface invalidation, or
+  changed anchor geometry. Normal button reflow is not evidence of tray-edge
+  movement. Fresh taskbar facts are re-read each pump
+  (`tiling_sys/pager_host.rs:647-673`; `ffi/pager.rs:1111-1136`).
+- Hiding the foreground permits fallback activation; the
+  [SW_HIDE contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow)
+  explicitly activates another window. Previously accepted source-event
+  measurements found unmatched foreground events on empty departures, not
+  causal attribution of those events. The roughly 80ms figure is first show
+  post to matched target foreground callback including delivery, not measured
+  pager blank duration (`windows-workspace-return-focus.md:1295-1300,1334-1355`).
+
+### Ranked explanations and proposed remedy
+
+1. **Shell/taskbar interaction during switching, cause still unproven.**
+   Best switch-only match: client visibility/button churn, foreground fallback
+   and the additional numbered-tray MODIFY. Against: fixed-size tray icon,
+   separate opaque pager, and earlier post-effect samples above the taskbar;
+   no transient occlusion or taskbar-order reversal was captured.
+2. **Intermediate GDI drawing exposed by switch-time scheduling/composition.**
+   Direct per-cell fills exist without an application backbuffer. Against:
+   focus changes do the same full-strip repaint without reported flicker;
+   there is no separate class-brush clear. Needs a switch-specific coupling.
+3. **Conditional strip move/resize.** Count or tray-edge changes can move it.
+   Against: not inherent to a switch, and the earlier larger tray shift is
+   separately resolved. Native move requests alone do not prove changed bounds.
+
+- Proposed rendering remedy, **only if capture shows incomplete cell drawing**:
+  draw a complete opaque frame off-screen and copy it once in `WM_PAINT`;
+  avoid requesting separate background erase. Retain the existing safe
+  topmost/show behavior until occlusion is excluded. Changing only erase=FALSE
+  is not a demonstrated fix with a NULL brush. Removing content-only
+  `SetWindowPos` could reduce native work but also remove immediate topmost
+  protection and worsen the first hypothesis.
+- If capture instead shows the whole strip replaced by taskbar pixels, pursue
+  taskbar-order evidence and a bounded, safety-gated event-driven z-order
+  correction, not a paint-buffer fix. A tray-ordinal freeze A/B would isolate
+  its shell call, but is a separate temporary behavior experiment, not tracing
+  and not performed here. Do not remove the numbered icon on inference alone.
+- Latency: no remedy should add a wait, retry or switch-settle deadline. A
+  reused off-screen buffer adds a strip-sized copy to painting, not a deliberate
+  arrival delay; its actual cost must be measured. No numeric speedup is
+  established. Preserve and compare select-to-visible/select-to-foreground
+  timing and command counts as well as blank-frame count.
+- The staged show -> visible proof -> focus -> foreground proof -> departure
+  hide design changes the foreground/visibility coupling and may change this
+  artifact independently. It does not remove tray MODIFY, guarantee taskbar
+  order, or solve no-target empty departures. Verify it separately rather than
+  folding a pager remedy into the switch-order experiment.
+- Exact next evidence: user-owned high-frame-rate recording (prefer 120/240fps
+  where supported, otherwise a physical high-speed camera) with the whole
+  taskbar, tray, pager and arriving/departing content visible, and the existing
+  in-product trace enabled. Record identifiable slow fixed-count roundtrips
+  and same-output focus changes as the control. Inspect every missing frame:
+  progressive background-only cells support drawing; underlying taskbar with unchanged strip
+  suggests coverage/surface loss; changed x/width plus logged geometry suggests
+  reanchoring. Join native events and world rows by request/revision, retaining
+  tickless gate rows. Existing pager events have order, not per-event clocks
+  (`ffi/pager_trace.rs:46-74`); batch context cannot measure erase/paint latency
+  or uniquely identify an occluder. A recording can narrow these branches, not
+  by itself prove tray MODIFY caused them. No additional diagnostic or product
+  code was added in this continuation.
+
+- Source paths above are relative to `crates/tiler-windows/src/` unless another
+  crate or document is named.
 
 ## Blocker and next action
 

@@ -13,6 +13,41 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## Command-owned memory and Windows latest-world rendering (closed 2026-10-28)
+
+- P1 | Command-owned active-window memory | Linked, safely bindable command
+  choices implemented and independently reviewed; per-path ownership audit and
+  discriminating red/green complete. Existing Engine commits retained; core,
+  protocol and Windows offline gates pass. Parked: held/unlinked or rejected
+  session-memory gates, exception/non-leaf storage and unknown-foreground policy.
+  Observation/departure ingestion is unchanged; Steam spam only partly addressed.
+  [Record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28).
+- P1 | Windows latest-world rendering | Approved 2026-10-27; process every
+  queued command in order, skip superseded unissued worlds structurally. Preserve
+  safety, exact-desktop/effect/hidden-write/flight fences; no waits or retries.
+  Batch-local numbered/trailing and history selection coalescing delivered;
+  catch-up renders nothing, linked-send barrier and fresh flush gates covered.
+  Independent review, offline gates and both zero-delay fixture cases pass.
+  Cross-family/cross-tick intake remains separate; subject/proof-dependent
+  commands stay per-command. CLI stress does not measure keyboard-burst savings.
+  [Record](changes/windows-workspace-return-focus.md#windows-batch-local-coalescing-outcome-2026-10-28).
+
+## Windows pager flicker on workspace switch (closed 2026-10-28; reopen on capture)
+
+- Remaining symptom: one to two frame flicker on workspace switches only, not
+  on focus moves. A larger taskbar shift was an external overlay, resolved
+  outside the product. Cause unproven; ranked hypotheses (shell/taskbar and
+  tray-icon activity during switches, unbuffered GDI cell painting, conditional
+  strip resize) and conditional fixes are in the
+  [record](changes/windows-pager-workspace-flicker.md). A high-frame-rate
+  capture was not obtained; reopen when one is available. No production fix.
+
+## Pager stale source layout after send-follow (closed 2026-10-28)
+
+- Cause was the stale pager snapshot cache, fixed by `2d3e36f1`; fixture
+  send-follow/revisit passed with matching desired, native and pager source
+  frames. Closed with no new pager policy.
+
 ## Windows wake-attribution trace flood (closed 2026-10-27)
 
 - Filter empty unstaged message-only wake detail, count omissions in existing

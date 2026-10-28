@@ -15,6 +15,19 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- Windows order (user 2026-10-28): (1) floating-window return focus check;
+  (2) cross-output directional focus edge-nearest; (3) Windows shared
+  window-policy adoption; (4) keyboard stress runner; (5) batched physical
+  checks session, including pending Xbox shortcut and launcher geometry
+  acceptance; (6) Windows-host test flakes; (7) staged switch prototype and
+  intermittent incomplete hide, blocked on the KDE ownership answer;
+  (8) sticky-rehome sampling and pager event coverage (P2).
+- P1 | Windows floating-window return focus check | Read-only: does a focused
+  floating window regain focus after switching away and back? Cover
+  mouse-focused floating, keyboard-focused floating, a floating-only workspace
+  and sticky. An earlier check's result was lost. If broken, outline a fix;
+  user 2026-10-28: it should be fixed, and any core model change needs approval
+  ([record](changes/windows-workspace-return-focus.md)).
 - P1 | Windows staged workspace switch prototype | Approved 2026-10-28
   ([decision](decisions.md#windows-decisions-2026-10-28)): batch nonactivating
   arrival shows, prove visible, one-shot focus, prove foreground, then hide
@@ -23,54 +36,44 @@ decisions of 2026-09-24 are under
   and per-phase latency before and after; any regression fails. Narrow R2 only
   if the visible-proof wait crosses revisions; stop and report if R2 proves hard
   or has side effects. Failing-first, live fixture stress at 0ms.
+  BEFORE latency accepted 2026-10-28 (practical per-phase method). Blocked on
+  the terminal partial-hide contract: user 2026-10-28 chose a finished switch
+  with a failed hide, and core-owned per-window visibility work with a
+  protocol version bump. Remaining decisions are recorded; implementation
+  waits for the KDE ownership answer below, then core, protocol and Windows
+  land together, coordinated with the KDE and macOS ports.
   [Record](changes/windows-workspace-return-focus.md).
-- P1 | Windows batched physical checks | After the staged switch prototype, one
-  user session: Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between fixture windows
-  (about 10 Alt-Tabs plus non-Alt-Tab controls); pager flicker high-frame-rate
-  capture with the in-product trace; wake-attribution same-tick confirmation
-  during spam; exact-desktop WS1 -> empty WS2 -> WS1 return; floating-window
-  focus across a workspace round trip. Then decide unknown-foreground A vs B.
-- P2 | Windows keyboard dispatch stress mode, then wider coalescing | Measure
-  real keyboard-burst jank with the staged switch before extending
-  render-latest-only coalescing beyond selections. Goal: coalesce fully and
-  rapidly to any latest world state; command-contract changes per family follow
-  the data ([decision](decisions.md#windows-decisions-2026-10-28)).
-- P1 | Command-owned active-window memory | Linked, safely bindable command
-  choices implemented and independently reviewed; per-path ownership audit and
-  discriminating red/green complete. Existing Engine commits retained; core,
-  protocol and Windows offline gates pass. Parked: held/unlinked or rejected
-  session-memory gates, exception/non-leaf storage and unknown-foreground policy.
-  Observation/departure ingestion is unchanged; Steam spam only partly addressed.
-  [Record](changes/windows-workspace-return-focus.md#command-owned-memory-outcome-2026-10-28).
-- P1 | Windows latest-world rendering | Approved 2026-10-27; process every
-  queued command in order, skip superseded unissued worlds structurally. Preserve
-  safety, exact-desktop/effect/hidden-write/flight fences; no waits or retries.
-  Batch-local numbered/trailing and history selection coalescing delivered;
-  catch-up renders nothing, linked-send barrier and fresh flush gates covered.
-  Independent review, offline gates and both zero-delay fixture cases pass.
-  Cross-family/cross-tick intake remains separate; subject/proof-dependent
-  commands stay per-command. CLI stress does not measure keyboard-burst savings.
-  [Record](changes/windows-workspace-return-focus.md#windows-batch-local-coalescing-outcome-2026-10-28).
-- P2 | Windows pager flicker on workspace switch | User dogfood 2026-10-27:
-  pager briefly disappears and reappears on workspace changes. Cause remains
-  unproven: bounded in-product pager tracing (`18a7a71b`) excludes switch-time
-  hide, suppression and recreation in fixture stress; move/show and repaint
-  activity remains. No production fix. Next: physical high-frame-rate capture
-  of the disappearance correlated with the in-product trace.
-  [Record](changes/windows-pager-workspace-flicker.md).
-- Windows exact-desktop workspace-arrival focus | User-approved 2026-10-27:
-  explicit workspace selection may restore focus over only the exact verified
-  desktop, with fresh shell-handle/process/lifetime/user/session/executable
-  proof and stability rechecks. Delivered offline with red/green regression,
-  negative safety coverage and accepted independent review; normal fixture
-  return passes with native/fixture focus agreement and clean recovery.
-  Remaining: physical exact-desktop-path acceptance on the user's simple
-  WS1 -> empty WS2 -> WS1 sequence; fixture scope leaves the unmanaged
-  application foreground and does not prove that path. No blanket shell
-  exception, observation refocus or retry. [Record](changes/windows-workspace-return-focus.md).
-- P2 | Windows-host scripted full row test flake | Pre-existing `scripted full
+- P1 | KDE: workspace ownership through unreadable desktop facts | Proposal
+  from the Windows protocol redesign, for the KDE owner to decide: today a
+  transient desktop/current read failure flips a report to `hostOwned: false`
+  with a logical-view fallback, which the new design would read as emulated
+  workspaces. Options, context and questions are in the
+  [proposal](changes/windows-workspace-return-focus.md#proposal-to-kde-stable-workspace-ownership-through-unreadable-desktop-facts-2026-10-28).
+  Needed before the cross-adapter protocol bump lands.
+- P1 | Windows batched physical checks | One user session, not waiting on the
+  staged switch prototype: Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
+  fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls);
+  wake-attribution same-tick confirmation during spam; exact-desktop WS1 ->
+  empty WS2 -> WS1 return; floating-window focus across a workspace round trip;
+  pending physical acceptance for Xbox shortcut conflicts and launcher geometry
+  (items below). Only the unknown-foreground A vs B decision waits on the
+  prototype.
+  Exact-desktop arrival focus (approved 2026-10-27) is delivered offline and
+  fixture-verified; fixture scope cannot prove the desktop path
+  ([record](changes/windows-workspace-return-focus.md)).
+- P1 | Windows intermittent incomplete workspace hide | Pair with the staged
+  switch prototype, which changes the same hide path. Stress home-away at
+  10ms once left a view transfer pending for 60s with one fixture member still
+  visible; a retry passed under the then-current harness, whose acceptance was
+  later withdrawn for unrelated trace-proof mixing. Preserve native failure
+  evidence; corrected home-away at 10ms and a separate repeat pass all hide/show
+  checkpoints but do not reproduce or disprove the race. Fix without weakening
+  lifetime/visibility fences ([record](changes/archive/platform-neutral-stress-acceptance.md)).
+- P2 | Windows-host test flakes | Pre-existing `scripted full
   row` panic reproduced once in 16 runs and also on parent `68ce0b75`.
-  Diagnose and stabilize without weakening the scripted-row assertions.
+  `panic_diag::tests::scoped_guard_installs_restores_and_delegates` failed once
+  in a full locked run 2026-10-28 and has not reproduced since.
+  Diagnose and stabilize without weakening the assertions.
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies (now owned by the KDE v2 port item
   below); (3) KDE Settings core-catalog
@@ -162,7 +165,9 @@ decisions of 2026-09-24 are under
   runners are KDE/macOS using these same definitions/oracles; physical burst
   ingress remains the separate keyboard item below
   ([Windows outcome](changes/archive/platform-neutral-stress-acceptance.md)).
-- P2 | Keyboard stress runner | User 2026-10-27: share definitions and oracles
+- P1 | Keyboard stress runner | Raised from P2 2026-10-28: first deliver the
+  current-order keyboard-burst baseline, which supplies the data for wider
+  coalescing. User 2026-10-27: share definitions and oracles
   with the existing deterministic-correctness CLI mode; use injected real
   shortcuts through the hook path for real-input bursts and the test window tool
   for churn. First check injected-shortcut acceptance and shortcut coverage for
@@ -171,13 +176,10 @@ decisions of 2026-09-24 are under
   input speed. No batch file/stdin CLI planned; possible follow-up only if
   keyboard mode cannot cover a case, requiring user approval as a new public CLI
   feature ([decision](decisions.md#stress-acceptance-and-dispatch-2026-10-27)).
-- P2 | Windows intermittent incomplete workspace hide | Stress home-away at
-  10ms once left a view transfer pending for 60s with one fixture member still
-  visible; a retry passed under the then-current harness, whose acceptance was
-  later withdrawn for unrelated trace-proof mixing. Preserve native failure
-  evidence; corrected home-away at 10ms and a separate repeat pass all hide/show
-  checkpoints but do not reproduce or disprove the race. Fix without weakening
-  lifetime/visibility fences ([record](changes/archive/platform-neutral-stress-acceptance.md)).
+  User 2026-10-28: after the staged switch, measure real keyboard-burst jank
+  before extending render-latest-only coalescing beyond selections. Goal:
+  coalesce fully and rapidly to any latest world state; command-contract changes
+  per family follow the data ([decision](decisions.md#windows-decisions-2026-10-28)).
 - P1 | Settings window behavior presets | User 2026-10-20: cross-platform
   convenience control (toggle, dropdown or buttons) sets ALL settings to match
   a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every
@@ -695,7 +697,8 @@ decisions of 2026-09-24 are under
   [Active record and physical plan](changes/windows-gaming-coexistence.md),
   [research limits](research/windows-port/xbox-shortcut-conflicts.md).
   Pending physical acceptance: [keyboard/shortcuts checklist](changes/windows-physical-checklist.md#single-monitor-keyboardshortcuts)
-  and [games checklist](changes/windows-physical-checklist.md#games).
+  and [games checklist](changes/windows-physical-checklist.md#games), run in
+  the batched physical checks session.
 - P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
   with repeated four-window writes. User-approved lifetime-bound declared-hint
   reuse on timeout (no expiry), rate-limited per-window diagnostics and
@@ -708,6 +711,7 @@ decisions of 2026-09-24 are under
   Review 2026-10-18: full ordinary-app journey remains user-run under the live
   guide; disposable helpers cannot substitute for launcher convergence or genuine
   Paint hint changes. No new launcher or physical-resize acceptance.
+  Full launcher acceptance runs in the batched physical checks session.
 - P3 | Windows visibility diagnostics | Delivered offline: bounded normal-level
   per-window hide/reveal outcomes and reasons, native visibility/cloak samples,
   exception lanes/refusal causes and monotonic timing; no behavior change or
@@ -723,6 +727,13 @@ decisions of 2026-09-24 are under
   ([decision](decisions.md#scope-and-platform-goals)). No VM setup or new
   dependency. Check 2 additionally needs a third output (user to arrange).
   General live-test reference environments remain parked.
+- PRE-0.1 | Protocol correctness review (all platforms) | User 2026-10-28:
+  shortly before 0.1, review the protocol and core/adapter seams for
+  workarounds adopted to avoid protocol changes (for example aggregate
+  evidence reconstructed from finer-grained writes, overloaded fields, adapter
+  or core special cases). Convert each into a direct protocol change so the
+  protocol is in its most correct state at 0.1; pre-0.1 removal and renaming
+  are allowed. Not platform-specific; low priority until close to 0.1.
 
 - P0 | 0.1 release (KDE Plasma, Windows, macOS) | User 2026-10-17: 0.1
   covers all three platforms, aiming for feature parity with KDE as far as

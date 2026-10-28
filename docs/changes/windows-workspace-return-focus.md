@@ -1649,3 +1649,655 @@ The proven blocker is foreground safety, not target classification or core targe
   Staged arrival-ready authority, unknown-foreground A/B, R2, SWITCHEND and
   exception/non-leaf memory remain parked. This combined investigation stays
   active for those decisions; the bounded Windows implementation is complete.
+
+## Staged prototype attempt and acceptance blockers (2026-10-28)
+
+### Approved scope and current outcome
+
+- The [Windows decisions](../decisions.md#windows-decisions-2026-10-28)
+  now authorize the narrow staged prototype and conditional R2. The earlier
+  statements that those decisions are parked describe their historical scope.
+- The prototype is **not accepted**. Offline implementation separates arrival
+  reveal and departure hide, adds an explicit-selection arrival-ready focus
+  lane, and tracks reveal attempts separately from completing view attempts.
+  It does not yet implement the approved sequence across asynchronous passes.
+  No staged native validation or speed acceptance is claimed.
+- Changed implementation: `world_diff.rs`, `world_native.rs`,
+  `world_diff_tests.rs`, and the `world_tick.rs` test initializer, all under
+  `crates/tiler-windows/src/tiling_sys/`. Core and protocol are unchanged.
+  No unknown-foreground policy, empty-output focus policy, focus sink, timer,
+  settle wait, retry, or recursive redispatch was added.
+
+### Current-order fixture evidence
+
+- BEFORE source: `103d33aef840966c054dba1291156f4a727c6cd2`, with documentation-only
+  working changes. Owner SHA-256
+  `24F88C489A73E950F5A733A98CFE0712FBA31D4EE89584C91D22E1E3E126AC78`;
+  fixture SHA-256
+  `650C87CB9AEB1340D3C4E1671A2757F23C56F0510D8D118474017689886DB592`.
+  Native Windows, ordinary integrity, fixture-only scope. Raw source/artifact
+  provenance, owner and observer logs, reports and restoration evidence remain
+  outside the repository.
+- A fresh independent pre-run proof hid two identity-bound fixture windows,
+  terminated the exact owned watcher and primary, proved both windows remained
+  hidden, then restored them using standalone restore. Settings bytes and
+  taskbar/SPI matched their preimages; owned processes and recovery state were
+  absent afterward. An earlier proof attempt observed the watcher restoring
+  immediately on owner exit; that was recovery behavior, not a hide defect.
+- Each baseline case passed 102 commands, existing checkpoint/final oracles,
+  fixture shutdown, exact-owner cleanup and settings restoration. A separate
+  passive observer reported no queue loss or pump error. Counts below were
+  independently recalculated from fresh revision-deduplicated owner applies,
+  excluding paired pager projections and bootstrap/setup posts.
+
+| BEFORE case, added delay | Show posts | Hide posts | Focus setters | First SHOW call -> target foreground callback median | SHOW post batch span median |
+| --- | --- | --- | --- | --- | --- |
+| home-away, 0 ms | 50 | 50 | 73 | 82 ms | 33 ms |
+| trio-churn, 0 ms | 75 | 75 | 74 | 115 ms | 64 ms |
+| home-away, 10 ms | 50 | 50 | 73 | 80 ms | 32 ms |
+
+- Foreground timings cover 23 returning arrivals per case and use the owner
+  clock; they include callback delivery, not exact foreground generation.
+  They are partial phase measurements, not end-to-end switch acceptance.
+  The two authored cases do not supply an isolated occupied-to-occupied
+  workspace handoff measurement.
+- Measurement review rejected publication queue acceptance as end-to-end
+  switch latency. A replacement analysis found owner dispatch-to-focus-terminal
+  medians of 106/138/102 ms, but still did not gate on final full-view proof;
+  these are **not accepted end-to-end measurements**. Exact visible-proof and
+  final departure-hide milestones still need a validated measurement oracle.
+- The new unexplained-foreground census is also unaccepted: managed-member
+  matching is not accepted-focus compatibility, and its replacement flight
+  join lacked an upper bound at terminal/supersession. Do not use those counts
+  to claim ambiguity reduction. Raw captures are retained for correction.
+
+### Independent review blockers
+
+- **Cross-pass ownership:** staged view state is local to one apply and requires
+  the command-only selection grant. A grant-less observation falls back to the
+  combined legacy switch, bypassing the intended foreground-before-hide phase.
+  The synchronous fake does not exercise asynchronous focus landing and grant
+  expiry. Never copy a selection grant onto that later observation.
+- **Liveness and paired hide:** refused focus and refused/partial hide paths
+  retain spent phases and can leave departures visible or transfers pending.
+  The approved reported fallback and preservation of partial native failure
+  evidence are not implemented adequately. The new refusal test enshrines a
+  pending state rather than proving the paired defect fixed.
+- **Arrival proof:** the partial readiness helper lacks the approved explicit
+  cloak and baseline lifetime/identity bracket for all required arrivals.
+  Existing downstream focus vetoes remain, but do not make that partial proof
+  sufficient.
+- **Batching:** the split native helpers still perform existing per-member
+  preparation/readback between show posts. The critical-path batching goal is
+  not met by separating the hide and reveal loops alone.
+- **Native boundaries and evidence:** hide foreground proof precedes freshness
+  processing and later preparation rather than a final native-write bracket.
+  Reveal failures have no completing view attempt; preserving their distinct
+  raw evidence needs coverage without fabricating settlement.
+- **Failing-first coverage:** five new tests pass, but the retained initial red
+  result was compilation failure on new APIs, not behavioral regression proof.
+  Cross-pass, real native batching, cloak/lifetime drift and partial member-hide
+  schedules need discriminating behavioral regressions before acceptance.
+
+### Verification boundary and next work
+
+- Full locked core/protocol/Windows tests pass; Windows library: 1176 passed,
+  one existing ignored. Requested strict locked all-target clippy, workspace
+  formatting and `git diff --check` pass. Passing existing gates does not close
+  the semantic review findings above.
+- The 10 ms home-away baseline did not reproduce the intermittent incomplete
+  hide; it neither fixes nor disproves that race. No AFTER leg was run, so
+  switch-speed non-regression and foreground-event reduction remain unproven.
+- R2 was not implemented. Whether fresh never-dispatched authority is needed
+  remains unmeasured; do not infer same-pass readiness from synchronous fakes.
+  No new causal finding binds departure hide to cross-output fallback activation.
+- Next work: first accept bounded full-view/foreground latency and census
+  joins; then resolve asynchronous phase accounting, failure fallback and true
+  reveal batching with behavioral red/green coverage. Re-review before running
+  the identical fixture matrix AFTER. Stop if the conditional fresh-authority
+  proof becomes challenging or changes other paths. Keep this record active;
+  the prototype must not advance as delivered.
+
+### Measurement prerequisite follow-up (2026-10-28)
+
+- The retained BEFORE captures cannot establish the required final full-view
+  milestone at or after focus proof. Re-measure BEFORE and AFTER with the same
+  corrected measurement harness; the earlier partial-phase numbers remain
+  historical diagnostics, not a switch-speed verdict.
+- An isolated diagnostic candidate records the existing post-apply
+  `receipt_updates` full-view results before transfer merging, their owner-clock
+  proof timestamp, and the timestamp after the existing foreground read-back.
+  Receipt-proof status changes emit once, including missing-to-proven and ABA
+  transitions, without an idle per-tick stream. It adds no native queries or
+  visibility/focus authority. It is not integrated into the staged prototype.
+- Review verified the fresh receipt source, native-read order, bounded omission
+  accounting and original paired-proof timestamps. Measurement acceptance is
+  still blocked: the replacement analysis has no real-log extraction driver,
+  uses apply-row time rather than dispatch origin, and does not enforce its
+  declared census selection and leg-end bounds.
+- Direct adversarial checks additionally show an inverted empty-arrival oracle:
+  it accepts an empty receipt map, although that means no output was proven,
+  and rejects the actual output/workspace proof for an empty workspace. A
+  foreground event after both declared selection and leg-end bounds is still
+  classified as verified. The synthetic 22-switch/20-census checks pass despite
+  these defects; they do not validate the measurement contract.
+- Isolated diagnostic gates: strict locked all-target core/protocol/Windows
+  clippy, workspace formatting and diff checks pass. The exact locked test
+  command fails in `panic_diag::tests::scoped_guard_installs_restores_and_delegates`
+  (Windows library: 1177 passed, one failed, one ignored). A separate reduced-
+  concurrency library run reports 1178 passed and one ignored; it does not
+  replace the failed exact gate. No unrelated test correction was made.
+- No new live leg, production repair, accepted end-to-end measurement, census,
+  speed comparison, R2 necessity measurement or departure-hide activation
+  finding follows from this work. The paired incomplete hide remains open.
+- Next: resolve the remaining measurement defects with behavioral negatives
+  and real-log extraction, then accept the oracle before re-measuring BEFORE.
+  Preserve the existing staged diff and its review blockers; do not run AFTER
+  or claim a non-regression verdict from the current analysis.
+
+### Practical phase measurement decision (2026-10-28)
+
+- **User decision:** do not build a formal full-view completion or census
+  oracle. This supersedes the measurement prerequisite above. Re-measure the
+  same home-away/0 ms, trio-churn/0 ms and home-away/10 ms cases with identical,
+  bounded in-product phase instrumentation on current-order and staged code.
+- Measure command received, all show calls issued, arrivals proven visible,
+  foreground confirmed and departures hidden. End-to-end runs from command
+  received to the last applicable phase. Empty arrivals have no show, arrival
+  or target-focus phase; missing required proof is not success.
+- Any end-to-end or material phase regression fails the prototype and is
+  reported rather than delivered. Unexplained-foreground counts are a
+  comparable diagnostic, not a proven census or activation-cause proof.
+- Instrumentation copies existing proof results and owner-clock timestamps;
+  it must add no native queries or alter native authority, ordering or safety.
+  Current-order BEFORE must precede prototype repair, independent review and
+  staged AFTER. Behavioral red/green tests must exercise the blocking findings.
+
+### Practical measurement run and extraction blocker (2026-10-28)
+
+- Current-order code with phase diagnostics completed all three unchanged
+  fixture stress cases after a fresh independent pre-run hide/restore proof.
+  Run reports record passing checkpoints and cleanup. Reported show/hide/focus
+  counts remain 50/50/73 for home-away at 0 and 10 ms, and 75/75/74 for
+  trio-churn at 0 ms. Raw logs and recovery evidence are retained externally.
+- No latency table or unexplained-foreground count is accepted yet. The first
+  extraction treated an emitted focus effect as foreground proof and derived
+  arrival requirements from the proof map itself. Its zero-missing and
+  zero-cross-revision claims are withdrawn.
+- The correction uses desired-member requirements and actual immediate or
+  landed-own proof, but still accepts later directional-command focus of any
+  required member as the selection's foreground milestone. It therefore
+  reports unrelated 1568/1754 ms outliers. Its foreground diagnostic counts
+  successful setter proof rows rather than actual foreground events and
+  excludes empty-arrival fallback changes; zero unexplained is not evidence.
+  This extraction is also unaccepted. Preserve both attempts, not their verdicts.
+- Blocker: practical timing must stay bound to the selected focus intent, not
+  merely a member visible in the interval before the next select. Report
+  missing selection proof honestly; do not fill it with another command's
+  success. This needs a bounded extraction correction, not a formal completion
+  or census oracle. Repeated failed extraction attempts have not justified
+  advancing to prototype repair or AFTER.
+- The exact locked core/protocol/Windows test command now directly passes on
+  both current-order diagnostics and staged main (Windows library 1184 and
+  1188 passed respectively, one existing ignored in each). The prior panic
+  diagnostic failure did not recur; neither its cause nor pre-existing
+  test-isolation status is established. No assertions were weakened.
+- Prototype behavior, its review blockers and paired incomplete-hide status are
+  unchanged. No AFTER, speed verdict, R2 implementation or new departure-hide
+  activation conclusion is claimed. The baseline remains needed for comparison.
+
+### Intent-bound extraction remains unaccepted (2026-10-28)
+
+- The offline correction binds foreground proof to the original selection's
+  effect and target, and derives arrival requirements from its desired roster.
+  Adversarial checks reject later directional focus, unproven dispatch,
+  foreign-roster homing and next-selection proof. Empty-roster show, arrival
+  and focus remain N/A; departure remains required.
+- Acceptance review rejects the correction because the final selection has
+  no verified interval end, yet contributes numeric E2E to every case summary.
+  The retained outputs explicitly mark `log-exhausted-unverified` while
+  reporting final-selection E2E of 98, 143 and 105 ms respectively. A targeted
+  negative reproduces numeric E2E on an unverified interval. The resulting
+  tables are not accepted comparison baselines.
+- Actual foreground-edge diagnostics replace setter-only counts, but full-case
+  unexplained-foreground counts remain unavailable: empty selections are
+  unclassified and the final interval is unverified. The candidate reports
+  visible proof on the originating revision for all 25 occupied selections in
+  each case; this does not establish a staged visible-wait crossing or justify
+  R2. No staged timing data exists.
+- Retained reports and binary hashes establish the three current-order run
+  identities and passing stress outcomes. Independent pre-run restore proof
+  precedes them. Settings preimages match and no recovery ledger remains;
+  final per-leg process/control/SPI cleanup is not fully established by the
+  inspected retained records. Earlier complete-cleanup claims remain reports,
+  not independently established evidence.
+- No production repair, additional extraction, AFTER run or new full gate
+  result follows. The diagnostic truncation corner and all staged safety and
+  incomplete-hide findings remain open. Preserve both worktrees and raw evidence;
+  no speed or delivery verdict is available.
+
+### Accepted practical BEFORE after final-bound exclusion (2026-10-28)
+
+- The mechanical correction excludes E2E for an unverified final interval and
+  marks proofs beyond its verified own tick missing. It changes no attribution,
+  roster, quantile, foreground diagnostic or non-final interval semantics.
+  Independent recheck passes: the synthetic final E2E is unavailable, all
+  non-final switches are identical, and real-output changes are limited to the
+  three final switches and derived focus/E2E summaries. The practical BEFORE
+  table is accepted under the selected method, not as a formal completion oracle.
+- Retained extractor SHA-256:
+  `257c6174320e667c097f50f13c12b2a6f4bd91c3b5df0ee1b6835e63f95d2f1a`.
+  Original rejected artifacts remain preserved. Bound tests fail behaviorally
+  against the original and pass against the correction; the independent
+  final-bound audit passes 27 assertions.
+
+| BEFORE case, added delay | Shows issued | Arrivals visible | Foreground confirmed | Departures hidden | E2E |
+| --- | --- | --- | --- | --- | --- |
+| home-away, 0 ms | 34 / 36 | 74 / 77 | 106 / 113.6 | 70 / 77 | 72 / 109 |
+| trio-churn, 0 ms | 66 / 70 | 105 / 110.6 | 133 / 144.9 | 104.5 / 111 | 107 / 143 |
+| home-away, 10 ms | 34 / 36 | 71 / 75 | 103.5 / 108.8 | 70 / 75 | 73 / 106.6 |
+
+- Values are median / p90 milliseconds from command receipt, with linear
+  quantiles. Each case has 48 switches: 25 occupied and 23 empty. Shows and
+  arrivals have 25 measurements, foreground 22, departures 48 and E2E 45.
+  Foreground is missing on three switches (including the excluded final proof);
+  show, arrival and departure missing counts are zero. Show, arrival and focus
+  are N/A on all 23 empty selections. E2E is unavailable on three switches.
+  Unknown-roster counts are zero.
+- Occupied-only E2E median / p90: 106 / 113.6, 133 / 144.9 and 103.5 / 108.8 ms;
+  empty-only: 67 / 70.8, 104 / 110.6 and 67 / 72.8 ms, respectively.
+  Whole-case unexplained foreground remains unavailable; occupied-only
+  diagnostics are 26, 25 and 26. Visible-proof revision crossings remain 0/25
+  in each case. Show/hide/focus counts remain the reported 50/50/73,
+  75/75/74 and 50/50/73. Complete final per-leg cleanup remains unestablished.
+- Diagnostic review found a cap-16 truncation mismatch that repeatedly logs
+  unchanged over-cap homing proofs. Correct bounded prefix/omission comparison
+  in both trees before prototype repair; omitted tail rows remain unmeasured.
+  No AFTER result, paired-hide repair, R2 need or speed verdict is claimed.
+
+### Bounded repairs and partial-hide contract blocker (2026-10-28)
+
+- Corrected diagnostic comparison in both current-order and staged trees:
+  `receipt_proof_changed` receives the true homing total, so the truncated
+  prefix does not falsely imply zero omissions. Stable 17-row proofs stay quiet;
+  prefix/count changes log and emission retains honest omissions. Same-size
+  tail-only changes remain omitted, not whole-map proof. The stable-17 test
+  fails behaviorally with the old calculation and passes with the fix. Focused
+  diagnostic suites pass 41 tests in staged and 42 in current-order code.
+  No native queries, authority or actuation ordering changed in this repair.
+- Arrival readiness now requires every required member's full identity to
+  match its observation baseline, a matching stored lifetime tag, readable
+  uncloaked facts and visible, non-iconic framed state before and after the
+  homing/frame reads. Existing downstream safety gates remain unchanged. Four
+  second-arrival regressions (cloak, recycled identity, rotated tag and missing
+  facts) fail behaviorally against the old helper and pass after repair; all
+  nine staged tests and 128 diff tests pass. The additional product proof reads
+  are unmeasured for latency; no speed claim follows.
+- Independent safety review finds no defect in those two bounded repairs.
+  It does not approve the full prototype: retained cross-pass ownership, true
+  prepared show batching, final native-write foreground bracket and distinct
+  reveal-failure accounting remain open.
+- **Blocking contract gap:** after revealing arrivals, a partial departure
+  refusal or issued-but-unproven hide leaves `LiveNative::read_view` unavailable.
+  The aggregate `ViewAttempt` then has no target proof or readable unchanged
+  preimage satisfying `WorldEngine::view_refused`. `settle_views_pre` retains
+  the transfer, while `spent_views` correctly prevents reissuing a possibly
+  executed hide. Completing never-issued members alone cannot settle a
+  permanently refused or ambiguous issued member. Per-member visibility-post
+  diagnostics are not core settlement evidence.
+- The approved fallback permits current authorized hiding, reported as
+  fallback rather than successful staged handoff. It does not define a new
+  terminal partial-failure outcome. Retrying on an unchanged readback would
+  violate the no-replay fence, not repair it. A bounded terminal-failure
+  contract decision is required before extending this path; no new retirement,
+  rollback, core/protocol semantics or unknown-foreground policy is selected.
+  The [minimal discriminator](../spec/reference-outcomes.md#rapid-unlanded-workspace-arrival)
+  records the unsupported outcome as TBD. This blocker is source-verified and
+  independently reviewed, not a new live reproduction or completed regression.
+- Full locked core/protocol/Windows tests and strict all-target clippy pass;
+  Windows library: 1196 passed, one existing ignored. The panic diagnostic test
+  passes again; its historical failure remains unexplained. Workspace format
+  and diff checks pass after formatting-only corrections. Passing gates do not
+  close the outstanding behavioral findings.
+- No AFTER leg or comparison ran. Paired incomplete hide remains unresolved;
+  no new departure-hide activation cause is established. R2 remains absent:
+  only current-order visible-proof crossings (0/25 per case) are available.
+  Retain the measurement tree and evidence until comparison is completed.
+  Next: decide the terminal partial-hide failure contract before further
+  production repair or live validation. The prototype remains unaccepted.
+
+### Terminal partial-hide decision and evidence boundary (2026-10-28)
+
+- **User decision:** after revealing arrivals, a refused or issued-but-unproven
+  departure hide terminates the switch/transfer as complete with a failed hide,
+  not pending and not a successful staged handoff. A stuck visible member keeps
+  its departure-workspace membership. Log and report failure, preserve the
+  spent-view fence, and neither retry automatically nor roll back arrivals.
+  Treat an ambiguous issued hide as failed until fresh observation proves its
+  actual state; the next command or fresh observation proceeds from new facts.
+  This resolves the [partial-hide discriminator](../spec/reference-outcomes.md#rapid-unlanded-workspace-arrival),
+  not the separate case of a successful hide followed by self-reveal.
+- **Implementation boundary:** no repair has been applied. The existing
+  `staged_switch_refused_hide_stays_pending_without_replay` test still passes,
+  explicitly pinning the now-rejected pending outcome. This is confirmation of
+  current behavior, not behavioral red/green for the selected contract.
+  `ViewAttempt` has only aggregate setter and view-readback facts; partial-hide
+  `None` readbacks provide neither target proof nor a readable refusal preimage.
+  Core settlement cannot identify the staged terminal-failure shape from those
+  facts alone without changing the existing ambiguity contract.
+- A narrowly scoped raw staged-hide evidence lane plus a terminal settlement
+  branch is a candidate, not an implemented design. Windows carries typed
+  reports in-process; the shared DTO's view-attempt decoder rejects unknown
+  keys. An in-process-only field and a corresponding optional wire field have
+  different compatibility scope. No new field or persistent core state has been
+  selected; new retained state has not been shown necessary. Reusing existing
+  aggregate refusal/ambiguity as terminal failure would broaden unrelated
+  settlement semantics and is not an accepted shortcut.
+- **Paired incomplete hide:** the retained one-visible-member, long-pending
+  incident is consistent with unavailable full-view proof plus no replay, but
+  predates the staged lane. No causal join, live reproduction or fix is proven.
+- **Successful hide, then self-reveal:** existing hidden-claim receipt logic
+  withholds homing proof on observed visibility drift
+  (`world_native_receipts.rs`, `attach_workspace_receipts`). For an existing
+  same-output member, `reconcile_members` and `logical_homing` retain its old
+  home when the receipt is unknown; they do not adopt the selected workspace
+  merely because it became visible. With no retained view transfer,
+  `settle_views_pre` has nothing to resume. The native drift unit test covers
+  proof withholding, not a full settled-switch/self-reveal live sequence. No
+  new enforcement, re-hide or focus policy is selected by this finding.
+- No source changes, full-prototype review, new full gates, AFTER legs or
+  comparison follow from this investigation. Cross-pass ownership, prepared
+  show batching, the final foreground bracket and reveal-failure accounting
+  remain open. The next dependency is the bounded terminal-failure evidence
+  representation; preserve the accepted BEFORE and measurement tree.
+
+### Per-write visibility protocol design check (2026-10-28)
+
+- **Verdict: fits with changes, not yet an implementation decision.** Windows
+  emulates a view through independent visibility writes; a partial result has
+  no single native current-workspace value. Core already selects its logical
+  view immediately (`world_tiling_views.rs:111-143,192-210`). Separate that
+  selection from visibility work, rather than manufacturing an applied-view
+  echo or treating unknown native state as successful hiding. The terminal
+  partial-hide decision above remains binding; it does not make ambiguity
+  proven refusal or change membership-transfer/clear settlement.
+
+#### 1. Root cause and actual producers
+
+- Windows `LiveNative::read_view` reconstructs the desired workspace only if
+  every non-sticky member proves the appropriate visibility side, with a
+  separate memberless case (`world_native.rs:1748-1855`). After reveal, both
+  workspaces can be visible: neither old nor target view is readable. The
+  staged producer samples that aggregate around departure hiding and emits
+  one `ViewAttempt` (`world_diff.rs:4305-4330`); the ordinary producer does
+  likewise (`3378-3473`). Core matches operation/output/target, stages the
+  row, and requires exact echo or readable refusal/external evidence
+  (`world_settle.rs:45-56,205-227,479-625`). The spent fence then correctly
+  prevents replay (`world_diff.rs:1074-1087,4294-4311`). This is a
+  representation mismatch, not a missing retry.
+- The separate observation echo is also reconstructed, not a native selector:
+  `crates/tiler-windows/src/tiling_sys/world_native_receipts.rs:225-320`
+  derives it from visible applied members, `world_capture.rs:1678` carries it,
+  and `world_diff.rs:256-263` uses it as the observation-time baseline. Both
+  this ingress and the immediate `read_view` attempt lane need disentangling.
+- Windows is the only located production producer of logical, tiler-owned
+  view attempts. KDE **does** produce native view attempts in
+  `kwin/src/world-apply.ts:542-548,1710-1716,2173-2210`. macOS **does** produce
+  them in `world_runtime.rs:178-222`; its production builder always sets
+  host-owned (`world_builder.rs:653-660,689`). `drag_drop.rs:1662` is a test,
+  not production capability evidence. Host view writes may be asynchronous;
+  migrations have separate target/refill phases, not one atomic whole-operation
+  write. The native current selector remains the appropriate unit per phase.
+- KDE ownership needs care: `world-observe.ts:1327-1330` currently clears
+  `hostOwned` when desktop/current reads fail, with a logical-view fallback
+  at `1375-1393`. That is a degraded native observation, not an emulated
+  Windows-style workspace domain. Do not route every `hostOwned:false`
+  report into visibility work without resolving this distinction. No
+  non-Windows production emulated hide/show view implementation was found.
+- Simulated tiler-owned reports also exist, but emit no view attempts:
+  `tiler-protocol/src/world_stress.rs:900-932` and
+  `tiler-protocol/examples/world_acceptance.rs:310-342`. Their logical echoes
+  and core tests are contract consumers, not additional native producers.
+
+#### 2. Settlement intersections
+
+| Intersection | Required treatment |
+| --- | --- |
+| View echo confirmation | Keep native-current confirmation for host-owned domains. Tiler-owned logical selection must not wait for reconstructed `ScreenView`; `crates/tiler-core/src/world_native.rs:168-182` and `crates/tiler-core/src/world_observe.rs:99-118,162-178` currently give that echo authority and therefore need changing, not merely a new attempt vector. |
+| History | Preserve effective logical-view history, not a new successful-visibility-only history: `world_model.rs:259-283` already observes effective views, shared selection records at command time (`world_tiling_views.rs:195-210`), and `settle_views_pre` also observes confirmation (`493-508`). Remove redundant tiler proof coupling; do not record a failed hide as a successful handoff. |
+| Refusal-to-observed | Keep host-native selector refusal reconciliation (`world_settle.rs:509-545`). A failed Windows hide does not revert the logical selection to a departure echo. Keep departure membership; record that member's visibility result independently. |
+| Ambiguity | Preserve raw unknown state and at-most-once identity. An issued-but-unproven departure hide is terminal failure under the selected contract, not `RefusedProven` and not success. Existing member ambiguity still holds (`world_settle.rs:716-720,807-818`); do not globally terminalize it. |
+| Migration and `-refill` | Replace only tiler-owned view-phase proof with the visibility-work group's terminal status. Preserve member-arrival barriers, independent target/refill identities, and host-native proofs. Today children are skipped in the pre-pass (`455-475`), handled with parents (`998-1084`), and both views gate completion (`1529-1706`). Leaving those echo checks unchanged would retain the same deadlock outside standalone selection. |
+| Source backing release | No visibility proof may release native backing. `release_migrated_source_backing` is host-only (`world_settle.rs:273-281`), arrival-gated and complete-native-list-gated (`254-270,304-315,1515-1528`); leave those rules intact. |
+| Follow parents | Preserve membership-before-follow. Same-output membership already settles separately; cross-output follow currently additionally waits for exact echo or third-location evidence (`world_settle.rs:761-819`). Use tiler visibility-group termination only for its view leg, never as member-arrival proof or refused-member evidence. |
+| Gaps | Missing roster/attempt rows never prove completion. Retain identity-bound evidence across acknowledgement. Inventory/screen/gesture gaps must still forbid new writes, inferred closes, homing changes and native refusal reconciliation (`world_settle.rs:479-486,531-536,832-857`). Whether already closed visibility work may retire during a later unrelated gap is an explicit remaining boundary below. |
+| No replay | Keep `spent_views` and `spent_reveals` armed before dispatch. Per-member work needs equivalent `(operation, phase, lifetime)` protection if an undispatched remainder can continue. A new row/map or fresh observation must never rearm an issued member. Preserve exact delivered-entry acknowledgement (`world_sequencer.rs:183-194,262-275`). |
+
+#### 3. Recommended minimal complete design
+
+- Two real mechanical primitives, not a Windows-specific staged-failure flag:
+  host-native current-view writes, and tiler-owned member visibility work.
+  Keep a core-owned view-operation group for correlation/completion, but give
+  it an explicit, bounded roster of visibility desires. Existing standalone
+  `View` has **no roster** (`world_tiling_views.rs:120-142`); the migration
+  member list is not a substitute. Bind every visibility desire/result to
+  output, selection operation/phase, window lifetime and requested state.
+- Freeze each authorized work set; close, supersession and independently
+  changed membership explicitly retire/invalidate affected entries. A new
+  arrival must not silently enlarge an already dispatched operation. Use
+  existing desired window rows as the policy source, but carry enough explicit
+  visibility authority/correlation that partial reports cannot redefine the
+  expected set. Sticky/minimized restoration and held rows need explicit
+  eligibility; "shown" must not mean unminimize or focus.
+- Report raw setter disposition and readable pre/post visibility, stamped at
+  the write, independently of trace configuration. Distinguish an actual
+  attempt from already-satisfied proof, not-yet-issued work, a mechanical
+  preflight veto, explicit close and supersession. Do not label a skipped
+  native call `Accepted`. Missing evidence is not a failed attempt. With a
+  core-known roster and explicit per-entry dispositions, no second generic
+  batch-completion oracle is necessary; a closure marker alone cannot prove
+  omitted members finished.
+- Core derives confirmed/refused/ambiguous with the existing unchanged-readable
+  preimage discipline (`world_settle.rs:180-216`, `world_report.rs:546-568`).
+  Separately, it retires **issued departure-hide** work on any of those
+  outcomes, with refused/ambiguous counted as failures. A group is complete
+  when its required entries are terminal, not when every member is hidden.
+  An empty known roster has no visibility work; it does not need a fictional
+  native view proof. Preserve focus safety/readiness separately. Reveal-failure
+  policy is not implicitly selected by applying hide semantics to every write.
+- Keep raw state unknown after ambiguity. A fresh matching visibility fact may
+  resolve current state, but cannot resurrect the old group, repeat its hide,
+  grant focus, or erase the recorded failed attempt. Terminal failure must not
+  populate Windows `proven_views`/successful handoff receipts.
+
+#### 4. Windows facts, query budget and staging
+
+- Existing per-member operations are already present: hide/reveal commit
+  helpers preserve logical homing (`world_native.rs:1235-1380`), and
+  `hide_departures`/`reveal_entering` iterate the members (`1414-1502`). They
+  currently collapse their individual results to two booleans; `filter_map`
+  and already-hidden skips must not silently remove required roster entries.
+- Existing trace posts are insufficient: `VisibilityPostDiag` has HWND,
+  direction, API acceptance and clocks, but no operation/lifetime/pre/post
+  proof; it is trace-only and capped at eight
+  (`product_hide/sys/mod.rs:812-861`). Do not promote that bounded diagnostic
+  prefix into settlement evidence.
+- No extra native query is inherently required to expose the existing hide
+  facts: `pre_hide_checks` already reads visible identity/nonce state
+  (`product_hide/sys/mod.rs:733-749`); post/poll and guarded finish already
+  read visibility and identity (`1021-1038,1089-1106`), and reveal preparation
+  already reads current visibility (`1132-1186`). Return these facts even on
+  error, leaving unavailable values unknown. Preserving them requires typed
+  result plumbing; they are not available in the current boolean/error API.
+  Do not add a post-refusal query merely to improve classification.
+- No zero-latency claim follows. Current helpers still poll/sleep per member
+  (`post_visibility_pos_traced:692-702`, `poll_visibility:1021-1038`); the
+  protocol change neither provides prepared show batching nor removes those
+  waits. Reuse prepare/post/finish evidence, avoid new queries/waits/roundtrips,
+  and retain identical BEFORE/AFTER phase measurements as the speed gate.
+- Keep arrival shows -> all-arrivals-ready -> grant-bound focus -> foreground
+  proof -> departure hides. `staged_arrival_ready` brackets each required
+  arrival's lifetime/tag, uncloaked visibility, homing and frame
+  (`world_diff.rs:1959-2032`); that proof deliberately allows departures to
+  remain visible. Terminal switch status cannot replace it or
+  `SelectionArrivalGrant`; neither observation nor a receipt creates focus
+  authority. Cross-pass ownership, prepared batching, final foreground bracket
+  and reveal-failure accounting remain separate unresolved prototype work.
+- Audit all remaining aggregate consumers, not just settlement: membership-only
+  homing uses `read_view` (`world_native.rs:1182,2555`), transfer receipt merge
+  revalidates it (`world_tick.rs:182-218`), and receipt updates store it
+  (`world_native.rs:2565-2647`). Retiring tiler view proof must not turn bare
+  visibility or logical selection into cross-output membership proof.
+
+#### 5. Host adapters and protocol removal
+
+- KDE/macOS need no per-member visibility implementation or Windows staging
+  policy. Preserve their native current reads, asynchronous settlement,
+  migration/follow barriers and no-replay handling. Schema cleanup is mechanical
+  but real: KWin DTO/encoder `world-report.ts:242-254,1763-1768`, exact ack
+  equality `world-state.ts:609-623`, attempt producers, and macOS
+  `world_runtime.rs:208-221` all spell the redundant logical fields today.
+- Recommend remove `ViewAttempt.pre/post/baseline` and the tiler-owned
+  aggregate-attempt lane; keep the native fields for host-owned view writes.
+  Retire logical applied-view ingress (`WorldReport.views`/`ScreenView`) as an
+  authority on emulated domains rather than copying the chosen target into it.
+  With native-only host proofs, removing the obsolete ingress entirely is
+  cleaner than preserving a second authoritative selector solely for tests.
+  Windows may keep local all-members-visible diagnostics, never as core view
+  selection or successful-termination proof.
+- Add typed visibility desire/result DTOs and bounds; update core validation,
+  digest (`world_report.rs:1780-1808,2274-2320`), size estimates
+  (`world_sizing.rs:715-735`), reply canonical encoding and sequencer exact
+  acknowledgement/reset/dirty bookkeeping. Validation must reject wrong
+  ownership lane, conflicting desired state, duplicate phase/lifetime rows and
+  wrong operation/target; native ids remain core-translated.
+- Wire decoder currently requires logical `pre/post/base` and rejects unknown
+  keys (`tiler-protocol/src/world_protocol.rs:799-829`). Replace it directly,
+  not an in-process-only field or optional compatibility workaround. Recommend
+  an explicit contract-version bump from current 2 (`world_report.rs:39`) with
+  atomic adapter updates. Update version rejection, removed/unknown fields,
+  capability routing, null-state, duplicate, malformed-row and size-budget
+  tests (`tiler-protocol/tests/world_codec.rs:903-1016`), plus KWin raw-attempt
+  and macOS builder/runtime tests. Simulated stress/acceptance must emit the
+  new truthful visibility work/results, not silently disable settlement tests.
+
+#### 6. Incident limits, alternatives and scope
+
+- The paired pre-staged one-visible-member/long-pending incident is consistent
+  with this aggregate-proof dead end, but has no proven causal join. A new
+  contract and passing synthetic partial-hide test would not establish that
+  historical incident fixed. Preserve the separate regression and native
+  acceptance requirement.
+- Successful hide followed by self-reveal is different. Hidden-claim capture
+  withholds homing on visibility drift (`world_native_receipts.rs:68-85`);
+  existing resident membership is preserved (`world_members.rs:90-95,158-181`,
+  `world_observe.rs:573-581`). Do not rehome to the selected workspace or
+  re-hide automatically. Removing reconstructed echo authority also prevents
+  that drift from being misinterpreted as an independent logical selection.
+- A smaller alternative is an explicitly correlated visibility-batch receipt
+  with full member facts and a closed-work-set marker, retaining aggregate
+  native `ViewAttempt`. It still needs roster completeness, separate terminal
+  policy and membership/focus boundaries; it saves desire plumbing only by
+  making the adapter define more of the work set. A bare `partial:true`,
+  aggregate `None`-means-done rule, forged echo, rollback, or retry is not a
+  correct simpler alternative. Recommend explicit core visibility work for the
+  cleaner pre-0.1 contract, not both models in parallel.
+- Estimated scope: core report/validation/digest/sizing, view retention and
+  publishing, observation/history authority, standalone/follow/migration
+  settlement; Windows native/product-hide result plumbing, diff/fences,
+  tick/receipts/capture and sequencer; protocol codec, simulations and contract
+  docs; mechanical KWin/macOS DTO/producers plus ownership-gap handling. Roughly
+  20-30 production modules plus focused tests and many report-constructor
+  updates. This is a medium cross-adapter contract redesign, not a bounded
+  Windows-only branch. No implementation or latency estimate is proven.
+
+#### 7. Remaining decisions to present, not silently select
+
+- Architecture: explicit core visibility work versus adapter-defined closed
+  batch. Recommendation: the former; adopt one direct protocol and retire
+  reconstructed tiler view authority. Host-owned native-view semantics stay.
+- Ownership through unreadable KDE snapshots: recommendation keep native-domain
+  ownership stable and report unknown native facts, rather than interpreting
+  a temporary `hostOwned:false` as emulated workspaces. This is a real required
+  seam correction, not evidence that KDE should implement hide/show work.
+- Reveal/preflight failures before the departure-hide phase: recommendation
+  retain no-focus/no-unsafe-hide gates and report explicit unsatisfied/cancelled
+  work; do not expand terminal-hide policy into automatic fallback or retry.
+  The precise group outcome for these cases needs approval.
+- Gap-time retirement: recommendation allow already accounted, identity-bound
+  terminal visibility work to retire without waiting for a new complete census,
+  while gaps still prevent new writes or factual membership/view inference.
+  This separates lifecycle completion from truth and avoids recreating the
+  rejected pending state. Host-native/membership refusal reconciliation keeps
+  its existing gap bars.
+- Verification here is source inspection only. No source was changed, no
+  product tests or live legs ran, and no AFTER/speed/full-prototype acceptance
+  is claimed. The implementation blockers above remain open.
+
+### Proposal to KDE: stable workspace ownership through unreadable desktop facts (2026-10-28)
+
+Status: proposal for the KDE adapter owner to decide. Not a user decision.
+
+- **Problem being solved (Windows).** Windows emulates workspaces by hiding
+  and showing member windows. Today it reports a switch as one aggregate view
+  attempt whose pre/post view is reconstructed from every member's
+  visibility. When one departure hide is refused or unproven, no view can be
+  reconstructed. Core then holds the transfer forever, while the no-replay
+  fence correctly forbids reissuing the hide. Intermittent stuck switches are
+  consistent with this, though not yet causally proven.
+- **User decisions (2026-10-28).**
+  - A switch with a failed departure hide finishes. The stuck window stays
+    visible and stays a member of its departure workspace. The failure is
+    logged, with no retry or rollback.
+  - Pre-0.1, prefer correcting the protocol over working around it.
+  - Core owns per-window visibility work on emulated workspace domains. Core
+    issues explicit show/hide work against a frozen roster, and the adapter
+    reports raw per-member outcomes. Core derives confirmed, refused or
+    ambiguous, and settles the switch. The reconstructed logical view
+    pre/post and the logical applied-view ingress (`WorldReport.views`) are
+    to be retired. The protocol version is bumped from 2 without a
+    compatibility shim.
+  - An arrival that fails to show, or that a safety gate blocks, before the
+    departure-hide phase: the switch finishes. Failed or blocked arrivals are
+    logged as not shown and never receive focus. Departures are hidden only
+    where existing safety gates allow. No retry.
+  - Visibility work whose per-member outcomes are all terminal retires during
+    a later unrelated report gap (incomplete inventory, screen or gesture).
+    Gaps still forbid new writes and any membership or view inference.
+    Ambiguous members stay "actual state unknown" until a complete
+    observation.
+- **Native domains are unaffected in intent.** KDE and macOS switch
+  workspaces with one native write. Their native view attempts and native
+  current/order facts stay, and neither would implement per-window
+  visibility work.
+- **Why KDE is involved.** At `103d33ae`, `kwin/src/world-observe.ts` sets
+  `hostOwned` per report: `desktopsReadable` and a known current desktop
+  on every screen (around lines 1327-1330). When that fails, the report
+  becomes `hostOwned: false`, empties `native[]` and falls back to
+  logical view receipts from the adapter's binding table (around lines
+  1365-1385). Under the new design, a per-report `hostOwned: false` would
+  read as "emulated workspaces". Core would then issue hide/show work to KDE
+  during a transient read gap. That would be wrong, and it is a hidden mode
+  switch either way.
+- **Options for the KDE owner.**
+  - **(a) Stable ownership (recommended from the Windows side).** KDE always
+    reports native ownership. Unreadable desktop/current facts ride as
+    explicit unknowns, and core holds as for other gaps: no new writes, no
+    inferred view, membership or close. The logical-view fallback goes away.
+    Native vs emulated becomes a fixed per-adapter property rather than a
+    per-report flag.
+  - **(b) Keep the per-report flag** and add a separate fixed
+    "emulated workspaces" capability that alone gates visibility work.
+    Smaller KDE change, but two overlapping signals remain, which the planned
+    pre-0.1 protocol correctness review would likely flag.
+  - Other designs are welcome if they fit KDE better.
+- **Questions for the KDE owner.**
+  - Does anything in the KDE path rely on the logical-view fallback during
+    read gaps, for example retained view settlement, history or pager
+    content?
+  - Are transient unreadable desktop/current reads common in practice?
+  - Is there a native reason ownership can genuinely change at runtime?
+- **Coordination.** The version bump changes the KDE and macOS codecs and
+  schema tests. All adapters need to land together.
+- Full Windows analysis:
+  [design check](#per-write-visibility-protocol-design-check-2026-10-28).
