@@ -1461,8 +1461,10 @@ decisions of 2026-09-24 are under
   exceptions (P0 item below; drafted, awaiting approval); (2) small fixes:
   focus-walk test fence (delivered offline `812eba82`), pager
   core-trailing-workspace check (incomplete projection found: the `+` action
-  disappears when the last native Space is empty; segment semantics pending
-  user decision), first-float placement decision, `just dev`
+  disappears when the last native Space is empty; direct core projection with a
+  separate trailing segment selected 2026-10-28, blocked on an explicit
+  core-published trailing designation; lazy backing retained), first-float
+  placement decision, `just dev`
   log-follower leak, `just launch` exit code; (3) targeted redogfood, including
   trailing send-follow (3a) and direct-wake feel; (4) fullscreen
   logical-membership design plus one bounded probe; (5) best-effort admission
