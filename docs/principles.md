@@ -77,6 +77,12 @@ Project principles, approved by the user.
   side effects where possible and distinguish them by causal evidence, never
   timing. Actual host state and uncertainty are reported separately from policy
   changes; safety checks always use the live host state.
+- Policy lives in the core. Platforms classify the facts only they can know
+  (for example, whether a foreground change came from the user, an app, a core
+  request, or an unknown cause) and report them, with uncertainty, as facts;
+  the core decides what they mean for placement, membership, workspaces and
+  focus. A thin platform carries no policy; it does not pass raw state for the
+  core to guess from.
 - Host limitations reach the core as platform-neutral options (for example, every screen always has the same workspace count), never as platform checks.
 - Logic several platforms share that is not part of the core's role goes into a separate shared library, decided case by case.
 - Push as much logic as is sensible down into the shared, system-agnostic
