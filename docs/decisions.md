@@ -5287,6 +5287,18 @@ User-confirmed 2026-10-28; implementation pending unless noted
   protected-window mismatches from system-service window churn. Fresh baseline
   required before any next leg.
 
+### macOS pager trailing-spare projection
+
+- User decision 2026-10-28: the macOS pager projects core workspace rows
+  directly; when core publishes an unbound trailing workspace identified by
+  core's own trailing designation, the pager shows it as a separate selectable
+  segment replacing the occupancy-driven '+'.
+- Source authority: the trailing spare is identified only from core's explicit
+  trailing designation. `WorkspaceDesire.native_binding == None` is not
+  trailing proof: it also covers pending/migrated rows and the default contract.
+- Backing stays lazy: displaying the spare authorizes no native append; native
+  backing is created only on first switch/send targeting it.
+
 ## Native adoption 2026-10-24
 
 User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
