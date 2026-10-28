@@ -1314,9 +1314,11 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 - First current native proof failed before any chord: the fixture caller could
   not be joined to a native window. Cause unresolved; no native latency samples
   exist. At that proof checkpoint, the coalesced 50 ms pump was unchanged.
-- The new receipt remains untouched and no new live work runs. Offline-only
-  direct-wake acceptance was approved at this checkpoint; implementation status
-  is recorded under Direct event-driven wake below.
+- At this checkpoint the new receipt remained untouched and no new live work
+  ran; that hold is superseded by the retirement in User review direction
+  2026-10-28 below. Offline-only direct-wake acceptance was approved at this
+  checkpoint; implementation status is recorded under Direct event-driven wake
+  below.
 
 ## Test iteration speed (2026-10-27)
 
@@ -1501,6 +1503,26 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   sending the first chord once. Preserve existing timeouts, exact accepted-focus
   count, edge-retention and recovery assertions. Repeatedly sending the command
   until something dispatches would mask the race and is not the repair.
+
+## User review direction 2026-10-28
+
+- User-confirmed ROI ordering gate proposal, small fixes, then targeted
+  redogfood.
+- Priority order for later work: fullscreen logical-membership design/probe,
+  best-effort admission, reliability/game safety, FFI unsafe review,
+  drag/drop, later small/distribution checks.
+- Shelved: native shared-spec stress runner until after redogfood (native
+  scaffold removed from tree; no shared-spec/oracle change); native latency
+  harness/tracing stays shelved; fixture input harness shelved in favor of
+  physical dogfood; selection/send route settings shelved; dynamic per-window
+  radius shelved with version-derived default staying, superseding the
+  2026-10-27 radius follow-up selection.
+- Deferred post-0.1: SkyLight underlay/below-target border experiment.
+  Deferred until macOS refuses Dock-swipe: Mission Control AX fallback.
+  Deferred: floor-15 check and indicator icons.
+- Live receipts: the newer baseline receipt retired/archived after two
+  protected-window mismatches from system-service window churn. Fresh baseline
+  required before any next leg; no new live work claimed here.
 
 ## Risks and open evidence
 

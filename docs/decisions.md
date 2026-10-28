@@ -5263,7 +5263,29 @@ User-confirmed 2026-10-28
   only the T2 measure-first requirement; the direct-wake direction stands.
   Deterministic offline proof is accepted, plus a later re-dogfood feel check.
 - The native latency harness and tracing stay parked/shelved. The retained new
-  live receipt stays untouched.
+  live receipt direction below supersedes the prior untouched hold: that
+  receipt is now retired/archived (see ROI review and receipt retirement
+  below).
+
+### ROI review and receipt retirement
+
+User-confirmed 2026-10-28; implementation pending unless noted
+([port record](changes/macos-world-v2-port.md#user-review-direction-2026-10-28)):
+
+- ROI ordering gate proposal first, then small fixes, then targeted redogfood.
+- Priority order for later work: fullscreen logical-membership design/probe,
+  best-effort admission, reliability and game safety, FFI unsafe review,
+  drag/drop, later small/distribution checks.
+- Shelved: native shared-spec stress runner until after redogfood; fixture
+  input harness shelved in favor of physical dogfood; selection/send route
+  settings shelved; dynamic per-window radius shelved with version-derived
+  default staying (supersedes the 2026-10-27 radius follow-up selection).
+- Deferred post-0.1: SkyLight underlay/below-target border experiment.
+  Deferred until macOS refuses Dock-swipe: Mission Control AX fallback.
+  Deferred: floor-15 check and indicator icons.
+- Live receipts: the newer baseline receipt is retired/archived after two
+  protected-window mismatches from system-service window churn. Fresh baseline
+  required before any next leg.
 
 ## Native adoption 2026-10-24
 
