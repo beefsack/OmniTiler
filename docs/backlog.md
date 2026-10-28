@@ -1432,9 +1432,12 @@ decisions of 2026-09-24 are under
   Focus-walk first-dispatch flake diagnosed 2026-10-28: first chord can precede
   the startup observation; test-only repair (wait for applied startup
   observation, fence, then one chord) pending.
-  (a) direct-wake latency unit with measured native before/after numbers;
-  user 2026-10-28: retire the stale live baseline receipt (archived) and
-  capture a fresh read-only baseline first
+  (a) delivered offline 2026-10-28: direct event-driven claim/completion wake
+  replaces the 50 ms pump; native before/after measurement dropped (user
+  2026-10-28), feel checked in (g); the native latency harness and tracing are
+  shelved; the first fixture leg's window-join failure is unresolved and the
+  retained live receipt (two protected-window mismatches) awaits user
+  disposition before any live leg
   ([decisions](decisions.md#macos-follow-up-review-decisions-2026-10-28));
   (b) delivered offline 2026-10-28: every user command reaches core FIFO, T3
   supersession retained (`3d64b5c5`);
