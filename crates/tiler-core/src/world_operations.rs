@@ -1786,7 +1786,8 @@ pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
         | WorldCommand::SendDirectional { window, .. }
         | WorldCommand::Send { window, .. }
         | WorldCommand::SendRelative { window, .. }
-        | WorldCommand::SendNumbered { window, .. } => Some(window.clone()),
+        | WorldCommand::SendNumbered { window, .. }
+        | WorldCommand::ToggleMaximize { window } => Some(window.clone()),
         WorldCommand::Operation(command) => match command {
             CoreCommand::Move { window, .. }
             | CoreCommand::Focus { window, .. }

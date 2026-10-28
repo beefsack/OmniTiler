@@ -2520,3 +2520,416 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
         other => panic!("maximized unfloat must refuse, got {other:?}"),
     }
 }
+
+#[test]
+fn toggle_maximize_command_decides_and_reports() {
+    // World-owned maximize toggle (KDE route): the focused subject's
+    // fullscreen/maximized preimage decides the correlated result while
+    // the snapshot IS the outcome (no retain, no topology mutation).
+    fn toggle(window: &str) -> WorldCommand {
+        WorldCommand::ToggleMaximize {
+            window: WindowId(window.to_owned()),
+        }
+    }
+    fn maximize_of(reply: &crate::world_report::WorldReply) -> (bool, bool, bool) {
+        match &reply.command_result {
+            Some(CommandResult::Maximize {
+                window,
+                maximized,
+                clear_fullscreen,
+                was_maximized,
+            }) => {
+                assert_eq!(window.0, "w1", "result names the subject");
+                (*maximized, *clear_fullscreen, *was_maximized)
+            }
+            other => panic!("expected maximize result, got {other:?}"),
+        }
+    }
+    let screens = vec![roomy("out-a", 0, true)];
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let seed = vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)];
+    let first = accepted(
+        &mut engine,
+        &report(1, screens.clone(), seed, "w1", vec![], None, None),
+    );
+    let w0_alloc = row_of(&first, "w0").allocation.expect("w0 seed slot");
+    let w1_alloc = row_of(&first, "w1").allocation.expect("w1 seed slot");
+
+    // Focused tiled fullscreen maximizes with a fullscreen clear; the
+    // exact subject/sibling allocations survive, nothing retains.
+    let mut fs = fact("w1", "out-a", 100);
+    fs.fullscreen = true;
+    let toggled = accepted(
+        &mut engine,
+        &report(
+            2,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fs],
+            "w1",
+            vec![],
+            Some(2),
+            Some(toggle("w1")),
+        ),
+    );
+    assert_eq!(
+        maximize_of(&toggled),
+        (true, true, false),
+        "fullscreen preimage maximizes with clear"
+    );
+    assert_eq!(
+        row_of(&toggled, "w1").allocation,
+        Some(w1_alloc),
+        "subject slot survives"
+    );
+    assert_eq!(
+        row_of(&toggled, "w0").allocation,
+        Some(w0_alloc),
+        "sibling slot survives"
+    );
+    assert!(toggled.transfers.is_empty(), "no transfers");
+    assert!(
+        toggled.effects.iter().all(|e| e.target.0 != "w1"),
+        "no subject effects: {:?}",
+        toggled.effects
+    );
+    // Exact result bytes: the structural estimate matches the existing
+    // serializer byte-for-byte (locks the fixed count, no guesses; the
+    // 10 bytes are the shared `,"result":` section prefix).
+    let mut encoded = String::new();
+    crate::world_sizing::encode_command_result(&mut encoded, &toggled.command_result);
+    assert_eq!(
+        crate::world_sizing::command_result_estimate(&toggled.command_result),
+        encoded.len() + 10,
+        "result estimate is exact: {encoded}"
+    );
+
+    // Maximized observation toggles back off with no clear; the base
+    // tile (seed slot) is the outcome.
+    let mut mx = fact("w1", "out-a", 100);
+    mx.maximized = true;
+    let untoggled = accepted(
+        &mut engine,
+        &report(
+            3,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), mx],
+            "w1",
+            vec![],
+            Some(3),
+            Some(toggle("w1")),
+        ),
+    );
+    assert_eq!(
+        maximize_of(&untoggled),
+        (false, false, true),
+        "maximized preimage unmaximizes without clear"
+    );
+    assert_eq!(
+        row_of(&untoggled, "w1").allocation,
+        Some(w1_alloc),
+        "second toggle keeps the base tile"
+    );
+    assert_eq!(
+        row_of(&untoggled, "w0").allocation,
+        Some(w0_alloc),
+        "sibling still exact"
+    );
+    // Both-flags observation maximizes with a clear (fullscreen wins).
+    let mut both = fact("w1", "out-a", 100);
+    both.fullscreen = true;
+    both.maximized = true;
+    let both_reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), both],
+            "w1",
+            vec![],
+            Some(4),
+            Some(toggle("w1")),
+        ),
+    );
+    assert_eq!(
+        maximize_of(&both_reply),
+        (true, true, true),
+        "both flags maximize with clear"
+    );
+    // Ordinary plain tile maximizes with no clear.
+    let plain = accepted(
+        &mut engine,
+        &report(
+            5,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w1",
+            vec![],
+            Some(5),
+            Some(toggle("w1")),
+        ),
+    );
+    assert_eq!(
+        maximize_of(&plain),
+        (true, false, false),
+        "plain tile maximizes without clear"
+    );
+    assert_eq!(
+        row_of(&plain, "w1").allocation,
+        Some(w1_alloc),
+        "plain toggle keeps the tile"
+    );
+    // Exact command bytes: the estimate delta over a commandless twin
+    // equals the wire delta (locks the fixed count, no guesses).
+    let wire = r#"{"op":"toggle-maximize","win":"w1"}"#;
+    let with_cmd = report(
+        6,
+        screens.clone(),
+        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+        "w1",
+        vec![],
+        Some(6),
+        Some(toggle("w1")),
+    );
+    let mut bare = with_cmd.clone();
+    bare.command = None;
+    assert_eq!(
+        crate::world_report::report_estimate(&with_cmd)
+            - crate::world_report::report_estimate(&bare),
+        wire.len() - 4,
+        "command estimate is exact"
+    );
+    // Commandless reports carry no result.
+    let quiet = accepted(
+        &mut engine,
+        &report(
+            6,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w1",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        quiet.command_result.is_none(),
+        "commandless carries nothing"
+    );
+    // A newer report reusing a consumed sequence reconciles only: the
+    // stale command never re-emits its result.
+    let replay = match engine.handle_report(&report(
+        7,
+        screens.clone(),
+        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+        "w1",
+        vec![],
+        Some(2),
+        Some(toggle("w1")),
+    )) {
+        WorldOutcome::CommandConsumed(reply) => reply,
+        other => panic!("consumed sequence replays quiet, got {other:?}"),
+    };
+    assert!(
+        replay.command_result.is_none(),
+        "consumed sequence stays quiet"
+    );
+
+    // Floating fullscreen toggles to maximized with a clear while the
+    // float keeps its durable placement and untouched frames.
+    {
+        let durable = rect(10, 10, 100, 100);
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w1",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w1",
+                vec![],
+                Some(2),
+                Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: "w1".to_owned(),
+                    float_rect: Some(durable),
+                })),
+            ),
+        );
+        let mut floated_fs = fact("w1", "out-a", 100);
+        floated_fs.floating = true;
+        floated_fs.fullscreen = true;
+        floated_fs.rect = Some(rect(0, 0, 800, 600));
+        let floated = accepted(
+            &mut engine,
+            &report(
+                3,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), floated_fs],
+                "w1",
+                vec![],
+                Some(3),
+                Some(toggle("w1")),
+            ),
+        );
+        match &floated.command_result {
+            Some(CommandResult::Maximize {
+                maximized,
+                clear_fullscreen,
+                was_maximized,
+                ..
+            }) => assert_eq!(
+                (*maximized, *clear_fullscreen, *was_maximized),
+                (true, true, false),
+                "floating fullscreen maximizes with clear"
+            ),
+            other => panic!("expected maximize result, got {other:?}"),
+        }
+        let row = row_of(&floated, "w1");
+        assert!(row.floating, "toggle keeps the float: {row:?}");
+        assert_eq!(row.allocation, None, "still no tile: {row:?}");
+        assert_eq!(
+            row.effective_frame,
+            Some(durable),
+            "durable placement survives: {row:?}"
+        );
+        assert!(floated.transfers.is_empty(), "no transfers");
+    }
+
+    // Refusal: a command naming an unfocused window never executes.
+    match engine.handle_report(&report(
+        8,
+        screens.clone(),
+        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+        "w0",
+        vec![],
+        Some(8),
+        Some(toggle("w1")),
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "focus-unknown"),
+        other => panic!("unfocused toggle refuses, got {other:?}"),
+    }
+
+    // Refusal: a geometrically held scope never executes.
+    {
+        let mut held_engine = WorldEngine::new("gen-1").expect("generation");
+        let abutting = vec![
+            ScreenReport {
+                output: OutputId("out-a".to_owned()),
+                full_rect: Some(rect(700, 0, 100, 100)),
+                work_area: Some(rect(700, 0, 100, 100)),
+                gap: 0,
+                outer_gap: 0,
+                complete: true,
+                primary: true,
+            },
+            roomy("out-b", 800, false),
+        ];
+        accepted(
+            &mut held_engine,
+            &report(
+                1,
+                abutting,
+                vec![fact("w0", "out-a", 710), fact("wb", "out-b", 800)],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let clamped = vec![
+            ScreenReport {
+                output: OutputId("out-a".to_owned()),
+                full_rect: Some(rect(700, 0, 100, 100)),
+                work_area: Some(rect(700, 0, 100, 100)),
+                gap: 0,
+                outer_gap: 64,
+                complete: true,
+                primary: true,
+            },
+            roomy("out-b", 800, false),
+        ];
+        match held_engine.handle_report(&report(
+            2,
+            clamped,
+            vec![fact("w0", "out-a", 710), fact("wb", "out-b", 800)],
+            "w0",
+            vec![],
+            Some(11),
+            Some(toggle("w0")),
+        )) {
+            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "scope-held"),
+            other => panic!("held toggle refuses, got {other:?}"),
+        }
+    }
+
+    // Refusal: a retained window transfer fences a same-window toggle.
+    // (Explicit sends are same-output only; directional sends own the
+    // crossing, so the flight here rides an ordinary same-output send.)
+    {
+        let mut flight_engine = WorldEngine::new("gen-1").expect("generation");
+        let seed = accepted(
+            &mut flight_engine,
+            &report(
+                1,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                None,
+                None,
+            ),
+        );
+        let ring: Vec<String> = seed
+            .workspaces
+            .iter()
+            .filter(|r| r.output.0 == "out-a")
+            .map(|r| r.id.clone())
+            .collect();
+        let sent = accepted(
+            &mut flight_engine,
+            &report(
+                2,
+                screens.clone(),
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                vec![],
+                Some(2),
+                Some(WorldCommand::Send {
+                    window: WindowId("w0".to_owned()),
+                    target_output: OutputId("out-a".to_owned()),
+                    target_workspace: ring[1].clone(),
+                    follow: false,
+                }),
+            ),
+        );
+        assert!(
+            sent.transfers
+                .iter()
+                .any(|t| matches!(&t.kind, TransferKind::Window(_))),
+            "send retains a window transfer"
+        );
+        match flight_engine.handle_report(&report(
+            3,
+            screens.clone(),
+            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+            "w0",
+            vec![],
+            Some(3),
+            Some(toggle("w0")),
+        )) {
+            WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "transfer-in-flight"),
+            other => panic!("in-flight toggle refuses, got {other:?}"),
+        }
+    }
+}

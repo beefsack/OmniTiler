@@ -752,18 +752,22 @@ rectangles where geometry is load-bearing.
   no runtime proof claimed).
 - Then paneru: TBD: combined sequence not audited at pin (source-only; no
   runtime proof claimed).
-- Then Ours KDE: Current recorded policy refuses Meta+M while fullscreen
-  first; no writes to B during fullscreen (D5); slot restore follows the
-  retained-slot R-MAX-02 path. `UT(2026-10-28)`: Meta+M appears dropped and
-  Meta+F11 exit tiles; exact slot/share/focus not measured, TBD.
-  `D(D-dec-ww)` + `D(D-dec-max)`
-  (window-state decisions: Meta+M refuses while fullscreen at :4654-4655,
-  D5 no writes during fullscreen at :2321-2325); requirement OPEN pending
-  user decision, current decisions stand.
-- Then Ours Windows: Recorded fullscreen-subject maximize refusal
-  (decisions.md:4799-4800), no deferred maximize; retained tile/share remains
-  beneath fullscreen and project exit restores it (R-MAX-02); refusal
-  preserves focus by policy. `D(D-dec-ww)` + `D(D-dec-max)`; this exact
-  sequence's native slot/state/focus outcome TBD. OPEN pending user decision;
-  current decisions stand.
-- Variant hook: V-FS-SLOT; no new REQ row, no normative selection.
+- Then Ours KDE: User 2026-10-28 selects Hyprland: explicit Meta+M replaces
+  fullscreen with maximized. Delivered offline: Session decides; KDE clears
+  fullscreen then calls `setMaximize(true, true)` with no geometry/focus/stack
+  writes. Tentative pending review: retain tiled slot/share and sibling
+  allocations or floating base; next Meta+M restores base; both flags also
+  become maximized. Real Engine command coverage plus adapter/native fixtures
+  prove the offline legs, not native acceptance (user-owned, pending).
+  `UT(2026-10-28)` dropped Meta+M is historical pre-change evidence only.
+  [Record](../../changes/archive/fullscreen-maximize-toggle.md).
+- Then Ours Windows: Same selected target; runtime adoption remains pending.
+  Legacy fullscreen-subject maximize refusal is unchanged; retained tile/share
+  remains beneath fullscreen and project exit restores it (R-MAX-02).
+  Only compile-only diagnostic enum arms added, not native integration.
+  Exact native slot/state/focus outcome TBD. `D(D-dec-ww)` + `D(D-dec-max)`.
+- Variant hook: V-FS-SLOT; REQ-MAX-11 NORMATIVE, User 2026-10-28. Minimal
+  variants: repeat Meta+M -> base; start floating+fullscreen -> maximized float;
+  start with both fullscreen/maximized flags -> maximized, not fullscreen.
+  These base/both-flags details remain tentative pending review; reference
+  outcomes for variants not established above remain TBD.

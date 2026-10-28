@@ -14,7 +14,7 @@
 // truthful readback, never the setter boolean. No workspace policy: core
 // converges the tiling consequences from the next full report.
 
-import type { WorldCommand } from "./world-report";
+import type { WorldCommand, WorldReplyResult } from "./world-report";
 import type { ApplyEnv } from "./world-apply";
 import { readDesktopForOutput, writeDesktopForOutput } from "./workspace-native";
 import { isOpaqueId } from "./world-seq";
@@ -60,6 +60,10 @@ export interface WorldNativeToggles {
     readonly setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
     readonly setMaximizedNative: (ref: object, maximized: boolean) => boolean;
     readonly setFullscreenNative: (ref: object, fullscreen: boolean) => boolean;
+    // Authorized maximize for a Planner toggle-maximize result. True only
+    // on readback-confirmed application; pending/unconfirmed is never
+    // claimed applied and never retried. No geometry/focus/stack writes.
+    readonly applyAuthorizedMaximize: (result: Extract<WorldReplyResult, { op: "maximize" }>) => boolean;
     // B9 pending-unfloat settlement probe (entry-driven, exactly once on
     // the first accepted full-state report after the issued clear): the
     // first fresh report is the settlement boundary. A cleared window
@@ -662,6 +666,108 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         }
     };
 
+    // Authorized maximize for the Planner toggle-maximize result. Fresh
+    // identity/ref/list/focus/source-flag fences run before any write so no
+    // stale accepted capture can actuate; worldApplyFenced runs once before
+    // writes. Ordinary results delegate to setMaximizedNative (setMaximize
+    // bool/bool only, never a fullscreen property write). The fullscreen
+    // branch clears first through the exact KWin name (`fullScreen`) then
+    // invokes maximize back-to-back with NO applied readback required
+    // between the setters: script `fullScreen` reads the APPLIED flag
+    // (window.h:332) while the WRITE setter flips the REQUESTED flag
+    // synchronously (xdgshellwindow.cpp:1737), which is what isResizable()
+    // reads (:682) and maximize() requires (:1773) before staging
+    // m_nextStates plus scheduleConfigure (:879, :890). Applied flags
+    // update only on client ack (:1080), so an applied-full readback
+    // between setters would always abort on Wayland; the legacy
+    // fullscreen guard is NOT reused here. Same-requested-mode maximize
+    // is a host no-op, so both-flags clears full and retains max. Tags v6.7.4 (same mechanism at v6.8.1):
+    // https://invent.kde.org/plasma/kwin/-/blob/v6.7.4/src/xdgshellwindow.cpp
+    // https://invent.kde.org/plasma/kwin/-/blob/v6.7.4/src/window.h
+    const applyAuthorizedMaximize = (result: Extract<WorldReplyResult, { op: "maximize" }>): boolean => {
+        try {
+            const target = result.maximized ? "maximized" : "restored";
+            if (env.activeWindowId() !== result.win) {
+                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=focus-raced`);
+                return false;
+            }
+            let live: object | null = null;
+            try {
+                live = env.liveRefById(result.win);
+            } catch (error) {
+                void error;
+                live = null;
+            }
+            if (live === null || liveWindowId(readProp, live) !== result.win || !isListed(live)) {
+                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=observe-missing`);
+                return false;
+            }
+            let focused: object | null = null;
+            try {
+                focused = env.activeWindowRef();
+            } catch (error) {
+                void error;
+                focused = null;
+            }
+            if (focused === null || liveWindowId(readProp, focused) !== result.win) {
+                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=focus-raced`);
+                return false;
+            }
+            // Source preimage: clearFullscreen IS the source fullscreen.
+            const sourceFullscreen = readFullscreen(readProp, live);
+            const sourceMaximized = readMaximized(readProp, live);
+            if (sourceFullscreen === null || sourceMaximized === null ||
+                sourceFullscreen !== result.clearFullscreen || sourceMaximized !== result.wasMaximized) {
+                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=source-raced`);
+                return false;
+            }
+            if (!result.clearFullscreen) {
+                return setMaximizedNative(live, result.maximized);
+            }
+            if (worldApplyFenced("maximize")) {
+                return false;
+            }
+            // Synchronous invalidation BEFORE the first setter.
+            env.invalidate();
+            let cleared = false;
+            try {
+                cleared = Reflect.set(live, "fullScreen", false);
+            } catch (error) {
+                void error;
+                cleared = false;
+            }
+            if (!cleared) {
+                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=clear-refused`);
+                return false;
+            }
+            let invoked = false;
+            try {
+                invoked = invokeMaximize(readProp, live, result.maximized);
+            } catch (error) {
+                void error;
+                invoked = false;
+            }
+            if (!invoked) {
+                log(`omnitiler:world:maximize-refused target=${target} window=${token(result.win)} reason=native-write-refused`);
+                return false;
+            }
+            env.scheduleDispatch();
+            // Truthful final readback (script names read APPLIED flags):
+            // confirmed claims applied, anything else logs unconfirmed
+            // (pending ack or host-rules refusal, indistinguishable here)
+            // with no retry; the next full report observes the truth.
+            if (readMaximized(readProp, live) === true && readFullscreen(readProp, live) === false) {
+                log(`omnitiler:world:maximize-applied target=maximized window=${token(result.win)} clear=fullscreen`);
+                return true;
+            }
+            log(`omnitiler:world:maximize-unconfirmed target=maximized window=${token(result.win)} outcome=unconfirmed`);
+            return false;
+        } catch (error) {
+            void error;
+            return false;
+        }
+    };
+
     // Automatic fixed-size float stacking driver (option A). `fresh`
     // carries classification flags only; every stacking write re-reads
     // live overlay state first and resolves a fresh live ref, so a stale
@@ -952,7 +1058,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         }
     };
 
-    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, pollPendingUnfloat, cancelPendingUnfloat, syncAutomaticFloatStacking, releaseAutomaticFloat, releaseAllAutomaticFloats };
+    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, applyAuthorizedMaximize, pollPendingUnfloat, cancelPendingUnfloat, syncAutomaticFloatStacking, releaseAutomaticFloat, releaseAllAutomaticFloats };
 }
 
 function readAutoAboveBelow(readProp: WorldNativeEnv["readProp"], ref: object): { above: boolean; below: boolean } | null {

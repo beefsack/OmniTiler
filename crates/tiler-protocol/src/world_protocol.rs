@@ -1530,6 +1530,12 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
                 workspace: req_id(map, "ws")?,
             })
         }
+        "toggle-maximize" => {
+            check_keys(map, &["op", "win"])?;
+            Ok(WorldCommand::ToggleMaximize {
+                window: WindowId(req_id(map, "win")?),
+            })
+        }
         "operation" => {
             check_keys(map, &["op", "command"])?;
             let inner = map.get("command").ok_or_else(malformed)?;

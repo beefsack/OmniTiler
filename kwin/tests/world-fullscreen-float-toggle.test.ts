@@ -63,6 +63,10 @@ function makeHarness(initial: LiveSpec[]) {
     const focusWrites: string[] = [];
     const aboveWrites: string[] = [];
     const nativeStateWrites: string[] = [];
+    // Applied-flag lag hook: a stuck window records requested native
+    // setters in call order but its script getters keep returning the
+    // pre-write applied values (Wayland client-ack lag).
+    const appliedStuck = new Set<string>();
     let activeBraced: string | null = initial.length > 0 ? (initial[0] as LiveSpec).braced : null;
     const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -97,6 +101,7 @@ function makeHarness(initial: LiveSpec[]) {
     const desktops = [{ id: WS_A }];
     const screens = [{ name: OUT, geometry: { x: 0, y: 0, width: 800, height: 600 } }];
     const wrap = (spec: LiveSpec): object => {
+        const stuckNow = appliedStuck.has(spec.braced);
         const w: Record<string, unknown> = {
             internalId: spec.braced, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
@@ -124,41 +129,49 @@ function makeHarness(initial: LiveSpec[]) {
         };
         Object.defineProperty(w, "fullScreen", {
             configurable: true,
-            get: () => fullScreen,
+            get: () => (stuckNow ? spec.fullScreen : fullScreen),
             set: (v: boolean) => {
-                fullScreen = v;
-                syncLive();
                 recordNative("fullScreen", v);
+                if (!stuckNow) {
+                    fullScreen = v;
+                    syncLive();
+                }
                 return true;
             },
         });
         Object.defineProperty(w, "fullscreen", {
             configurable: true,
-            get: () => fullScreen,
+            get: () => (stuckNow ? spec.fullScreen : fullScreen),
             set: (v: boolean) => {
-                fullScreen = v;
-                syncLive();
                 recordNative("fullscreen", v);
+                if (!stuckNow) {
+                    fullScreen = v;
+                    syncLive();
+                }
                 return true;
             },
         });
         Object.defineProperty(w, "maximizeMode", {
             configurable: true,
-            get: () => maximizeMode,
+            get: () => (stuckNow ? spec.maximizeMode : maximizeMode),
             set: (v: number) => {
-                maximizeMode = v;
-                syncLive();
                 recordNative("maximizeMode", v);
+                if (!stuckNow) {
+                    maximizeMode = v;
+                    syncLive();
+                }
                 return true;
             },
         });
         Object.defineProperty(w, "maximized", {
             configurable: true,
-            get: () => maximizeMode !== 0,
+            get: () => (stuckNow ? spec.maximizeMode !== 0 : maximizeMode !== 0),
             set: (v: boolean) => {
-                maximizeMode = v ? 3 : 0;
-                syncLive();
                 recordNative("maximized", v);
+                if (!stuckNow) {
+                    maximizeMode = v ? 3 : 0;
+                    syncLive();
+                }
                 return true;
             },
         });
@@ -183,9 +196,11 @@ function makeHarness(initial: LiveSpec[]) {
             },
         });
         w["setMaximize"] = (vertically: boolean, horizontally: boolean): void => {
-            maximizeMode = vertically && horizontally ? 3 : 0;
-            syncLive();
             nativeStateWrites.push(`${spec.braced}@setMaximize:${vertically},${horizontally}`);
+            if (!stuckNow) {
+                maximizeMode = vertically && horizontally ? 3 : 0;
+                syncLive();
+            }
         };
         let above = false;
         Object.defineProperty(w, "keepAbove", {
@@ -360,6 +375,12 @@ function makeHarness(initial: LiveSpec[]) {
             const st = live.get(`{${bare}}`);
             assert.ok(st !== undefined);
             st.maximizeMode = modeValue;
+        },
+        setActive: (bare: string): void => {
+            activeBraced = `{${bare}}`;
+        },
+        stickApplied: (bare: string): void => {
+            appliedStuck.add(`{${bare}}`);
         },
         liveFrame: (bare: string): [number, number, number, number] => {
             const spec = live.get(`{${bare}}`);
@@ -634,5 +655,271 @@ describe("world fullscreen float toggle", () => {
         const spec = h.live.get(`{${WIN_A}}`);
         assert.equal(spec?.maximizeMode, 3, "native maximize state untouched");
         assert.equal(spec?.fullScreen, true, "native fullscreen state untouched");
+    });
+});
+
+describe("world maximize toggle", () => {
+    const maximizeResult = (maximized: boolean, clearFullscreen: boolean, wasMaximized: boolean): Record<string, unknown> => ({
+        op: "maximize", win: WIN_A, maximized, clearFullscreen, wasMaximized,
+    });
+    const tiledWindows = (): Array<Record<string, unknown>> => [
+        winRow(WIN_A, TILE_A, "controlled"),
+        winRow(WIN_B, TILE_B_HALF, "controlled"),
+    ];
+    const acceptMaximize = (
+        h: ReturnType<typeof makeHarness>,
+        rev: string,
+        windows: Array<Record<string, unknown>>,
+        result: Record<string, unknown>,
+    ): void => {
+        const call = h.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, rev, {
+            windows, result,
+        }));
+    };
+
+    it("tiled fullscreen maximize clears full first then maximizes with slots retained", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, false));
+        // Realistic setter order: exact KWin `fullScreen` clear first,
+        // then `setMaximize(true, true)` back-to-back with no applied
+        // readback between them.
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=false`,
+            `{${WIN_A}}@setMaximize:true,true`,
+        ]);
+        const spec = h.live.get(`{${WIN_A}}`);
+        assert.equal(spec?.fullScreen, false, "native fullscreen cleared");
+        assert.equal(spec?.maximizeMode, 3, "native maximize applied");
+        assert.deepEqual(h.liveFrame(WIN_B), TILE_B_HALF, "sibling allocation unchanged");
+        assert.deepEqual(h.subjectWrites(`{${WIN_A}}`), [], "no geometry write to the cleared subject");
+        assert.deepEqual(h.geometryWrites, [], "slots retained, no reflow writes");
+        assert.deepEqual(h.focusWrites.filter((f) => f.includes(WIN_A)), [], "no focus write");
+        assert.ok(h.logs.some((l) => l.includes("maximize-applied") && l.includes("clear=fullscreen")), "applied clear log");
+    });
+
+    it("second maximize restores the plain original tile", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, false));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=false`,
+            `{${WIN_A}}@setMaximize:true,true`,
+        ]);
+
+        entry.requestMaximize();
+        h.runTimers();
+        const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        acceptMaximize(h, "2", tiledWindows(), maximizeResult(false, false, true));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=false`,
+            `{${WIN_A}}@setMaximize:true,true`,
+            `{${WIN_A}}@setMaximize:false,false`,
+        ], "restore uses setMaximize only, never a fullscreen write");
+        const spec = h.live.get(`{${WIN_A}}`);
+        assert.equal(spec?.fullScreen, false);
+        assert.equal(spec?.maximizeMode, 0, "plain original tile restored");
+        assert.deepEqual(h.liveFrame(WIN_A), FULLSCREEN_FRAME, "native frame untouched by the adapter");
+        assert.deepEqual(h.liveFrame(WIN_B), TILE_B_HALF);
+    });
+
+    it("floating fullscreen stays floated under maximize and restores the float", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestFloat();
+        h.runTimers();
+        acceptMaximize(h, "1", [
+            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+            winRow(WIN_B, TILE_B_FULL, "controlled"),
+        ], { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "float beneath fullscreen writes nothing");
+
+        entry.requestMaximize();
+        h.runTimers();
+        const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        acceptMaximize(h, "2", [
+            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+            winRow(WIN_B, TILE_B_FULL, "controlled"),
+        ], maximizeResult(true, true, false));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=false`,
+            `{${WIN_A}}@setMaximize:true,true`,
+        ]);
+        assert.deepEqual(h.subjectWrites(`{${WIN_A}}`), [], "float retained, no subject geometry write");
+        assert.deepEqual(h.liveFrame(WIN_B), TILE_B_FULL, "sibling stays full");
+
+        entry.requestMaximize();
+        h.runTimers();
+        acceptMaximize(h, "3", [
+            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+            winRow(WIN_B, TILE_B_FULL, "controlled"),
+        ], maximizeResult(false, false, true));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=false`,
+            `{${WIN_A}}@setMaximize:true,true`,
+            `{${WIN_A}}@setMaximize:false,false`,
+        ]);
+        const spec = h.live.get(`{${WIN_A}}`);
+        assert.equal(spec?.maximizeMode, 0, "maximize restored");
+        assert.equal(spec?.fullScreen, false);
+    });
+
+    it("both flags clears full and retains max", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true, maximizeMode: 3 }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, true));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=false`,
+            `{${WIN_A}}@setMaximize:true,true`,
+        ], "same-requested-mode maximize is a host no-op, full still clears");
+        const spec = h.live.get(`{${WIN_A}}`);
+        assert.equal(spec?.fullScreen, false);
+        assert.equal(spec?.maximizeMode, 3, "max retained");
+    });
+
+    it("ordinary maximize uses setMaximize only and commandless reports write no fullscreen state", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        assert.deepEqual(filed["command"], { op: "toggle-maximize", win: WIN_A });
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, false, false));
+        assert.deepEqual(
+            h.subjectNativeWrites(`{${WIN_A}}`),
+            [`{${WIN_A}}@setMaximize:true,true`],
+            "ordinary maximize never touches a fullscreen property",
+        );
+        assert.equal(h.live.get(`{${WIN_A}}`)?.maximizeMode, 3);
+
+        const g = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        g.discover();
+        g.fire("windowActivated");
+        g.runTimers();
+        const call = g.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(g.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
+            windows: tiledWindows(),
+            result: null,
+        }));
+        assert.deepEqual(g.subjectNativeWrites(`{${WIN_A}}`), [], "no explicit command means zero fullscreen native writes");
+        assert.equal(g.live.get(`{${WIN_A}}`)?.fullScreen, true, "fullscreen untouched");
+    });
+
+    it("stale preimage, raced focus, and duplicate takes never replay the setters", () => {
+        const stale = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        stale.discover();
+        stale.nonNullHandle.requestMaximize();
+        stale.runTimers();
+        acceptMaximize(stale, "1", tiledWindows(), maximizeResult(true, false, false));
+        assert.deepEqual(stale.subjectNativeWrites(`{${WIN_A}}`), [], "preimage mismatch writes nothing");
+        assert.ok(stale.logs.some((l) => l.includes("reason=source-raced")), "source race logged");
+
+        const raced = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        raced.discover();
+        raced.nonNullHandle.requestMaximize();
+        raced.runTimers();
+        raced.setActive(WIN_B);
+        acceptMaximize(raced, "1", tiledWindows(), maximizeResult(true, true, false));
+        assert.deepEqual(raced.subjectNativeWrites(`{${WIN_A}}`), [], "focus race writes nothing");
+        assert.ok(raced.logs.some((l) => l.includes("reason=focus-raced")), "focus race logged");
+
+        const dup = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        dup.discover();
+        dup.nonNullHandle.requestMaximize();
+        dup.runTimers();
+        acceptMaximize(dup, "1", tiledWindows(), maximizeResult(true, true, false));
+        assert.equal(dup.subjectNativeWrites(`{${WIN_A}}`).length, 2);
+        (globalThis as Record<string, unknown>)["__takeResult"] = maximizeResult(true, true, false);
+        dup.fire("windowActivated");
+        dup.runTimers();
+        const call = dup.lastCall("DescribeWorld");
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        call.callback(dup.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
+            windows: tiledWindows(),
+            result: null,
+        }));
+        // The commandless flight never takes, so the duplicated terminal
+        // never replays the setters; drop the staged duplicate so later
+        // flights cannot consume it.
+        delete (globalThis as Record<string, unknown>)["__takeResult"];
+        assert.equal(dup.subjectNativeWrites(`{${WIN_A}}`).length, 2, "duplicate never replays");
+    });
+
+    it("applied lag still orders clear before maximize and reports unconfirmed", () => {
+        const h = makeHarness([
+            termSpec(WIN_A, { x: FULLSCREEN_FRAME[0], y: FULLSCREEN_FRAME[1], width: FULLSCREEN_FRAME[2], height: FULLSCREEN_FRAME[3] }, { fullScreen: true }),
+            termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
+        ]);
+        h.discover();
+        const entry = h.nonNullHandle;
+
+        entry.requestMaximize();
+        h.runTimers();
+        // Freeze applied flags: setters record the requested writes but
+        // script getters keep returning the pre-write applied values
+        // until the Wayland client acks.
+        h.stickApplied(WIN_A);
+        acceptMaximize(h, "1", tiledWindows(), maximizeResult(true, true, false));
+        assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [
+            `{${WIN_A}}@fullScreen=false`,
+            `{${WIN_A}}@setMaximize:true,true`,
+        ], "no applied readback between the setters, clear stays first");
+        assert.ok(h.logs.some((l) => l.includes("maximize-unconfirmed")), "pending ack logs unconfirmed, never retried");
+        const spec = h.live.get(`{${WIN_A}}`);
+        assert.equal(spec?.fullScreen, true, "applied fullscreen still pending");
+        assert.equal(spec?.maximizeMode, 0, "applied maximize still pending");
+        assert.deepEqual(h.subjectWrites(`{${WIN_A}}`), [], "no geometry write while pending");
     });
 });

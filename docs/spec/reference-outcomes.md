@@ -6151,17 +6151,20 @@ minimum-size stays a supplemental file (not nested in resize).
 ### Fullscreen-toggle index discriminators (R-MAX-10/11)
 
 Source-only Tier 1 legs; Tier 2/3 TBD (combined sequences not audited at
-their pins). Ours cells record current refusal policy; both rows are OPEN
-pending user decision with no normative selection.
+their pins). User 2026-10-28 selects R-MAX-10 apply-under-fullscreen and
+R-MAX-11 replace-with-maximized; shared core/KDE delivered offline, native
+acceptance pending. Windows/macOS runtime adoption is separate.
 
 | Leg | Minimal action sequence | Tier 1 split | Tier-rule read / status |
 | --- | --- | --- | --- |
-| [R-MAX-10](reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen) float toggle on fullscreen | Tile `H[A,B*]`; project-fullscreen B; toggle float; observe; exit monitor fullscreen only if still active; observe slot/state/focus | Hyprland/i3/sway apply floating while preserving fullscreen; COSMIC refuses | Rule would suggest apply-while-preserving with the float revealed on exit; OPEN pending user decision, D5 tension unresolved |
-| [R-MAX-11](reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen) maximize toggle on fullscreen | Reset `H[A,B*]`; project-fullscreen B; toggle maximize; observe; exit monitor fullscreen only if still active; observe slot/state/focus | COSMIC ignores; Hyprland replaces fullscreen with MAXIMIZED; i3/sway have no counterpart (non-voting, never no-op votes) | No consensus; tier default remains COSMIC absent a new user decision; OPEN |
+| [R-MAX-10](reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen) float toggle on fullscreen | Tile `H[A,B*]`; project-fullscreen B; toggle float; observe; exit monitor fullscreen only if still active; observe slot/state/focus | Hyprland/i3/sway apply floating while preserving fullscreen; COSMIC refuses | User 2026-10-28 selects apply-under-fullscreen, no subject writes (D5); REQ-MAX-10 NORMATIVE; shared/KDE delivered offline |
+| [R-MAX-11](reference-outcomes/maximize-fullscreen.md#r-max-11-maximize-toggle-on-fullscreen) maximize toggle on fullscreen | Reset `H[A,B*]`; project-fullscreen B; toggle maximize; observe; exit monitor fullscreen only if still active; observe slot/state/focus | COSMIC ignores; Hyprland replaces fullscreen with MAXIMIZED; i3/sway have no counterpart (non-voting, never no-op votes) | User 2026-10-28 selects Hyprland; REQ-MAX-11 NORMATIVE; shared/KDE delivered offline; explicit-command D5 exception tentative pending review |
 
 Game safety tension: Hyprland's transient fullscreen clear/reapply and native
 floating/configure changes during fullscreen are not proven safe for games;
-D5 remains unchanged. Settled final geometry/focus visuals are TBD
+D5 still forbids unsolicited writes; only R-MAX-11's explicit target command
+permits the required native state transition (tentative pending review).
+Settled final geometry/focus visuals are TBD
 (source-only) in every leg. Keys `S(S-cos-fullscreen-toggles)`,
 `S(S-hyp-fullscreen-toggles)`, `S(S-i3-fullscreen-float)`,
 `S(S-sway-fullscreen-float)`.

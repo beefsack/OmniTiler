@@ -507,3 +507,117 @@ describe("world apply host desktop creation", () => {
         assert.equal(host.listDesktops?.()?.[0]?.name, "wl-1");
     });
 });
+
+describe("world authorized maximize", () => {
+    const maximizeOf = (win: string, maximized: boolean, clearFullscreen: boolean, wasMaximized: boolean) => ({
+        op: "maximize" as const, win, maximized, clearFullscreen, wasMaximized,
+    });
+    const withRecordingFullscreen = (ref: FakeWin, order: string[], sticky: boolean): void => {
+        let full = true;
+        Object.defineProperty(ref, "fullScreen", {
+            configurable: true,
+            get: () => (sticky ? true : full),
+            set: (v: boolean) => {
+                order.push(`fullScreen:${v}`);
+                full = v;
+            },
+        });
+    };
+
+    it("applies an ordinary maximize through setMaximize only", () => {
+        const { ref, order } = makeWin();
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, false, false)), true);
+        assert.deepEqual(order, ["invalidate", "setMaximize:true,true"]);
+        assert.equal(ref.maximizeMode, 3);
+        assert.equal(ref.fullScreen, false);
+        assert.equal(h.calls.length, 0);
+        assert.ok(h.logs.some((m) => m.includes("maximize-applied")));
+    });
+
+    it("applies an ordinary restore through setMaximize only", () => {
+        const { ref, order } = makeWin({ maximizeMode: 3 });
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", false, false, true)), true);
+        assert.deepEqual(order, ["invalidate", "setMaximize:false,false"]);
+        assert.equal(ref.maximizeMode, 0);
+    });
+
+    it("clears fullscreen first then maximizes back-to-back", () => {
+        const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 0 });
+        withRecordingFullscreen(ref, order, false);
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), true);
+        assert.deepEqual(order, ["invalidate", "fullScreen:false", "setMaximize:true,true"]);
+        assert.equal(ref.maximizeMode, 3);
+        assert.ok(h.logs.some((m) => m.includes("maximize-applied") && m.includes("clear=fullscreen")));
+    });
+
+    it("clears fullscreen and retains max on the both-flags result", () => {
+        const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 3 });
+        withRecordingFullscreen(ref, order, false);
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, true)), true);
+        assert.deepEqual(order, ["invalidate", "fullScreen:false", "setMaximize:true,true"]);
+        assert.equal(ref.maximizeMode, 3);
+    });
+
+    it("reports unconfirmed when applied flags stay pending after the setters", () => {
+        const { ref, order } = makeWin({ fullScreen: true, maximizeMode: 0 });
+        withRecordingFullscreen(ref, order, true);
+        ref.setMaximize = (v: boolean, hv: boolean): void => {
+            order.push(`setMaximize:${v},${hv}`);
+        };
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), false);
+        // The clear is still requested FIRST: no applied readback is
+        // required between the setters (Wayland keeps applied-full true
+        // until the client acks), and nothing is retried.
+        assert.deepEqual(order, ["invalidate", "fullScreen:false", "setMaximize:true,true"]);
+        assert.ok(h.logs.some((m) => m.includes("maximize-unconfirmed")));
+    });
+
+    it("refuses a refused clear write without invoking maximize", () => {
+        const { ref, order } = makeWin({ maximizeMode: 0 });
+        Object.defineProperty(ref, "fullScreen", {
+            configurable: true,
+            get: () => true,
+        });
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), false);
+        assert.ok(!order.some((e) => e.startsWith("setMaximize")), "no maximize call after a refused clear");
+        assert.ok(h.logs.some((m) => m.includes("reason=clear-refused")));
+    });
+
+    it("refuses a stale source preimage with no writes", () => {
+        const { ref, order } = makeWin();
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, true, false)), false);
+        assert.deepEqual(order, []);
+        assert.ok(h.logs.some((m) => m.includes("reason=source-raced")));
+    });
+
+    it("refuses a result for a window that lost focus with no writes", () => {
+        const { ref, order } = makeWin();
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-b", true, false, false)), false);
+        assert.deepEqual(order, []);
+        assert.ok(h.logs.some((m) => m.includes("reason=focus-raced")));
+    });
+
+    it("refuses a replaced live ref with no writes", () => {
+        const { ref, order } = makeWin({ internalId: "win-b" });
+        const h = setup(ref, order);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, false, false)), false);
+        assert.deepEqual(order, []);
+        assert.ok(h.logs.some((m) => m.includes("observe-missing")));
+    });
+
+    it("fails closed while a world apply is in flight", () => {
+        const { ref, order } = makeWin();
+        const h = setup(ref, order);
+        h.env.setBusy(true);
+        assert.equal(h.toggles.applyAuthorizedMaximize(maximizeOf("win-a", true, false, false)), false);
+        assert.deepEqual(order, []);
+    });
+});

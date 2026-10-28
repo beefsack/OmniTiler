@@ -962,6 +962,13 @@ pub enum WorldCommand {
     /// refuses without mutation. Genuine explicit migrations route
     /// [`WorldCommand::MigrateWorkspace`] with both scopes named.
     MigrateDirectional { direction: String },
+    /// Maximize toggle: flip the maximized flag on the focused
+    /// subject at execution time. `clear_fullscreen` carries the source
+    /// fullscreen preimage (true when the subject was fullscreen, so the
+    /// adapter clears fullscreen first); `was_maximized` carries the source
+    /// maximized preimage. Never retains or mutates topology: the snapshot
+    /// retains base membership; the result authorizes the native transition.
+    ToggleMaximize { window: WindowId },
     /// Existing operation route: one [`CoreCommand`] executed against the
     /// homing (or first readable) domain through the full [`CoreEvent`].
     /// `SendToWorkspace`/`SendToOutput` retain a window transfer exactly
@@ -1398,6 +1405,16 @@ pub enum CommandResult {
         target: Option<WindowId>,
         rect: Option<Rect>,
         cause: Option<String>,
+    },
+    /// Maximize-toggle decision: `maximized` is the desired
+    /// maximized flag after the toggle, `clear_fullscreen` the source
+    /// fullscreen preimage (the adapter clears fullscreen first when
+    /// true), `was_maximized` the source maximized preimage.
+    Maximize {
+        window: WindowId,
+        maximized: bool,
+        clear_fullscreen: bool,
+        was_maximized: bool,
     },
 }
 
@@ -2551,6 +2568,7 @@ pub fn valid_command(command: &WorldCommand) -> bool {
             window, direction, ..
         } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::MigrateDirectional { direction } => DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::ToggleMaximize { window } => is_opaque_id(&window.0),
         WorldCommand::Operation(command) => valid_operation(command),
     }
 }

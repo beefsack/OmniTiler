@@ -2380,7 +2380,8 @@ platform API behavior.
   - D5 born-fullscreen (CHANGED, delivered offline):
     born-fullscreen first exit classifies as newly admitted: fixed
     floats with no writes, otherwise tiles; previously fixed-floating
-    restores float. No writes during fullscreen. Deliberate COSMIC
+    restores float. No unsolicited writes during fullscreen; explicit
+    maximize replacement is the narrow R-MAX-11 exception below. Deliberate COSMIC
     deviation for game safety; pending live observation.
   - D6 workspace enable (CHANGED, delivered offline):
     enabling workspace tiling checks every window being tiled,
@@ -4723,8 +4724,9 @@ platform API behavior.
 - Maximize isolation mirrors fullscreen, authorized 2026-09-14. A nonzero KWin
   `maximizeMode` (1 vertical, 2 horizontal, 3 full) is collapsed to one adapter
   boolean; no horizontal or vertical maximize concept enters the Rust engine or
-  its protocol, and no Rust protocol/session state is added for maximize. A
-  maximized member keeps its observed identity, leaf/tree position, and share,
+  its protocol. R-MAX-11 later adds a command-only core decision/result, not
+  retained maximize state. A maximized member keeps its observed identity,
+  leaf/tree position, and share,
   receives no geometry write, and on unmaximize is restored to its exact
   retained allocation. Fullscreen takes precedence when a window is both
   fullscreen and maximized: fullscreen refusal tokens and the `skip-fullscreen`
@@ -4733,13 +4735,36 @@ platform API behavior.
   fresh `maximizeMode` reads on later observations. An unseen native change
   remains unknown until a subsequent observation.
 - `Meta+M` toggles KWin maximize through `Window.setMaximize(bool, bool)`, never
-  `maximizeMode`. Fullscreen refuses first. Post-admission maximize retains its
-  tile slot and skips geometry writes; unmaximize restores its retained
+  `maximizeMode`. User 2026-10-28 selects Hyprland's R-MAX-11: fullscreen is
+  replaced by maximized, superseding the prior fullscreen-first refusal.
+  Post-admission maximize retains its tile slot and skips geometry writes;
+  unmaximize restores its retained
   allocation. The action has its own exact-reference `maximizedChanged` fence,
   so a deliberate post-admission maximize is never affected by admission-time
   clearing. Current read-only enumeration found `kwin/KrohnkiteMonocleLayout`
   on `Meta+M`; registration preserves that record and emits the shadowed-
   delivery diagnostic until the user applies the exact reversible KCM override.
+- R-MAX-11 delivered offline in shared core/KDE; native acceptance pending.
+  Tentative integration choice pending user review: ordinary and fullscreen
+  maximize toggles both use `WorldCommand::ToggleMaximize`, a Session-owned
+  decision, and a command-only `Maximize` result. KDE no longer chooses the
+  toggle locally. The additive command/result shape needs coordinated protocol
+  bump review with unreadable-desktop workspace ownership and Windows staged
+  switches; no version bump here.
+  Tentative behavior details pending user review: an explicit Meta+M targets
+  that fullscreen window, permitting only the native state writes needed to
+  replace fullscreen with maximize under D5/REQ-MAX-09 explicit-command policy.
+  No automatic or unsolicited fullscreen writes are authorized. Tiled base
+  retains its slot/share without sibling reflow; floating base stays floating
+  with durable placement. Meta+M again unmaximizes to that base. Both flags set
+  also become maximized, not fullscreen (Hyprland mode-replacement reading).
+  KDE clears `fullScreen` before `setMaximize`: KWin v6.7.4/v6.8.1 synchronously
+  updates requested fullscreen, which maximize's resizability check reads;
+  applied flags can lag until client acknowledgment. No intermediate applied
+  readback, delay, retry or inferred success. Final readback logs confirmed or
+  unconfirmed; later observations remain authoritative. Windows/macOS runtime
+  adoption remains separate; Windows has only two compile-only diagnostic
+  match arms. [Record](changes/archive/fullscreen-maximize-toggle.md).
 - KDE toggle activation (user 2026-10-05, delivered offline): each explicit
   maximize/sticky activation makes at most one native toggle attempt; no
   persistent attempted-state map or automatic retry. Exact-reference echo

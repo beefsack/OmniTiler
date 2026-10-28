@@ -19,13 +19,14 @@ use crate::workspace_scope::{
     resolve_relative_step, resolve_trailing,
 };
 use crate::world_engine::{
-    KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_MIGRATION, KIND_SCOPE_HELD,
-    KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED,
-    MSG_DIRECTION, MSG_FOCUS, MSG_MIGRATION, MSG_MIGRATION_FLIGHT, MSG_MIGRATION_INVENTORY,
-    MSG_MIGRATION_RECIPROCAL, MSG_MIGRATION_RESIDUE, MSG_MIGRATION_SHARED, MSG_MIGRATION_SOURCE,
-    MSG_MIGRATION_SOURCE_UNREADABLE, MSG_MIGRATION_TARGET_GEOMETRY,
-    MSG_MIGRATION_TARGET_INCOMPLETE, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN, MSG_SEND_TARGET,
-    MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
+    KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION,
+    KIND_OPERATION, KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW,
+    KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT, MSG_MIGRATION,
+    MSG_MIGRATION_FLIGHT, MSG_MIGRATION_INVENTORY, MSG_MIGRATION_RECIPROCAL, MSG_MIGRATION_RESIDUE,
+    MSG_MIGRATION_SHARED, MSG_MIGRATION_SOURCE, MSG_MIGRATION_SOURCE_UNREADABLE,
+    MSG_MIGRATION_TARGET_GEOMETRY, MSG_MIGRATION_TARGET_INCOMPLETE, MSG_OPERATION, MSG_SCOPE_HELD,
+    MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
+    WorldEngine,
 };
 use crate::world_report::{
     CommandResult, OneShotEffect, SendSource, TransferKind, TransferTarget, WorldCommand,
@@ -840,10 +841,83 @@ impl WorldEngine {
                     held_scopes,
                 )
             }
+            WorldCommand::ToggleMaximize { window } => {
+                self.toggle_maximize(report, command_seq, window, held_scopes)
+            }
             WorldCommand::Operation(command) => {
                 self.execute_operation(report, command_seq, command, &by_id, held_scopes)
             }
         }
+    }
+
+    /// Maximize toggle: the focused subject only, over readable
+    /// staged homing outside held scopes, with no retained transfer for the
+    /// window. The [`crate::session::Session`] decision flips the maximized
+    /// flag (fullscreen always maximizes with a fullscreen clear); the
+    /// correlated result authorizes the native transition while the snapshot
+    /// retains base membership. Never retains, never mutates topology.
+    pub(crate) fn toggle_maximize(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        window: &WindowId,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        if report.focused_global != window.0 {
+            return CommandApplied::Rejected {
+                kind: KIND_FOCUS,
+                message: MSG_FOCUS,
+            };
+        }
+        let Some(home) = self.staged.homing.get(window).cloned() else {
+            return CommandApplied::Rejected {
+                kind: KIND_FOCUS,
+                message: MSG_FOCUS,
+            };
+        };
+        if held_scopes.contains(&home) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        if !self
+            .staged
+            .domains
+            .iter()
+            .any(|domain| domain.readable && domain.key == home)
+        {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        }
+        let Some(fact) = self.staged.facts.get(window) else {
+            return CommandApplied::Rejected {
+                kind: KIND_FOCUS,
+                message: MSG_FOCUS,
+            };
+        };
+        if self
+            .retained
+            .iter()
+            .any(|transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if w == window))
+        {
+            return CommandApplied::Rejected {
+                kind: KIND_IN_FLIGHT,
+                message: MSG_IN_FLIGHT,
+            };
+        }
+        let decision =
+            crate::session::Session::decide_maximize_toggle(fact.fullscreen, fact.maximized);
+        self.command_result = Some(CommandResult::Maximize {
+            window: window.clone(),
+            maximized: decision.maximized,
+            clear_fullscreen: decision.clear_fullscreen,
+            was_maximized: fact.maximized,
+        });
+        self.note_command(command_seq);
+        CommandApplied::NoEffect
     }
 }
 

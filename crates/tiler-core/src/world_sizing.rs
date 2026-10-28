@@ -509,6 +509,19 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
             bytes += cause.as_ref().map_or(4, |c| json_string_len(c));
             bytes
         }
+        CommandResult::Maximize {
+            window,
+            maximized,
+            clear_fullscreen,
+            was_maximized,
+        } => {
+            // {"op":"maximize","win":S,"maximized":B,"clearFullscreen":B,
+            // "wasMaximized":B} = 72 fixed.
+            72 + json_string_len(&window.0)
+                + bool_len(*maximized)
+                + bool_len(*clear_fullscreen)
+                + bool_len(*was_maximized)
+        }
     }
 }
 
@@ -967,6 +980,10 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
         WorldCommand::MigrateDirectional { direction } => {
             // {"op":"migrate-directional","direction":S} = 41 fixed.
             41 + json_string_len(direction)
+        }
+        WorldCommand::ToggleMaximize { window } => {
+            // {"op":"toggle-maximize","win":S} = 31 fixed.
+            31 + json_string_len(&window.0)
         }
         WorldCommand::Operation(command) => {
             // {"op":"operation","command":{...}} = 30 fixed.
@@ -1750,6 +1767,22 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
                 Some(c) => push_json_string(out, c),
                 None => out.push_str("null"),
             }
+            out.push('}');
+        }
+        Result::Maximize {
+            window,
+            maximized,
+            clear_fullscreen,
+            was_maximized,
+        } => {
+            out.push_str("{\"op\":\"maximize\",\"win\":");
+            push_json_string(out, &window.0);
+            out.push_str(",\"maximized\":");
+            out.push_str(if *maximized { "true" } else { "false" });
+            out.push_str(",\"clearFullscreen\":");
+            out.push_str(if *clear_fullscreen { "true" } else { "false" });
+            out.push_str(",\"wasMaximized\":");
+            out.push_str(if *was_maximized { "true" } else { "false" });
             out.push('}');
         }
     }

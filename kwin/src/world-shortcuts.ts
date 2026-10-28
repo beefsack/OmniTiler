@@ -13,6 +13,7 @@ import {
     cmdSelectRelative,
     cmdSelectTrailing,
     cmdSendRelative,
+    cmdToggleMaximize,
     cmdToggleWorkspaceTiling,
     implicitSource,
     type WorldCommand,
@@ -90,7 +91,6 @@ export interface WorldShortcutsEnv {
     submitMigration: (direction: string) => boolean;
     submitFloat: (label: string) => boolean;
     setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
-    setMaximizedNative: (ref: object, maximized: boolean) => boolean;
     setFullscreenNative: (ref: object, fullscreen: boolean) => boolean;
     activeOutputName: () => string | null;
     activeWindowId: () => string | null;
@@ -108,7 +108,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
     const {
         readProp, isDirection, shortcutFailed, submitCommand,
         submitCatalogMove, submitOutputSend, submitMigration, submitFloat,
-        setStickyNative, setMaximizedNative, setFullscreenNative,
+        setStickyNative, setFullscreenNative,
         activeOutputName, activeWindowId, activeWindowRef,
         currentScopeId,
     } = env;
@@ -221,10 +221,10 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 }
             });
         }
-        // Window-state toggles (legacy parity): float/sticky/maximize/
-        // fullscreen/orientation route the same handlers as the facade.
-        // Sticky/maximize/fullscreen are synchronous native toggles with
-        // pre-setter safety rechecks; float/orientation are world commands.
+        // Window-state toggles (legacy parity): float/maximize/orientation
+        // route the same handlers as the facade. Sticky/fullscreen are
+        // synchronous native toggles with pre-setter safety rechecks;
+        // float/maximize/orientation are world commands.
         tryRegister("omnitiler-toggle-float", "Toggle floating window", "Meta+G", () => {
             submitFloat("toggle-float");
         });
@@ -238,10 +238,8 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             }
         });
         tryRegister("omnitiler-toggle-maximize", "Toggle maximize window", "Meta+M", () => {
-            const ref = activeWindowRef();
-            const mode = ref !== null ? readProp(ref, "maximizeMode") : undefined;
-            const maximized = typeof mode === "number" ? mode !== 0 : ref !== null ? readNativeAlias(readProp, ref, "maximized") === true : false;
-            if (ref === null || !setMaximizedNative(ref, !maximized)) {
+            const w = focusedWin();
+            if (w === null || !submitCommand(cmdToggleMaximize(w), "toggle-maximize")) {
                 shortcutFailed("toggle-maximize");
             }
         });

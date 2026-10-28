@@ -433,9 +433,14 @@ Prioritise by return toward these goals
     refusals; explicit commands only, no automatic fullscreen writes (D5).
     Float delivered offline in shared Session plus KDE: single/double toggle,
     sibling reflow, no fullscreen-subject writes and both exit states covered.
-    Native/physical acceptance pending; maximize pending as a separate unit.
+    Maximize also delivered offline in shared Session plus KDE: core-owned
+    ordinary/fullscreen toggle, retained tiled/floating base, clear-before-max
+    native order and no-command safety covered. Native/physical acceptance
+    pending, user-owned. Additive command/result needs coordinated protocol
+    bump review; no version bump in this delivery.
     Windows/macOS adapters follow in their own items.
-    [Float record](changes/archive/fullscreen-float-toggle.md).
+    [Float record](changes/archive/fullscreen-float-toggle.md),
+    [maximize record](changes/archive/fullscreen-maximize-toggle.md).
   - Ghostty cross-output height/width shortfall is external client/toolkit
     sizing; no OmniTiler retry or artificial resize workaround. Draft upstream
     report pending filing ([decision](decisions.md#cross-output-gesture-release-placement-2026-10-27)).
@@ -1202,6 +1207,12 @@ Prioritise by return toward these goals
   `float_toggle_refusal`'s retained safety fence. Preserve durable placement
   and double-toggle fresh admission; add native/adapter acceptance.
   [Shared/KDE record](changes/archive/fullscreen-float-toggle.md).
+- P1 | Windows core maximize-toggle integration | Adopt the shared command-only
+  maximize result for ordinary/fullscreen toggles; fullscreen becomes maximized
+  with existing tiled/floating base retained. Only two compile-only diagnostic
+  match arms landed; no Windows runtime integration. Native restore/preimage
+  safety and acceptance remain pending. Review additive shape with staged-switch
+  protocol coordination. [Record](changes/archive/fullscreen-maximize-toggle.md).
 - P0 | Windows feature parity queue | User order (2026-10-02), each matching
   KDE behavior/bindings. All slices delivered offline; physical/live acceptance
   pending per slice: (1) active border; (2) group underlay A/B (C parked, see
@@ -1395,6 +1406,10 @@ Prioritise by return toward these goals
   behavior acceptance inferred from shared core tests.
   [Shared/KDE record](changes/archive/fullscreen-float-toggle.md).
 - P1 | macOS Linux portable gates | Baseline reproduces 9 dock-swipe tests failing with `macOS major unreadable` and strict clippy unused/dead-code errors; pre-existing, unrelated to fullscreen float ([evidence](changes/archive/fullscreen-float-toggle.md)).
+- P1 | macOS core maximize-toggle integration | Adopt the shared ordinary/
+  fullscreen maximize intent/result with retained tiled/floating base. No macOS
+  adapter behavior changed; native fullscreen/zoom mechanism and acceptance
+  remain pending. [Record](changes/archive/fullscreen-maximize-toggle.md).
 - P1 | macOS port | Started 2026-10-14 (user), superseding the after-KDE-0.1
   sequencing. Port contract finalized 2026-10-24:
   [world adapter guide](porting/world-adapter-guide.md) plus

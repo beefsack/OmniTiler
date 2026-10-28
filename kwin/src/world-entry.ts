@@ -80,6 +80,7 @@ import {
     cmdSendDirectional,
     cmdSendNumbered,
     cmdSendRelative,
+    cmdToggleMaximize,
     cmdToggleWorkspaceTiling,
     implicitSource,
     isCoreWorldReply,
@@ -3096,6 +3097,23 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         sendToOutput: (ref, outRef) =>
                             withHomingSuppression(ref, () => applyHostBase.sendToOutput(ref, outRef)),
                     });
+                    // Authorized maximize actuation: the take result for this
+                    // exact flight's clientCmd is the settlement of the
+                    // command this flight filed (the head was consumed at
+                    // file-send, so no later reply can replay it; the take
+                    // lane already fenced generation/revision/input staleness).
+                    // Only a maximize result on a command-carrying flight
+                    // actuates, against the exact result window under fresh
+                    // native fences inside.
+                    try {
+                        if (flight.clientCmd !== null && takeResult !== null && takeResult.op === "maximize") {
+                            if (!native.applyAuthorizedMaximize(takeResult)) {
+                                shortcutFailed("maximize");
+                            }
+                        }
+                    } catch (error) {
+                        void error;
+                    }
                     // Terminal drop-attempt diagnostic (tracked window only):
                     // pending-report rows for the NEXT report. The accepted
                     // ack retires only exactly-equal delivered rows, so no
@@ -4503,7 +4521,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         submitMigration,
         submitFloat: (label) => native.submitFloat(label),
         setStickyNative: (ref, id, sticky) => native.setStickyNative(ref, id, sticky),
-        setMaximizedNative: (ref, maximized) => native.setMaximizedNative(ref, maximized),
         setFullscreenNative: (ref, fullscreen) => native.setFullscreenNative(ref, fullscreen),
         activeOutputName,
         activeWindowId,
@@ -4679,10 +4696,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         requestFloat: () => {
             native.submitFloat("float");
         },
-        // Sticky/maximize/fullscreen have no Planner command route: they
-        // are synchronous native state toggles applied here with pre-setter
+        // Sticky/fullscreen have no Planner command route: they are
+        // synchronous native state toggles applied here with pre-setter
         // safety rechecks, then observed authoritatively on the next full
-        // report (core converges the tiling consequences). Fullscreen and
+        // report (core converges the tiling consequences). Maximize routes
+        // a Planner toggle-maximize command instead. Fullscreen and
         // maximized overlays refuse exactly like the legacy guards; game
         // safety wins over parity. Sticky restores floating origin plus
         // keepAbove/keepBelow on off.
@@ -4705,8 +4723,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         },
         requestMaximize: () => {
-            const ref = activeWindowRef();
-            if (ref === null) {
+            const id = activeWindowId();
+            if (id === null) {
                 shortcutFailed("maximize");
                 return;
             }
@@ -4715,12 +4733,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             } catch (error) {
                 void error;
             }
-            // Maximize echo: the toggle target logs before the setter so a
-            // missing finish signal still converges on the next observation.
-            const mode = readProp(ref, "maximizeMode");
-            const want = (typeof mode === "number" ? mode !== 0 : readNativeAlias(readProp, ref, "maximized") === true) !== true;
-            log(`omnitiler:world:maximize-toggle target=${want ? "maximized" : "restored"} outcome=issued`);
-            if (!native.setMaximizedNative(ref, want)) {
+            if (!submitCommand(cmdToggleMaximize(id), "maximize")) {
                 shortcutFailed("maximize");
             }
         },

@@ -1873,3 +1873,72 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         "transport mirrors the core writer"
     );
 }
+
+#[test]
+fn toggle_maximize_decodes_and_result_encodes() {
+    // Wire toggle-maximize decodes to the typed command, and the focused
+    // plain tile publishes the Maximize result through both writers with
+    // exact result sizing. Malformed/missing win refuses.
+    use tiler_core::world_report::CommandResult as R;
+    use tiler_core::world_report::WorldCommand as C;
+    let command = serde_json::json!({"op": "toggle-maximize", "win": "win-a"});
+    let mut value: serde_json::Value =
+        serde_json::from_str(&with_command(&command, "7")).expect("valid");
+    value["focused"] = serde_json::Value::String("win-a".to_owned());
+    let report = decode_request(&value.to_string()).expect("toggle-maximize decodes");
+    assert!(
+        matches!(report.command, Some(C::ToggleMaximize { ref window }) if window.0 == "win-a")
+    );
+    assert_eq!(report.command_seq, Some(7));
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    match &reply.command_result {
+        Some(R::Maximize {
+            window,
+            maximized,
+            clear_fullscreen,
+            was_maximized,
+        }) => {
+            assert_eq!(window.0, "win-a");
+            assert_eq!(
+                (*maximized, *clear_fullscreen, *was_maximized),
+                (true, false, false)
+            );
+        }
+        other => panic!("expected maximize result, got {other:?}"),
+    }
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical, "transport mirrors the core writer");
+    assert!(
+        wire.contains("\"op\":\"maximize\""),
+        "maximize result round-trips, got {wire}"
+    );
+    let mut encoded = String::new();
+    tiler_core::world_sizing::encode_command_result(&mut encoded, &reply.command_result);
+    assert_eq!(
+        tiler_core::world_sizing::command_result_estimate(&reply.command_result),
+        encoded.len() + 10,
+        "result estimate is exact: {encoded}"
+    );
+    let estimate = tiler_core::world_report::reply_estimate(&reply);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+    let missing = serde_json::json!({"op": "toggle-maximize"});
+    assert!(decode_request(&with_command(&missing, "7")).is_err());
+    for bad in [
+        serde_json::json!({"op": "toggle-maximize", "win": null}),
+        serde_json::json!({"op": "toggle-maximize", "win": 7}),
+        serde_json::json!({"op": "toggle-maximize", "win": ""}),
+        serde_json::json!({"op": "toggle-maximize", "win": " "}),
+    ] {
+        assert!(decode_request(&with_command(&bad, "7")).is_err());
+    }
+}

@@ -7,6 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+    cmdToggleMaximize,
     isCoreWorldReply,
     isWorldRejection,
     parseWorldReply,
@@ -105,6 +106,44 @@ describe("world reply result", () => {
         } else {
             assert.fail("expected ready");
         }
+    });
+
+    it("parses the maximize result with exact preimage provenance", () => {
+        assert.deepEqual(cmdToggleMaximize("win-a"), { op: "toggle-maximize", win: "win-a" });
+        const parsed = unwrapTake(baseTake(
+            `"result":{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":true,"wasMaximized":false}`,
+        ));
+        if (parsed.outcome === "ready") {
+            assert.equal(parsed.result?.op, "maximize");
+            if (parsed.result?.op === "maximize") {
+                assert.equal(parsed.result.win, "win-a");
+                assert.equal(parsed.result.maximized, true);
+                assert.equal(parsed.result.clearFullscreen, true);
+                assert.equal(parsed.result.wasMaximized, false);
+            }
+        } else {
+            assert.fail("expected ready");
+        }
+        const both = unwrapTake(baseTake(
+            `"result":{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":true,"wasMaximized":true}`,
+        ));
+        if (both.outcome === "ready") {
+            assert.equal(both.result?.op, "maximize");
+        } else {
+            assert.fail("expected ready");
+        }
+        assert.equal(parseWorldReply(baseTake(
+            `"result":{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":true}`,
+        )), null, "missing preimage refuses");
+        assert.equal(parseWorldReply(baseTake(
+            `"result":{"op":"maximize","win":"win-a","maximized":"yes","clearFullscreen":false,"wasMaximized":false}`,
+        )), null, "non-boolean maximized refuses");
+        assert.equal(parseWorldReply(baseTake(
+            `"result":{"op":"maximize","win":"win a","maximized":true,"clearFullscreen":false,"wasMaximized":false}`,
+        )), null, "non-opaque win refuses");
+        assert.equal(parseWorldReply(baseCapture(
+            `"result":{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":true,"wasMaximized":false}`,
+        )), null, "capture lane never carries the terminal maximize result");
     });
 
     it("reads a null take result as the snapshot-only outcome", () => {

@@ -40,6 +40,7 @@ export type WorldCommand =
     | { op: "send-numbered"; win: string; source: SendSource; index: number; follow: boolean }
     | { op: "set-workspace-tiling"; out: string; ws: string; tiled: boolean }
     | { op: "toggle-workspace-tiling"; out: string; ws: string }
+    | { op: "toggle-maximize"; win: string }
     | { op: "migrate-workspace"; from: string; to: string; ws: string }
     | { op: "focus-directional"; win: string; direction: string }
     | { op: "move-directional"; win: string; direction: string; sameAxis: string }
@@ -123,6 +124,7 @@ export type WorldReplyResult =
         } | null;
     }
     | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null; noSpace: boolean }
+    | { op: "maximize"; win: string; maximized: boolean; clearFullscreen: boolean; wasMaximized: boolean }
     | {
         op: "active-group"; rev: string; group: string; leaf: string; win: string;
         bounds: [number, number, number, number];
@@ -501,6 +503,9 @@ export function cmdSetWorkspaceTiling(out: string, ws: string, tiled: boolean): 
 }
 export function cmdToggleWorkspaceTiling(out: string, ws: string): WorldCommand {
     return { op: "toggle-workspace-tiling", out, ws };
+}
+export function cmdToggleMaximize(win: string): WorldCommand {
+    return { op: "toggle-maximize", win };
 }
 export function cmdMigrateWorkspace(from: string, to: string, ws: string): WorldCommand | null {
     if (from === to) {
@@ -1366,7 +1371,7 @@ export function buildPresentationReadRequest(req: string): string | null {
     return JSON.stringify({ v: 2, req });
 }
 
-const RESULT_OPS = new Set(["drag-preview", "toggle-float", "active-group", "no-group", "migrate-workspace"]);
+const RESULT_OPS = new Set(["drag-preview", "toggle-float", "maximize", "active-group", "no-group", "migrate-workspace"]);
 const NO_GROUP_REASONS = new Set([
     "no-session", "diverged", "pending", "domain-mismatch", "stale-revision",
     "focus-mismatch", "focus-unmapped", "no-tree", "no-parent-group",
@@ -1462,6 +1467,18 @@ function parseResult(value: unknown): WorldReplyResult | null {
             op: "toggle-float", win: id(o["win"]),
             rect: rectRaw === null || rectRaw === undefined ? null : rect(rectRaw),
             noSpace: noSpaceRaw === true,
+        };
+    }
+    if (op === "maximize") {
+        const maximized = o["maximized"];
+        const clearFullscreen = o["clearFullscreen"];
+        const wasMaximized = o["wasMaximized"];
+        if (typeof maximized !== "boolean" || typeof clearFullscreen !== "boolean" || typeof wasMaximized !== "boolean") {
+            throw new Error("result-maximize");
+        }
+        return {
+            op: "maximize", win: id(o["win"]),
+            maximized, clearFullscreen, wasMaximized,
         };
     }
     if (op === "active-group") {

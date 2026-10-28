@@ -394,7 +394,6 @@ describe("world shortcut settings", () => {
             submitMigration: (_d: string): boolean => false,
             submitFloat: (_label: string): boolean => false,
             setStickyNative: (): boolean => false,
-            setMaximizedNative: (): boolean => false,
             setFullscreenNative: (): boolean => false,
             activeOutputName: (): string | null => "out",
             activeWindowId: (): string | null => "win-a",

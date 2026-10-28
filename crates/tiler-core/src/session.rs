@@ -859,6 +859,15 @@ pub struct Session {
     preview_stage: Option<&'static str>,
 }
 
+/// Pure maximize-toggle decision: `maximized` is the desired
+/// flag after the toggle, `clear_fullscreen` the source fullscreen
+/// preimage (the adapter clears fullscreen first when true).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaximizeDecision {
+    pub maximized: bool,
+    pub clear_fullscreen: bool,
+}
+
 impl Session {
     /// Create an empty session over explicit logical domains.
     pub fn new(
@@ -983,6 +992,24 @@ impl Session {
     #[must_use]
     pub const fn accepted_fingerprint(&self) -> u64 {
         self.accepted_fingerprint
+    }
+
+    /// Pure maximize-toggle decision from the source flags: fullscreen
+    /// always maximizes (clearing fullscreen first), otherwise the
+    /// maximized flag flips. No state, no topology.
+    #[must_use]
+    pub const fn decide_maximize_toggle(fullscreen: bool, maximized: bool) -> MaximizeDecision {
+        if fullscreen {
+            MaximizeDecision {
+                maximized: true,
+                clear_fullscreen: true,
+            }
+        } else {
+            MaximizeDecision {
+                maximized: !maximized,
+                clear_fullscreen: false,
+            }
+        }
     }
 
     /// Session owner binding (mirrors the reconciler binding).

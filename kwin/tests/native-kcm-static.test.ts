@@ -601,7 +601,6 @@ describe("native KCM static contract", () => {
             submitMigration: () => true,
             submitFloat: () => true,
             setStickyNative: () => true,
-            setMaximizedNative: () => true,
             setFullscreenNative: () => true,
             activeOutputName: () => "out-1",
             activeWindowId: () => "win-1",

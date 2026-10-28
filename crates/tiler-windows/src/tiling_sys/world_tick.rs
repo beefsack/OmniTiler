@@ -288,6 +288,7 @@ fn world_command_kind(command: &WorldCommand) -> &'static str {
         WorldCommand::MoveDirectional { .. } => "move-directional",
         WorldCommand::SendDirectional { .. } => "send-directional",
         WorldCommand::MigrateDirectional { .. } => "migrate-directional",
+        WorldCommand::ToggleMaximize { .. } => "toggle-maximize",
         WorldCommand::Operation(_) => "operation",
     }
 }
@@ -301,6 +302,7 @@ fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
         Some(CommandResult::Float { .. }) => "float",
         Some(CommandResult::Directional { .. }) => "directional",
         Some(CommandResult::Migration { .. }) => "migration",
+        Some(CommandResult::Maximize { .. }) => "maximize",
     }
 }
 
