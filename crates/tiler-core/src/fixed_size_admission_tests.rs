@@ -3276,3 +3276,220 @@ fn b9_maximized_float_unfloat_refuses_until_clear_then_fresh_admits() {
         );
     }
 }
+
+// Retained-float unfloat exact-refusal shapes: every reachable
+// PartialObservation emit on the explicit-tile route after convergence,
+// each row mutating exactly one fact so the earliest guard is proved.
+// Unreachable on this route (not tested): the tiled-to-float missing
+// target lookup (that leg never runs for a retained float), the admit
+// subject lookup shadowed by completeness set equality, the normal
+// admission overlay gate shadowed by the subject binding check, and the
+// remove-leg completeness/known-match guards (unfloat fresh-admits,
+// never removes).
+#[test]
+fn retained_float_unfloat_exact_refusals() {
+    fn setup() -> Session {
+        let mut session = Session::new(
+            owner(),
+            generation(),
+            0,
+            7,
+            vec![domain(), dom_pair("out-1", "ws-2")],
+        )
+        .expect("session");
+        session.set_fixed_size_admission(true);
+        admit_plain(&mut session, "win-a", "c-rf-a");
+        let base = session.accepted_revision();
+        session
+            .converge_observation(
+                &observation(base, vec![plain("win-a"), fixed("win-f")]),
+                None,
+            )
+            .expect("admit fixed automatic");
+        assert!(session.is_automatic_fixed_float(&WindowId("win-f".to_owned())));
+        session
+    }
+    fn complete(session: &Session) -> Vec<ObservedWindow> {
+        let mut windows: Vec<ObservedWindow> = session
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| plain(&l.window.0))
+            .collect();
+        windows.extend(session.exception_observed());
+        for entry in windows.iter_mut() {
+            if entry.window.0 == "win-f" {
+                entry.floating = true;
+            }
+        }
+        windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+        windows
+    }
+    #[derive(Clone, Copy)]
+    enum RefusalCase {
+        MissingTarget,
+        StaleFloating,
+        StaleHoming,
+        MaximizedTarget,
+        MissingPeer,
+        ExtraPeer,
+        StalePeerFlags,
+        StalePeerHoming,
+        StaleSubjectSticky,
+    }
+    impl RefusalCase {
+        fn site(self) -> &'static str {
+            match self {
+                Self::MissingTarget => "propose_toggle_float missing-target",
+                Self::StaleFloating => "propose_toggle_float stale-floating-binding",
+                Self::StaleHoming => "propose_toggle_float stale-homing-binding",
+                Self::MaximizedTarget => "propose_toggle_float maximized-target",
+                Self::MissingPeer => "propose_admit completeness missing-peer",
+                Self::ExtraPeer => "propose_admit completeness extra-peer",
+                Self::StalePeerFlags => "propose_admit known-match stale-peer-flags",
+                Self::StalePeerHoming => "propose_admit known-match stale-peer-homing",
+                Self::StaleSubjectSticky => "propose_admit subject-binding stale-subject-sticky",
+            }
+        }
+        fn mutate(self, windows: &mut Vec<ObservedWindow>) {
+            match self {
+                Self::MissingTarget => windows.retain(|e| e.window.0 != "win-f"),
+                Self::MissingPeer => windows.retain(|e| e.window.0 != "win-a"),
+                Self::ExtraPeer => windows.push(plain("win-x")),
+                Self::StaleFloating => {
+                    for e in windows.iter_mut() {
+                        if e.window.0 == "win-f" {
+                            e.floating = false;
+                        }
+                    }
+                }
+                Self::StaleHoming => {
+                    for e in windows.iter_mut() {
+                        if e.window.0 == "win-f" {
+                            e.workspace = WorkspaceId("ws-2".to_owned());
+                        }
+                    }
+                }
+                Self::MaximizedTarget => {
+                    for e in windows.iter_mut() {
+                        if e.window.0 == "win-f" {
+                            e.maximized = true;
+                        }
+                    }
+                }
+                Self::StalePeerFlags => {
+                    for e in windows.iter_mut() {
+                        if e.window.0 == "win-a" {
+                            e.floating = true;
+                        }
+                    }
+                }
+                Self::StalePeerHoming => {
+                    for e in windows.iter_mut() {
+                        if e.window.0 == "win-a" {
+                            e.workspace = WorkspaceId("ws-2".to_owned());
+                        }
+                    }
+                }
+                Self::StaleSubjectSticky => {
+                    for e in windows.iter_mut() {
+                        if e.window.0 == "win-f" {
+                            e.sticky = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Each case names its earliest guard; the mutation proves it by
+    // changing exactly one fact of the complete observation.
+    let rows = [
+        RefusalCase::MissingTarget,
+        RefusalCase::StaleFloating,
+        RefusalCase::StaleHoming,
+        RefusalCase::MaximizedTarget,
+        RefusalCase::MissingPeer,
+        RefusalCase::ExtraPeer,
+        RefusalCase::StalePeerFlags,
+        RefusalCase::StalePeerHoming,
+        RefusalCase::StaleSubjectSticky,
+    ];
+    for (i, case) in rows.iter().enumerate() {
+        let site = case.site();
+        let mut session = setup();
+        let base = session.accepted_revision();
+        let mut windows = complete(&session);
+        case.mutate(&mut windows);
+        windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+        let err = session
+            .propose(
+                &SessionCommand::ToggleFloat {
+                    window: WindowId("win-f".to_owned()),
+                    float_geometry: None,
+                },
+                &observation(base, windows),
+                &correlation(&format!("c-rf-{i}")),
+                &LifecycleCapabilities::full(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ProposeError::Refused(RefusalKind::PartialObservation),
+            "{site} refuses exact"
+        );
+        assert!(!session.has_pending(), "{site} stages no plan");
+        assert!(!session.has_pending_desired(), "{site} stages no desired");
+        let id = WindowId("win-f".to_owned());
+        assert!(session.is_exception(&id), "{site} keeps float");
+        assert!(
+            session.is_automatic_fixed_float(&id),
+            "{site} keeps automatic marker"
+        );
+        assert!(
+            !session.has_fixed_tile_override(&id),
+            "{site} records no override"
+        );
+        assert_eq!(
+            tiled_ids(&session),
+            vec!["win-a".to_owned()],
+            "{site} mutates no topology"
+        );
+        // Restored complete facts accept in the same session: the refusal
+        // staged nothing, so the genuine toggle still proposes.
+        let base = session.accepted_revision();
+        session
+            .propose(
+                &SessionCommand::ToggleFloat {
+                    window: WindowId("win-f".to_owned()),
+                    float_geometry: None,
+                },
+                &observation(base, complete(&session)),
+                &correlation(&format!("c-rf-restore-{i}")),
+                &LifecycleCapabilities::full(),
+            )
+            .unwrap_or_else(|e| panic!("{site} restored facts accept: {e:?}"));
+    }
+    // Corrected full facts accept, directly and after two converging
+    // re-observations.
+    for (tag, resyncs) in [("direct", 0), ("resync", 2)] {
+        let mut session = setup();
+        for _ in 0..resyncs {
+            let base = session.accepted_revision();
+            session
+                .converge_observation(&observation(base, complete(&session)), None)
+                .expect("resync converges");
+        }
+        let base = session.accepted_revision();
+        session
+            .propose(
+                &SessionCommand::ToggleFloat {
+                    window: WindowId("win-f".to_owned()),
+                    float_geometry: None,
+                },
+                &observation(base, complete(&session)),
+                &correlation(&format!("c-rf-ok-{tag}")),
+                &LifecycleCapabilities::full(),
+            )
+            .unwrap_or_else(|e| panic!("{tag} complete facts accept: {e:?}"));
+    }
+}

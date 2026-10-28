@@ -651,12 +651,14 @@ Prioritise by return toward these goals
   [Record](changes/archive/kde-native-state-settlement.md);
   [coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
 - P1 | KDE D7 controller-restart precondition: exact-site reproduction |
-  A stable fixed-client explicit-tile request refused `partial-observation`
-  before controller replacement. Fail-closed behavior is expected; product vs
-  fixture trigger is unresolved because operation payload/refusal site is absent.
-  Reproduce offline immediately after workspace enable, with/without intervening
-  observes; retain complete reports/replies, known-set bindings and exact refusal
-  site. No delay-only workaround or controller-restart pass inferred.
+  Offline real-engine KDE regressions accept complete fixed-client explicit tile
+  immediately after enable and after two observes; full wire traces/bindings
+  retained. Nine core malformed-fact cases pin six fail-closed refusal predicates;
+  unreadable producer observations hold without writes. No product defect or
+  historic fixture cause established: missing historic payload/site still blocks
+  classification. Retain a complete failing operation/report before selecting a
+  fix; no delay workaround or controller-restart pass inferred.
+  [Diagnosis](changes/archive/kde-d7-tile-precondition.md);
   [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
 - P0 | KDE restart float-intent loss on held first observation | Delivered:
   held-first preservation and fresh script-stream handover now pass the complete-

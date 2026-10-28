@@ -315,13 +315,19 @@
 - An accepted sibling run had two observes between workspace enable and explicit
   tile; the refused run had none. This is a settling hypothesis only, not a
   diagnosis or a new requirement to delay commands. No retry was performed.
-- Parked diagnostic/regression work: reconstruct the producer-shaped fixed-client
-  report immediately after workspace enable, compare identical commands with and
-  without intervening observes, and assert the exact refusal site and known-set
-  bindings. Use genuine fixed hints, renewed wrappers and QML array-likes. Retain
-  complete request/reply and retained exception state before selecting a fix;
-  a delay-only harness workaround would not establish correctness. No core or
-  adapter change was made, and controller restart remains blocked.
+- Offline follow-up: production KDE entry/capture with renewed wrappers, QML
+  array-likes and genuine fixed hints feeds the real retained engine. Complete
+  fixed-client explicit tile passes immediately after one enable report and after
+  exactly two observes. Full wire reports/replies, command payloads and exact
+  logical/native member bindings are retained in test diagnostics. Nine core
+  single-fact cases pin six reachable refusal predicates without staged mutation;
+  an unreadable-frame observe-only producer case holds `incomplete-inventory`
+  with zero writes, rather than emitting `partial-observation`.
+- No complete-facts defect reproduced and no production fix selected. The historic
+  trigger remains unclassified, not proven to be a fixture error or corrected by
+  intervening changes. A complete failing operation/report is still needed to
+  select an exact site; controller restart remains unaccepted. See the
+  [site map, regressions and gates](archive/kde-d7-tile-precondition.md).
 
 ### Settings discriminator and callback-route sends/history
 
@@ -417,10 +423,10 @@
 | --- | --- | --- |
 | Ordinary unfloat | Native callback functional pass, two pairs | Physical Meta+G delivery |
 | Both Settings identities | Source-built native shell plus targeted AT-SPI tabs/Status, draft/save/reopen, Cancel, Defaults, both post-switch draft read-backs and unchanged Apply endpoints | Physical traversal/buddies/visual UX and transient-operation isolation |
-| Restart / unavailable Planner | Sampled native pass, no old-command replay; fixed override survives Planner-only replacement after workspace re-enable | Clean controller-restart intent coverage and broader race/error permutations |
+| Restart / unavailable Planner | Sampled native pass, no old-command replay; fixed override survives Planner-only replacement; offline complete fixed-tile precondition passes with zero/two observes after enable | Historic partial-observation trigger still unclassified; clean controller-restart intent coverage and broader race/error permutations |
 | Transport | Exact request limit, oversize/count refusal and large reply delivered | Exact reply-limit delivery and broader latency acceptance |
 | Ordinary actions / lifecycle | Sampled native pass; sticky/native-change and busy-suppression functional signals; maximize/fullscreen settlement correction passes offline regressions | Renewed live diagnostic acceptance, clean remaining permutations and B1 repeats |
-| Safety states / workspace enable | Prior samples plus genuine fixed D5 born/prior-float exit, D6 enable/control and D7 Planner-only restart | Clean D7 controller restart, non-fixed born exit, remaining predicates/controls, games and refused/raced variants |
+| Safety states / workspace enable | Prior fixed D5/D6 and D7 Planner-only samples; offline complete D7 precondition, six refusal predicates and incomplete-inventory hold pinned | Historic exact-site reproduction, clean D7 controller restart, non-fixed born exit, remaining predicates/controls, games and refused/raced variants |
 | Workspace paths | Callback/state selection/history, floating-boundary numbered/relative follow/stay, one tiled numbered follow | Held-scope diagnosis; clean tiled return/stay/relative, append, lifecycle races and migration partial refusal |
 | Drag / client clamp | Controller-free setter observations only; no acceptance | Safe genuine drag route; continuous preview/drop/resize, late-reply cancel and bounded native clamp |
 | Multiple outputs | Not testable in this single-output fixture | Selection/history/swaps/hotplug-return and cross-output matrix |
@@ -428,10 +434,11 @@
 - No complete full-state or single-output inventory gate is claimed. Physical
   keyboard/drag and Settings traversal/visual checks are not established by
   callbacks, direct accessibility actions or offline widget tests.
-- Next bounded step: offline producer-shaped reproduction of fixed-tile
-  `partial-observation` and tiled-send held-scope publication, retaining exact
-  request/reply and refusal-site evidence before another live retry. The historic
-  payloads are unavailable; do not substitute inferred causes. Controller restart
+- Next bounded step: tiled-send held-scope publication diagnosis. D7's complete
+  producer-shaped precondition now passes offline with zero/two observes; its
+  historic refusal needs a complete failing operation/report plus retained
+  bindings to choose an exact predicate. The historic payloads are unavailable;
+  do not substitute inferred causes or a delay requirement. Controller restart
   and tiled return remain pending. A later clean fixture needs retained child
   exit status, explicit workspace re-enable after replacement and immediate
   teardown on the first unexpected refusal.
