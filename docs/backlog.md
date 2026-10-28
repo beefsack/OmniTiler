@@ -43,13 +43,14 @@ decisions of 2026-09-24 are under
   waits for the KDE ownership answer below, then core, protocol and Windows
   land together, coordinated with the KDE and macOS ports.
   [Record](changes/windows-workspace-return-focus.md).
-- P1 | KDE: workspace ownership through unreadable desktop facts | Proposal
-  from the Windows protocol redesign, for the KDE owner to decide: today a
-  transient desktop/current read failure flips a report to `hostOwned: false`
-  with a logical-view fallback, which the new design would read as emulated
-  workspaces. Options, context and questions are in the
-  [proposal](changes/windows-workspace-return-focus.md#proposal-to-kde-stable-workspace-ownership-through-unreadable-desktop-facts-2026-10-28).
-  Needed before the cross-adapter protocol bump lands.
+- P1 | KDE: workspace ownership through unreadable desktop facts | DECIDED
+  2026-10-28, option (a): KDE always reports native ownership, unreadable
+  desktop/current facts are explicit unknowns, and the logical-view fallback
+  is removed in the coordinated protocol bump. Prerequisite for that bump:
+  core completeness fences (view echo confirmation, equal-count padding,
+  shared native creation/desires) with producer-shaped gap/recovery tests
+  before the ownership flag changes. KDE work lands with the bump.
+  [Answer](changes/windows-workspace-return-focus.md#kde-answer-option-a-stable-native-ownership-2026-10-28).
 - P1 | Windows batched physical checks | One user session, not waiting on the
   staged switch prototype: Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
   fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls);

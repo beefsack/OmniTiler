@@ -2301,3 +2301,50 @@ Status: proposal for the KDE adapter owner to decide. Not a user decision.
   schema tests. All adapters need to land together.
 - Full Windows analysis:
   [design check](#per-write-visibility-protocol-design-check-2026-10-28).
+
+#### KDE answer: option (a), stable native ownership (2026-10-28)
+
+Decided by the KDE owner at the user's request, after a read-only source
+investigation at `328c1469`; no code changed.
+
+- **Decision.** KDE always reports native ownership. Unreadable desktop or
+  current facts ride as explicit unknowns. The logical-view fallback is
+  removed in the coordinated protocol bump. (b) was rejected: retiring
+  `WorldReport.views` removes the fallback anyway, leaving only a second,
+  overlapping signal.
+- **Answers.**
+  - Reliance on the fallback: none required. `hostOwned` is computed at
+    `kwin/src/world-observe.ts:1330`; the binding-table fallback is at
+    `1375-1390`. Consumers (`kde_raw.rs`, `world_observe.rs`,
+    `world_native.rs`, `world_settle.rs`, `world_members.rs`,
+    `world_publish.rs`) use it only for degraded receipts, gap-time admission
+    to the physical current view, and suppressed native bindings. No Stage 7
+    mode, history or pager path needs emulated ownership. The pager keeps
+    retained content during a gap. Native creation attempts are already
+    rejected without ownership (`world_report.rs:1980-1984`).
+  - Frequency: unknown, with no recorded occurrence. Pinned KWin (v6.7.4 and
+    6.8.1) keeps a valid current through startup, hotplug, desktop removal
+    and Activities. Triggers are malformed bridge facts or a null output.
+    Wholly undecodable lists already produce no observation.
+  - Runtime ownership change: none. The KWin per-output setting and
+    OmniTiler modes change scope or synchronization, not ownership.
+- **Required with (a): the explicit gap hold is not free.** Core already has
+  gap holds for unknown currents, unknown membership, incomplete screens,
+  implicit close and refusal settlement. However, `complete: false` is not a
+  universal hold today. These paths need fences plus producer-shaped
+  gap/recovery tests before the ownership flag changes:
+  - Domain readability uses screen completeness only (`world_observe.rs:349`).
+  - Native echoes can confirm views without a completeness check
+    (`world_native.rs:141-156`, `world_settle.rs:491-508`).
+  - Equal-count padding has no gap check (`world_model.rs:216-239`).
+  - Shared native creation and outstanding creation desires lack the
+    completeness gate that separate creation has (`world_native.rs:1274-1369`
+    vs `792-806`).
+  - KDE also reports `equal_workspace_count` true for an empty `native[]`
+    (`world-observe.ts:1394`).
+- **KDE scope estimate.** About five TS modules (`world-observe.ts`,
+  `world-report.ts`, `world-apply.ts`, `world-state.ts`, `world-seq.ts`),
+  plus `kde_raw.rs` normalization, the codec and the hold fences above.
+  Version/schema tests: `world-wire.test.ts`, `world-raw-attempts.test.ts`,
+  `tests/world_codec.rs`, `world_service_flow.rs`. Lands with the
+  coordinated bump.
