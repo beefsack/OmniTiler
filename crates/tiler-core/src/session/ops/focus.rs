@@ -94,9 +94,9 @@ impl super::super::Session {
         // G-06 maximized directional focus fence (REQ-MAX-08): with the
         // Linux-route opt-in on, directional focus is fenced while the
         // focused tiled window is maximized (no-op `Unchanged`, no plan and
-        // no pending; leave via unmaximize or Alt+Tab). Fullscreen keeps
-        // its enter/leave behavior. Off by default so Windows carriers
-        // keep exact current behavior.
+        // no pending; leave via unmaximize or Alt+Tab). Fullscreen uses
+        // its separate directional focus policy below. Off by default so
+        // Windows carriers keep exact current behavior.
         if self.maximized_focus_fence
             && let Some(entry) = session_observation
                 .windows
@@ -104,6 +104,21 @@ impl super::super::Session {
                 .find(|w| w.window == focused_window)
             && entry.maximized
             && !entry.fullscreen
+        {
+            return Err(ProposeError::Refused(RefusalKind::Unchanged));
+        }
+        // R-MAX-02: a fullscreen focused subject skips all same-output
+        // siblings. Refuse as `Unchanged` in every direction (no plan, no
+        // pending) so the caller continues to the adjacent output
+        // (`Left`/`Right` cross leg) or stays (no adjacent/vertical).
+        // Explicit focus-by-window and workspace switches are unaffected
+        // (they never route here). Maximized (non-fullscreen) keeps its
+        // fence above; fullscreen exempts it and takes this rule instead.
+        if let Some(entry) = session_observation
+            .windows
+            .iter()
+            .find(|w| w.window == focused_window)
+            && entry.fullscreen
         {
             return Err(ProposeError::Refused(RefusalKind::Unchanged));
         }
@@ -448,16 +463,27 @@ impl super::super::Session {
             if window != &focused_window {
                 return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
             }
-            // Local focus must be exhausted: any local target wins (no cross).
-            let Some(tree) = self.trees.get(domain).cloned().flatten() else {
-                return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
-            };
-            let Some(focus_plan) = crate::directional::plan_focus(&tree, &focused_leaf, direction)
-            else {
-                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-            };
-            if !matches!(focus_plan, FocusPlan::Edge) {
-                return Err(ProposeError::Refused(RefusalKind::Unchanged));
+            // R-MAX-02: a fullscreen tiled subject skips the local-edge
+            // gate below: same-output siblings never win, so focus
+            // continues to the adjacent output using the existing
+            // entry-edge ranking. All other validations are preserved.
+            let fullscreen_subject = session_observation
+                .windows
+                .iter()
+                .any(|entry| entry.window == *window && entry.fullscreen);
+            if !fullscreen_subject {
+                // Local focus must be exhausted: any local target wins (no cross).
+                let Some(tree) = self.trees.get(domain).cloned().flatten() else {
+                    return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
+                };
+                let Some(focus_plan) =
+                    crate::directional::plan_focus(&tree, &focused_leaf, direction)
+                else {
+                    return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+                };
+                if !matches!(focus_plan, FocusPlan::Edge) {
+                    return Err(ProposeError::Refused(RefusalKind::Unchanged));
+                }
             }
             Some(focused_leaf)
         };

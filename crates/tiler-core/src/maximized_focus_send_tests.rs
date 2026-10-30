@@ -13,8 +13,8 @@
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::contract::{
-    AckOutcome, AdapterAck, FocusCapabilities, FocusPostObservation, LifecycleCapabilities,
-    LifecycleOperation, Observation,
+    AckOutcome, AdapterAck, FocusCapabilities, LifecycleCapabilities, LifecycleOperation,
+    Observation,
 };
 use crate::directional::{Capabilities, Direction, OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
@@ -181,28 +181,6 @@ fn two_tile() -> (Session, DomainKey) {
     (s, domain)
 }
 
-/// Commit a staged focus plan through acknowledge/verify.
-fn commit_focus(s: &mut Session, plan: &crate::session::SessionFocusPlan, c: &str) {
-    let base = s.accepted_revision();
-    s.acknowledge(&AdapterAck::new(
-        corr(c),
-        owner(),
-        generation(),
-        base,
-        AckOutcome::Accepted,
-    ))
-    .expect("ack");
-    let post = FocusPostObservation::new(
-        Observation::new(owner(), generation(), base, 950 + base),
-        corr(c),
-        true,
-        plan.dispatch.preconditions.clone(),
-        plan.dispatch.operation.clone(),
-    );
-    let commit = s.verify_focus(&post).expect("verify focus");
-    assert_eq!(commit.revision, base + 1);
-}
-
 #[test]
 fn fence_defaults_off_preserving_the_windows_route() {
     let engine = Engine::new();
@@ -241,17 +219,20 @@ fn fence_on_refuses_maximized_local_focus_with_no_pending() {
 }
 
 #[test]
-fn fence_on_keeps_fullscreen_focus_and_ordinary_focus() {
+fn fence_on_fullscreen_skips_local_sibling_while_ordinary_focus_plans() {
     let (mut s, domain) = two_tile();
     let focused = focused_window(&s, &domain);
-    // Fullscreen (even with maximize also set) keeps enter/leave behavior.
+    // Fullscreen (even with maximize also set) skips same-output siblings
+    // (R-MAX-02): the local propose refuses as `Unchanged` with no plan and
+    // no pending; the cross leg continues to the adjacent output instead
+    // (covered in `fullscreen_focus_cross_tests`).
     let mut flags = BTreeMap::new();
     flags.insert(
         focused.0.clone(),
         fullscreen_maximized_flag(&tiled(&focused.0, "out-1", "ws-1")),
     );
     let o0 = obs(&s, &flags);
-    let plan = s
+    let err = s
         .propose_focus(
             &domain,
             &focused,
@@ -260,16 +241,16 @@ fn fence_on_keeps_fullscreen_focus_and_ordinary_focus() {
             &corr("corr-g06-fs"),
             &FocusCapabilities::full(),
         )
-        .expect("fullscreen focus stays allowed");
-    assert!(!plan.desired_focus_leaf.0.is_empty());
-    commit_focus(&mut s, &plan, "corr-g06-fs");
-    // Ordinary focus still plans under the fence (focus now rests on win-1).
-    let focused = focused_window(&s, &domain);
+        .expect_err("fullscreen focus skips the local sibling");
+    assert_eq!(err, ProposeError::Refused(RefusalKind::Unchanged));
+    assert!(!s.has_pending(), "fence stages no pending");
+    assert!(!s.has_pending_desired(), "fence stages no desired state");
+    // Ordinary focus still plans under the fence.
     let o1 = obs(&s, &BTreeMap::new());
     s.propose_focus(
         &domain,
         &focused,
-        Direction::Right,
+        Direction::Left,
         &o1,
         &corr("corr-g06-plain"),
         &FocusCapabilities::full(),
@@ -629,7 +610,7 @@ fn engine_fence_off_plans_maximized_focus_preserving_windows_behavior() {
 }
 
 #[test]
-fn engine_fence_on_still_plans_fullscreen_and_ordinary_focus() {
+fn engine_fence_on_fullscreen_skips_local_while_ordinary_plans() {
     let mut engine = seed_engine(true);
     let ordinary = focus_event(
         vec![
@@ -644,7 +625,8 @@ fn engine_fence_on_still_plans_fullscreen_and_ordinary_focus() {
         CoreReply::FocusDirectional(_) => {}
         other => panic!("ordinary focus must plan under the fence, got {other:?}"),
     }
-    // Fullscreen keeps its enter/leave behavior under the fence.
+    // Fullscreen skips the local sibling (R-MAX-02): the local request
+    // refuses as unchanged; the cross leg continues instead.
     let mut full = engine_window("win-2", 200, true);
     full.fullscreen = true;
     let event = focus_event(
@@ -654,7 +636,9 @@ fn engine_fence_on_still_plans_fullscreen_and_ordinary_focus() {
         7,
     );
     match engine.handle(&event) {
-        CoreReply::FocusDirectional(_) => {}
-        other => panic!("fullscreen focus must stay allowed, got {other:?}"),
+        CoreReply::Rejected { kind, .. } => {
+            assert_eq!(kind, "unchanged", "fullscreen skips local")
+        }
+        other => panic!("fullscreen focus must skip the local sibling, got {other:?}"),
     }
 }

@@ -442,7 +442,13 @@ impl WorldEngine {
                 return CommandApplied::NoEffect;
             }
         }
-        if source_row.floating || source_row.sticky {
+        // R-MAX-02: a fullscreen subject skips the float/sticky lattice
+        // below: same-output float siblings never win. Fullscreen floats
+        // fall through to the adjacent-output cross leg (float-origin);
+        // without one (or on vertical) they retain with no staging, like a
+        // lattice miss. Tiled subjects fall through unchanged.
+        let fullscreen_subject = source_row.fullscreen;
+        if (source_row.floating || source_row.sticky) && !fullscreen_subject {
             let mut staged: Vec<EngineWindow> = Vec::new();
             for domain in &self.staged.domains {
                 staged.extend(domain.windows.iter().cloned());
@@ -493,11 +499,15 @@ impl WorldEngine {
             .then(|| self.core_topology_target(&source_key.output, direction_parsed))
             .flatten();
         if cross_target.is_some() {
+            // R-MAX-02: the cross command carries the float origin exactly
+            // when the subject floats (only fullscreen floats reach here;
+            // the lattice above returns for every other float).
+            let float_subject = source_row.floating || source_row.sticky;
             let command = CoreCommand::Focus {
                 window: window.0.clone(),
                 direction: direction.to_owned(),
                 cross_output_transfer: true,
-                float_subject: false,
+                float_subject,
             };
             return self.operation_directional(
                 report,
@@ -509,6 +519,20 @@ impl WorldEngine {
                 by_id,
                 held_scopes,
             );
+        }
+        // R-MAX-02: a fullscreen float with no adjacent output (or on
+        // vertical) retains with no staging, like a lattice miss. Tiled
+        // subjects (fullscreen or not) run the local leg unchanged: the
+        // Session fullscreen rule refuses there, non-fullscreen plans.
+        if fullscreen_subject && (source_row.floating || source_row.sticky) {
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::FocusFloatRetained,
+                target: None,
+                rect: None,
+                cause: Some("no-target".to_owned()),
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
         }
         let local_command = CoreCommand::Focus {
             window: window.0.clone(),

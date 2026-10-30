@@ -58,6 +58,8 @@ mod fixed_size_admission_tests;
 #[cfg(test)]
 mod focused_fullscreen_presentation_tests;
 #[cfg(test)]
+mod fullscreen_focus_cross_tests;
+#[cfg(test)]
 mod gap_repair_replay_tests;
 #[cfg(test)]
 mod maximized_focus_send_tests;
