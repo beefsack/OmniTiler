@@ -1002,15 +1002,17 @@ mod native {
     }
 
     /// Pure segment-row assembly for one applied indicator render:
-    /// projection rows plus the trailing slot, each bound to its
-    /// render-time click identity, with the pager miniature rows attached
-    /// by native SID. No AppKit: icons ride in parallel (resolved by the
-    /// caller; `None` renders the plain number alone). The live tick's
-    /// `push_native` renders exactly these rows through
+    /// projection rows (plus the legacy trailing slot, when given) each
+    /// bound to its render-time click identity, with the pager miniature
+    /// rows attached by row position. No AppKit: icons ride in parallel
+    /// (resolved by the caller; `None` renders the plain number alone).
+    /// The live tick's `push_native` renders exactly these rows through
     /// `WorkspaceIndicator::rebuild`, and the wiring test proves what the
     /// bar draws by calling this same function — disconnecting the tick
     /// from the production pager path changes this output and fails that
-    /// test. The trailing slot never carries miniatures.
+    /// test. Core spare rows render their own core ordinal exactly like
+    /// any workspace segment (never `"+"`/`"+?"`); the legacy
+    /// trailing slot never carries miniatures.
     pub(crate) fn assemble_segment_rows(
         rows: &[crate::workspace_indicator::IndicatorRow],
         trailing: Option<(
@@ -1018,7 +1020,7 @@ mod native {
             crate::workspace_indicator::SpaceOccupancy,
             u64,
         )>,
-        pager: &[(u64, Vec<crate::pager::MiniatureDraw>)],
+        pager: &[(usize, Vec<crate::pager::MiniatureDraw>)],
         icons: &[Option<objc2::rc::Retained<objc2_app_kit::NSImage>>],
         generation: u64,
         revision: u64,
@@ -1029,12 +1031,13 @@ mod native {
             .map(|(row, icon)| {
                 let miniatures = pager
                     .iter()
-                    .find(|(sid, _)| *sid == row.sid)
+                    .find(|(position, _)| *position == row.position)
                     .map(|(_, minis)| minis.clone())
                     .unwrap_or_default();
+                let title = crate::workspace_indicator::segment_title(row.position, row.occupancy);
                 crate::ffi::SegmentRow {
                     position: row.position,
-                    title: crate::workspace_indicator::segment_title(row.position, row.occupancy),
+                    title,
                     current: row.current,
                     enabled: row.selectable,
                     occupancy: row.occupancy,
@@ -1177,12 +1180,18 @@ mod native {
         /// fires (moved revision, published observation, changed live
         /// accent, or empty cache - never a blind per-cadence poll) and
         /// push it to the native item only on a changed render (change-only
-        /// dedup inside the driver). Occupancy is retained-engine truth
-        /// (managed windows only); any unproven frame renders every row
-        /// `Unknown`. The pager miniatures resolve here too, from the last
-        /// applied reply presentation plus its workspace bindings with the
-        /// loop's highlight style and the live accent: the same production
-        /// inputs every paint uses, never a frozen boot snapshot. Counts,
+        /// dedup inside the driver). The rows project DIRECT CORE ROWS:
+        /// every pager workspace row of the single applied-reply screen in
+        /// core order with core ids/ordinals/current (the coherent snapshot
+        /// below names one reply, never a torn mix). Occupancy is
+        /// retained-engine truth (managed windows only); any unproven frame
+        /// renders `Unknown`. The pager miniatures resolve here too, by
+        /// core workspace id with the loop's highlight style and the live
+        /// accent: the same production inputs every paint uses, never a
+        /// frozen boot snapshot. No occupancy-driven `+` slot is ever
+        /// invented (the spare comes only from the reply's explicit
+        /// trailing designation); an empty/unavailable pager hides safely
+        /// with an explicit reason, never fabricating native rows. Counts,
         /// ordinals, and the UI generation in the log only; SIDs, PIDs,
         /// bundles, titles, and paths never appear.
         #[allow(clippy::too_many_arguments)]
@@ -1195,13 +1204,16 @@ mod native {
             frontmost_pid: Option<u32>,
             presentation: &tiler_core::world_presentation::WorldPresentation,
             bindings: &[crate::pager::PagerWorkspaceBinding],
+            desires: &[tiler_core::world_report::WorkspaceDesire],
+            core_generation: &str,
             highlight: &crate::pager_highlight::PagerHighlightStyle,
             accent: Option<crate::active_border::SystemAccent>,
         ) {
             if !self.driver.needs_tick(revision, observations, accent) {
                 return;
             }
-            let mut trailing: Option<(
+            self.driver.note_core_generation(core_generation);
+            let trailing: Option<(
                 crate::workspace_indicator::TrailingSlot,
                 crate::workspace_indicator::SpaceOccupancy,
                 u64,
@@ -1215,66 +1227,61 @@ mod native {
                         complete,
                         frontmost_pid,
                     );
-                    // The trailing action slot renders only while the
-                    // capability gate arms it (production `false`: no extra
-                    // segment, no trailing click binding - disabled and
-                    // unshown while unarmed, never an enabled-looking slot).
-                    // The binding carries the TRUE native row identity
-                    // (`row.spaces.last()` over the full native row, never
-                    // the filtered projection's last row, which in
-                    // `Current` mode shows only the current Space).
-                    if crate::workspace_input::TRAILING_CAPABILITY_ENABLED {
-                        let last_occupancy = summary
+                    let occupancy_of = |sid: u64| {
+                        summary
                             .iter()
                             .zip(row.spaces.iter())
-                            .find(|(_, s)| **s == *row.spaces.last().unwrap_or(&0))
+                            .find(|(_, s)| **s == sid)
                             .map(|((o, _), _)| *o)
-                            .unwrap_or(crate::workspace_indicator::SpaceOccupancy::Unknown);
-                        trailing = row.spaces.last().copied().and_then(|native_last| {
-                            crate::workspace_indicator::project_trailing_slot(
-                                &row.spaces,
-                                row.current,
-                                rows.len(),
-                                self.options.mode,
-                                last_occupancy,
-                            )
-                            .map(|slot| (slot, last_occupancy, native_last))
-                        });
-                    }
-                    crate::workspace_indicator::project_indicator(
-                        &row.spaces,
-                        row.current,
-                        rows.len(),
-                        self.options.mode,
-                        &|sid| {
-                            summary
-                                .iter()
-                                .zip(row.spaces.iter())
-                                .find(|(_, s)| **s == sid)
-                                .map(|((o, _), _)| *o)
-                                .unwrap_or(crate::workspace_indicator::SpaceOccupancy::Unknown)
-                        },
-                        &|sid| {
-                            summary
-                                .iter()
-                                .zip(row.spaces.iter())
-                                .find(|(_, s)| **s == sid)
-                                .and_then(|((_, r), _)| *r)
-                                .and_then(|(pid, _)| {
-                                    i32::try_from(pid)
-                                        .ok()
-                                        .and_then(crate::ffi::bundle_id_for_pid)
-                                })
-                        },
-                    )
-                    .unwrap_or_else(|reason| {
+                            .unwrap_or(crate::workspace_indicator::SpaceOccupancy::Unknown)
+                    };
+                    let representative_of = |sid: u64| {
+                        summary
+                            .iter()
+                            .zip(row.spaces.iter())
+                            .find(|(_, s)| **s == sid)
+                            .and_then(|((_, r), _)| *r)
+                            .and_then(|(pid, _)| {
+                                i32::try_from(pid)
+                                    .ok()
+                                    .and_then(crate::ffi::bundle_id_for_pid)
+                            })
+                    };
+                    // Core-order rows only. An empty/missing pager means no
+                    // coherent core reply (paused, suspended, no reply yet):
+                    // hide safely, never fabricate native rows under a game.
+                    // The legacy native projection survives only for
+                    // dedicated read-only diag/tests, never production.
+                    if presentation.pager.is_empty() {
                         crate::workspace_indicator::IndicatorProjection {
                             visible: false,
-                            hidden_reason: Some(reason),
+                            hidden_reason: Some(
+                                "no coherent core pager reply; refusing native inference"
+                                    .to_owned(),
+                            ),
                             title: String::new(),
                             rows: Vec::new(),
                         }
-                    })
+                    } else {
+                        let native_last = row.spaces.last().copied().unwrap_or(0);
+                        crate::workspace_indicator::project_core_indicator(
+                            &presentation.pager,
+                            desires,
+                            rows.len(),
+                            self.options.mode,
+                            &occupancy_of,
+                            &representative_of,
+                            native_last,
+                        )
+                        .unwrap_or_else(|reason| {
+                            crate::workspace_indicator::IndicatorProjection {
+                                visible: false,
+                                hidden_reason: Some(reason),
+                                title: String::new(),
+                                rows: Vec::new(),
+                            }
+                        })
+                    }
                 }
                 Err(reason) => crate::workspace_indicator::IndicatorProjection {
                     visible: false,
@@ -1304,13 +1311,15 @@ mod native {
                     })
                 })
                 .collect();
-            // Pager miniature rows per Space, resolved from the last applied
-            // reply presentation plus its workspace bindings with the loop's
-            // highlight style and the live accent — the same production
-            // inputs every paint uses. Band widths share the native column
-            // rule, so layout matches the drawn segments exactly.
+            // Pager miniature rows per rendered row, resolved from the
+            // coherent snapshot with the loop's highlight style and the live
+            // accent — the same production inputs every paint uses. Core
+            // rows resolve by core workspace id (never an inferred native
+            // slot); legacy native rows resolve by native SID. Keyed by row
+            // position (unique per render). Band widths share the native
+            // column rule, so layout matches the drawn segments exactly.
             let highlight_rgb = crate::pager::resolve_highlight(highlight, accent);
-            let pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)> = projection
+            let pager: Vec<(usize, Vec<crate::pager::MiniatureDraw>)> = projection
                 .rows
                 .iter()
                 .zip(icons.iter())
@@ -1320,9 +1329,15 @@ mod native {
                     let wide = row.position >= 10 || title.ends_with('?');
                     let band_w =
                         crate::workspace_indicator::segment_column_width(icon.is_some(), wide);
-                    (
-                        row.sid,
-                        crate::pager::indicator_miniatures(
+                    let minis = match row.core.as_ref() {
+                        Some(core) => crate::pager::indicator_miniatures_for_id(
+                            presentation,
+                            &core.workspace,
+                            highlight_rgb,
+                            band_w,
+                            crate::workspace_indicator::MINIATURE_BAND_H,
+                        ),
+                        None => crate::pager::indicator_miniatures(
                             presentation,
                             bindings,
                             row.sid,
@@ -1330,7 +1345,8 @@ mod native {
                             band_w,
                             crate::workspace_indicator::MINIATURE_BAND_H,
                         ),
-                    )
+                    };
+                    (row.position, minis)
                 })
                 .collect();
             match self.driver.apply(
@@ -1489,20 +1505,27 @@ mod native {
             );
         }
 
-        /// Drain queued click bindings: each routes by its rendered kind
-        /// through [`crate::workspace_indicator::resolve_indicator_click`]
-        /// against the CURRENT render generation plus the cadence's fresh
-        /// user row and revision (rebuilt UI, moved topology, moved rows,
-        /// and past-nine positions all refuse before any backend touch)
-        /// and submits through the guarded engine lane with its immutable
-        /// binding - the same gates as a tap select, the same main-thread
-        /// drain, the same verified arrival. Numbered clicks never fall
-        /// through to trailing creation; trailing slot clicks resolve only
-        /// while the capability gate arms the slot (unarmed discards
-        /// before the engine lane) with the same generation/revision/row
-        /// fencing and the same lane. Refusals log the honest bounded
-        /// reason (position/kind tokens plus the refusing fence, never
-        /// SIDs). Positions and outcome tokens in the log only.
+        /// Drain queued click bindings. Core-order rows resolve through the
+        /// driver's generation-scoped side-table (the rendered rows carry
+        /// the immutable core output/id/binding/designation): the click
+        /// payload must still name the rendered row's own position and
+        /// anchor SID and the row must still be `selectable` (forged clicks
+        /// and disabled past-nine rows refuse), then the UI generation
+        /// plus the topology revision fence (rebuilt UI or moved topology
+        /// refuses), then the coherent latest reply must still name the
+        /// same id with the same binding and designation under the same
+        /// core generation — stale renders, arrived bindings, marker loss,
+        /// and core-generation moves all refuse before any backend touch.
+        /// Verified clicks dispatch the existing
+        /// `WorldCommand::SelectWorkspace` for the EXACT rendered core id
+        /// (never a positional reinterpretation, never `SelectTrailing`).
+        /// Unbound non-spare rows refuse as pending backing. Legacy
+        /// native-order rows keep the positional path unchanged. Every path
+        /// submits through the guarded engine lane with its immutable
+        /// binding — the same gates as a tap select, the same main-thread
+        /// drain, the same verified arrival. Refusals log the honest
+        /// bounded reason (position/kind tokens plus the refusing fence,
+        /// never SIDs). Positions and outcome tokens in the log only.
         fn drain_clicks(
             &mut self,
             fresh: &crate::workspace_select::SelectionSnapshot,
@@ -1520,13 +1543,42 @@ mod native {
             while let Ok(click) = rx.try_recv() {
                 let position = click.position;
                 let kind = click.kind.as_str();
-                let action = crate::workspace_indicator::resolve_indicator_click(
-                    click,
-                    current_generation,
-                    &fresh.spaces,
-                    fresh_revision,
-                    crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
-                );
+                let rendered = self.driver.last().and_then(|projection| {
+                    // A hidden render carries no clickable rows: refuse every
+                    // queued click instead of falling back to a positional
+                    // native select under a game/pause.
+                    if !projection.visible {
+                        return None;
+                    }
+                    projection.rows.iter().find(|row| row.position == position)
+                });
+                let Some(rendered) = rendered else {
+                    eprintln!(
+                        "tiler-macos dev indicator click kind={} position={} discarded reason={}",
+                        kind,
+                        position,
+                        crate::workspace_indicator::bound_click_discard_reason(
+                            "stale workspace click discarded: rendered row no longer present; no select dispatched",
+                        ),
+                    );
+                    continue;
+                };
+                let action = match rendered.core.clone() {
+                    Some(_) => self.resolve_core_target(
+                        rendered,
+                        click,
+                        current_generation,
+                        fresh_revision,
+                        runtime,
+                    ),
+                    None => crate::workspace_indicator::resolve_indicator_click(
+                        click,
+                        current_generation,
+                        &fresh.spaces,
+                        fresh_revision,
+                        crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                    ),
+                };
                 match action {
                     Ok(action) => {
                         let id = crate::workspace_input::workspace_action_id(&action)
@@ -1562,6 +1614,41 @@ mod native {
                     }
                 }
             }
+        }
+
+        /// Verify one core-row click against the render plus the coherent
+        /// latest reply, returning the exact-id select action. Delegates to
+        /// the portable [`crate::workspace_indicator::verify_core_row_click`]
+        /// with the render-time core generation plus the coherent snapshot:
+        /// the UI generation plus the topology revision fence first, then
+        /// the rendered payload identity and `selectable` (forged clicks
+        /// and disabled past-nine rows refuse), then the coherent latest
+        /// reply must still name the same id with the same binding and
+        /// designation under the same core generation. The returned action
+        /// selects exactly that core id through the existing
+        /// `SelectWorkspace` route — the native anchor stays a freshness
+        /// fence only, never the actuation target, and the existing
+        /// unbound-creation seam consumes the reply's explicit creation
+        /// desire downstream.
+        fn resolve_core_target(
+            &self,
+            rendered: &crate::workspace_indicator::IndicatorRow,
+            click: crate::workspace_indicator::IndicatorClick,
+            current_generation: u64,
+            fresh_revision: u64,
+            runtime: &crate::runtime::RuntimeHandle,
+        ) -> Result<crate::runtime_types::InputSemanticAction, String> {
+            let (presentation, _, desires, snapshot_generation) = runtime.last_indicator_snapshot();
+            crate::workspace_indicator::verify_core_row_click(
+                click,
+                rendered,
+                current_generation,
+                fresh_revision,
+                self.driver.last_core_generation(),
+                &presentation,
+                &desires,
+                &snapshot_generation,
+            )
         }
 
         /// Live segment readbacks off the actual AppKit buttons (title,
@@ -2825,14 +2912,22 @@ mod native {
                             let frontmost_pid = crate::ffi::frontmost_app()
                                 .and_then(|(pid, _)| u32::try_from(pid).ok())
                                 .filter(|pid| *pid > 1);
+                            let (
+                                snapshot_presentation,
+                                snapshot_bindings,
+                                snapshot_desires,
+                                snapshot_generation,
+                            ) = handle.last_indicator_snapshot();
                             indicator.tick(
                                 &live.rows,
                                 live.revision,
                                 observations,
                                 report,
                                 frontmost_pid,
-                                &handle.last_presentation(),
-                                &handle.last_pager_bindings(),
+                                &snapshot_presentation,
+                                &snapshot_bindings,
+                                &snapshot_desires,
+                                &snapshot_generation,
                                 &request.pager_highlight,
                                 accent,
                             );
@@ -4053,6 +4148,8 @@ mod native {
                 last_geometry_key: None,
                 last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
                 last_pager_bindings: Vec::new(),
+                last_workspace_desires: Vec::new(),
+                last_core_generation: String::new(),
                 presentation_style: crate::active_border::PresentationStylePx::default(),
             }));
             crate::runtime::RuntimeHandle {
@@ -5121,7 +5218,7 @@ mod tests {
         // width, then applied through the production driver.
         let band_w = segment_column_width(false, false);
         let band_h = crate::workspace_indicator::MINIATURE_BAND_H;
-        let pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)> = [1u64, 2u64]
+        let pager: Vec<(usize, Vec<crate::pager::MiniatureDraw>)> = [1usize, 2usize]
             .iter()
             .map(|sid| {
                 (
@@ -5129,7 +5226,7 @@ mod tests {
                     indicator_miniatures(
                         &reply.presentation,
                         &bindings,
-                        *sid,
+                        u64::try_from(*sid).expect("test position fits"),
                         highlight,
                         band_w,
                         band_h,
@@ -5186,5 +5283,219 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn core_spare_segment_renders_ordinal_with_id_miniatures() {
+        use crate::pager::indicator_miniatures_for_id;
+        use crate::workspace_indicator::{CoreRowTarget, IndicatorRow, SpaceOccupancy};
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+        use tiler_core::world_report::{PresentationIngress, WORLD_CONTRACT_VERSION, WorldReport};
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> tiler_core::geometry::Rect {
+            tiler_core::geometry::Rect { x, y, w, h }
+        }
+        // Core reply with one ordinary plus one trailing spare workspace.
+        let mut engine = WorldEngine::new("gen-9").expect("generation");
+        let report = WorldReport {
+            contract_version: WORLD_CONTRACT_VERSION,
+            owner: "owner-a".to_owned(),
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-9".to_owned(),
+            observation_seq: 1,
+            request_seq: 1,
+            request_id: "req-1".to_owned(),
+            command_seq: None,
+            command: None,
+            workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
+            screens: vec![tiler_core::world_report::ScreenReport {
+                output: OutputId("out-a".to_owned()),
+                full_rect: Some(rect(0, 0, 800, 600)),
+                work_area: Some(rect(0, 0, 800, 560)),
+                gap: 0,
+                outer_gap: 0,
+                complete: true,
+                primary: true,
+            }],
+            windows: vec![tiler_core::world_report::WindowFact {
+                window: WindowId("win-a".to_owned()),
+                output: OutputId("out-a".to_owned()),
+                rect: Some(rect(0, 0, 40, 90)),
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                minimized: false,
+                observed_workspace: None,
+                native_workspace: Some("space-1".to_owned()),
+            }],
+            views: Vec::new(),
+            closed: vec![],
+            host_owned_workspace_domains: true,
+            equal_workspace_count: false,
+            birth_clear: false,
+            native: vec![tiler_core::world_report::NativeObservation {
+                output: OutputId("out-a".to_owned()),
+                native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
+                current_native: Some("space-1".to_owned()),
+                occupancy: vec![
+                    tiler_core::world_report::NativeOccupancy {
+                        native: "space-1".to_owned(),
+                        count: None,
+                    },
+                    tiler_core::world_report::NativeOccupancy {
+                        native: "space-2".to_owned(),
+                        count: None,
+                    },
+                ],
+            }],
+            fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
+            migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::default(),
+            anchor_fallback: tiler_core::admission::AnchorFallback::default(),
+            no_space_result: tiler_core::admission::NoSpaceResult::default(),
+            born_maximized: tiler_core::born_maximized::BornMaximized::default(),
+            switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+            fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+            focus_follows_cursor: false,
+            cursor_warp: false,
+            cursor: None,
+            cursor_hit: None,
+            focused_global: "win-a".to_owned(),
+            action_foreground: None,
+            action_cached: None,
+            action_outputs: Vec::new(),
+            default_tiled: true,
+            inventory_complete: true,
+            gesture_barrier: false,
+            gesture: None,
+            monotonic_ms: 0,
+            frames: Vec::new(),
+            member_attempts: Vec::new(),
+            view_attempts: Vec::new(),
+            clear_attempts: Vec::new(),
+            creation_attempts: Vec::new(),
+            presentation: {
+                let mut ingress = PresentationIngress::disabled();
+                ingress.foreground = "win-a".to_owned();
+                ingress.foreground_frame = Some(rect(0, 0, 40, 90));
+                ingress.border_enabled = true;
+                ingress.pager_frames = vec![tiler_core::world_report::PresentationPagerFrame {
+                    window: WindowId("win-a".to_owned()),
+                    live: Some(rect(0, 0, 40, 90)),
+                    float_frame: None,
+                    tile_frame: None,
+                }];
+                ingress.pager_order = vec![WindowId("win-a".to_owned())];
+                ingress
+            },
+        };
+        let reply = match engine.handle_report(&report) {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        };
+        assert!(
+            !reply.presentation.pager.is_empty(),
+            "engine publishes pager content"
+        );
+        // The reply's explicit trailing spare: exactly one pager row
+        // carries the marker; the indicator binds that real id, never a
+        // fabricated one.
+        let trailing: Vec<String> = reply.presentation.pager[0]
+            .workspaces
+            .iter()
+            .filter(|row| row.trailing)
+            .map(|row| row.id.clone())
+            .collect();
+        assert_eq!(
+            trailing.len(),
+            1,
+            "reply names exactly one trailing spare: {:?}",
+            reply.presentation.pager[0]
+                .workspaces
+                .iter()
+                .map(|row| (row.id.clone(), row.ordinal, row.trailing))
+                .collect::<Vec<_>>()
+        );
+        let spare_id = trailing.into_iter().next().expect("trailing spare");
+        assert!(
+            !reply.presentation.pager[0].workspaces[0].trailing,
+            "first pager row is the ordinary workspace"
+        );
+        let rows = vec![
+            IndicatorRow {
+                position: 1,
+                sid: 1,
+                current: true,
+                occupancy: SpaceOccupancy::Occupied,
+                selectable: true,
+                representative: None,
+                core: Some(CoreRowTarget {
+                    output: "out-a".to_owned(),
+                    workspace: reply.presentation.pager[0].workspaces[0].id.clone(),
+                    native_binding: Some("space-1".to_owned()),
+                    spare: false,
+                }),
+            },
+            IndicatorRow {
+                position: 2,
+                sid: 2,
+                current: false,
+                occupancy: SpaceOccupancy::Unknown,
+                selectable: true,
+                representative: None,
+                core: Some(CoreRowTarget {
+                    output: "out-a".to_owned(),
+                    workspace: spare_id.clone(),
+                    native_binding: None,
+                    spare: true,
+                }),
+            },
+        ];
+        let icons: Vec<Option<objc2::rc::Retained<objc2_app_kit::NSImage>>> = vec![None, None];
+        let segments = super::native::assemble_segment_rows(&rows, None, &[], &icons, 5, 7);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[1].title, "2?");
+        assert!(!segments[1].title.contains('+'));
+        // Miniatures resolve by core id; the real spare id paints nothing
+        // (no windows homed there) and unknown ids paint nothing.
+        let minis = indicator_miniatures_for_id(
+            &reply.presentation,
+            &rows[0].core.as_ref().expect("core").workspace,
+            (0xaa, 0xbb, 0xcc),
+            26.0,
+            crate::workspace_indicator::MINIATURE_BAND_H,
+        );
+        assert!(!minis.is_empty(), "bound core id paints");
+        assert!(
+            indicator_miniatures_for_id(
+                &reply.presentation,
+                &spare_id,
+                (0xaa, 0xbb, 0xcc),
+                26.0,
+                crate::workspace_indicator::MINIATURE_BAND_H,
+            )
+            .is_empty(),
+            "real spare id paints nothing without homed windows"
+        );
+        assert!(
+            indicator_miniatures_for_id(
+                &reply.presentation,
+                "no-such-workspace",
+                (0xaa, 0xbb, 0xcc),
+                26.0,
+                crate::workspace_indicator::MINIATURE_BAND_H,
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            rows[1].core.as_ref().expect("core").workspace,
+            spare_id,
+            "spare row binds the reply's real trailing id"
+        );
     }
 }

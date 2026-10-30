@@ -129,6 +129,7 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation() {
                 }
                 // The basic catalogue holds no workspace or drag actions.
                 InputSemanticAction::WorkspaceSelect { .. }
+                | InputSemanticAction::IndicatorSelectWorkspace { .. }
                 | InputSemanticAction::WorkspaceSend { .. }
                 | InputSemanticAction::WorkspaceRelative { .. }
                 | InputSemanticAction::WorkspaceSendRelative { .. }

@@ -1971,20 +1971,26 @@ fn handle_select_action_with(
     };
     // Ordinary taps resolve their output core-side (`None`); indicator
     // taps that already carry a render-time binding keep their explicit
-    // semantic output (`Some`). No pre-reply ordinal claims: every armed
-    // select dispatches its positional core command and only the accepted
-    // reply resolves the target. Indicator taps keep their immutable
-    // render-time SID only as a drain-side staleness fence - never as the
-    // actuation target.
+    // semantic output (`Some`). The indicator exact-id action carries its
+    // verified core output directly (drain-side side-table, checked
+    // against the coherent latest reply before submit). No pre-reply
+    // ordinal claims: every armed select dispatches its positional core
+    // command and only the accepted reply resolves the target. Indicator
+    // taps keep their immutable render-time SID only as a drain-side
+    // staleness fence - never as the actuation target.
     let tap = claim.expected_sid.is_none();
-    let command_output: Option<tiler_core::directional::OutputId> = if tap {
-        None
-    } else {
-        let Some(output) = select_output(retained, &ctx) else {
-            refuse_select_claim(shared, "refused-select-no-view");
-            return;
-        };
-        Some(output)
+    let command_output: Option<tiler_core::directional::OutputId> = match &claim.action {
+        crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace { output, .. } => {
+            Some(tiler_core::directional::OutputId(output.clone()))
+        }
+        _ if tap => None,
+        _ => {
+            let Some(output) = select_output(retained, &ctx) else {
+                refuse_select_claim(shared, "refused-select-no-view");
+                return;
+            };
+            Some(output)
+        }
     };
     let command = match &claim.action {
         crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 0 } => {
@@ -2687,6 +2693,8 @@ mod trailing_join_tests {
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
+            last_workspace_desires: Vec::new(),
+            last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }
@@ -5366,6 +5374,8 @@ mod drag_gesture_handoff_tests {
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
+            last_workspace_desires: Vec::new(),
+            last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }

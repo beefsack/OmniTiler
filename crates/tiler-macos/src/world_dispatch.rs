@@ -1431,6 +1431,8 @@ fn consume_world_reply(
         let mut guard = lock_shared(shared);
         guard.last_presentation = reply.presentation.clone();
         guard.last_pager_bindings = pager_bindings;
+        guard.last_workspace_desires = reply.workspaces.clone();
+        guard.last_core_generation = reply.core_generation.clone();
         guard.last_geometry_key = Some(geometry_key);
     }
     emit_world_frames(
@@ -2368,6 +2370,8 @@ mod tests {
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
+            last_workspace_desires: Vec::new(),
+            last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }

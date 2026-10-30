@@ -494,6 +494,9 @@ pub fn parse_workspace_action(id: &str) -> Option<InputSemanticAction> {
 /// through [`parse_workspace_action`].
 #[must_use]
 pub fn workspace_action_id(action: &InputSemanticAction) -> Option<&'static str> {
+    if matches!(action, InputSemanticAction::IndicatorSelectWorkspace { .. }) {
+        return Some("indicator-select-workspace");
+    }
     workspace_catalogue()
         .iter()
         .find(|row| row.action == *action)
@@ -522,6 +525,7 @@ pub const fn is_armed_select_with(action: &InputSemanticAction, trailing_enabled
         InputSemanticAction::WorkspaceSelect { index } => {
             (index >= 1 && index <= 9) || (index == 0 && trailing_enabled)
         }
+        InputSemanticAction::IndicatorSelectWorkspace { .. } => true,
         InputSemanticAction::WorkspaceRelative { .. } | InputSemanticAction::WorkspacePrevious => {
             true
         }
@@ -603,6 +607,7 @@ pub fn workspace_unsupported_reason_with(
         | InputSemanticAction::ToggleFloat
         | InputSemanticAction::ToggleOrientation => None,
         InputSemanticAction::WorkspaceSelect { .. }
+        | InputSemanticAction::IndicatorSelectWorkspace { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious => Some(
             "trailing select-or-create unarmed: automatic trailing Space \
@@ -653,6 +658,7 @@ pub fn workspace_unsupported_outcome_with(
         | InputSemanticAction::ToggleFloat
         | InputSemanticAction::ToggleOrientation => None,
         InputSemanticAction::WorkspaceSelect { .. }
+        | InputSemanticAction::IndicatorSelectWorkspace { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious => Some("refused-workspace-switch-unsupported"),
         InputSemanticAction::WorkspaceSend { .. }

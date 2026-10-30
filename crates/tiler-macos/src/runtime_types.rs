@@ -623,6 +623,19 @@ pub enum InputSemanticAction {
     WorkspaceSelect {
         index: u8,
     },
+    /// Menu-bar indicator exact-id select (macOS-local, indicator-only):
+    /// selects exactly the rendered core workspace id on `output`. Never
+    /// bound to a keyboard chord and never produced by taps: only the
+    /// indicator drain constructs it from its generation-scoped side-table
+    /// after verifying the render against the coherent latest reply
+    /// (same generation, core generation, topology, and matching
+    /// id/binding/designation). Travels the same armed engine
+    /// lane/FIFO/fences as any select and dispatches the existing
+    /// [`tiler_core::world_report::WorldCommand::SelectWorkspace`].
+    IndicatorSelectWorkspace {
+        output: String,
+        workspace: String,
+    },
     /// Numbered workspace send: `index` 1-9 sends the observed-focus
     /// window there, `index` 0 appends a new workspace for it (Windows
     /// `workspace-send-N` / KDE `omnitiler-move-workspace-N` parity).

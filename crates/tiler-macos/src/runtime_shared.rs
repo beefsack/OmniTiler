@@ -412,6 +412,18 @@ pub(crate) struct Shared {
     /// presentation so the tick maps native SIDs to pager content with a
     /// current-reply live lookup, never a durable host table.
     pub(crate) last_pager_bindings: Vec<crate::pager::PagerWorkspaceBinding>,
+    /// Latest applied reply workspace desires (every row, including
+    /// unbound): the core-order row source for the menu-bar indicator.
+    /// Published atomically next to `last_presentation` under the same
+    /// lock so the tick/drain share one coherent snapshot; a
+    /// binding-map absence here is NOT unbound proof (only an explicit
+    /// `trailing` designation plus an explicit `None` binding names the
+    /// spare).
+    pub(crate) last_workspace_desires: Vec<tiler_core::world_report::WorkspaceDesire>,
+    /// Core generation of the last applied reply (coherence fence for the
+    /// indicator drain's exact-id select: a render verified against one
+    /// generation never actuates against another).
+    pub(crate) last_core_generation: String,
     /// Startup-resolved presentation style numbers for the report ingress
     /// (whole-point rounded width/gap plus the ring switch). Published
     /// once by the tile main thread at startup; the engine copies it into

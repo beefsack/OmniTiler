@@ -1474,14 +1474,14 @@ Prioritise by return toward these goals
   fallback. macOS sends `float_rect: None` and core currently centers 60% for
   a first float; change that to the current frame before the float-toggle
   package starts. Windows also needs fresh post-placement facts for parity.
-- P1 | macOS: baseline triage then pager publication (P1 next) | Triage the
-  eight macOS failures (4 lib / 4 integration in
-  [record](changes/macos-core-trailing-pager.md)) reproduced on clean HEAD
-  after `ae073de9` into a stale macOS expectation, a macOS adapter bug (fix in
-  tiler-macos), or a core regression (return to the user; a core change needs
-  user approval and Windows-session coordination). No assertion weakening, no
-  timeout/retry workarounds. Then restore the parked reviewed pager projection,
-  rerun full gates, publish.
+- P1 | macOS: core hidden-focus blocker then pager publication (P1 next) | Eight
+  failures triaged: seven stale completeness expectations fixed in macOS tests,
+  preserving hold/no-write/no-release/exact-resume safety; one core regression
+  remains (`first_transition_same_report_focus_never_restores_hidden`). Incomplete
+  same-report minimization still mints hidden-target focus. Reviewed pager restored;
+  core/protocol and all macOS integrations pass, macOS lib has exactly this one
+  failure. Resolve the core blocker, rerun full gates, then publish
+  ([repro and evidence](changes/macos-core-trailing-pager.md#core-blocker-same-report-minimized-target-during-an-inventory-gap)).
 - P1 | macOS: native Settings window for 0.1 | D5 rejected 2026-10-29: check 12
   requires native Settings-window acceptance before 0.1 ships. Reuse shared
   settings-window elements; validate save/read/reload/default/predicate
@@ -1642,9 +1642,9 @@ Prioritise by return toward these goals
   disappears when the last native Space is empty; direct core projection with a
   separate trailing segment selected 2026-10-28; optional core trailing
   designation delivered offline with publication/wire regressions; macOS
-  projection locally reviewed but parked pending eight independently reproduced
-  baseline macOS test failures after native completeness fencing; full gate not
-  waived ([record](changes/macos-core-trailing-pager.md)); lazy backing retained), first-float
+  projection locally reviewed and restored; seven stale completeness test
+  expectations fixed, one core hidden-focus regression blocks publication; full
+  gate not waived ([record](changes/macos-core-trailing-pager.md)); lazy backing retained), first-float
   placement decision, `just dev`
   log-follower leak, `just launch` exit code; (3) targeted redogfood, including
   trailing send-follow (3a) and direct-wake feel; (4) fullscreen

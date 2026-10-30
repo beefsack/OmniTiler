@@ -77,7 +77,7 @@
 - Shared marker published in `e422f59f`. The publication pull incorporated native
   completeness fencing (`ae073de9`); subsequent targeted checks passed, but full
   macOS checks below expose previously untested baseline regressions.
-- macOS projection is independently accepted locally, but parked, not published.
+- The prior macOS projection was independently accepted locally, then parked.
   Review corrections enforce disabled-row refusal, exact-id/freshness fences and
   actual engine-issued spare ids. The exact-id spare test drives a real engine
   flight through creation desire and plan binding without native creation.
@@ -97,7 +97,8 @@
   `first_transition_same_report_focus_never_restores_hidden`,
   `unreadable_scope_holds_without_write_authority`. The first two expect
   `Unreadable` but receive `IncompleteInventory` after `ae073de9`; the others
-  involve completeness/hidden-focus expectations. No shared semantics changed here.
+  involve completeness/hidden-focus expectations. The pager projection itself
+  changed no shared semantics.
 - Baseline integration failures: `skipped_display_parks_layout_then_resumes_exact`,
   `hidden_space_roundtrip_preserves_per_window_slots_across_blind_interval`,
   `skip_then_actual_removal_releases`,
@@ -110,5 +111,73 @@
   user approval and Windows-session coordination). No assertion weakening and no
   timeout/retry workarounds. Then restore the parked reviewed pager projection,
   rerun full gates, and publish. The source was preserved and removed from the
-  working tree; this record remains active. Native pixels and physical feel remain
-  untested; no live leg was run.
+  working tree at that checkpoint; this record remains active. Native pixels and
+  physical feel remain untested; no live leg was run.
+
+## Baseline triage and restored projection (2026-10-29)
+
+- Clean `d5db9fdf` reproduced exactly the eight listed failures: macOS library
+  1,382 passed / 4 failed; integration 146 passed / 4 failed.
+- Intended `ae073de9` semantics are explicit in the
+  [phase-1 outcome](windows-workspace-return-focus.md#phase-1-outcome-core-ownershipgap-foundations-2026-10-29),
+  lines 2725-2732: host-owned domains require complete inventory, even when
+  individual facts are known; publish `Hold(IncompleteInventory)`, retain homes,
+  and recover without inferred close. Native-derived receipts have the same fence.
+
+| Failure | Verdict and retained safety property |
+| --- | --- |
+| `cg_alive_unreadable_membership_holds_target_scope` | Stale expectation: assert `IncompleteInventory`, retaining target hold and `scope-held` send refusal. |
+| `cg_unreadable_oracle_holds_target_scope` | Stale expectation: same reason-code change, retaining target hold and send refusal. |
+| `unreadable_scope_holds_without_write_authority` | Stale partial-tiling expectation: assert all scopes held, no frame authority/geometry, then complete recovery and retained hidden binding. |
+| `skipped_display_parks_layout_then_resumes_exact` | Stale partial-tiling expectation: nothing tiles during the gap; exact frames resume without retirement. |
+| `hidden_space_roundtrip_preserves_per_window_slots_across_blind_interval` | Stale blind-interval helper-tiling expectation: no writes during the gap; covering helper membership on return restores complete inventory and exact per-window slots. |
+| `skip_then_actual_removal_releases` | Stale assumption that topology removal alone completes inventory: add the parked app's covering unknown-home observation; retain no release during skip and release only after actual removal. |
+| `space_type_gap_retains_hidden_layout_without_release` | Stale partial-tiling expectation: no writes or focus during the gap; retain bindings and exact-frame recovery. |
+| `first_transition_same_report_focus_never_restores_hidden` | Core regression: an incomplete report's first minimized transition still permits a direct-target `Focus` effect on the hidden lifetime. Assertion remains unchanged and failing. |
+
+- Seven tests are updated only in `tiler-macos`; no adapter production bug was
+  demonstrated. Independent review accepts the expectation changes, truthful
+  covering recovery observations and preserved hold/no-write/no-release/exact-resume
+  assertions. It independently reproduces the core blocker and rejects full closure.
+
+### Core blocker: same-report minimized target during an inventory gap
+
+```sh
+mise exec -- cargo test --locked -p tiler-macos --lib world_builder::tests::first_transition_same_report_focus_never_restores_hidden -- --nocapture
+```
+
+| Step | Report/command | Required outcome |
+| --- | --- | --- |
+| 1 | Complete inventory: `1001_7` and `1002_8` live on `space-11`, focus `1001_7`. | Establish both live lifetimes. |
+| 2 | Same report first marks `1001_7` minimized and frameless, reports `1002_8` focused, makes `space-12` unreadable (`inventory_complete: false`), and commands `Focus(1001_7, left)`. | Reject `focus-unknown` without convergence, or accept with no hidden-target focus effect, geometry or controlled authority. |
+
+- Actual: step 2 accepts and mints `EffectKind::Focus` on `1001_7`; the complete
+  contrast passes. `world_commands.rs:70-103` checks retained session membership
+  but not the staged minimized/held facts before minting the effect. The adapter
+  supplies the correct minimized, frameless, native-home and incomplete facts.
+- Proposed core correction, not implemented: reject a staged minimized target
+  before the retained-membership fallback can authorize direct focus; review
+  staged-home/readability/held-scope eligibility consistently with other commands.
+  Keep minimized restoration separate from this hidden-target focus path and
+  cover complete/incomplete transition contrasts in core regressions.
+
+### Current verification
+
+- Rebased onto `41111fed` (world v3); both `tile` and `world_command_map`
+  fixtures explicitly set `NativeOccupancy.count` to `None`. Independent merge
+  review passed. Unknown occupancy, trailing-spare designation and exact-id
+  selection rules are preserved.
+- Builds pass for `tiler-core`, `tiler-protocol` and `tiler-macos`. Fresh test
+  results (all Cargo test runs were per-target):
+  - Core: 1,073 library + 498 integration passed across all 31 integration targets.
+  - Protocol: 30 library + 35 `world_codec` passed.
+  - macOS: 1,396 library passed / 1 failed; all 150 integration tests passed.
+    The one failure is the same known hidden-focus test reproduced identically
+    on clean origin `41111fed`; it is a baseline core regression, preserved and
+    outside the pager change.
+- Strict all-target clippy for core/protocol/macOS, workspace format and diff
+  whitespace checks pass. Host compilation of core/protocol/windows passes;
+  no Windows tests or live tests were run. The initial test `--list` discovery
+  timed out while compiling, not during a test run.
+- Offline verification otherwise passes; this does not claim full semantic
+  acceptance, native/live closure, or native pixel/physical-feel acceptance.

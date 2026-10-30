@@ -153,14 +153,22 @@ pub enum SpaceOccupancy {
     Unknown,
 }
 
-/// One projected menu row: plain native ordinal, highlight, occupancy, and
-/// whether a click may dispatch (positions past the armed `1..=9` select
-/// range are shown but never dispatched).
+/// One projected menu row: plain 1-based ordinal, highlight, occupancy, and
+/// whether a click may dispatch. Positions past the armed `1..=9` select
+/// range are shown but never dispatched (no armed route — clicking one
+/// must refuse, never select wrong). Core-order rows (see
+/// [`project_core_indicator`]) additionally carry their immutable core
+/// identity in `core`: the driver generation-scoped side-table the drain
+/// resolves through — the FFI click stays a `Copy` native positional
+/// token, never a heap id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndicatorRow {
-    /// 1-based position in native order (also the menu item tag and the
-    /// armed select index while `selectable`).
+    /// 1-based position: the native ordinal for native-order rows, the
+    /// core ordinal for core-order rows (also the menu item tag).
     pub position: usize,
+    /// Native anchor SID: the bound desktop for bound rows, the
+    /// render-time native last for spare rows, `0` for unbound pending
+    /// rows. Freshness fence only — never the actuation target.
     pub sid: u64,
     pub current: bool,
     pub occupancy: SpaceOccupancy,
@@ -168,6 +176,25 @@ pub struct IndicatorRow {
     /// Deterministic representative bundle ID for the icons flag (`None`
     /// without a member to name). Never logged.
     pub representative: Option<String>,
+    /// Core identity for core-order rows (`None` for legacy native-order
+    /// rows, which keep the positional select path).
+    pub core: Option<CoreRowTarget>,
+}
+
+/// Immutable core identity for one core-order indicator row, captured at
+/// render time: the core output plus the stable core logical workspace id
+/// plus the explicit native binding (`None` exactly when the applied
+/// reply leaves the logical unbound) plus whether the applied reply
+/// explicitly designates the row as the trailing spare. Plain data;
+/// the drain revalidates all of it against the coherent latest reply
+/// (same UI generation, core generation, topology, and matching
+/// id/binding/designation) before submitting the exact-id select.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreRowTarget {
+    pub output: String,
+    pub workspace: String,
+    pub native_binding: Option<String>,
+    pub spare: bool,
 }
 
 /// The cached view-model the main thread applies change-only to the native
@@ -245,6 +272,7 @@ pub fn project_indicator(
             // instead of selecting the wrong Space.
             selectable: position <= 9,
             representative: representative(*sid),
+            core: None,
         });
     }
     Ok(IndicatorProjection {
@@ -252,6 +280,323 @@ pub fn project_indicator(
         hidden_reason: None,
         title: current_position.to_string(),
         rows,
+    })
+}
+
+// -- Core-order projection (DIRECT CORE ROW projection) ---------------------
+
+/// Project one indicator frame in CORE order: every pager workspace row
+/// of the single applied-reply screen in core order using core
+/// ids/ordinals/current/occupied. Binding-map absence is NOT unbound
+/// proof: only an explicit `trailing` designation on BOTH the pager row
+/// and its matching desire row plus an explicit `None` native binding
+/// names the spare. A non-tail `None` binding is never a spare — it
+/// renders visible in core order as ordinary pending (disabled until
+/// backing arrives). A bound trailing row is ordinary (selectable like
+/// any bound row). The single-display and mode gates match
+/// [`project_indicator`]; pager screens empty/missing or not exactly one
+/// screen projects hidden with an explicit reason (multi-display
+/// per-display targeting is TBD — never first-display guessing). No
+/// occupancy-driven `+` slot is ever invented here: the spare comes only
+/// from the explicit core designation above.
+///
+/// Arguments: `screens` is the applied reply presentation pager content;
+/// `desires` the same reply's workspace desires; `native_last` the
+/// render-time native last SID (spare-row freshness anchor only — never
+/// an actuation target); `occupancy`/`representative` resolve over bound
+/// native SIDs (unbound rows read `Unknown` with no representative).
+pub fn project_core_indicator(
+    screens: &[tiler_core::world_presentation::PagerScreen],
+    desires: &[tiler_core::world_report::WorkspaceDesire],
+    display_count: usize,
+    mode: IndicatorMode,
+    occupancy: &dyn Fn(u64) -> SpaceOccupancy,
+    representative: &dyn Fn(u64) -> Option<String>,
+    native_last: u64,
+) -> Result<IndicatorProjection, String> {
+    if mode == IndicatorMode::Off {
+        return Ok(IndicatorProjection {
+            visible: false,
+            hidden_reason: Some("disabled by configuration".to_owned()),
+            title: String::new(),
+            rows: Vec::new(),
+        });
+    }
+    if display_count != 1 {
+        return Ok(IndicatorProjection {
+            visible: false,
+            hidden_reason: Some(format!(
+                "expected exactly one native display, found {display_count}; refusing ambiguous attribution"
+            )),
+            title: String::new(),
+            rows: Vec::new(),
+        });
+    }
+    if screens.len() != 1 {
+        return Ok(IndicatorProjection {
+            visible: false,
+            hidden_reason: Some(format!(
+                "expected exactly one core pager screen, found {}; refusing ambiguous attribution",
+                screens.len()
+            )),
+            title: String::new(),
+            rows: Vec::new(),
+        });
+    }
+    let screen = &screens[0];
+    if screen.workspaces.is_empty() {
+        return Ok(IndicatorProjection {
+            visible: false,
+            hidden_reason: Some("core pager screen carries no workspaces".to_owned()),
+            title: String::new(),
+            rows: Vec::new(),
+        });
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for workspace in &screen.workspaces {
+        if workspace.ordinal == 0 || !seen.insert(workspace.ordinal) {
+            return Err("workspace row/core ordinal identity unprovable".to_owned());
+        }
+    }
+    let Some(current_workspace) = screen.workspaces.iter().find(|row| row.current) else {
+        return Err("workspace row/current identity unprovable".to_owned());
+    };
+    let current_position = usize::try_from(current_workspace.ordinal)
+        .map_err(|_| "workspace row/core ordinal identity unprovable".to_owned())?;
+    let mut rows = Vec::with_capacity(screen.workspaces.len());
+    for workspace in &screen.workspaces {
+        let position = usize::try_from(workspace.ordinal)
+            .map_err(|_| "workspace row/core ordinal identity unprovable".to_owned())?;
+        // Explicit spare rule: BOTH the pager row and its matching desire
+        // row designate trailing AND the desire binding is explicitly
+        // `None`. A binding-map absence alone (no desire row, or a
+        // non-trailing desire) is never a spare.
+        let desire = desires
+            .iter()
+            .find(|row| row.output.0 == screen.output && row.id == workspace.id);
+        let spare = workspace.trailing
+            && desire.is_some_and(|row| row.trailing && row.native_binding.is_none());
+        let bound_sid = desire
+            .and_then(|row| row.native_binding.as_deref())
+            .and_then(crate::workspace_select::parse_native_binding);
+        // A `Some` binding that does not parse is unproven: treat the row
+        // as unbound pending (never guess a desktop from a malformed
+        // binding).
+        let bound = bound_sid.is_some();
+        if mode == IndicatorMode::Current && !workspace.current && !spare {
+            continue;
+        }
+        let (anchor, row_occupancy, row_representative) = if bound {
+            let sid = bound_sid.unwrap_or(0);
+            // Core occupancy is authoritative for core rows: the pager
+            // `occupied` fact decides Occupied vs Empty. The host summary
+            // only styles Unknown (incomplete/coverage gap) plus the
+            // representative, never flips the core ring fact.
+            let host = occupancy(sid);
+            let core = if workspace.occupied {
+                SpaceOccupancy::Occupied
+            } else {
+                SpaceOccupancy::Empty
+            };
+            let styled = match host {
+                SpaceOccupancy::Unknown => SpaceOccupancy::Unknown,
+                _ => core,
+            };
+            (sid, styled, representative(sid))
+        } else if spare {
+            (native_last, SpaceOccupancy::Unknown, None)
+        } else {
+            (0, SpaceOccupancy::Unknown, None)
+        };
+        rows.push(IndicatorRow {
+            position,
+            sid: anchor,
+            current: workspace.current,
+            occupancy: row_occupancy,
+            // Unbound non-spare rows stay visible but disabled (pending
+            // backing — never an armed route until the reply binds them);
+            // positions past the armed `1..=9` range stay disabled like
+            // native rows. The spare selects exactly like a bound row.
+            selectable: (bound || spare) && position <= 9,
+            representative: row_representative,
+            core: Some(CoreRowTarget {
+                output: screen.output.clone(),
+                workspace: workspace.id.clone(),
+                native_binding: desire.and_then(|row| row.native_binding.clone()),
+                spare,
+            }),
+        });
+    }
+    Ok(IndicatorProjection {
+        visible: true,
+        hidden_reason: None,
+        title: current_position.to_string(),
+        rows,
+    })
+}
+
+/// Resolve one queued CORE-row segment click binding: the UI generation
+/// and topology revision the render was built from. Render-time position
+/// and anchor SID are deliberately NOT consulted here (core order may
+/// skew against native order — the click targets the exact core id
+/// through the driver's generation-scoped side-table, verified against
+/// the coherent latest reply by [`verify_core_row_click`]). Any
+/// generation or revision drift refuses instead of selecting the wrong
+/// workspace.
+pub fn resolve_core_click(
+    click: IndicatorClick,
+    current_generation: u64,
+    fresh_revision: u64,
+) -> Result<(), String> {
+    if click.ui_generation != current_generation {
+        return Err(format!(
+            "stale workspace click discarded: status view rebuilt after render (generation {} != current {current_generation}); no select dispatched",
+            click.ui_generation
+        ));
+    }
+    if click.topology_revision != fresh_revision {
+        return Err(format!(
+            "stale workspace click discarded: topology revision moved after render ({} != current {fresh_revision}); no select dispatched",
+            click.topology_revision
+        ));
+    }
+    Ok(())
+}
+
+/// Verify one queued CORE-row click against the rendered row plus the
+/// coherent latest reply, returning the exact-id select action. Fences,
+/// in order:
+/// - render identity: the click payload must name the rendered row's own
+///   position and anchor SID (a forged payload naming another row, or a
+///   payload replayed against a different render, refuses);
+/// - armed route: positions past the `1..=9` select range refuse, and a
+///   rendered row that is not `selectable` refuses (disabled past-nine
+///   rows and pending unbound rows never arm);
+/// - UI generation plus topology revision (rebuilt UI or moved topology
+///   refuses, via [`resolve_core_click`]);
+/// - pending unbound non-spare rows refuse as pending backing;
+/// - the latest coherent snapshot must carry the same core generation as
+///   the render (a core-side move the native revision cannot see
+///   refuses);
+/// - its desires must still name the exact `(output, workspace)` id with
+///   the same native binding and the same effective spare predicate
+///   (`trailing && binding is None`, mirroring the projection rule — a
+///   bound trailing row stays ordinary, so raw marker flips under a
+///   stable binding do not refuse; an arrived/moved binding, a vanished
+///   desire, or a flipped effective spare refuses);
+/// - its presentation pager must still carry the workspace with the same
+///   effective spare predicate (a vanished row or a lost unbound marker
+///   refuses instead of selecting the id against a moved ring; a bound
+///   row's raw marker flip under the same stable binding stays ordinary
+///   and does not refuse).
+///
+/// The returned action selects exactly that core id through the existing
+/// `SelectWorkspace` route — the native anchor stays a freshness fence
+/// only, never the actuation target.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_core_row_click(
+    click: IndicatorClick,
+    rendered: &IndicatorRow,
+    current_generation: u64,
+    fresh_revision: u64,
+    render_core_generation: &str,
+    presentation: &tiler_core::world_presentation::WorldPresentation,
+    desires: &[tiler_core::world_report::WorkspaceDesire],
+    snapshot_generation: &str,
+) -> Result<InputSemanticAction, String> {
+    let Some(core) = rendered.core.as_ref() else {
+        return Err(
+            "stale workspace click discarded: rendered row carries no core identity; no select dispatched"
+                .to_owned(),
+        );
+    };
+    if click.position != rendered.position {
+        return Err(format!(
+            "stale workspace click discarded: click position {} does not match rendered row {}; no select dispatched",
+            click.position, rendered.position
+        ));
+    }
+    if click.expected_sid != rendered.sid {
+        return Err(format!(
+            "stale workspace click discarded: click identity moved under the click (row {} changed); no select dispatched",
+            rendered.position
+        ));
+    }
+    if rendered.position == 0 || rendered.position > 9 {
+        return Err(format!(
+            "workspace segment {} has no armed select route (armed range is 1..=9); refusing instead of selecting the wrong Space",
+            rendered.position
+        ));
+    }
+    if !rendered.selectable {
+        return Err(format!(
+            "stale workspace click discarded: rendered row {} is not selectable; no select dispatched",
+            rendered.position
+        ));
+    }
+    resolve_core_click(click, current_generation, fresh_revision)?;
+    if !core.spare && core.native_binding.is_none() {
+        return Err(format!(
+            "stale workspace click discarded: row {} still pending native backing; no select dispatched",
+            rendered.position
+        ));
+    }
+    if snapshot_generation != render_core_generation {
+        return Err(
+            "stale workspace click discarded: core generation moved after render; no select dispatched"
+                .to_owned(),
+        );
+    }
+    let Some(desire) = desires
+        .iter()
+        .find(|row| row.output.0 == core.output && row.id == core.workspace)
+    else {
+        return Err(
+            "stale workspace click discarded: rendered workspace no longer desired; no select dispatched"
+                .to_owned(),
+        );
+    };
+    if desire.native_binding != core.native_binding {
+        return Err(format!(
+            "stale workspace click discarded: native binding arrived or moved under the click (row {} changed); no select dispatched",
+            rendered.position
+        ));
+    }
+    // Effective spare mirrors the projection rule (marker && unbound):
+    // a bound trailing row projects ordinary (spare=false) with both raw
+    // markers true, so comparing raw markers to `core.spare` would always
+    // refuse it. Bound marker role changes under a stable binding keep the
+    // effective predicate false and do not refuse: the exact-id select
+    // does not depend on the trailing role once bound. Unbound spare
+    // transitions (marker loss or binding arrival) flip the predicate and
+    // still refuse.
+    let desire_spare = desire.trailing && desire.native_binding.is_none();
+    if desire_spare != core.spare {
+        return Err(format!(
+            "stale workspace click discarded: trailing designation moved under the click (row {} changed); no select dispatched",
+            rendered.position
+        ));
+    }
+    let pager_holds = presentation
+        .pager
+        .iter()
+        .find(|screen| screen.output == core.output)
+        .and_then(|screen| {
+            screen
+                .workspaces
+                .iter()
+                .find(|row| row.id == core.workspace)
+        })
+        .is_some_and(|row| (row.trailing && desire.native_binding.is_none()) == core.spare);
+    if !pager_holds {
+        return Err(format!(
+            "stale workspace click discarded: pager row vanished or marker moved under the click (row {} changed); no select dispatched",
+            rendered.position
+        ));
+    }
+    Ok(InputSemanticAction::IndicatorSelectWorkspace {
+        output: core.output.clone(),
+        workspace: core.workspace.clone(),
     })
 }
 
@@ -1013,10 +1358,16 @@ pub struct IndicatorDriver {
     generation: u64,
     last: Option<IndicatorProjection>,
     last_trailing: Option<(TrailingSlot, SpaceOccupancy)>,
-    last_pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)>,
+    last_pager: Vec<(usize, Vec<crate::pager::MiniatureDraw>)>,
     last_accent: Option<crate::active_border::SystemAccent>,
     last_revision: Option<u64>,
     last_observations: u64,
+    /// Core generation of the applied reply the cached render was built
+    /// from: the drain refuses any click whose render-time core
+    /// generation no longer matches the coherent latest reply (same rule
+    /// as the UI generation, but for core-side moves the native revision
+    /// cannot see).
+    last_core_generation: String,
     updates: u64,
     clicks: u64,
 }
@@ -1034,6 +1385,7 @@ impl IndicatorDriver {
             last_accent: None,
             last_revision: None,
             last_observations: 0,
+            last_core_generation: String::new(),
             updates: 0,
             clicks: 0,
         }
@@ -1066,12 +1418,32 @@ impl IndicatorDriver {
     }
 
     /// Cached pager miniature rows the native surface draws
-    /// (`(native SID, drawable miniatures)` per Space, empty without pager
-    /// content). Pager-only changes repaint without advancing the
-    /// generation, so queued clicks stay valid across a focus move.
+    /// (`(row position, drawable miniatures)` per rendered row, empty
+    /// without pager content). Keyed by position (core ordinals and native
+    /// ordinals are both unique per render), never by inferred native
+    /// slot, so skewed core/native orders paint exactly. Pager-only
+    /// changes repaint without advancing the generation, so queued clicks
+    /// stay valid across a focus move.
     #[must_use]
-    pub fn last_pager(&self) -> &[(u64, Vec<crate::pager::MiniatureDraw>)] {
+    pub fn last_pager(&self) -> &[(usize, Vec<crate::pager::MiniatureDraw>)] {
         &self.last_pager
+    }
+
+    /// Record the core generation the current tick's coherent snapshot
+    /// came from (call on every computed tick, applied or duplicate, so
+    /// the drain's fence names the render's reply even across
+    /// pager-only repaints that keep the clickable generation).
+    pub fn note_core_generation(&mut self, core_generation: &str) {
+        if self.armed {
+            self.last_core_generation = core_generation.to_owned();
+        }
+    }
+
+    /// Core generation the cached render was built from (empty before the
+    /// first core-backed tick; the drain refuses core-row clicks then).
+    #[must_use]
+    pub fn last_core_generation(&self) -> &str {
+        &self.last_core_generation
     }
 
     /// Applied native pushes (visible renders only).
@@ -1126,7 +1498,7 @@ impl IndicatorDriver {
         &mut self,
         projection: IndicatorProjection,
         trailing: Option<(TrailingSlot, SpaceOccupancy)>,
-        pager: Vec<(u64, Vec<crate::pager::MiniatureDraw>)>,
+        pager: Vec<(usize, Vec<crate::pager::MiniatureDraw>)>,
         revision: u64,
         observations: u64,
         accent: Option<crate::active_border::SystemAccent>,
@@ -1169,6 +1541,7 @@ impl IndicatorDriver {
         self.last_trailing = None;
         self.last_pager = Vec::new();
         self.last_accent = None;
+        self.last_core_generation = String::new();
     }
 
     /// Record one accepted click submission (guarded-lane `Accepted` only;
@@ -2200,7 +2573,7 @@ mod tests {
             border: (0xbd, 0x93, 0xf9),
             fill: (0x49, 0x3a, 0x62),
         };
-        let pager = vec![(20u64, vec![mini])];
+        let pager = vec![(1usize, vec![mini])];
         assert!(driver.needs_tick(9, 1, None), "observation retriggers");
         assert_eq!(
             driver.apply(projected(&[20, 3], 20), None, pager.clone(), 9, 1, None),
@@ -2224,7 +2597,7 @@ mod tests {
             fill: (0x07, 0x0d, 0x14),
             ..mini
         };
-        let pager_accent = vec![(20u64, vec![mini_accent])];
+        let pager_accent = vec![(1usize, vec![mini_accent])];
         assert_eq!(
             driver.apply(
                 projected(&[20, 3], 20),
@@ -2305,5 +2678,805 @@ mod tests {
             assert_eq!(digits.parse::<usize>().expect("numeric stem"), position);
             assert_eq!(marked, occupancy == SpaceOccupancy::Unknown);
         }
+    }
+
+    fn core_workspace(
+        id: &str,
+        ordinal: u32,
+        current: bool,
+        occupied: bool,
+        trailing: bool,
+    ) -> tiler_core::world_presentation::PagerWorkspace {
+        tiler_core::world_presentation::PagerWorkspace {
+            id: id.to_owned(),
+            ordinal,
+            label: tiler_core::world_presentation::pager_workspace_label(ordinal),
+            current,
+            occupied,
+            contains_focused: current,
+            trailing,
+            windows: Vec::new(),
+        }
+    }
+
+    fn core_desire(
+        id: &str,
+        output: &str,
+        native_binding: Option<&str>,
+        trailing: bool,
+        order: usize,
+    ) -> tiler_core::world_report::WorkspaceDesire {
+        tiler_core::world_report::WorkspaceDesire {
+            id: id.to_owned(),
+            output: tiler_core::directional::OutputId(output.to_owned()),
+            native_binding: native_binding.map(str::to_owned),
+            scope: output.to_owned(),
+            order,
+            tiling_mode: tiler_core::world_report::TilingMode::Tiled,
+            existence: true,
+            hold: None,
+            trailing,
+        }
+    }
+
+    fn core_screen(
+        output: &str,
+        rows: Vec<tiler_core::world_presentation::PagerWorkspace>,
+    ) -> tiler_core::world_presentation::PagerScreen {
+        tiler_core::world_presentation::PagerScreen {
+            output: output.to_owned(),
+            workspaces: rows,
+        }
+    }
+
+    #[test]
+    fn core_rows_follow_core_order_ids_and_ordinals_not_native_positions() {
+        // Skew: native SIDs [20, 10] but core ordinals [1, 2] on ids
+        // ws-a/ws-b. Rows must carry CORE ordinals/ids in core order.
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-a", 1, true, true, false),
+                core_workspace("ws-b", 2, false, false, false),
+            ],
+        )];
+        let desires = vec![
+            core_desire("ws-a", "out-a", Some("space-20"), false, 0),
+            core_desire("ws-b", "out-a", Some("space-10"), false, 1),
+        ];
+        let projection = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Empty,
+            &|_| None,
+            10,
+        )
+        .expect("provable core row projects");
+        assert!(projection.visible);
+        assert_eq!(projection.title, "1");
+        assert_eq!(projection.rows.len(), 2);
+        assert_eq!(projection.rows[0].position, 1);
+        assert_eq!(projection.rows[0].sid, 20);
+        assert!(projection.rows[0].current);
+        assert_eq!(projection.rows[0].occupancy, SpaceOccupancy::Occupied);
+        assert_eq!(
+            projection.rows[0].core.as_ref().expect("core").workspace,
+            "ws-a"
+        );
+        assert_eq!(projection.rows[1].position, 2);
+        assert_eq!(projection.rows[1].sid, 10);
+        assert!(!projection.rows[1].current);
+        assert_eq!(projection.rows[1].occupancy, SpaceOccupancy::Empty);
+        assert_eq!(
+            projection.rows[1].core.as_ref().expect("core").workspace,
+            "ws-b"
+        );
+        // Click identity targets the exact core id, never a native slot:
+        // generation/revision fences pass here, mismatch refuses.
+        let click = IndicatorClick {
+            kind: IndicatorClickKind::Numbered,
+            position: 2,
+            expected_sid: 10,
+            ui_generation: 7,
+            topology_revision: 9,
+        };
+        assert!(resolve_core_click(click, 7, 9).is_ok());
+        assert!(resolve_core_click(click, 8, 9).is_err());
+        assert!(resolve_core_click(click, 7, 10).is_err());
+    }
+
+    fn core_click_harness() -> (
+        Vec<tiler_core::world_presentation::PagerScreen>,
+        Vec<tiler_core::world_report::WorkspaceDesire>,
+        Vec<IndicatorRow>,
+    ) {
+        // Two coherent core rows: bound ordinary ws-a plus trailing spare
+        // ws-spare, projected through the production projector.
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-a", 1, true, true, false),
+                core_workspace("ws-spare", 2, false, false, true),
+            ],
+        )];
+        let desires = vec![
+            core_desire("ws-a", "out-a", Some("space-20"), false, 0),
+            core_desire("ws-spare", "out-a", None, true, 1),
+        ];
+        let projection = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            99,
+        )
+        .expect("provable core rows project");
+        assert_eq!(projection.rows.len(), 2);
+        assert!(projection.rows[0].selectable);
+        assert!(projection.rows[1].selectable);
+        assert!(projection.rows[1].core.as_ref().expect("core").spare);
+        (screens, desires, projection.rows)
+    }
+
+    fn core_click_for(row: &IndicatorRow, generation: u64, revision: u64) -> IndicatorClick {
+        IndicatorClick {
+            kind: IndicatorClickKind::Numbered,
+            position: row.position,
+            expected_sid: row.sid,
+            ui_generation: generation,
+            topology_revision: revision,
+        }
+    }
+
+    fn core_presentation_for(
+        screens: &[tiler_core::world_presentation::PagerScreen],
+    ) -> tiler_core::world_presentation::WorldPresentation {
+        tiler_core::world_presentation::WorldPresentation {
+            pager: screens.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn core_click_verifier_selects_exact_id_on_coherent_snapshot() {
+        use crate::runtime_types::InputSemanticAction;
+        let (screens, desires, rows) = core_click_harness();
+        let presentation = core_presentation_for(&screens);
+        // Bound ordinary row selects its exact core id.
+        let action = verify_core_row_click(
+            core_click_for(&rows[0], 7, 9),
+            &rows[0],
+            7,
+            9,
+            "gen-9",
+            &presentation,
+            &desires,
+            "gen-9",
+        )
+        .expect("coherent bound click selects");
+        assert_eq!(
+            action,
+            InputSemanticAction::IndicatorSelectWorkspace {
+                output: "out-a".to_owned(),
+                workspace: "ws-a".to_owned(),
+            }
+        );
+        // Trailing spare row selects its exact spare id, never a
+        // positional reinterpretation and never a trailing-create route.
+        let spare_action = verify_core_row_click(
+            core_click_for(&rows[1], 7, 9),
+            &rows[1],
+            7,
+            9,
+            "gen-9",
+            &presentation,
+            &desires,
+            "gen-9",
+        )
+        .expect("coherent spare click selects");
+        assert_eq!(
+            spare_action,
+            InputSemanticAction::IndicatorSelectWorkspace {
+                output: "out-a".to_owned(),
+                workspace: "ws-spare".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn core_click_verifier_refuses_disabled_rows_and_forged_payloads() {
+        let (screens, desires, rows) = core_click_harness();
+        let presentation = core_presentation_for(&screens);
+        // Forged payload: position names another rendered row.
+        let mut wrong_position = core_click_for(&rows[1], 7, 9);
+        wrong_position.position = rows[0].position;
+        assert!(
+            verify_core_row_click(
+                wrong_position,
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Forged payload: anchor SID does not match the rendered row.
+        let mut wrong_sid = core_click_for(&rows[1], 7, 9);
+        wrong_sid.expected_sid = rows[0].sid;
+        assert!(
+            verify_core_row_click(
+                wrong_sid,
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Disabled past-nine row refuses even with a coherent snapshot: the
+        // projector marks ordinal 10 unselectable and the verifier enforces
+        // both the range and the rendered flag.
+        let ids: Vec<String> = (1u32..=10)
+            .map(|ordinal| format!("ws-wide-{ordinal}"))
+            .collect();
+        let bindings: Vec<String> = (0..10)
+            .map(|index| format!("space-{}", 30 + index))
+            .collect();
+        let wide_rows: Vec<tiler_core::world_presentation::PagerWorkspace> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let ordinal = (index + 1) as u32;
+                core_workspace(id, ordinal, ordinal == 1, false, false)
+            })
+            .collect();
+        let wide_desires: Vec<tiler_core::world_report::WorkspaceDesire> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| core_desire(id, "out-a", Some(&bindings[index]), false, index))
+            .collect();
+        let wide_screens = vec![core_screen("out-a", wide_rows)];
+        let wide_projection = project_core_indicator(
+            &wide_screens,
+            &wide_desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            40,
+        )
+        .expect("ten core rows project");
+        assert_eq!(wide_projection.rows.len(), 10);
+        let past_nine = &wide_projection.rows[9];
+        assert_eq!(past_nine.position, 10);
+        assert!(!past_nine.selectable, "ordinal 10 never arms");
+        let wide_presentation = core_presentation_for(&wide_screens);
+        assert!(
+            verify_core_row_click(
+                core_click_for(past_nine, 7, 9),
+                past_nine,
+                7,
+                9,
+                "gen-9",
+                &wide_presentation,
+                &wide_desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Pending unbound non-spare row refuses: visible but never armed.
+        let pending_screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-1", 1, true, true, false),
+                core_workspace("ws-pending", 2, false, false, false),
+            ],
+        )];
+        let pending_desires = vec![
+            core_desire("ws-1", "out-a", Some("space-11"), false, 0),
+            core_desire("ws-pending", "out-a", None, false, 1),
+        ];
+        let pending_projection = project_core_indicator(
+            &pending_screens,
+            &pending_desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            11,
+        )
+        .expect("pending row projects");
+        let pending = &pending_projection.rows[1];
+        assert!(!pending.selectable, "unbound non-spare never arms");
+        let pending_presentation = core_presentation_for(&pending_screens);
+        assert!(
+            verify_core_row_click(
+                core_click_for(pending, 7, 9),
+                pending,
+                7,
+                9,
+                "gen-9",
+                &pending_presentation,
+                &pending_desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn core_click_verifier_fences_generation_binding_and_pager() {
+        let (screens, desires, rows) = core_click_harness();
+        let presentation = core_presentation_for(&screens);
+        let check = |click: IndicatorClick,
+                     rendered: &IndicatorRow,
+                     current_generation: u64,
+                     fresh_revision: u64,
+                     render_core_generation: &str,
+                     presentation: &tiler_core::world_presentation::WorldPresentation,
+                     desires: &[tiler_core::world_report::WorkspaceDesire],
+                     snapshot_generation: &str| {
+            verify_core_row_click(
+                click,
+                rendered,
+                current_generation,
+                fresh_revision,
+                render_core_generation,
+                presentation,
+                desires,
+                snapshot_generation,
+            )
+        };
+        // UI generation drift refuses.
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                8,
+                9,
+                "gen-9",
+                &presentation,
+                &desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Topology revision drift refuses.
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                7,
+                10,
+                "gen-9",
+                &presentation,
+                &desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Core generation moved after render refuses.
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &desires,
+                "gen-10",
+            )
+            .is_err()
+        );
+        // Rendered workspace no longer desired refuses.
+        let vanished_desires: Vec<tiler_core::world_report::WorkspaceDesire> = desires
+            .iter()
+            .filter(|row| row.id != "ws-spare")
+            .cloned()
+            .collect();
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &vanished_desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Native binding arrived under the click (None -> Some) refuses.
+        let mut arrived = desires.clone();
+        arrived[1].native_binding = Some("space-99".to_owned());
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &arrived,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Native binding moved under the click refuses.
+        let mut moved = desires.clone();
+        moved[0].native_binding = Some("space-21".to_owned());
+        assert!(
+            check(
+                core_click_for(&rows[0], 7, 9),
+                &rows[0],
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &moved,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Trailing designation flipped under the click refuses.
+        let mut flipped = desires.clone();
+        flipped[1].trailing = false;
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &flipped,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Pager row vanished refuses.
+        let shrunk_screens = vec![core_screen(
+            "out-a",
+            vec![core_workspace("ws-a", 1, true, true, false)],
+        )];
+        let shrunk_presentation = core_presentation_for(&shrunk_screens);
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &shrunk_presentation,
+                &desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+        // Pager trailing marker lost refuses.
+        let mut unmarked = screens.clone();
+        for workspace in &mut unmarked[0].workspaces {
+            workspace.trailing = false;
+        }
+        let unmarked_presentation = core_presentation_for(&unmarked);
+        assert!(
+            check(
+                core_click_for(&rows[1], 7, 9),
+                &rows[1],
+                7,
+                9,
+                "gen-9",
+                &unmarked_presentation,
+                &desires,
+                "gen-9",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn core_spare_renders_ordinal_and_selects_while_non_tail_none_stays_pending() {
+        // ws-spare: pager trailing + desire trailing + None binding = spare.
+        // ws-pending: non-tail None binding = visible ordinary pending,
+        // disabled. ws-bound-trailing: bound trailing row is ordinary bound.
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-1", 1, true, true, false),
+                core_workspace("ws-pending", 2, false, false, false),
+                core_workspace("ws-bound-tail", 3, false, true, true),
+                core_workspace("ws-spare", 4, false, false, true),
+            ],
+        )];
+        let desires = vec![
+            core_desire("ws-1", "out-a", Some("space-11"), false, 0),
+            core_desire("ws-pending", "out-a", None, false, 1),
+            core_desire("ws-bound-tail", "out-a", Some("space-13"), true, 2),
+            core_desire("ws-spare", "out-a", None, true, 3),
+        ];
+        let projection = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            99,
+        )
+        .expect("provable core row projects");
+        assert_eq!(projection.rows.len(), 4);
+        let spare = &projection.rows[3];
+        assert_eq!(spare.position, 4);
+        assert!(spare.core.as_ref().expect("core").spare);
+        assert!(spare.selectable, "spare selects like a bound row");
+        assert_eq!(spare.occupancy, SpaceOccupancy::Unknown);
+        // Ordinal title, never '+'/'?'-plus: the segment title helper
+        // renders the core ordinal with the Unknown suffix only.
+        assert_eq!(
+            segment_title(spare.position, spare.occupancy),
+            "4?",
+            "spare renders its core ordinal, never a plus marker"
+        );
+        assert!(!segment_title(spare.position, spare.occupancy).contains('+'));
+        let pending = &projection.rows[1];
+        assert!(!pending.core.as_ref().expect("core").spare);
+        assert_eq!(pending.sid, 0);
+        assert!(!pending.selectable, "pending unbound never arms");
+        assert_eq!(pending.occupancy, SpaceOccupancy::Unknown);
+        let bound_tail = &projection.rows[2];
+        assert!(!bound_tail.core.as_ref().expect("core").spare);
+        assert!(bound_tail.selectable, "bound trailing is ordinary");
+        assert_eq!(bound_tail.sid, 13);
+    }
+
+    #[test]
+    fn core_click_verifier_selects_bound_trailing_ordinary() {
+        // Bound trailing projects ordinary (spare=false) with both raw
+        // markers true: the exact-id click must succeed, and a bound
+        // marker role flip to ordinary (both markers false, same binding)
+        // stays effective-spare false and must not refuse.
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-1", 1, true, true, false),
+                core_workspace("ws-bound-tail", 2, false, false, true),
+                core_workspace("ws-spare", 3, false, false, true),
+            ],
+        )];
+        let desires = vec![
+            core_desire("ws-1", "out-a", Some("space-11"), false, 0),
+            core_desire("ws-bound-tail", "out-a", Some("space-13"), true, 1),
+            core_desire("ws-spare", "out-a", None, true, 2),
+        ];
+        let projection = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            99,
+        )
+        .expect("bound trailing projects");
+        let bound_tail = &projection.rows[1];
+        assert!(!bound_tail.core.as_ref().expect("core").spare);
+        assert!(bound_tail.selectable, "bound trailing is ordinary");
+        let presentation = core_presentation_for(&screens);
+        verify_core_row_click(
+            core_click_for(bound_tail, 7, 9),
+            bound_tail,
+            7,
+            9,
+            "gen-9",
+            &presentation,
+            &desires,
+            "gen-9",
+        )
+        .expect("bound trailing exact-id click selects");
+        // Bound markers flip to ordinary (both false, binding stable):
+        // effective spare stays false, click still selects the same id.
+        let mut ordinary_desires = desires.clone();
+        ordinary_desires[1].trailing = false;
+        let mut ordinary_screens = screens.clone();
+        ordinary_screens[0].workspaces[1].trailing = false;
+        let ordinary_presentation = core_presentation_for(&ordinary_screens);
+        verify_core_row_click(
+            core_click_for(bound_tail, 7, 9),
+            bound_tail,
+            7,
+            9,
+            "gen-9",
+            &ordinary_presentation,
+            &ordinary_desires,
+            "gen-9",
+        )
+        .expect("bound trailing->ordinary marker flip stays ordinary");
+        // Unbound spare still fences: marker loss refuses.
+        let spare = &projection.rows[2];
+        let mut lost = screens.clone();
+        lost[0].workspaces[2].trailing = false;
+        assert!(
+            verify_core_row_click(
+                core_click_for(spare, 7, 9),
+                spare,
+                7,
+                9,
+                "gen-9",
+                &core_presentation_for(&lost),
+                &desires,
+                "gen-9",
+            )
+            .is_err(),
+            "unbound spare pager marker loss still refuses"
+        );
+        // Unbound spare still fences: binding arrival refuses.
+        let mut bound = desires.clone();
+        bound[2].native_binding = Some("space-99".to_owned());
+        assert!(
+            verify_core_row_click(
+                core_click_for(spare, 7, 9),
+                spare,
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &bound,
+                "gen-9",
+            )
+            .is_err(),
+            "unbound spare binding arrival still refuses"
+        );
+    }
+
+    #[test]
+    fn core_occupancy_is_authoritative_over_host_summary() {
+        // Core occupied=true beats a host Empty; core false beats host
+        // Occupied; host Unknown still styles Unknown.
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-occ", 1, true, true, false),
+                core_workspace("ws-empty", 2, false, false, false),
+                core_workspace("ws-unk", 3, false, true, false),
+            ],
+        )];
+        let desires = vec![
+            core_desire("ws-occ", "out-a", Some("space-21"), false, 0),
+            core_desire("ws-empty", "out-a", Some("space-22"), false, 1),
+            core_desire("ws-unk", "out-a", Some("space-23"), false, 2),
+        ];
+        let occupancy_of = |sid: u64| match sid {
+            21 => SpaceOccupancy::Empty,
+            22 => SpaceOccupancy::Occupied,
+            23 => SpaceOccupancy::Unknown,
+            _ => SpaceOccupancy::Unknown,
+        };
+        let projection = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &occupancy_of,
+            &|_| None,
+            0,
+        )
+        .expect("projects");
+        assert_eq!(projection.rows[0].occupancy, SpaceOccupancy::Occupied);
+        assert_eq!(projection.rows[1].occupancy, SpaceOccupancy::Empty);
+        assert_eq!(projection.rows[2].occupancy, SpaceOccupancy::Unknown);
+    }
+
+    #[test]
+    fn core_projection_hides_without_pager_and_gates_modes() {
+        // No screens: hidden, never guessed. Empty pager screen: hidden.
+        let hidden = project_core_indicator(
+            &[],
+            &[],
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            0,
+        )
+        .expect("hidden projects");
+        assert!(!hidden.visible);
+        let empty_screen = vec![core_screen("out-a", Vec::new())];
+        let hidden_empty = project_core_indicator(
+            &empty_screen,
+            &[],
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            0,
+        )
+        .expect("hidden projects");
+        assert!(!hidden_empty.visible);
+        // Mode gates: Off hides; Current keeps current plus spare only.
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-1", 1, true, true, false),
+                core_workspace("ws-2", 2, false, false, false),
+                core_workspace("ws-spare", 3, false, false, true),
+            ],
+        )];
+        let desires = vec![
+            core_desire("ws-1", "out-a", Some("space-11"), false, 0),
+            core_desire("ws-2", "out-a", Some("space-12"), false, 1),
+            core_desire("ws-spare", "out-a", None, true, 2),
+        ];
+        let off = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::Off,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            12,
+        )
+        .expect("off projects hidden");
+        assert!(!off.visible);
+        let current = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::Current,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            12,
+        )
+        .expect("current projects");
+        assert_eq!(current.rows.len(), 2);
+        assert!(current.rows.iter().any(|row| row.current));
+        assert!(
+            current
+                .rows
+                .iter()
+                .any(|row| row.core.as_ref().expect("core").spare)
+        );
+        // Multi-display and malformed bindings stay safe: malformed Some
+        // binding degrades to pending, never a guessed desktop.
+        let malformed_desires = vec![
+            core_desire("ws-1", "out-a", Some("space-11"), false, 0),
+            core_desire("ws-2", "out-a", Some("bogus"), false, 1),
+            core_desire("ws-spare", "out-a", None, true, 2),
+        ];
+        let malformed = project_core_indicator(
+            &screens,
+            &malformed_desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            12,
+        )
+        .expect("projects");
+        let row2 = &malformed.rows[1];
+        assert_eq!(row2.sid, 0);
+        assert!(!row2.selectable);
+        let multi = project_core_indicator(
+            &screens,
+            &desires,
+            2,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            12,
+        )
+        .expect("multi projects hidden");
+        assert!(!multi.visible);
     }
 }

@@ -309,6 +309,8 @@ impl Runtime {
                 last_geometry_key: None,
                 last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
                 last_pager_bindings: Vec::new(),
+                last_workspace_desires: Vec::new(),
+                last_core_generation: String::new(),
                 presentation_style: crate::active_border::PresentationStylePx::default(),
             }));
             let inbox = Arc::new(Inbox::new(config.engine_queue_depth.max(1)));
@@ -367,6 +369,8 @@ impl Runtime {
             last_geometry_key: None,
             last_presentation: tiler_core::world_presentation::WorldPresentation::default(),
             last_pager_bindings: Vec::new(),
+            last_workspace_desires: Vec::new(),
+            last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }));
         emit(&shared, 0, 0, 0, "runtime", "starting", 0);
@@ -1808,6 +1812,30 @@ impl RuntimeHandle {
     /// content through these rows with a current-reply live lookup.
     pub fn last_pager_bindings(&self) -> Vec<crate::pager::PagerWorkspaceBinding> {
         lock_shared(&self.shared).last_pager_bindings.clone()
+    }
+
+    /// One coherent indicator snapshot: the last applied reply
+    /// presentation plus its workspace bindings, its workspace desires
+    /// (every row, including unbound), and its core generation — cloned
+    /// under the SAME lock so the tick projects and the drain verifies
+    /// against one reply, never a torn mix. A binding-map absence is NOT
+    /// unbound proof; only an explicit `trailing` desire plus an explicit
+    /// `None` binding names the spare.
+    pub fn last_indicator_snapshot(
+        &self,
+    ) -> (
+        tiler_core::world_presentation::WorldPresentation,
+        Vec<crate::pager::PagerWorkspaceBinding>,
+        Vec<tiler_core::world_report::WorkspaceDesire>,
+        String,
+    ) {
+        let guard = lock_shared(&self.shared);
+        (
+            guard.last_presentation.clone(),
+            guard.last_pager_bindings.clone(),
+            guard.last_workspace_desires.clone(),
+            guard.last_core_generation.clone(),
+        )
     }
 
     /// Current generation for a live app, if any.

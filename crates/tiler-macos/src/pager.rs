@@ -179,6 +179,40 @@ pub fn layout_miniatures(
         .collect()
 }
 
+/// Indicator miniature lookup by CORE workspace id (core-order rows):
+/// the same highlight/layout path as [`indicator_miniatures`], keyed
+/// directly on the pager workspace id instead of the inferred native
+/// slot. Unmapped ids, empty workspaces, and the paused game lane (no
+/// pager screens) all paint nothing.
+#[must_use]
+pub fn indicator_miniatures_for_id(
+    presentation: &WorldPresentation,
+    workspace_id: &str,
+    highlight: (u8, u8, u8),
+    band_w: f64,
+    band_h: f64,
+) -> Vec<MiniatureDraw> {
+    if presentation.pager.is_empty() || workspace_id.is_empty() {
+        return Vec::new();
+    }
+    let Some(workspace) = presentation
+        .pager
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .find(|workspace| workspace.id == workspace_id)
+    else {
+        return Vec::new();
+    };
+    layout_miniatures(
+        &workspace.windows,
+        &presentation.foreground,
+        workspace.contains_focused,
+        highlight,
+        band_w,
+        band_h,
+    )
+}
+
 /// Production pager input for one indicator segment: resolve one native
 /// Space to its drawable miniatures from one applied reply presentation
 /// plus its workspace bindings. This is the exact function the live

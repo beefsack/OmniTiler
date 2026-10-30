@@ -1070,24 +1070,21 @@ mod live {
             // Production pager inputs: the last applied reply presentation
             // plus its workspace bindings with the default highlight style
             // (this harness owns no settings file) and the live accent.
-            let presentation = self
-                .runtime
-                .as_ref()
-                .map(|handle| handle.last_presentation())
-                .unwrap_or_default();
-            let bindings = self
-                .runtime
-                .as_ref()
-                .map(|handle| handle.last_pager_bindings())
-                .unwrap_or_default();
+            let (snapshot_presentation, snapshot_bindings, snapshot_desires, snapshot_generation) =
+                self.runtime
+                    .as_ref()
+                    .map(|handle| handle.last_indicator_snapshot())
+                    .unwrap_or_default();
             self.indicator.tick(
                 &rows,
                 revision,
                 observations,
                 report,
                 frontmost,
-                &presentation,
-                &bindings,
+                &snapshot_presentation,
+                &snapshot_bindings,
+                &snapshot_desires,
+                &snapshot_generation,
                 &crate::pager_highlight::PagerHighlightStyle::default(),
                 ffi::border_system_accent(),
             );
