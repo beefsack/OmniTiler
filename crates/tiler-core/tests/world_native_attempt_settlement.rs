@@ -67,8 +67,8 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    FrameSetter, MemberAttempt, NativeCreationAttempt, NativeObservation, ScreenReport,
-    ViewAttempt, WORLD_CONTRACT_VERSION, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, NativeCreationAttempt, NativeObservation, NativeOccupancy,
+    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -102,6 +102,13 @@ fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation 
         output: OutputId(output.to_owned()),
         native_order: order.iter().map(|s| (*s).to_owned()).collect(),
         current_native: Some(current.to_owned()),
+        occupancy: order
+            .iter()
+            .map(|s| NativeOccupancy {
+                native: (*s).to_owned(),
+                count: None,
+            })
+            .collect(),
     }
 }
 

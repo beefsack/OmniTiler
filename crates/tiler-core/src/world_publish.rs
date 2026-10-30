@@ -595,7 +595,9 @@ impl WorldEngine {
                 // clears retained memory (completion is desired == observed,
                 // never setter success); a suppressed pair publishes a
                 // constraint-clamp hold with the desire intact so the adapter
-                // skips the write and retries only on genuine change.
+                // skips the write and retries only on genuine change. The
+                // burst bound adds a second veto for the same pair: at most
+                // two consumed attempts per observed-change burst.
                 let observed = staged
                     .facts
                     .get(&geometry.window)
@@ -611,6 +613,13 @@ impl WorldEngine {
                         report.monotonic_ms,
                     )
                 });
+                let burst_held = Self::frame_burst_gate(
+                    &mut self.frame_bursts,
+                    &geometry.window,
+                    &geometry.rect,
+                    observed,
+                    report.monotonic_ms,
+                );
                 windows.push(WindowDesire {
                     lifetime: geometry.window.clone(),
                     output: geometry.output.clone(),
@@ -623,7 +632,7 @@ impl WorldEngine {
                     },
                     frame_authority: if fullscreen {
                         ScopeAuthority::Untouched
-                    } else if frame_suppressed {
+                    } else if frame_suppressed || burst_held {
                         ScopeAuthority::Hold(HoldReason::ConstraintClamp)
                     } else if frame_hold {
                         ScopeAuthority::Hold(HoldReason::GestureBarrier)
@@ -1050,14 +1059,19 @@ impl WorldEngine {
     /// Planner-owned logical workspace rows: every retained ring id gets
     /// one row in ring order with scope, order, and tiling mode. Rings
     /// already converged (bootstrap, lifecycle, displacement, commands),
-    /// so rows publish the retained set directly. `existence` is always
-    /// true: the adapter never deletes logical workspaces. Incomplete
-    /// screens hold their rows without authorizing writes.
+    /// so rows publish the retained set directly. A row reads
+    /// `existence:false` only when the global native-retirement set names
+    /// it (completely empty everywhere, unprotected, above the native
+    /// minimum): eligibility only, the adapter re-enumerates before
+    /// deleting, and the ring plus native binding stay until a complete
+    /// readback drops the desktop. Incomplete screens hold their rows
+    /// without authorizing writes.
     pub(crate) fn plan_workspaces(&mut self, report: &WorldReport) -> Vec<WorkspaceDesire> {
         let _ = report;
         let mut outputs: Vec<String> = self.mapping.keys().cloned().collect();
         outputs.sort();
         let staged = self.staged.clone();
+        let doomed = self.retirement_deletion_set(report);
         let mut rows = Vec::new();
         for output in outputs {
             let Some(ring) = self.mapping.get(&output).cloned() else {
@@ -1095,7 +1109,7 @@ impl WorldEngine {
                     scope: workspace_scope_key(report.workspace_mode, &OutputId(output.clone())),
                     order: index,
                     tiling_mode: self.workspace_tiling_mode(&OutputId(output.clone()), id),
-                    existence: true,
+                    existence: !doomed.contains(&(output.clone(), id.clone())),
                     hold,
                     trailing: marked.as_deref() == Some(id.as_str()),
                 });

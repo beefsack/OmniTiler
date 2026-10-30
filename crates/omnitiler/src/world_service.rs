@@ -53,7 +53,7 @@ pub const WORLD_METHOD: &str = "DescribeWorld";
 /// World discovery/bootstrap route: generation plus capabilities, always
 /// `ready=false` with no applicable desired state.
 pub const DISCOVERY_METHOD: &str = "DiscoverWorld";
-/// External command queue route: one strict v2 command in, queued/duplicate out.
+/// External command queue route: one strict v3 command in, queued/duplicate out.
 pub const QUEUE_METHOD: &str = "QueueWorldCommand";
 /// Command result route: exactly-once terminal result collection.
 pub const TAKE_METHOD: &str = "TakeCommandResult";
@@ -513,7 +513,7 @@ impl Future for WorldWait {
 }
 
 /// Parsed discovery/bootstrap request: adapter incarnation plus request id.
-/// Strict v2 shape (`{v:2,adapter,req}`); failures carry fixed kind/message
+/// Strict v3 shape (`{v:3,adapter,req}`); failures carry fixed kind/message
 /// pairs for the in-band error body.
 pub fn parse_discovery_request(
     request: &str,
@@ -533,7 +533,7 @@ pub fn parse_discovery_request(
         }
         return Err(("malformed", "request is malformed"));
     }
-    if map.get("v").and_then(serde_json::Value::as_u64) != Some(2) {
+    if map.get("v").and_then(serde_json::Value::as_u64) != Some(3) {
         return Err(("unsupported-version", "unsupported contract version"));
     }
     let adapter = map
@@ -807,15 +807,15 @@ mod tests {
     }
 
     #[test]
-    fn discovery_parse_is_strict_v2() {
-        assert!(parse_discovery_request("{\"v\":2,\"adapter\":\"a-1\",\"req\":\"r-1\"}").is_ok());
+    fn discovery_parse_is_strict_v3() {
+        assert!(parse_discovery_request("{\"v\":3,\"adapter\":\"a-1\",\"req\":\"r-1\"}").is_ok());
         // v1 refuses: no compatibility route.
         assert_eq!(
             parse_discovery_request("{\"v\":1,\"adapter\":\"a-1\",\"req\":\"r-1\"}"),
             Err(("unsupported-version", "unsupported contract version"))
         );
         assert_eq!(
-            parse_discovery_request("{\"v\":2,\"adapter\":\"a-1\",\"req\":\"r-1\",\"x\":1}"),
+            parse_discovery_request("{\"v\":3,\"adapter\":\"a-1\",\"req\":\"r-1\",\"x\":1}"),
             Err(("unknown-field", "request contains an unknown field"))
         );
     }
@@ -830,9 +830,9 @@ mod tests {
                 .expect("valid JSON");
         let generation = discovery["gen"].as_str().expect("gen");
         let envelope = format!(
-            "{{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+            "{{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
             \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
-            \"report\":{{\"v\":2,\"mode\":\"per-output-local\",\"screens\":[],\"windows\":[],\
+            \"report\":{{\"v\":3,\"mode\":\"per-output-local\",\"screens\":[],\"windows\":[],\
             \"views\":[],\"closed\":[],\"hostOwned\":false,\"equalCount\":false,\"native\":[],\
             \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
             \"defaultTiled\":true,\"focused\":\"\",\"complete\":false,\"gesture\":false,\
@@ -935,9 +935,9 @@ mod tests {
             "omnitiler:world-summary direction=egress req=src-7 \
              outcome=accepted kind=- rev=3 msg=-"
         );
-        let queued_request = "{\"v\":2,\"gen\":\"gen-1\",\"client\":\"panel-1\",\"clientCmd\":\"4\",\
+        let queued_request = "{\"v\":3,\"gen\":\"gen-1\",\"client\":\"panel-1\",\"clientCmd\":\"4\",\
              \"command\":{\"op\":\"focus\"}}";
-        let queued = "{\"v\":2,\"outcome\":\"queued\",\"gen\":\"gen-1\",\"client\":\"panel-1\",\
+        let queued = "{\"v\":3,\"outcome\":\"queued\",\"gen\":\"gen-1\",\"client\":\"panel-1\",\
             \"clientCmd\":\"4\",\"globalCmd\":\"9\"}";
         let line = world_egress_summary(queued_request, queued);
         assert_eq!(
@@ -946,7 +946,7 @@ mod tests {
              outcome=queued kind=- rev=9 msg=-"
         );
         // Terminal command failures carry their kind and global sequence.
-        let failed = "{\"v\":2,\"outcome\":\"failed\",\"gen\":\"gen-1\",\"globalCmd\":\"9\",\
+        let failed = "{\"v\":3,\"outcome\":\"failed\",\"gen\":\"gen-1\",\"globalCmd\":\"9\",\
             \"kind\":\"selection-unknown\",\"message\":\"selection target is not a known workspace\"}";
         let line = world_egress_summary(queued_request, failed);
         assert_eq!(
@@ -958,18 +958,18 @@ mod tests {
 
     #[test]
     fn ingress_summary_names_route_and_watermark() {
-        let capture = "{\"v\":2,\"source\":\"src-9\",\"nativeInvalid\":\"12\",\"report\":{}}";
+        let capture = "{\"v\":3,\"source\":\"src-9\",\"nativeInvalid\":\"12\",\"report\":{}}";
         assert_eq!(
             world_ingress_summary(capture),
             "omnitiler:world-summary direction=ingress req=src-9 cmd=capture nwinv=12"
         );
-        let read = "{\"v\":2,\"req\":\"read-3\"}";
+        let read = "{\"v\":3,\"req\":\"read-3\"}";
         assert_eq!(
             world_ingress_summary(read),
             "omnitiler:world-summary direction=ingress req=read-3 cmd=read nwinv=-"
         );
         let wait =
-            "{\"v\":2,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
+            "{\"v\":3,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
         assert_eq!(
             world_ingress_summary(wait),
             "omnitiler:world-summary direction=ingress req=wait-7 cmd=wait nwinv=-"
@@ -991,7 +991,7 @@ mod tests {
 
     fn queue_select_numbered(service: &WorldService, generation: &str, client_cmd: &str) {
         let request = format!(
-            "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+            "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
               \"clientCmd\":\"{client_cmd}\",\
               \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
         );
@@ -1116,20 +1116,20 @@ mod tests {
     #[test]
     fn wait_summaries_name_wake_and_lease_without_content() {
         let request =
-            "{\"v\":2,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
-        let wake = "{\"v\":2,\"outcome\":\"wake\",\"gen\":\"w-1\",\"cursor\":\"4\"}";
+            "{\"v\":3,\"gen\":\"w-1\",\"adapter\":\"a-1\",\"nonce\":\"wait-7\",\"cursor\":\"3\"}";
+        let wake = "{\"v\":3,\"outcome\":\"wake\",\"gen\":\"w-1\",\"cursor\":\"4\"}";
         assert_eq!(
             world_egress_summary(request, wake),
             "omnitiler:world-summary direction=egress req=wait-7 \
              outcome=wake kind=- rev=4 msg=-"
         );
-        let lease = "{\"v\":2,\"outcome\":\"lease\",\"gen\":\"w-1\",\"cursor\":\"3\"}";
+        let lease = "{\"v\":3,\"outcome\":\"lease\",\"gen\":\"w-1\",\"cursor\":\"3\"}";
         assert_eq!(
             world_egress_summary(request, lease),
             "omnitiler:world-summary direction=egress req=wait-7 \
              outcome=lease kind=- rev=3 msg=-"
         );
-        let superseded = "{\"v\":2,\"outcome\":\"superseded\",\"gen\":\"w-1\"}";
+        let superseded = "{\"v\":3,\"outcome\":\"superseded\",\"gen\":\"w-1\"}";
         assert_eq!(
             world_egress_summary(request, superseded),
             "omnitiler:world-summary direction=egress req=wait-7 \
@@ -1336,7 +1336,7 @@ mod tests {
             ),
         };
         format!(
-            "{{\"v\":2,\"mode\":\"per-output-local\",\
+            "{{\"v\":3,\"mode\":\"per-output-local\",\
               \"screens\":[{{\"out\":\"out-a\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
               \"gap\":0,\"outer\":0,\"complete\":true,\"primary\":true}},\
               {{\"out\":\"out-b\",\"full\":[800,0,800,600],\"work\":[800,0,800,560],\
@@ -1378,7 +1378,7 @@ mod tests {
         gesture: Option<(&str, &str, &str)>,
     ) -> serde_json::Value {
         let envelope = format!(
-            "{{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+            "{{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
               \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
               \"report\":{}}}",
             suspension_inner(fullscreen_a, focused, gesture),
@@ -1391,7 +1391,7 @@ mod tests {
 
     fn suspension_read(service: &WorldService, req: &str) -> serde_json::Value {
         let body = service
-            .read_presentation(&format!("{{\"v\":2,\"req\":\"{req}\"}}"))
+            .read_presentation(&format!("{{\"v\":3,\"req\":\"{req}\"}}"))
             .expect("read");
         serde_json::from_str(&body).expect("valid JSON")
     }
@@ -1405,7 +1405,7 @@ mod tests {
         y: i32,
     ) -> serde_json::Value {
         let request = format!(
-            "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+            "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
               \"clientCmd\":\"{client_cmd}\",\
               \"command\":{{\"op\":\"operation\",\"command\":{{\"op\":\"drag-preview\",\
               \"win\":\"{mover}\",\"x\":{x},\"y\":{y},\"hover\":null,\"source\":null}}}}}}"
@@ -1422,7 +1422,7 @@ mod tests {
         client_cmd: &str,
     ) -> serde_json::Value {
         let request = format!(
-            "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+            "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
               \"clientCmd\":\"{client_cmd}\"}}"
         );
         let settled = service

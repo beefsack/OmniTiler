@@ -147,7 +147,7 @@ function runTimers(flow: ReturnType<typeof startFlow>): void {
 
 function bootstrap(gen: string, req: string): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req,
+        v: 3, adapter: "broker-1", gen, req,
         obs: "0", rev: "0", ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
@@ -163,7 +163,7 @@ function acceptCapture(
     frame: [number, number, number, number] = [10, 10, 300, 300],
 ): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
+        v: 3, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
         ready: true, consumed: false,
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [], outputs: [],
@@ -177,7 +177,7 @@ function acceptCapture(
 
 function generationMismatch(gen: string): string {
     return JSON.stringify({
-        v: 2, outcome: "rejected", kind: "generation-mismatch",
+        v: 3, outcome: "rejected", kind: "generation-mismatch",
         message: "generation mismatch", gen, source: "", nativeInvalid: "0", clock: "1",
     });
 }
@@ -193,7 +193,7 @@ function queueOk(flow: ReturnType<typeof startFlow>, gen: string, globalCmd: str
     const filed = JSON.parse(queue.payload) as Record<string, unknown>;
     assert.equal(filed["gen"], gen, "queue binds the serving generation");
     queue.callback(JSON.stringify({
-        v: 2, outcome: "queued", gen,
+        v: 3, outcome: "queued", gen,
         client: filed["client"], clientCmd: filed["clientCmd"], globalCmd,
     }));
     return queue;
@@ -211,7 +211,7 @@ function takeReady(flow: ReturnType<typeof startFlow>, gen: string, globalCmd: s
     const take = lastCall(flow.calls, "TakeCommandResult");
     const body = JSON.parse(take.payload) as Record<string, unknown>;
     assert.equal(body["gen"], gen, "take binds the serving generation");
-    take.callback(JSON.stringify({ v: 2, outcome: "ready", gen, globalCmd, result: null }));
+    take.callback(JSON.stringify({ v: 3, outcome: "ready", gen, globalCmd, result: null }));
     return take;
 }
 
@@ -257,7 +257,7 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
         // The delayed Q1 success (gen-1) arrives after the reset: no-op.
         // It never drains, never clears newer undecided state, never wedges.
         q1.callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(q1.payload) as Record<string, unknown>)["client"],
             clientCmd: q1client, globalCmd: "9",
         }));
@@ -314,7 +314,7 @@ describe("stale queue/take lanes after a lifetime rotation", () => {
         const applied = flow.logs.filter((l) => l.startsWith("omnitiler:world:applied")).length;
         // The delayed T1 terminal result (gen-1) arrives after the reset:
         // it never applies stale actuation and never wedges the stream.
-        t1.callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
+        t1.callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
         assert.equal(flow.world.geometryWrites.length, writes, "stale take reply applies nothing");
         assert.equal(
             flow.calls.filter((c) => c.method === "DescribeWorld").length,

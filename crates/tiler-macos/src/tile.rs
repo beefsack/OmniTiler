@@ -4961,8 +4961,8 @@ mod tests {
         use tiler_core::directional::{OutputId, WindowId};
         use tiler_core::world_engine::{WorldEngine, WorldOutcome};
         use tiler_core::world_report::{
-            NativeObservation, PresentationIngress, ScreenReport, WORLD_CONTRACT_VERSION,
-            WindowFact, WorldReport,
+            NativeObservation, NativeOccupancy, PresentationIngress, ScreenReport,
+            WORLD_CONTRACT_VERSION, WindowFact, WorldReport,
         };
         // Host-owned admission through the real engine: two Spaces, focus
         // on the first.
@@ -5041,6 +5041,16 @@ mod tests {
                     output: OutputId("out-a".to_owned()),
                     native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
                     current_native: Some("space-1".to_owned()),
+                    occupancy: vec![
+                        NativeOccupancy {
+                            native: "space-1".to_owned(),
+                            count: None,
+                        },
+                        NativeOccupancy {
+                            native: "space-2".to_owned(),
+                            count: None,
+                        },
+                    ],
                 }],
                 fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
                 migration_source_refill:

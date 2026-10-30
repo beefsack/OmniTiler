@@ -33,7 +33,7 @@ const TRANSFER_OP = "op-3";
 // Synthetic reply: two controlled frames plus one retained unheld view
 // transfer to the non-shown workspace.
 const REPLY_TEXT = JSON.stringify({
-    v: 2, adapter: "broker-1", gen: GEN, req: REQ, obs: OBS, rev: REV,
+    v: 3, adapter: "broker-1", gen: GEN, req: REQ, obs: OBS, rev: REV,
     ready: true, consumed: false,
     source: REQ,
     nativeInvalid: "1",

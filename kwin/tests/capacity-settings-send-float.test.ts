@@ -120,12 +120,12 @@ describe("capacity settings report carriage", () => {
         const body = JSON.parse(json as string) as Record<string, unknown>;
         assert.equal(body["anchorFallback"], "closest-splittable-relative");
         assert.equal(body["noSpaceResult"], "allow-overlap");
-        // Strict v2: the broker-owned namespace never rides the inner
+        // Strict v3: the broker-owned namespace never rides the inner
         // report; there is exactly one sequencing namespace.
         for (const key of ["owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
             assert.ok(!(key in body), `inner report carries no ${key}`);
         }
-        assert.equal(body["v"], 2);
+        assert.equal(body["v"], 3);
     });
 
     it("round-trips the documented wire alphabet shape", () => {

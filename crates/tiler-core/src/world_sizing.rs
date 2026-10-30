@@ -674,14 +674,20 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         bytes += json_string_len(&id.0) + 1;
     }
     for native in &report.native {
-        // {"out":S,"order":[S...],"current":S|null} = 32 fixed plus
-        // strings; `null` (4) when the current surface is not an ordered
-        // desktop.
-        bytes += 32
+        // {"out":S,"order":[S...],"current":S|null,"occupancy":[{"native":S,
+        // "count":N|null}...]} = 58 fixed plus strings, counts, and commas;
+        // `null` (4) when the current surface is not an ordered desktop and
+        // when an occupant count is unknown.
+        bytes += 58
             + json_string_len(&native.output.0)
             + native.current_native.as_deref().map_or(4, json_string_len);
         for id in &native.native_order {
             bytes += json_string_len(id) + 1;
+        }
+        for row in &native.occupancy {
+            bytes += 22
+                + json_string_len(&row.native)
+                + row.count.map_or(4, |count| u64_len(u64::from(count)));
         }
     }
     for attempt in &report.frames {

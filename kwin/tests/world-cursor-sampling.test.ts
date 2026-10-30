@@ -43,7 +43,7 @@ const GEN = "gen-1";
 
 function acceptedReply(source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen: GEN, req: source, obs: rev, rev,
+        v: 3, adapter: "broker-1", gen: GEN, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [],
@@ -62,7 +62,7 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
 
 function bootstrap(req: string): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen: GEN, req, obs: "0", rev: "0",
+        v: 3, adapter: "broker-1", gen: GEN, req, obs: "0", rev: "0",
         ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
         windows: [], transfers: [], effects: [], result: null,
         gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -143,10 +143,10 @@ function makeHarness() {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const body = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 2, outcome: "queued", gen: GEN,
+                callback(JSON.stringify({ v: 3, outcome: "queued", gen: GEN,
                     client: body["client"], clientCmd: body["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
-                callback(JSON.stringify({ v: 2, outcome: "pending", gen: GEN }));
+                callback(JSON.stringify({ v: 3, outcome: "pending", gen: GEN }));
             }
         },
         scheduleOnce: (delay, cb) => {

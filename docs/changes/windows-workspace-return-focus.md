@@ -2612,7 +2612,7 @@ investigation at `328c1469`; no code changed.
 - Update every typed constructor, raw KWin normalizer, TS DTO/encoder/exact ack,
   macOS builder/runtime, stress/acceptance simulator and version fixture.
   `visibilityResults` without capability rejects; truthful visibility samples
-  are allowed with capability false. Use required v3 fields, not optional v2
+   are allowed with capability false. Use required v4 fields, not optional v3
   backfills. Stable capability changes require a fresh incarnation/bootstrap;
   core never guesses suppression support from `hostOwned:false`.
 
@@ -2628,7 +2628,7 @@ investigation at `328c1469`; no code changed.
 | 0. Freeze the boundary | Resolve the open focus-failure outcome below; retain existing partial-hide discriminator in `docs/spec/reference-outcomes.md` and add a minimal focus-unproven action sequence if that behavior is selected. Pin known failed-show, empty/minimized-only, sticky/float and independent suppression expectations; unknown outcomes remain TBD | Review exact shapes, no-call accounting and all consumers; preserve accepted BEFORE measurements and outstanding prototype blockers. No product behavior chosen from mocks |
 | 1. Core ownership/gap foundations | **Complete offline** (outcome below): producer-shaped KDE desktop list/current unreadability and recovery tests failed first on native echo confirmation, domain readability, equal-count padding and shared native creation/desire leaks; known non-ordered-current versus unreadable-current cases included | All listed fences pass with old ownership still stable in tests; no new creation, inferred close/homing/view/history during gaps. This prerequisite precedes changing KDE's ownership producer |
 | 2. Core visibility lifecycle | Frozen per-window roster/authority/OR composition, unique work, exact evidence retention, logical-view/history decoupling, terminal failed hide/show and gap-time retirement. Red current pending-hide characterization against selected completion. Cover every standalone/follow/migration-target/refill leg and every enumerated execution branch, including veto/unknown/no-call outcomes | Core tests prove failed member retains departure home, ambiguity stays unknown, no replay after duplicate/ack/gap/reset/ABA, close/supersession accounted, empty known roster terminates, and latest intents do not lose ordered commands. No unenumerated adapter branch or member/backing shortcut; native selector/member/clear ambiguity semantics remain unchanged |
-| 3. Protocol and adapter schema cutover | v2 rejection, removed/unknown fields, required capability tuples, null/known native facts, duplicate/forged rows, canonical byte equality, digest changes, max-size refusal and exact ack retention. Simulators actually execute/report visibility work; do not disable their settlement coverage | Core/protocol plus Windows typed consumers and KDE/macOS schema producers/builders move to v3 together. Keep this integration private until all constructors/codecs compile and contract gates pass; do not deploy mixed versions or flip KDE ownership before phase 1 |
+| 3. Protocol and adapter schema cutover | v3 rejection, removed/unknown fields, required capability tuples, null/known native facts, duplicate/forged rows, canonical byte equality, digest changes, max-size refusal and exact ack retention. Simulators actually execute/report visibility work; do not disable their settlement coverage | Core/protocol plus Windows typed consumers and KDE/macOS schema producers/builders move to v4 together. Keep this integration private until all constructors/codecs compile and contract gates pass; do not deploy mixed versions or flip KDE ownership before phase 1 |
 | 4. Windows native execution | Behavioral red tests for true prepared-show batching (no per-member wait/readback between posts), second-arrival lifetime/cloak/tag loss, asynchronous focus landing across owner passes, grant expiry, final foreground race before hide, partial issued hide, explicit show failures, and no-call blocked dependencies. Plumb existing product-hide pre/post facts on errors, independent of trace | Core work is sole visibility authority. Preserve existing recovery ledger, native identity, game/fullscreen/desktop gates and spent-before-write fences. No grant-less legacy fallthrough, new query for refusal classification, retry or R2 without its measured trigger. Full offline gates and independent safety/contract review pass before live work |
 | 5. Coordinated acceptance | Future fixture-only Windows AFTER matrix matches accepted BEFORE method: 0 ms home-away/trio-churn, occupied-to-occupied handoff, paired incomplete-hide discriminators, partial failure and rapid supersession. Tests assert truthful failures as well as normal successful phase ordering | End-to-end and per-phase speed have no regression. No speed claim from fewer calls or unit counts. Native failure evidence remains; a synthetic fix is not proof the historical intermittent hide is fixed. Physical-only safety/unknown-foreground questions remain with their existing acceptance items |
 
@@ -2673,14 +2673,16 @@ investigation at `328c1469`; no code changed.
 | Focus refused or remains unproven after arrivals are ready: exact terminal group outcome and departure fallback accounting | **User-accepted 2026-10-29** ([decision](../decisions.md#windows-decisions-2026-10-29)). Finish with explicit failed/unproven focus and individually accounted visibility results, never staged success. No departure write under staged authority without foreground proof; use only the already authorized fallback under fresh existing gates, otherwise explicitly block those entries. No retry or indefinite wait. Pin this minimal sequence before implementation; do not decide the separate unknown-foreground A/B policy |
 
 - User 2026-10-29 resolves the tab questions: full tab core/protocol stays
-  after 0.1; coordinated v3 is visibility-ready with per-window suppression
+   after 0.1; coordinated v4 is visibility-ready with per-window suppression
   authority/correlation independent of workspace ownership, its own capability,
   core-composed workspace vs inactive-tab suppression and truthful hidden facts.
   A later tab bump is accepted, expected around 0.2; no speculative reservations
   to avoid it. Tab-close survivor provisionally defaults to positional-next,
   clamped at the end; confirm against Tier 1 source when tab work starts.
 
-- Technical choices for schema review (user-accepted 2026-10-29): next version 3, required
+- User 2026-10-29 assigns v3 to native occupancy and the separate
+  `keepAboveTiles` follow-up; this planned visibility cutover becomes v4.
+- Technical choices for schema review (user-accepted 2026-10-29): next version 4, required
   independent boolean capability, core-minted work/group ids, separate typed
   lifecycle rows and native known-state flags. These spellings/layouts can be
   simplified before freeze while preserving the exclusive ownership table;
@@ -2695,7 +2697,7 @@ investigation at `328c1469`; no code changed.
   tabs merely because the wire is visibility-ready.
 - Phase 1 is complete offline (outcome below), independently of the parked
   focus-failure decision. Next product action: settle that decision before
-  phase 2 lifecycle work; review the v3 shapes before adapter cutover.
+   phase 2 lifecycle work; review the v4 shapes before adapter cutover.
 
 ### Design review and evidence boundary
 

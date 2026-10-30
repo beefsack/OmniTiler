@@ -53,7 +53,7 @@ fn route_fixture(
         "{envelope_name}: real-JS envelope must be accepted, got {reply}"
     );
     let body = service
-        .read_presentation(&format!("{{\"v\":2,\"req\":\"{req}\"}}"))
+        .read_presentation(&format!("{{\"v\":3,\"req\":\"{req}\"}}"))
         .expect("in-band");
     body.replace(generation, "gen-stage5")
 }

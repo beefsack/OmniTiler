@@ -16,11 +16,11 @@ import {
 } from "../src/world-report";
 
 function baseTake(result: string): string {
-    return `{"v":2,"outcome":"ready","gen":"gen-1","globalCmd":"9",${result}}`;
+    return `{"v":3,"outcome":"ready","gen":"gen-1","globalCmd":"9",${result}}`;
 }
 
 function baseCapture(result: string): string {
-    return `{"v":2,"adapter":"broker-1","gen":"gen-1","req":"req-1",` +
+    return `{"v":3,"adapter":"broker-1","gen":"gen-1","req":"req-1",` +
         `"obs":"1","rev":"1","ready":true,"consumed":false,` +
         `"scopes":[],"workspaces":[],"outputs":[],"windows":[],` +
         `"transfers":[],"effects":[],${result},` +
@@ -148,7 +148,7 @@ describe("world reply result", () => {
 
     it("reads a null take result as the snapshot-only outcome", () => {
         const parsed = parseWorldReply(
-            `{"v":2,"outcome":"ready","gen":"gen-1","globalCmd":"9","result":null}`,
+            `{"v":3,"outcome":"ready","gen":"gen-1","globalCmd":"9","result":null}`,
         );
         assert.ok(parsed !== null && !isWorldRejection(parsed));
         const outcome = (parsed as { outcome?: unknown } | null)?.outcome;

@@ -1655,16 +1655,32 @@ export function createWorldApplyHost(
                     if (typeof item !== "object" || item === null) {
                         return { total: 0, readable: false };
                     }
+                    const sticky = readProp(item as object, "onAllDesktops");
+                    if (sticky === true) {
+                        total += 1;
+                        continue;
+                    }
                     const members = decodeList(readProp(item as object, "desktops"), MAX_NATIVE_WINDOW_DESKTOPS);
                     if (members === null) {
                         return { total: 0, readable: false };
                     }
-                    for (const m of members) {
-                        if (typeof m === "object" && m !== null && readProp(m as object, "id") === nativeId) {
-                            total += 1;
-                            break;
-                        }
+                    if (members.length === 0) {
+                        total += 1;
+                        continue;
                     }
+                    if (typeof sticky !== "boolean") {
+                        return { total: 0, readable: false };
+                    }
+                    let found = false;
+                    for (const m of members) {
+                        if (typeof m !== "object" || m === null) {
+                            return { total: 0, readable: false };
+                        }
+                        const id = readProp(m as object, "id");
+                        if (!isOpaqueId(id)) return { total: 0, readable: false };
+                        if (id === nativeId) found = true;
+                    }
+                    if (found) total += 1;
                 }
                 return { total, readable: true };
             } catch (error) {
@@ -1683,9 +1699,10 @@ export function createWorldApplyHost(
                 if (screens === null || screens.length === 0) {
                     return null;
                 }
-                let readable = false;
+                let readable = true;
                 for (const s of screens) {
                     if (typeof s !== "object" || s === null) {
+                        readable = false;
                         continue;
                     }
                     let cur: { id: string } | null = null;
@@ -1696,9 +1713,9 @@ export function createWorldApplyHost(
                         cur = null;
                     }
                     if (cur === null) {
+                        readable = false;
                         continue;
                     }
-                    readable = true;
                     if (cur.id === nativeId) {
                         return true;
                     }

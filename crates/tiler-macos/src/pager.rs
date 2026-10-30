@@ -625,6 +625,16 @@ mod tests {
             output: OutputId("out-a".to_owned()),
             native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
             current_native: Some("space-1".to_owned()),
+            occupancy: vec![
+                tiler_core::world_report::NativeOccupancy {
+                    native: "space-1".to_owned(),
+                    count: None,
+                },
+                tiler_core::world_report::NativeOccupancy {
+                    native: "space-2".to_owned(),
+                    count: None,
+                },
+            ],
         }];
         base
     }

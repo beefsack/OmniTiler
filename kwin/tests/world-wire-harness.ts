@@ -181,7 +181,7 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
                 // Stale generation files nothing: the serving generation
                 // refuses before any high-water or queue access.
                 return JSON.stringify({
-                    v: 2, outcome: "rejected", kind: "generation-mismatch",
+                    v: 3, outcome: "rejected", kind: "generation-mismatch",
                     message: "generation mismatch", gen, source: "",
                     nativeInvalid: "0", clock: "1",
                 });
@@ -191,7 +191,7 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             if (known !== undefined) {
                 // Duplicate file under the same identity: never re-executes.
                 return JSON.stringify({
-                    v: 2, outcome: "duplicate", gen,
+                    v: 3, outcome: "duplicate", gen,
                     client: body["client"], clientCmd: body["clientCmd"], globalCmd: known,
                 });
             }
@@ -199,7 +199,7 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
             filedGlobal.set(key, globalSeq);
             queued.push({ client: body["client"], clientCmd: body["clientCmd"], command: body["command"], globalCmd: globalSeq });
             return JSON.stringify({
-                v: 2, outcome: "queued", gen,
+                v: 3, outcome: "queued", gen,
                 client: body["client"], clientCmd: body["clientCmd"], globalCmd: globalSeq,
             });
         },
@@ -212,17 +212,17 @@ export function createMiniBroker(incarnation = BROKER_INCARNATION): MiniBroker {
                 // Stale generation collects nothing: the serving generation
                 // refuses before any settlement or high-water access.
                 return JSON.stringify({
-                    v: 2, outcome: "rejected", kind: "generation-mismatch",
+                    v: 3, outcome: "rejected", kind: "generation-mismatch",
                     message: "generation mismatch", gen, source: "",
                     nativeInvalid: "0", clock: "1",
                 });
             }
             const open = settlements.find((s) => !s.collected && s.settled);
             if (open === undefined) {
-                return JSON.stringify({ v: 2, outcome: "pending", gen });
+                return JSON.stringify({ v: 3, outcome: "pending", gen });
             }
             open.collected = true;
-            return JSON.stringify({ v: 2, outcome: "ready", gen, globalCmd: open.globalCmd, result: open.result });
+            return JSON.stringify({ v: 3, outcome: "ready", gen, globalCmd: open.globalCmd, result: open.result });
         },
     };
 }

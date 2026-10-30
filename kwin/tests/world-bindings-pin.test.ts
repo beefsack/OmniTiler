@@ -68,15 +68,15 @@ describe("world binding retention flags", () => {
                 calls.push({ method, payload, callback });
                 if (method === "QueueWorldCommand") {
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                         client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
                 } else if (method === "TakeCommandResult") {
                     const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                     if (stagedTake !== undefined) {
                         delete (globalThis as Record<string, unknown>)["__takeResult"];
-                        callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                        callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                     } else {
-                        callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                        callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                     }                }
             },
             scheduleOnce: (delay, cb) => {
@@ -90,7 +90,7 @@ describe("world binding retention flags", () => {
         });
         assert.ok(handle !== null);
         calls.find((c) => c.method === "DiscoverWorld")?.callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen: "gen-1", req: "disc-1",
+            v: 3, adapter: "broker-1", gen: "gen-1", req: "disc-1",
             obs: "0", rev: "0", ready: false, consumed: false,
             gestureSettled: null,
             operationSettled: [], nativeCreations: [],
@@ -105,7 +105,7 @@ describe("world binding retention flags", () => {
         assert.ok(auto !== undefined);
         const autoBody = JSON.parse((auto as { payload: string }).payload) as Record<string, unknown>;
         (auto as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen: "gen-1", req: autoBody["source"],
+            v: 3, adapter: "broker-1", gen: "gen-1", req: autoBody["source"],
             obs: "1", rev: "1", ready: true, consumed: false,
             source: autoBody["source"],
             nativeInvalid: autoBody["nativeInvalid"],

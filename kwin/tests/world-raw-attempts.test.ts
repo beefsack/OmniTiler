@@ -142,7 +142,7 @@ function startFlow(): Flow {
         callDbus: (_s, _p, _i, method, payload, callback) => {
             base.calls.push({ method, payload, callback });
             if (method === "TakeCommandResult") {
-                callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
             }
         },
         scheduleOnce: (delay, cb) => {
@@ -196,7 +196,7 @@ const PRESENTATION = {
 
 function bootstrap(gen: string, req: string): Record<string, unknown> {
     return {
-        v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
+        v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
         ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
@@ -212,7 +212,7 @@ function accept(
 ): void {
     const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
     const reply: Record<string, unknown> = {
-        v: 2, adapter: "broker-1", gen: "gen-1", req: payload["source"],
+        v: 3, adapter: "broker-1", gen: "gen-1", req: payload["source"],
         obs: rev, rev, ready: true, consumed: false,
         source: payload["source"], nativeInvalid: payload["nativeInvalid"], clock: "1",
         scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,

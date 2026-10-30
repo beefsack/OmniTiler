@@ -88,7 +88,7 @@ fn inner_report_with_attempts(
         format!(",\"frameAttempts\":[{attempts}]")
     };
     format!(
-        "{{\"v\":2,\"mode\":\"per-output-local\",\
+        "{{\"v\":3,\"mode\":\"per-output-local\",\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}}],\
           \"windows\":[{}],\"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}}],\"closed\":[],\
@@ -121,7 +121,7 @@ fn capture_source(
     inner: &str,
 ) -> String {
     format!(
-        "{{\"v\":2,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+        "{{\"v\":3,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
           \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\
           \"nativeInvalid\":\"{watermark}\",\"report\":{inner}}}"
     )
@@ -157,7 +157,7 @@ fn parse(reply: &str) -> serde_json::Value {
 /// {v:2,gen,client,clientCmd,command}.
 fn queue_req(generation: &str, client: &str, client_cmd: &str, command: &str) -> String {
     format!(
-        "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"{client}\",\
+        "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"{client}\",\
           \"clientCmd\":\"{client_cmd}\",\"command\":{command}}}"
     )
 }
@@ -166,7 +166,7 @@ fn queue_req(generation: &str, client: &str, client_cmd: &str, command: &str) ->
 /// {v:2,gen,client,clientCmd}.
 fn take_req(generation: &str, client: &str, client_cmd: &str) -> String {
     format!(
-        "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"{client}\",\
+        "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"{client}\",\
           \"clientCmd\":\"{client_cmd}\"}}"
     )
 }
@@ -198,7 +198,7 @@ fn discovery_binds_generation_and_broker_incarnation() {
     assert!(!incarnation.is_empty());
     // No accepted capture yet: the presentation route stays not-ready.
     let reply = service
-        .read_presentation("{\"v\":2,\"req\":\"read-0\"}")
+        .read_presentation("{\"v\":3,\"req\":\"read-0\"}")
         .expect("in-band");
     let parsed = parse(&reply);
     assert_eq!(parsed["outcome"], "rejected");
@@ -206,7 +206,7 @@ fn discovery_binds_generation_and_broker_incarnation() {
     assert_eq!(parsed["gen"].as_str(), Some(generation.as_str()));
     // v1 envelopes refuse on the strict v2 boundary.
     let v1 = "{\"v\":1,\"adapter\":\"a\",\"gen\":\"g\",\"source\":\"src-1\",\
-        \"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{\"v\":2}}";
+        \"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{\"v\":3}}";
     let reply = service.evaluate_capture(v1).expect("in-band");
     let parsed = parse(&reply);
     assert_eq!(parsed["outcome"], "rejected");
@@ -731,7 +731,7 @@ fn actuator_reply_carries_no_terminal_result_but_presentation_hides_tokens() {
     // one-shot lanes and no native write tokens in window rows.
     let projection = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"pager-1\"}")
+            .read_presentation("{\"v\":3,\"req\":\"pager-1\"}")
             .expect("in-band"),
     );
     assert_eq!(projection["outcome"], "presentation");
@@ -840,7 +840,7 @@ fn bounded_result_memory_forgets_without_reexecution() {
 fn host_owned_native_capture_adopts_uuid_desktops_truthfully() {
     let (service, generation) = discovered_service();
     let native = format!(
-        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\"}}"
+        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}}]}}"
     );
     let inner = inner_report(
         &[
@@ -941,11 +941,11 @@ fn bootstrap_discovery_and_full_capture_match_the_js_producer_shape() {
     // generation, the JS correlation (`src-<counter36>-<rand36>`) with its
     // decimal sequence, the local watermark, and the commandless inner
     // report. Stable schemas: discovery {v:2,adapter,req}; capture
-    // {v:2,adapter,gen,source,sourceSeq,nativeInvalid,report}; replies bind
+    // {v:3,adapter,gen,source,sourceSeq,nativeInvalid,report}; replies bind
     // source/nativeInvalid/clock only (no sourceSeq echo).
     let service = WorldService::new();
     let lifetime = "kwin-world-adapter-1";
-    let discovery_request = format!("{{\"v\":2,\"adapter\":\"{lifetime}\",\"req\":\"disc-1\"}}");
+    let discovery_request = format!("{{\"v\":3,\"adapter\":\"{lifetime}\",\"req\":\"disc-1\"}}");
     let (discovery_adapter, discovery_req) =
         omnitiler::world_service::parse_discovery_request(&discovery_request)
             .expect("producer discovery parses");
@@ -1263,7 +1263,7 @@ fn failed_drain_falls_back_to_fresh_facts_without_poisoning_cache() {
     // full reply and not a poisoned null projection.
     let projection = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"pager-1\"}")
+            .read_presentation("{\"v\":3,\"req\":\"pager-1\"}")
             .expect("in-band"),
     );
     assert_eq!(projection["outcome"], "presentation");
@@ -1314,7 +1314,7 @@ fn discovery_binds_a_single_lifetime_and_rotates_on_change() {
     assert_eq!(same["gen"].as_str(), Some(gen_a.as_str()));
     let cached = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"r-0\"}")
+            .read_presentation("{\"v\":3,\"req\":\"r-0\"}")
             .expect("in-band"),
     );
     assert_eq!(cached["outcome"], "presentation");
@@ -1428,7 +1428,7 @@ fn discovery_binds_a_single_lifetime_and_rotates_on_change() {
     assert_eq!(refiled["gen"], gen_b.as_str());
     let not_ready = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"r-1\"}")
+            .read_presentation("{\"v\":3,\"req\":\"r-1\"}")
             .expect("in-band"),
     );
     assert_eq!(not_ready["outcome"], "rejected");
@@ -1455,7 +1455,7 @@ fn discovery_binds_a_single_lifetime_and_rotates_on_change() {
 /// lifetime, waiter correlation, canonical cursor.
 fn wait_req(generation: &str, adapter: &str, nonce: &str, cursor: &str) -> String {
     format!(
-        "{{\"v\":2,\"gen\":\"{generation}\",\"adapter\":\"{adapter}\",\
+        "{{\"v\":3,\"gen\":\"{generation}\",\"adapter\":\"{adapter}\",\
           \"nonce\":\"{nonce}\",\"cursor\":\"{cursor}\"}}"
     )
 }
@@ -1616,7 +1616,7 @@ fn rejected_capture_never_advances_the_epoch_or_wakes() {
     // A malformed capture rejects without draining: the epoch is
     // untouched, so the waiter stays parked (no hot-loop on re-arm).
     let rejected = broker
-        .dispatch_capture("{\"v\":2,\"bogus\":true}")
+        .dispatch_capture("{\"v\":3,\"bogus\":true}")
         .expect("in-band");
     let rejected_value: serde_json::Value =
         serde_json::from_str(&rejected).expect("rejection JSON");
@@ -2058,7 +2058,7 @@ fn raw_kwin_shape_projects_fixed_minimized_overlay_and_safety() {
     // the shared fixed classifier on the captured client sizes.
     let (service, generation) = discovered_service();
     let native = format!(
-        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\"}}"
+        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}}]}}"
     );
     let fixed = window_json("win-fixed", "[0,0,408,308]", Some(UUID_A))
         .replace(
@@ -2237,7 +2237,9 @@ fn born_raw(
 }
 
 fn born_native_order() -> String {
-    format!("{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\"}}")
+    format!(
+        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}}]}}"
+    )
 }
 
 /// Inject the tolerant `bornMaximized` ingress mode into a built inner
@@ -3452,7 +3454,7 @@ fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
     // take, minus issuer correlation.
     let projection = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"sub-1\"}")
+            .read_presentation("{\"v\":3,\"req\":\"sub-1\"}")
             .expect("in-band"),
     );
     assert_eq!(projection["outcome"], "presentation");
@@ -3497,7 +3499,7 @@ fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
     assert_eq!(next["rev"], "3");
     let cleared = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"sub-2\"}")
+            .read_presentation("{\"v\":3,\"req\":\"sub-2\"}")
             .expect("in-band"),
     );
     assert_eq!(cleared["outcome"], "presentation");
@@ -3531,7 +3533,7 @@ fn drop_preview_projection_is_shared_read_only_and_cleared_by_fresh_facts() {
     assert_eq!(settled["result"]["op"], "toggle-float");
     let projection = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"sub-3\"}")
+            .read_presentation("{\"v\":3,\"req\":\"sub-3\"}")
             .expect("in-band"),
     );
     assert!(
@@ -3561,13 +3563,13 @@ fn preview_survives_rejected_captures_but_fallback_clears_it() {
         .expect("preview drained");
     let seeded = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"seed\"}")
+            .read_presentation("{\"v\":3,\"req\":\"seed\"}")
             .expect("in-band"),
     );
     assert_trimmed_preview(&seeded["preview"]);
     assert_unproven_producer(&seeded["preview"]);
     // A malformed envelope rejects without touching the cache.
-    let malformed = parse(&service.evaluate_capture("{\"v\":2}").expect("in-band"));
+    let malformed = parse(&service.evaluate_capture("{\"v\":3}").expect("in-band"));
     assert_eq!(malformed["outcome"], "rejected");
     // A remembered source with different bytes refuses as reused.
     let reused = parse(
@@ -3586,7 +3588,7 @@ fn preview_survives_rejected_captures_but_fallback_clears_it() {
     assert_eq!(reused["kind"], "source-reused");
     let kept = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"kept\"}")
+            .read_presentation("{\"v\":3,\"req\":\"kept\"}")
             .expect("in-band"),
     );
     assert_eq!(
@@ -3621,7 +3623,7 @@ fn preview_survives_rejected_captures_but_fallback_clears_it() {
     assert_eq!(failed["outcome"], "failed");
     let cleared = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"after-fallback\"}")
+            .read_presentation("{\"v\":3,\"req\":\"after-fallback\"}")
             .expect("in-band"),
     );
     assert_eq!(cleared["outcome"], "presentation");
@@ -3641,7 +3643,7 @@ const UUID_D: &str = "6ba7b812-9dad-11d1-80b4-00c04fd430c8";
 /// window riding DP-2's fourth native (B/ws4 occupied, B1-3 empty).
 fn two_output_all_mode_inner(mode: &str, window: &str) -> String {
     format!(
-        "{{\"v\":2,\"mode\":\"{mode}\",\
+        "{{\"v\":3,\"mode\":\"{mode}\",\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}},\
           {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\
@@ -3650,9 +3652,9 @@ fn two_output_all_mode_inner(mode: &str, window: &str) -> String {
           \"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}},{{\"out\":\"DP-2\",\"view\":\"\"}}],\"closed\":[],\
           \"hostOwned\":true,\"equalCount\":true,\
           \"native\":[{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
-          \"current\":\"{UUID_A}\"}},\
+          \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}},\
           {{\"out\":\"DP-2\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
-          \"current\":\"{UUID_A}\"}}],\
+          \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
           \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
           \"defaultTiled\":true,\"focused\":\"\",\
           \"complete\":true,\"gesture\":false,\"switchTarget\":\"cursor-output\",\
@@ -3827,7 +3829,7 @@ fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
         .expect("preview drained");
     let seeded = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"seed-a\"}")
+            .read_presentation("{\"v\":3,\"req\":\"seed-a\"}")
             .expect("in-band"),
     );
     assert_trimmed_preview(&seeded["preview"]);
@@ -3838,7 +3840,7 @@ fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
     assert_ne!(gen_b, gen_a);
     let not_ready = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"seed-b\"}")
+            .read_presentation("{\"v\":3,\"req\":\"seed-b\"}")
             .expect("in-band"),
     );
     assert_eq!(not_ready["outcome"], "rejected");
@@ -3880,7 +3882,7 @@ fn preview_drops_on_rotation_and_reseeds_for_the_new_lifetime() {
         .expect("preview drained");
     let reseeded = parse(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"seed-b2\"}")
+            .read_presentation("{\"v\":3,\"req\":\"seed-b2\"}")
             .expect("in-band"),
     );
     assert_eq!(reseeded["outcome"], "presentation");

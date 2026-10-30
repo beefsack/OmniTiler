@@ -1138,9 +1138,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
     // Per-window homing echo suppression (approach2/5 native
     // drag/send adoption): the synchronous `outputChanged` /
-    // `desktopsChanged` echo of our own output/membership setters must
-    // not invalidate mid-apply (that would wedge the flight and can
-    // resurrect stalled migrations). While a wrapped setter runs,
+    // `desktopsChanged` / `frameGeometryChanged` echo of our own
+    // output/membership/geometry setters must not invalidate mid-apply
+    // (that would wedge the flight and can resurrect stalled
+    // migrations). While a wrapped setter runs,
     // `homingSuppressDepth` is nonzero with the actuated ref; that
     // window's own echo defers to one post-apply observation, while any
     // other window's signal, and closure/unsafe/disappearance of the
@@ -3359,6 +3360,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // rows plus fresh native facts are the only evidence
                     // the adapter reports. Unknown ops change nothing and
                     // never actuate.
+                    // Trace-preserving geometry base: the trace probe wraps
+                    // the host setter when armed (one-shot observation), so
+                    // the homing suppression below wraps the traced setter
+                    // and synchronous own frame echoes still defer.
+                    const setGeometryBase = typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1"
+                        ? (worldTraceProbes.get(state)?.setGeometryFor(fresh, applyHostBase, token(flight.source)) ?? applyHostBase.setGeometry)
+                        : applyHostBase.setGeometry;
                     const applied = applyWorldReply({
                         state,
                         observation: fresh,
@@ -3367,9 +3375,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         takeResult,
                         log,
                         ...applyHostBase,
-                        setGeometry: typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1"
-                            ? (worldTraceProbes.get(state)?.setGeometryFor(fresh, applyHostBase, token(flight.source)) ?? applyHostBase.setGeometry)
-                            : applyHostBase.setGeometry,
+                        setGeometry: (ref, rect) =>
+                            withHomingSuppression(ref, () => setGeometryBase(ref, rect)),
                         setMembership: (ref, wsNativeId, wsRef) =>
                             withHomingSuppression(ref, () => applyHostBase.setMembership(ref, wsNativeId, wsRef)),
                         sendToOutput: (ref, outRef) =>
@@ -4465,12 +4472,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
     // Per-window homing subscriptions (approach2/5 native drag/send
     // adoption, pin ab7df7cc): `Window::outputChanged`, window
-    // `desktopsChanged`, and `Window::hiddenChanged` (src/window.h:590 at
-    // pinned v6.7.4) are WINDOW signals; workspace `desktopsChanged`
-    // is only count/order. External native output/membership/hidden changes
-    // are invisible to the workspace-only watermark, so every tracked
-    // window subscribes all three homing signals; each schedules a full
-    // world observe (never geometry noise, no polling). Own-flight
+    // `desktopsChanged`, `Window::hiddenChanged` (src/window.h:590 at
+    // pinned v6.7.4), and `Window::frameGeometryChanged` are WINDOW
+    // signals; workspace `desktopsChanged`
+    // is only count/order. External native output/membership/hidden/frame
+    // changes are invisible to the workspace-only watermark, so every
+    // tracked window subscribes all four homing signals; each schedules a
+    // full world observe (no polling). Own-flight
     // echoes (synchronous emissions inside the wrapped setters above)
     // defer to the single post-apply observation instead; the actuated
     // window's closure/unsafe/disappearance still invalidates
@@ -4517,7 +4525,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         const detachesForWindow: Array<() => void> = [];
-        for (const signalName of ["outputChanged", "desktopsChanged", "hiddenChanged"] as const) {
+        for (const signalName of ["outputChanged", "desktopsChanged", "hiddenChanged", "frameGeometryChanged"] as const) {
             try {
                 const detach = connectSignal(readSignal(ref, signalName), onWindowHoming(ref));
                 if (detach !== null) {

@@ -12,7 +12,7 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    HoldReason, NativeObservation, ScopeAuthority, ScreenReport, TransferKind,
+    HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority, ScreenReport, TransferKind,
     WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 
@@ -172,6 +172,13 @@ fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation 
         output: OutputId(output.to_owned()),
         native_order: order.iter().map(|s| (*s).to_owned()).collect(),
         current_native: Some(current.to_owned()),
+        occupancy: order
+            .iter()
+            .map(|s| NativeOccupancy {
+                native: (*s).to_owned(),
+                count: None,
+            })
+            .collect(),
     }
 }
 

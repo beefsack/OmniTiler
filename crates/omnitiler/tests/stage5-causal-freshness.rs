@@ -73,7 +73,7 @@ fn bare_window_json(id: &str, rect: &str) -> String {
 
 fn inner_report(windows: &[String]) -> String {
     format!(
-        "{{\"v\":2,\"mode\":\"per-output-local\",\
+        "{{\"v\":3,\"mode\":\"per-output-local\",\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}}],\
           \"windows\":[{}],\"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}}],\"closed\":[],\
@@ -120,7 +120,7 @@ fn capture(
     inner: &str,
 ) -> serde_json::Value {
     let envelope = format!(
-        "{{\"v\":2,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+        "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
           \"source\":\"src-{seq}-t\",\"sourceSeq\":\"{seq}\",\
           \"nativeInvalid\":\"{watermark}\",\"report\":{inner}}}"
     );
@@ -130,7 +130,7 @@ fn capture(
 
 fn read_presentation(service: &WorldService, req: &str) -> serde_json::Value {
     let reply = service
-        .read_presentation(&format!("{{\"v\":2,\"req\":\"{req}\"}}"))
+        .read_presentation(&format!("{{\"v\":3,\"req\":\"{req}\"}}"))
         .expect("in-band");
     serde_json::from_str(&reply).expect("reply is JSON")
 }
@@ -339,7 +339,7 @@ fn stage5_red_preview_requires_producing_identity() {
     ];
     commanded
         .evaluate_capture(&format!(
-            "{{\"v\":2,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
+            "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
               \"source\":\"src-1-t\",\"sourceSeq\":\"1\",\
               \"nativeInvalid\":\"10\",\"report\":{}}}",
             witnessed(&inner_report(&big), "effect-1", "1")
@@ -351,7 +351,7 @@ fn stage5_red_preview_requires_producing_identity() {
         .queue_command(
             SENDER,
             &format!(
-                "{{\"v\":2,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\
+                "{{\"v\":3,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\
                   \"clientCmd\":\"1\",\"command\":{drag_command}}}"
             ),
         )
@@ -359,7 +359,7 @@ fn stage5_red_preview_requires_producing_identity() {
     let drained: serde_json::Value = serde_json::from_str(
         &commanded
             .evaluate_capture(&format!(
-                "{{\"v\":2,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
+                "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{command_gen}\",\
                   \"source\":\"src-2-t\",\"sourceSeq\":\"2\",\
                   \"nativeInvalid\":\"11\",\"report\":{}}}",
                 witnessed(&inner_report(&big), "effect-1", "1")
@@ -380,7 +380,7 @@ fn stage5_red_preview_requires_producing_identity() {
             .take_result(
                 SENDER,
                 &format!(
-                    "{{\"v\":2,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\"clientCmd\":\"1\"}}"
+                    "{{\"v\":3,\"gen\":\"{command_gen}\",\"client\":\"drag-1\",\"clientCmd\":\"1\"}}"
                 ),
             )
             .expect("in-band"),
@@ -440,7 +440,7 @@ fn stage5_red_focus_clear_preserves_covered_watermark() {
         "1",
     );
     let envelope = format!(
-        "{{\"v\":2,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+        "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
           \"source\":\"src-1-t\",\"sourceSeq\":\"1\",\
           \"nativeInvalid\":\"10\",\"report\":{inner}}}"
     );

@@ -1,5 +1,5 @@
 // Offline unit coverage for the world decimal/parse/state boundary
-// (strict v2, sole broker): bounded decimal strings (no Number precision),
+// (strict v3, sole broker): bounded decimal strings (no Number precision),
 // strict envelope/reply parsing, the broker wire codec, and the adapter
 // lifetime state machine (transport fences, dirty/ack, creation, ambiguous
 // holds). The broker owns ALL sequencing; the adapter owns only the
@@ -47,7 +47,7 @@ const DISABLED_PRESENTATION = {
 const ACCEPTED = (
     overrides: Record<string, unknown> = {},
 ): string => JSON.stringify({
-    v: 2,
+    v: 3,
     adapter: "broker-1",
     gen: "gen-1",
     req: "req-1",
@@ -138,10 +138,11 @@ describe("world-report commands and reply parsing", () => {
             assert.equal(parsed.clock, "0");
             assert.equal(parsed.result, null);
         }
-        const rejection = parseWorldReply('{"v":2,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0"}');
+        const rejection = parseWorldReply('{"v":3,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0"}');
         assert.ok(isWorldRejection(rejection));
-        // v1 refuses: no compatibility route.
-        assert.equal(parseWorldReply(ACCEPTED().replace('"v":2', '"v":1')), null);
+        // v1 and v2 refuse: no compatibility route.
+        assert.equal(parseWorldReply(ACCEPTED().replace('"v":3', '"v":1')), null);
+        assert.equal(parseWorldReply(ACCEPTED().replace('"v":3', '"v":2')), null);
         // Actuator lane with a terminal result refuses.
         assert.equal(parseWorldReply(ACCEPTED({ result: { op: "no-group", reason: "pending", rev: null } })), null);
         // Bare-number counters refuse: no f64 precision-loss path.
@@ -150,18 +151,18 @@ describe("world-report commands and reply parsing", () => {
         assert.equal(parseWorldReply("not json"), null);
     });
 
-    it("builds strict v2 envelopes with no broker keys inside the report", () => {
-        const inner = buildCaptureEnvelope("a-1", "gen-1", "src-1", "1", "4", '{"v":2}');
+    it("builds strict v3 envelopes with no broker keys inside the report", () => {
+        const inner = buildCaptureEnvelope("a-1", "gen-1", "src-1", "1", "4", '{"v":3}');
         assert.deepEqual(JSON.parse(inner), {
-            v: 2, adapter: "a-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "4", report: { v: 2 },
+            v: 3, adapter: "a-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "4", report: { v: 3 },
         });
-        assert.deepEqual(JSON.parse(buildDiscoveryRequest("a-1", "disc-9")), { v: 2, adapter: "a-1", req: "disc-9" });
+        assert.deepEqual(JSON.parse(buildDiscoveryRequest("a-1", "disc-9")), { v: 3, adapter: "a-1", req: "disc-9" });
         assert.deepEqual(
             JSON.parse(buildQueueRequest("panel-1", "gen-1", "3", { op: "select-trailing", out: null })),
-            { v: 2, gen: "gen-1", client: "panel-1", clientCmd: "3", command: { op: "select-trailing", out: null } },
+            { v: 3, gen: "gen-1", client: "panel-1", clientCmd: "3", command: { op: "select-trailing", out: null } },
         );
-        assert.deepEqual(JSON.parse(buildTakeRequest("panel-1", "gen-1", "3")), { v: 2, gen: "gen-1", client: "panel-1", clientCmd: "3" });
-        const queued = parseWorldReply('{"v":2,"outcome":"queued","gen":"gen-1","client":"panel-1","clientCmd":"3","globalCmd":"9"}');
+        assert.deepEqual(JSON.parse(buildTakeRequest("panel-1", "gen-1", "3")), { v: 3, gen: "gen-1", client: "panel-1", clientCmd: "3" });
+        const queued = parseWorldReply('{"v":3,"outcome":"queued","gen":"gen-1","client":"panel-1","clientCmd":"3","globalCmd":"9"}');
         assert.ok(isWorldQueueReply(queued));
     });
 });

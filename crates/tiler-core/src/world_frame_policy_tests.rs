@@ -3062,3 +3062,919 @@ fn learned_float_excursion_preserves_and_reapplies() {
         "floor reapplies after the excursion"
     );
 }
+
+// --- frame-burst anti-loop bound (two attempts per observed-change burst) ---
+
+fn is_hold(reply: &crate::world_report::WorldReply, window: &str) -> bool {
+    frame_row(reply, window).frame_authority == ScopeAuthority::Hold(HoldReason::ConstraintClamp)
+}
+
+fn shrink(rect: Rect, dw: i32) -> Rect {
+    Rect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w - dw,
+        h: rect.h,
+    }
+}
+
+#[test]
+fn burst_two_attempt_cap_holds_despite_redrift() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let r1 = shrink(desired, 100);
+    let r2 = shrink(desired, 50);
+    let r3 = shrink(desired, 70);
+    // Two refused attempts inside one fast drift burst (readable facts, so
+    // the transient lane alone would expire 500ms after ms=1100).
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(r1))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r1), 1000)],
+            1000,
+            true,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(r2))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r2), 1100)],
+            1100,
+            true,
+        ),
+    );
+    // Still inside continuous observed change: every publish stays held.
+    // Every report drifts, so the transient lane re-arms on the changed
+    // pair (expiring outright past ms=1600): only the burst bound can hold.
+    for (seq, clock, frame) in [
+        (4u64, 1200u64, r3),
+        (5, 1300, r1),
+        (6, 1400, r2),
+        (7, 1500, r3),
+        (8, 1600, r1),
+        (9, 1700, r2),
+        (10, 1800, r3),
+    ] {
+        let reply = accepted(
+            &mut engine,
+            &report(
+                seq,
+                vec![fact("w1", Some(frame))],
+                vec![],
+                vec![],
+                clock,
+                true,
+            ),
+        );
+        assert!(is_hold(&reply, "w1"), "drift stays held at ms={clock}");
+    }
+    // A lost-ack redelivery of the consumed ms=1100 attempt is ignored and
+    // changes nothing: still held, still no new budget.
+    let redelivered = attempt("w1", desired, FrameSetter::Refused, Some(r2), 1100);
+    let replayed = accepted(
+        &mut engine,
+        &report(
+            11,
+            vec![fact("w1", Some(r1))],
+            vec![],
+            vec![redelivered],
+            1900,
+            true,
+        ),
+    );
+    assert!(is_hold(&replayed, "w1"), "stale redelivery stays held");
+}
+
+#[test]
+fn burst_quiet_stability_rearms() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let held = shrink(desired, 100);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(held),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(held),
+                1100,
+            )],
+            1100,
+            true,
+        ),
+    );
+    assert!(is_hold(&third, "w1"), "exhausted burst holds");
+    // Stable observation plus time past both lanes reopens the budget with
+    // no timer: the transient backoff (1000ms from ms=1100) has expired and
+    // the quiet gap (1000 -> 2200) rearms the burst.
+    let fourth = accepted(
+        &mut engine,
+        &report(4, vec![fact("w1", Some(held))], vec![], vec![], 2200, true),
+    );
+    assert_eq!(
+        frame_row(&fourth, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    // A fresh retry after rearm consumes a new budget cleanly.
+    let fifth = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(held),
+                2300,
+            )],
+            2300,
+            true,
+        ),
+    );
+    assert!(is_hold(&fifth, "w1"), "fresh retry re-suppresses");
+}
+
+#[test]
+fn burst_layout_target_change_rearms() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let sibling = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let r1 = shrink(desired, 100);
+    let r2 = shrink(desired, 50);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(r1)), fact("w2", Some(sibling))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r1), 1000)],
+            1000,
+            true,
+        ),
+    );
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(r2)), fact("w2", Some(sibling))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r2), 1100)],
+            1100,
+            true,
+        ),
+    );
+    assert!(is_hold(&third, "w1"), "exhausted burst holds");
+    // Closing the sibling regrows the w1 tile: a new desired target drops
+    // the old budget even though the observation never matched.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(r2))],
+            vec!["w2"],
+            vec![],
+            1200,
+            true,
+        ),
+    );
+    let row = frame_row(&fourth, "w1");
+    assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
+    assert_ne!(
+        row.effective_frame.expect("tiled"),
+        desired,
+        "sibling close regrows the tile"
+    );
+}
+
+#[test]
+fn burst_zero_clock_never_time_rearms() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let r1 = shrink(desired, 100);
+    let r2 = shrink(desired, 50);
+    let r3 = shrink(desired, 70);
+    // First attempt: budget opens (a transient never suppresses at now=0).
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(r1))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r1), 1000)],
+            0,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&second, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    // Second attempt exhausts the budget; with no clock the gate can never
+    // time-rearm, so every later publish holds fail-closed.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(r2))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r2), 1100)],
+            0,
+            true,
+        ),
+    );
+    assert!(is_hold(&third, "w1"), "zero clock holds after two attempts");
+    let fourth = accepted(
+        &mut engine,
+        &report(4, vec![fact("w1", Some(r3))], vec![], vec![], 0, true),
+    );
+    assert!(is_hold(&fourth, "w1"), "zero clock never reopens");
+}
+
+#[test]
+fn burst_stale_redelivery_does_not_consume_budget() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let r1 = shrink(desired, 100);
+    let r2 = shrink(desired, 50);
+    let r3 = shrink(desired, 70);
+    let old = attempt("w1", desired, FrameSetter::Refused, Some(r1), 1000);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(r1))],
+            vec![],
+            vec![old.clone()],
+            1000,
+            true,
+        ),
+    );
+    // Redelivering the consumed attempt while the frame drifts is stale: it
+    // must not spend budget, so the reply stays controlled (burst count is
+    // still one, transient pair changed).
+    let third = accepted(
+        &mut engine,
+        &report(3, vec![fact("w1", Some(r2))], vec![], vec![old], 1100, true),
+    );
+    assert_eq!(
+        frame_row(&third, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    // The second FRESH attempt exhausts the budget.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(r2))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r2), 1200)],
+            1200,
+            true,
+        ),
+    );
+    assert!(is_hold(&fourth, "w1"), "second fresh attempt holds");
+    // Drift continues inside the burst, past the transient backoff
+    // (500ms from ms=1200): the burst bound alone must hold. Had the stale
+    // redelivery consumed, the counts would differ but the visible proof is
+    // the controlled third report above plus this hold.
+    let fifth = accepted(
+        &mut engine,
+        &report(5, vec![fact("w1", Some(r3))], vec![], vec![], 1300, true),
+    );
+    assert!(
+        is_hold(&fifth, "w1"),
+        "drift holds after two fresh attempts"
+    );
+    let sixth = accepted(
+        &mut engine,
+        &report(6, vec![fact("w1", Some(r1))], vec![], vec![], 1750, true),
+    );
+    assert!(is_hold(&sixth, "w1"), "burst alone holds past transient");
+}
+
+#[test]
+fn burst_sibling_shares_unaffected() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let sibling = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let r1 = shrink(desired, 100);
+    let r2 = shrink(desired, 50);
+    let r3 = shrink(desired, 70);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(r1)), fact("w2", Some(sibling))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r1), 1000)],
+            1000,
+            true,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(r2)), fact("w2", Some(sibling))],
+            vec![],
+            vec![attempt("w1", desired, FrameSetter::Refused, Some(r2), 1100)],
+            1100,
+            true,
+        ),
+    );
+    // Keep w1 drifting in small steps so continuity never breaks, past the
+    // transient backoff: w1 stays held while the untouched sibling publishes
+    // controlled with a stable target.
+    for (seq, clock, frame) in [
+        (4u64, 1200u64, r3),
+        (5, 1300, r1),
+        (6, 1400, r2),
+        (7, 1500, r3),
+        (8, 1650, r1),
+    ] {
+        let reply = accepted(
+            &mut engine,
+            &report(
+                seq,
+                vec![fact("w1", Some(frame)), fact("w2", Some(sibling))],
+                vec![],
+                vec![],
+                clock,
+                true,
+            ),
+        );
+        assert!(is_hold(&reply, "w1"), "w1 stays held at ms={clock}");
+        assert_eq!(
+            frame_row(&reply, "w2").frame_authority,
+            ScopeAuthority::Controlled,
+            "sibling unaffected at ms={clock}"
+        );
+        assert_eq!(
+            frame_row(&reply, "w2").effective_frame.expect("tiled"),
+            sibling,
+            "sibling target stable at ms={clock}"
+        );
+    }
+}
+
+#[test]
+fn burst_close_prunes_budget() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(shrink(desired, 100)))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(shrink(desired, 100)),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(shrink(desired, 50)))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(shrink(desired, 50)),
+                1100,
+            )],
+            1100,
+            true,
+        ),
+    );
+    // Explicit close prunes the budget with the other frame maps.
+    accepted(
+        &mut engine,
+        &report(4, vec![], vec!["w1"], vec![], 1200, true),
+    );
+    // A returning lifetime with the same id starts with a clean budget.
+    let fifth = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            1300,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&fifth, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+}
+
+#[test]
+fn burst_float_attempts_never_acquire_tiled_budget() {
+    use crate::boundary::CoreCommand;
+    use crate::world_report::WorldCommand;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let target = rect(600, 400, 150, 120);
+    let mut floated = report(
+        2,
+        vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+        vec![],
+        vec![],
+        0,
+        true,
+    );
+    floated.command_seq = Some(9);
+    floated.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: "w1".to_owned(),
+        float_rect: Some(target),
+    }));
+    floated.request_id = "req-2".to_owned();
+    let placed = accepted(&mut engine, &floated);
+    assert!(frame_row(&placed, "w1").floating);
+    // Failed placements against a floating lifetime never enter the tiled
+    // burst budget, and the float path never consults it: the row keeps its
+    // retained target with untouched authority past every backoff.
+    let drifting = || {
+        let mut floating = fact("w1", Some(rect(10, 10, 150, 120)));
+        floating.floating = true;
+        floating
+    };
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![drifting()],
+            vec![],
+            vec![attempt(
+                "w1",
+                target,
+                FrameSetter::Refused,
+                Some(rect(0, 0, 40, 90)),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![drifting()],
+            vec![],
+            vec![attempt(
+                "w1",
+                target,
+                FrameSetter::Refused,
+                Some(rect(10, 10, 150, 120)),
+                1100,
+            )],
+            1100,
+            true,
+        ),
+    );
+    let fifth = accepted(
+        &mut engine,
+        &report(5, vec![drifting()], vec![], vec![], 2200, true),
+    );
+    let row = frame_row(&fifth, "w1");
+    assert!(row.floating);
+    assert_eq!(row.effective_frame, Some(target));
+    assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
+}
+
+#[test]
+fn burst_accepted_exact_readback_spends_budget() {
+    // Async accepted shape: the synchronous readback proves the write
+    // landed exactly at target while the later staged fact holds the
+    // app-pulled size. The accepted attempt spends burst budget like any
+    // other setter.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let held = shrink(desired, 100);
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Accepted,
+                Some(desired),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    let burst = engine
+        .frame_bursts
+        .get(&WindowId("w1".to_owned()))
+        .expect("accepted attempt spends budget");
+    assert_eq!(burst.attempts, 1);
+    assert_eq!(burst.desired, desired);
+    assert!(is_hold(&second, "w1"));
+    // A second accepted attempt in the same burst spends the last retry.
+    let drifted = shrink(desired, 50);
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(drifted))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Accepted,
+                Some(drifted),
+                1100,
+            )],
+            1100,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .frame_bursts
+            .get(&WindowId("w1".to_owned()))
+            .expect("budget retained")
+            .attempts,
+        2
+    );
+    assert!(is_hold(&third, "w1"));
+}
+
+#[test]
+fn burst_exact_echo_then_redrift_preserves_budget() {
+    // An exact target echo refreshes continuity without resetting the
+    // count; a fast redrift inside the burst preserves it too.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let key = WindowId("w1".to_owned());
+    let drifted = shrink(desired, 50);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(desired))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Accepted,
+                Some(desired),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .frame_bursts
+            .get(&key)
+            .expect("budget spent")
+            .attempts,
+        1
+    );
+    // Exact target echo with no attempt: controlled, count kept.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(desired))],
+            vec![],
+            vec![],
+            1100,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&third, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    let burst = engine.frame_bursts.get(&key).expect("echo keeps budget");
+    assert_eq!(burst.attempts, 1);
+    assert_eq!(burst.observed, desired);
+    // Fast redrift inside the burst: controlled, still no reset.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(drifted))],
+            vec![],
+            vec![],
+            1200,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&fourth, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert_eq!(
+        engine
+            .frame_bursts
+            .get(&key)
+            .expect("redrift keeps budget")
+            .attempts,
+        1
+    );
+    // The second fresh attempt spends the last retry and holds.
+    let fifth = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w1", Some(drifted))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(drifted),
+                1300,
+            )],
+            1300,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .frame_bursts
+            .get(&key)
+            .expect("budget spent")
+            .attempts,
+        2
+    );
+    assert!(is_hold(&fifth, "w1"));
+    // Even after exhaustion, an exact observation clears pair suppression
+    // without clearing the burst: another fast redrift remains held.
+    accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![fact("w1", Some(desired))],
+            vec![],
+            vec![],
+            1400,
+            true,
+        ),
+    );
+    let seventh = accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![fact("w1", Some(drifted))],
+            vec![],
+            vec![],
+            1500,
+            true,
+        ),
+    );
+    assert!(is_hold(&seventh, "w1"));
+}
+
+#[test]
+fn burst_observation_gap_never_manufactures_quiet() {
+    // Minimized then unreadable gaps break continuity (timestamp clears)
+    // without spending budget; resuming on a changed frame thousands of
+    // milliseconds later proves no quiet, so the count survives.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            0,
+            true,
+        ),
+    );
+    let desired = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let key = WindowId("w1".to_owned());
+    let held = shrink(desired, 100);
+    let drifted = shrink(desired, 50);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![attempt(
+                "w1",
+                desired,
+                FrameSetter::Refused,
+                Some(held),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .frame_bursts
+            .get(&key)
+            .expect("budget spent")
+            .attempts,
+        1
+    );
+    // Minimized gap with long elapsed time: continuity breaks, count kept.
+    accepted(
+        &mut engine,
+        &report(3, vec![minimized_fact("w1")], vec![], vec![], 6000, true),
+    );
+    let burst = engine.frame_bursts.get(&key).expect("gap keeps budget");
+    assert_eq!(burst.attempts, 1);
+    assert_eq!(burst.last_change_ms, 0);
+    // Unreadable gap, still later: still broken, still kept.
+    accepted(
+        &mut engine,
+        &report(4, vec![fact("w1", None)], vec![], vec![], 9000, true),
+    );
+    let burst = engine.frame_bursts.get(&key).expect("gap keeps budget");
+    assert_eq!(burst.attempts, 1);
+    assert_eq!(burst.last_change_ms, 0);
+    // Resume on a changed frame long after: no quiet can be proven across
+    // the gap, so no reset even though 9000ms elapsed.
+    let fifth = accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w1", Some(drifted))],
+            vec![],
+            vec![],
+            10000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&fifth, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert_eq!(
+        engine
+            .frame_bursts
+            .get(&key)
+            .expect("resume keeps budget")
+            .attempts,
+        1
+    );
+    // The next fresh attempt still spends the final retry.
+    let resumed = frame_row(&fifth, "w1").effective_frame.expect("tiled");
+    let sixth = accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![fact("w1", Some(drifted))],
+            vec![],
+            vec![attempt(
+                "w1",
+                resumed,
+                FrameSetter::Refused,
+                Some(drifted),
+                10100,
+            )],
+            10100,
+            true,
+        ),
+    );
+    assert!(is_hold(&sixth, "w1"));
+}

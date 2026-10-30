@@ -158,15 +158,15 @@ function makeHarness(initial: LiveSpec[]) {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -211,7 +211,7 @@ function makeHarness(initial: LiveSpec[]) {
             (globalThis as Record<string, unknown>)["__takeResult"] = result;
         }
         return JSON.stringify({
-            v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
+            v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
             ready: true, consumed: false,
             source,
             nativeInvalid,
@@ -229,7 +229,7 @@ function makeHarness(initial: LiveSpec[]) {
         const call = lastCall("DiscoverWorld");
         const body = JSON.parse(call.payload);
         call.callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
+            v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
             ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
             gestureSettled: null,
             operationSettled: [], nativeCreations: [],

@@ -1570,7 +1570,9 @@ mod tests {
 
     use tiler_core::gesture::{GestureIngress, GestureKind, GesturePhase};
     use tiler_core::world_engine::WorldOutcome;
-    use tiler_core::world_report::{NativeObservation, ScreenReport, WindowFact, WorldReport};
+    use tiler_core::world_report::{
+        NativeObservation, NativeOccupancy, ScreenReport, WindowFact, WorldReport,
+    };
 
     /// Offline world drag harness: one screen, two tiled windows on one
     /// native Space, and a retained [`WorldEngine`](tiler_core::world_engine::WorldEngine)
@@ -1666,6 +1668,10 @@ mod tests {
                     output: OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
                     current_native: Some("space-11".to_owned()),
+                    occupancy: vec![NativeOccupancy {
+                        native: "space-11".to_owned(),
+                        count: None,
+                    }],
                 }],
                 fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
                 migration_source_refill:

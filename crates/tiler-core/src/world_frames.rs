@@ -7,8 +7,8 @@
 //! clamp/suppress verdict, and a setter success alone never proves geometry
 //! completion: only an exact desired/observed match clears.
 //!
-//! Two suppression lanes plus one persistent floor, all keyed by exact
-//! window lifetime:
+//! Two suppression lanes, a persistent floor, and a burst budget, all keyed
+//! by exact window lifetime:
 //!
 //! - `clamp`: an accepted setter with readable proof whose later observation
 //!   still mismatches.
@@ -23,6 +23,14 @@
 //!   [`crate::world_model`]). A later stable eligible smaller observation
 //!   disproves the floor and clears that axis; unrelated higher changes
 //!   and exact arrivals never erase it.
+//! - `burst`: at most two consumed mechanical attempts per lifetime and
+//!   unchanged desired target inside a continuous observed frame-change
+//!   burst (the initial layout write counts). A >=500ms quiet gap in
+//!   observed frame changes or a desired target change re-arms; exact
+//!   target echoes never reset the count. Unreadable, minimized, or missing
+//!   facts break continuity without spending budget, and a zero clock never
+//!   time-rearms, so a resume from an observation gap can never reset the
+//!   count. Tiled rows only; the float token path never consults it.
 //!
 //! Evidence rules: unreadable evidence, minimized lifetimes, unknown
 //! lifetimes, and explicit closes record nothing. Unknown DPI on either
@@ -94,6 +102,26 @@ impl FrameMemory {
         }
         now_ms.saturating_sub(self.last_ms) < transient_backoff_ms(self.failures)
     }
+}
+
+/// Cap for consumed mechanical attempts per frame-change burst: the initial
+/// layout write plus one retry inside one continuous observed-change burst.
+pub(crate) const FRAME_BURST_MAX_ATTEMPTS: u32 = 2;
+/// Quiet gap in observed frame changes that re-arms the burst budget.
+pub(crate) const FRAME_BURST_QUIET_MS: u64 = 500;
+
+/// Per-lifetime burst budget: consumed mechanical attempts against one
+/// unchanged desired target inside a continuous observed frame-change
+/// burst. `observed`/`last_change_ms` track continuity only; exact target
+/// echoes refresh them without resetting `attempts`. A zero
+/// `last_change_ms` means broken continuity (observation gap or zero
+/// clock): it never proves quiet, so it never re-arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrameBurst {
+    pub(crate) desired: Rect,
+    pub(crate) attempts: u32,
+    pub(crate) observed: Rect,
+    pub(crate) last_change_ms: u64,
 }
 
 /// Resolve the observed key for one attempt: the current staged fact where
@@ -514,6 +542,87 @@ impl WorldEngine {
             }
         }
     }
+    /// Refresh burst continuity from the current staged facts before
+    /// consuming this report's attempts: eligible readable tiled rows only.
+    /// Identical observations change nothing; exact target echoes refresh
+    /// continuity without resetting the count; other changes reset the
+    /// count only on proven quiet (>=500ms between reliably observed
+    /// changes). Unreadable, minimized, or missing facts break continuity
+    /// (the timestamp clears) without spending budget, so a resume from an
+    /// observation gap can never time-reset the count.
+    fn update_burst_observations(&mut self, report: &WorldReport) {
+        let now_ms = report.monotonic_ms;
+        let windows: Vec<WindowId> = self.frame_bursts.keys().cloned().collect();
+        for window in windows {
+            let Some(current) = self.eligible_fact(report, &window) else {
+                if let Some(entry) = self.frame_bursts.get_mut(&window) {
+                    entry.last_change_ms = 0;
+                }
+                continue;
+            };
+            let Some(entry) = self.frame_bursts.get_mut(&window) else {
+                continue;
+            };
+            if current == entry.observed {
+                continue;
+            }
+            if current != entry.desired
+                && now_ms != 0
+                && entry.last_change_ms != 0
+                && now_ms.saturating_sub(entry.last_change_ms) >= FRAME_BURST_QUIET_MS
+            {
+                entry.attempts = 0;
+            }
+            entry.observed = current;
+            entry.last_change_ms = now_ms;
+        }
+    }
+
+    /// True when the tiled burst budget vetoes a frame write for this exact
+    /// desired target: two consumed attempts already spent inside the
+    /// current observed-change burst with no proven quiet gap since. No
+    /// entry, an unreadable observation, an exact desired/observed match, a
+    /// changed desired target (which drops the old budget), or fewer than
+    /// two attempts all permit; proven quiet re-arms the count without a
+    /// timer. Tiled rows only: the float token path never calls this.
+    /// Takes the burst map (not `self`) so the tiled publish loop can hold
+    /// its retained-session borrow across the call.
+    pub(crate) fn frame_burst_gate(
+        bursts: &mut std::collections::BTreeMap<WindowId, FrameBurst>,
+        window: &WindowId,
+        desired: &Rect,
+        observed: Option<Rect>,
+        now_ms: u64,
+    ) -> bool {
+        let Some(current) = observed else {
+            return false;
+        };
+        let Some(entry) = bursts.get(window) else {
+            return false;
+        };
+        if entry.desired != *desired {
+            bursts.remove(window);
+            return false;
+        }
+        if current == *desired {
+            return false;
+        }
+        if entry.attempts < FRAME_BURST_MAX_ATTEMPTS {
+            return false;
+        }
+        if now_ms != 0
+            && entry.last_change_ms != 0
+            && now_ms.saturating_sub(entry.last_change_ms) >= FRAME_BURST_QUIET_MS
+        {
+            if let Some(entry) = bursts.get_mut(window) {
+                entry.attempts = 0;
+                entry.last_change_ms = now_ms;
+            }
+            return false;
+        }
+        true
+    }
+
     /// Settle mechanical frame attempts against the staged observation:
     /// first drop floors disproven by fresh smaller evidence (prior
     /// watermark only), then consume attempts, learn new floors, and prune
@@ -534,6 +643,7 @@ impl WorldEngine {
         // reply. Filtering here must stay a subset decision (stale or
         // clockless); never consult post-loop state.
         self.invalidate_learned(report);
+        self.update_burst_observations(report);
         for attempt in &report.frames {
             let (fact_rect, minimized) = match self.staged.facts.get(&attempt.window) {
                 Some(fact) => (fact.rect, fact.minimized),
@@ -548,6 +658,29 @@ impl WorldEngine {
                 .is_some_and(|prior| is_stale_replay(prior, attempt))
             {
                 continue;
+            }
+            // Burst budget: every non-stale attempt on an eligible readable
+            // tiled row spends one attempt against the current desired
+            // target, whatever the setter or DPI basis. An unchanged target
+            // accumulates; a changed target opens a fresh budget. Ineligible
+            // rows (floats, overlays, unreadable facts, ...) never spend.
+            if let Some(current) = self.eligible_fact(report, &attempt.window) {
+                match self.frame_bursts.get_mut(&attempt.window) {
+                    Some(entry) if entry.desired == attempt.target => {
+                        entry.attempts = entry.attempts.saturating_add(1);
+                    }
+                    _ => {
+                        self.frame_bursts.insert(
+                            attempt.window.clone(),
+                            FrameBurst {
+                                desired: attempt.target,
+                                attempts: 1,
+                                observed: current,
+                                last_change_ms: report.monotonic_ms,
+                            },
+                        );
+                    }
+                }
             }
             // Learned minima ride the same fresh-evidence gate but persist:
             // only stable readable accepted growth at the requested origin
@@ -579,12 +712,14 @@ impl WorldEngine {
             self.frames.remove(id);
             self.consumed_frames.remove(id);
             self.learned_mins.remove(id);
+            self.frame_bursts.remove(id);
         }
         let doomed: Vec<WindowId> = self
             .frames
             .keys()
             .chain(self.consumed_frames.keys())
             .chain(self.learned_mins.keys())
+            .chain(self.frame_bursts.keys())
             .filter(|window| {
                 !self.staged.facts.contains_key(window) && !self.members.contains_key(window)
             })
@@ -594,6 +729,7 @@ impl WorldEngine {
             self.frames.remove(&window);
             self.consumed_frames.remove(&window);
             self.learned_mins.remove(&window);
+            self.frame_bursts.remove(&window);
         }
     }
 

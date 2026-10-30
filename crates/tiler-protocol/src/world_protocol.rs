@@ -26,7 +26,7 @@
 //!
 //! Request keys (object, all required):
 //! ```text
-//! {v:2, owner, adapter, gen, obs:"u64", reqSeq:"u64", req, cmdSeq:"u64"|null,
+//! {v:3, owner, adapter, gen, obs:"u64", reqSeq:"u64", req, cmdSeq:"u64"|null,
 //!  command:{op,...}|null, screens, windows, views, closed,
 //!  hostOwned:bool, equalCount:bool, native, predicate, refill,
 //!  defaultTiled:bool, focused:""|id, complete:bool, gesture:bool,
@@ -50,9 +50,12 @@
 //! views[]: {out, view:""|id} (empty means unknown)
 //! closed[]: [id...] (explicit closes)
 //! native[] (host-owned observations, requires hostOwned): {out, order:[id...],
-//!             current:id|null} (strict: null means the current surface is
-//!             not an ordered desktop and retains the logical view; empty
-//!             strings and missing keys refuse)
+//!             current:id|null, occupancy:[{native,count:int|null}...]} (strict:
+//!             null means the current surface is not an ordered desktop and
+//!             retains the logical view; occupancy covers exactly each order
+//!             id: count is the neutral all-window occupant total for that
+//!             desktop, null is explicit unknown and never an inferred zero;
+//!             empty strings and missing keys refuse)
 //! predicate: "both-axes-fixed"|"either-axis-fixed"
 //! refill: "last-remaining-workspace"|"most-recently-used-workspace"
 //! anchorFallback: "largest-splittable-window"|"closest-splittable-relative"|"no-search"
@@ -167,7 +170,7 @@
 //! `underlay` found/hidden shape, `pager` content).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and
 //! empty sections. Bounded errors reuse
-//! `{v:2,outcome:"rejected",kind,message,gen}`.
+//! `{v:3,outcome:"rejected",kind,message,gen}`.
 
 use tiler_core::boundary::CoreCommand;
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
@@ -235,7 +238,7 @@ fn unknown_value() -> WorldProtocolError {
 #[must_use]
 pub fn encode_error(kind: &str, message: &str, core_generation: &str) -> String {
     let mut out = String::new();
-    out.push_str("{\"v\":2,\"outcome\":\"rejected\",\"kind\":");
+    out.push_str("{\"v\":3,\"outcome\":\"rejected\",\"kind\":");
     push_json_string(&mut out, kind);
     out.push_str(",\"message\":");
     push_json_string(&mut out, message);
@@ -656,7 +659,7 @@ fn decode_view(value: &serde_json::Value) -> Result<ScreenView> {
 
 fn decode_native(value: &serde_json::Value) -> Result<NativeObservation> {
     let map = as_object(value)?;
-    check_keys(map, &["out", "order", "current"])?;
+    check_keys(map, &["out", "order", "current", "occupancy"])?;
     let order_value = map.get("order").ok_or_else(malformed)?;
     let order_items = order_value.as_array().ok_or_else(malformed)?;
     let mut order = Vec::with_capacity(order_items.len());
@@ -682,10 +685,48 @@ fn decode_native(value: &serde_json::Value) -> Result<NativeObservation> {
         }
         Some(_) => return Err(unknown_value()),
     };
+    // v3 required neutral occupancy: `[{native, count:int|null}...]`.
+    // Shape-checked here (opaque id, u32 JSON number or null, no
+    // tolerance); exact coverage of `order` is enforced by core
+    // validation (`native-occupancy-incomplete`, `duplicate-native-occupancy`).
+    let occupancy_value = map.get("occupancy").ok_or_else(malformed)?;
+    let occupancy_items = occupancy_value.as_array().ok_or_else(malformed)?;
+    let mut occupancy = Vec::with_capacity(occupancy_items.len());
+    for item in occupancy_items {
+        let row = as_object(item)?;
+        check_keys(row, &["native", "count"])?;
+        let native_id = match row.get("native") {
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                text.clone()
+            }
+            _ => return Err(malformed()),
+        };
+        let count = match row.get("count") {
+            None => return Err(malformed()),
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Number(number)) => {
+                let count = number.as_u64().ok_or_else(unknown_value)?;
+                let count = u32::try_from(count).map_err(|_| unknown_value())?;
+                if count > tiler_core::world_report::MAX_NATIVE_OCCUPANTS_PER_DESKTOP {
+                    return Err(unknown_value());
+                }
+                Some(count)
+            }
+            Some(_) => return Err(unknown_value()),
+        };
+        occupancy.push(tiler_core::world_report::NativeOccupancy {
+            native: native_id,
+            count,
+        });
+    }
     Ok(NativeObservation {
         output: OutputId(req_id(map, "out")?),
         native_order: order,
         current_native,
+        occupancy,
     })
 }
 

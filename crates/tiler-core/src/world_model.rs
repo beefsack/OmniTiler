@@ -157,6 +157,7 @@ impl WorldEngine {
                 }
             }
         } else {
+            let mut plans = BTreeMap::new();
             for output in &live {
                 let complete = report
                     .screens
@@ -190,6 +191,29 @@ impl WorldEngine {
                     })
                     .collect();
                 let plan = plan_trailing(&facts);
+                plans.insert(output.clone(), (ring, plan));
+            }
+            if report.host_owned_workspace_domains && report.equal_workspace_count {
+                // Partial native retirement readback must not replace an old
+                // logical identity with freshly minted equal-count padding.
+                let floor = live
+                    .iter()
+                    .filter_map(|output| {
+                        let ring = self.mapping.get(output)?;
+                        Some(plans.get(output).map_or(ring.len(), |(_, plan)| {
+                            ring.len() - plan.remove.len() + usize::from(plan.need_append)
+                        }))
+                    })
+                    .max()
+                    .unwrap_or(0);
+                for (ring, plan) in plans.values_mut() {
+                    let budget = (ring.len() + usize::from(plan.need_append)).saturating_sub(floor);
+                    if plan.remove.len() > budget {
+                        plan.remove.drain(..plan.remove.len() - budget);
+                    }
+                }
+            }
+            for (output, (ring, plan)) in plans {
                 let remove: BTreeSet<usize> = plan.remove.into_iter().collect();
                 if !remove.is_empty() {
                     let mut kept: Vec<String> = Vec::new();

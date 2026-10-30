@@ -32,7 +32,7 @@ fn window_json(id: &str, rect: &str) -> String {
 
 fn inner_report(windows: &[String]) -> String {
     format!(
-        "{{\"v\":2,\"mode\":\"per-output-local\",\
+        "{{\"v\":3,\"mode\":\"per-output-local\",\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}}],\
           \"windows\":[{}],\"views\":[{{\"out\":\"DP-1\",\"view\":\"\"}}],\"closed\":[],\
@@ -81,7 +81,7 @@ fn capture(service: &WorldService, generation: &str, seq: u64, inner: &str) -> s
 
 fn capture_envelope_text(generation: &str, seq: u64, inner: &str) -> String {
     format!(
-        "{{\"v\":2,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
+        "{{\"v\":3,\"adapter\":\"{ADAPTER}\",\"gen\":\"{generation}\",\
           \"source\":\"src-{seq}-t\",\"sourceSeq\":\"{seq}\",\
           \"nativeInvalid\":\"{seq}\",\"report\":{inner}}}"
     )
@@ -170,7 +170,7 @@ fn discover(service: &WorldService) -> String {
 fn preview_of(service: &WorldService, req: &str) -> serde_json::Value {
     serde_json::from_str(
         &service
-            .read_presentation(&format!("{{\"v\":2,\"req\":\"{req}\"}}"))
+            .read_presentation(&format!("{{\"v\":3,\"req\":\"{req}\"}}"))
             .expect("in-band"),
     )
     .expect("valid JSON")
@@ -603,7 +603,7 @@ fn broker_carries_native_lifecycle_without_second_lifecycle() {
     assert_eq!(parse(&replied)["outcome"], serde_json::Value::Null);
     let projection: serde_json::Value = serde_json::from_str(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"read-1\"}")
+            .read_presentation("{\"v\":3,\"req\":\"read-1\"}")
             .expect("in-band"),
     )
     .expect("valid JSON");
@@ -639,7 +639,7 @@ fn broker_carries_native_lifecycle_without_second_lifecycle() {
     let _ = capture(&service, &generation, 2, &held);
     let projection: serde_json::Value = serde_json::from_str(
         &service
-            .read_presentation("{\"v\":2,\"req\":\"read-2\"}")
+            .read_presentation("{\"v\":3,\"req\":\"read-2\"}")
             .expect("in-band"),
     )
     .expect("valid JSON");

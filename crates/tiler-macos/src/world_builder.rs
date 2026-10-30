@@ -63,8 +63,8 @@ use tiler_core::size_hints::FixedSizePredicate;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_report::{
     ClearAttempt, FrameAttempt, HoldReason, MemberAttempt, NativeCreationAttempt,
-    NativeObservation, ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
-    WorldReport,
+    NativeObservation, NativeOccupancy, ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION,
+    WindowFact, WorldCommand, WorldReport,
 };
 
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, collect_window_facts, minimized_fact};
@@ -526,6 +526,19 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReport {
             // unknown): retains the logical view while using the order,
             // never adopted and never a move.
             current_native: current_native.get(output).cloned(),
+            // Explicit unknown occupancy: the neutral count lane is not
+            // yet populated from an all-native-window roster; it cannot
+            // prove an empty desktop and is never fabricated as zero.
+            occupancy: native_order
+                .get(output)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|native| NativeOccupancy {
+                    native,
+                    count: None,
+                })
+                .collect(),
         })
         .collect();
 

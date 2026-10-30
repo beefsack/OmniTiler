@@ -80,7 +80,6 @@ describe("world entry probe compile-time stripping", () => {
     function assertNoProbe(bundle: string, label: string): void {
         assert.ok(!bundle.includes("omnitiler:world:trace"), `${label} bundle must not emit probe lines`);
         assert.ok(!bundle.includes("__OMNITILER_TRACE__"), `${label} bundle must fold the trace define away`);
-        assert.ok(!bundle.includes("frameGeometryChanged"), `${label} bundle must not carry the probe-only subscription`);
         // Every gated use site folds away with the construction branch, so
         // no probe method or state identifier can survive: these names
         // occur nowhere in production code.
@@ -103,12 +102,21 @@ describe("world entry probe compile-time stripping", () => {
         }
     }
 
+    // The persistent production frame invalidation listener is not probe
+    // code: ordinary and installed bundles must retain the
+    // frameGeometryChanged subscription while carrying none of the
+    // trace-only one-shot identifiers above.
+    function assertProductionFrameSubscription(bundle: string, label: string): void {
+        assert.ok(bundle.includes("frameGeometryChanged"), `${label} bundle must retain the production frame invalidation subscription`);
+        assertNoProbe(bundle, label);
+    }
+
     it("ships no probe code in ordinary bundles", () => {
-        assertNoProbe(bundleEntry("ordinary"), "ordinary");
+        assertProductionFrameSubscription(bundleEntry("ordinary"), "ordinary");
     });
 
     it("ships no probe code in installed bundles", () => {
-        assertNoProbe(bundleEntry("installed"), "installed");
+        assertProductionFrameSubscription(bundleEntry("installed"), "installed");
     });
 
     it("keeps the probe in trace bundles", () => {

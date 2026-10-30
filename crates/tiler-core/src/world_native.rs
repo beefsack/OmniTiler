@@ -9,7 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::directional::OutputId;
+use crate::directional::{OutputId, WorkspaceId};
+use crate::session::DomainKey;
+use crate::workspace::MIN_WORKSPACES;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{WindowFact, WorldReport};
 
@@ -312,6 +314,368 @@ impl WorldEngine {
         let live: BTreeSet<String> = order.into_iter().collect();
         self.native_map
             .retain(|(out, native), _| out != output || live.contains(native));
+    }
+
+    /// Global native-retirement deletion set: `(output, logical)` rows
+    /// whose native desktop reads completely empty and may publish
+    /// `existence:false`. Join key is the native desktop id across all
+    /// modes, collected as the UNION of the complete per-output orders:
+    /// independent per-output native lists retire independently. A
+    /// candidate joins only its observing projections (outputs whose
+    /// complete order contains it); absence on another complete output is
+    /// not a veto. A missing native observation row, an incomplete screen,
+    /// or inexact occupancy coverage on any live output keeps everything
+    /// unknown (no deletions at all). Every observing projection must read
+    /// `Some(0)`, hold a live `(output, native)` binding into a ringed
+    /// logical (unmapped vetoes: no unmanaged removal), and clear every
+    /// guard; the same global native id never deletes when any observing
+    /// projection vetoes. Shared mirrored rows (one logical ringed on
+    /// several outputs) additionally clear view/trailing/homing/protection
+    /// guards on every output ringing the logical, including outputs that
+    /// do not observe the candidate native. Guards also cover retained
+    /// transfer sources/refills, staged unreadable/held domains, and the
+    /// gesture barrier: no held scope authorizes deletion. The native
+    /// minimum-two floor counts bound rows only (logical spares never
+    /// prove it) alongside an explicit logical minimum-two; while removal
+    /// would drop an output below a floor the earliest canonical-order
+    /// groups are spared first, preferring groups exclusive to
+    /// over-reduced outputs so globally joined deletions survive local
+    /// excess. With `equal_workspace_count` the surviving groups must
+    /// leave every output's logical count equal: one-sided rows that would
+    /// force padding delete/replace stay, while disjoint balanced groups
+    /// retire jointly; without the flag one-sided natives retire on their
+    /// own floor. Pure read of mapping/native_map/current and staged
+    /// homing/domain holds; no ring or binding mutation (prune plus the
+    /// trailing lifecycle settle the row only after complete absence).
+    pub(crate) fn retirement_deletion_set(
+        &self,
+        report: &WorldReport,
+    ) -> BTreeSet<(String, String)> {
+        let mut doomed: BTreeSet<(String, String)> = BTreeSet::new();
+        if !report.host_owned_workspace_domains || !report.inventory_complete {
+            return doomed;
+        }
+        if report.gesture_barrier || self.staged.gesture_barrier {
+            return doomed;
+        }
+        if self.native_order_conflict(report) {
+            return doomed;
+        }
+        let mut live: Vec<String> = report
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        live.sort();
+        if live.is_empty() {
+            return doomed;
+        }
+        let mut orders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut counts: BTreeMap<String, BTreeMap<String, Option<u32>>> = BTreeMap::new();
+        for output in &live {
+            if !self.native_list_complete(report, output) {
+                return doomed;
+            }
+            let Some(entry) = report.native.iter().find(|entry| entry.output.0 == *output) else {
+                return doomed;
+            };
+            if entry.occupancy.len() != entry.native_order.len() {
+                return doomed;
+            }
+            let mut keyed: BTreeMap<String, Option<u32>> = BTreeMap::new();
+            for row in &entry.occupancy {
+                if keyed.insert(row.native.clone(), row.count).is_some() {
+                    return doomed;
+                }
+            }
+            if entry.native_order.iter().any(|id| !keyed.contains_key(id)) {
+                return doomed;
+            }
+            orders.insert(output.clone(), entry.native_order.clone());
+            counts.insert(output.clone(), keyed);
+        }
+        // Canonical union order: the first output's order, then natives
+        // unique to later outputs in (output, position) order.
+        let mut canonical: Vec<String> = Vec::new();
+        for output in &live {
+            for id in orders.get(output).cloned().unwrap_or_default() {
+                if !canonical.contains(&id) {
+                    canonical.push(id);
+                }
+            }
+        }
+        // Eligible groups: one native plus its observing projections.
+        let mut groups: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        'candidate: for native in &canonical {
+            let mut projections: Vec<(String, String)> = Vec::new();
+            for output in &live {
+                if !orders
+                    .get(output)
+                    .is_some_and(|order| order.contains(native))
+                {
+                    continue;
+                }
+                if !counts
+                    .get(output)
+                    .and_then(|keyed| keyed.get(native))
+                    .is_some_and(|count| *count == Some(0))
+                {
+                    continue 'candidate;
+                }
+                let Some(logical) = self
+                    .native_map
+                    .get(&(output.clone(), native.clone()))
+                    .cloned()
+                else {
+                    continue 'candidate;
+                };
+                if !self
+                    .mapping
+                    .get(output)
+                    .is_some_and(|ring| ring.contains(&logical))
+                {
+                    continue 'candidate;
+                }
+                if !self.retirement_guards(report, output, &logical) {
+                    continue 'candidate;
+                }
+                projections.push((output.clone(), logical));
+            }
+            if projections.is_empty() {
+                continue;
+            }
+            for (_, logical) in &projections {
+                for output in &live {
+                    if projections.iter().any(|(out, _)| out == output) {
+                        continue;
+                    }
+                    if self
+                        .mapping
+                        .get(output)
+                        .is_some_and(|ring| ring.contains(logical))
+                        && !self.retirement_guards(report, output, logical)
+                    {
+                        continue 'candidate;
+                    }
+                }
+            }
+            groups.push((native.clone(), projections));
+        }
+        let ring_len = |output: &str| self.mapping.get(output).map(Vec::len).unwrap_or(0);
+        let bound_len = |output: &str| {
+            self.mapping
+                .get(output)
+                .map(|ring| {
+                    ring.iter()
+                        .filter(|id| self.native_binding_for(output, id).is_some())
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let removed_on = |kept: &[bool], output: &str| {
+            groups
+                .iter()
+                .zip(kept.iter())
+                .filter(|(_, keep)| **keep)
+                .filter(|((_, rows), _)| rows.iter().any(|(out, _)| out == output))
+                .count()
+        };
+        let logical_rows: Vec<Vec<(String, String)>> = groups
+            .iter()
+            .map(|(_, rows)| {
+                live.iter()
+                    .flat_map(|output| {
+                        self.mapping
+                            .get(output)
+                            .into_iter()
+                            .flatten()
+                            .filter(|id| rows.iter().any(|(_, logical)| logical == *id))
+                            .map(|id| (output.clone(), id.clone()))
+                    })
+                    .collect()
+            })
+            .collect();
+        let logical_removed_on = |kept: &[bool], output: &str| {
+            logical_rows
+                .iter()
+                .zip(kept.iter())
+                .filter(|(_, keep)| **keep)
+                .flat_map(|(rows, _)| rows.iter())
+                .filter(|(out, _)| out == output)
+                .map(|(_, logical)| logical)
+                .collect::<BTreeSet<_>>()
+                .len()
+        };
+        let mut kept = vec![true; groups.len()];
+        // Floors first (dropping groups only ever helps floors).
+        loop {
+            let over: Vec<String> = live
+                .iter()
+                .filter(|output| {
+                    removed_on(&kept, output) > bound_len(output).saturating_sub(MIN_WORKSPACES)
+                        || logical_removed_on(&kept, output)
+                            > ring_len(output).saturating_sub(MIN_WORKSPACES)
+                })
+                .cloned()
+                .collect();
+            if over.is_empty() {
+                break;
+            }
+            let touches_over =
+                |rows: &[(String, String)]| rows.iter().any(|(out, _)| over.contains(out));
+            let exclusive_over = |rows: &[(String, String)]| {
+                touches_over(rows) && rows.iter().all(|(out, _)| over.contains(out))
+            };
+            let drop_index = groups
+                .iter()
+                .zip(kept.iter())
+                .enumerate()
+                .filter(|(_, (_, kept))| **kept)
+                .filter(|(_, ((_, rows), _))| exclusive_over(rows))
+                .map(|(index, _)| index)
+                .next()
+                .or_else(|| {
+                    groups
+                        .iter()
+                        .zip(kept.iter())
+                        .enumerate()
+                        .filter(|(_, (_, kept))| **kept)
+                        .filter(|(_, ((_, rows), _))| touches_over(rows))
+                        .map(|(index, _)| index)
+                        .next()
+                });
+            match drop_index {
+                Some(index) => kept[index] = false,
+                None => break,
+            }
+        }
+        // Equal-count padding: surviving removals must leave every
+        // output's logical count equal.
+        if report.equal_workspace_count {
+            loop {
+                if !kept.contains(&true) {
+                    break;
+                }
+                let finals: BTreeMap<String, usize> = live
+                    .iter()
+                    .map(|output| {
+                        (
+                            output.clone(),
+                            ring_len(output).saturating_sub(logical_removed_on(&kept, output)),
+                        )
+                    })
+                    .collect();
+                let top = finals.values().copied().max().unwrap_or(0);
+                if finals.values().all(|final_| *final_ == top) {
+                    break;
+                }
+                let below: Vec<String> = finals
+                    .iter()
+                    .filter(|(_, final_)| **final_ < top)
+                    .map(|(output, _)| output.clone())
+                    .collect();
+                let touches_below =
+                    |rows: &[(String, String)]| rows.iter().any(|(out, _)| below.contains(out));
+                let exclusive_below = |rows: &[(String, String)]| {
+                    touches_below(rows) && rows.iter().all(|(out, _)| below.contains(out))
+                };
+                let drop_index = logical_rows
+                    .iter()
+                    .zip(kept.iter())
+                    .enumerate()
+                    .filter(|(_, (_, kept))| **kept)
+                    .filter(|(_, (rows, _))| exclusive_below(rows))
+                    .map(|(index, _)| index)
+                    .next()
+                    .or_else(|| {
+                        logical_rows
+                            .iter()
+                            .zip(kept.iter())
+                            .enumerate()
+                            .filter(|(_, (_, kept))| **kept)
+                            .filter(|(_, (rows, _))| touches_below(rows))
+                            .map(|(index, _)| index)
+                            .next()
+                    });
+                match drop_index {
+                    Some(index) => kept[index] = false,
+                    None => {
+                        kept.fill(false);
+                        break;
+                    }
+                }
+            }
+        }
+        for ((_, rows), keep) in groups.into_iter().zip(kept.iter()) {
+            if *keep {
+                doomed.extend(rows);
+            }
+        }
+        doomed
+    }
+
+    /// Per-projection retirement guards for one `(output, logical)` row:
+    /// unviewed (adapter echo wins, so a known raw current vetoes even
+    /// when a command moved the desired view), untrailing, unhomed,
+    /// no retained flight/source/refill, no retained creation, no pending
+    /// source release, no displaced hosting, no creation hold, and a
+    /// readable unheld staged domain. True when the row is clear.
+    fn retirement_guards(&self, report: &WorldReport, output: &str, logical: &str) -> bool {
+        if self.effective_view(&OutputId(output.to_owned())).as_deref() == Some(logical) {
+            return false;
+        }
+        if self.trailing_marked_id(report, output).as_deref() == Some(logical) {
+            return false;
+        }
+        let homed = DomainKey {
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(logical.to_owned()),
+        };
+        if self.staged.homing.values().any(|key| key == &homed) {
+            return false;
+        }
+        if self
+            .retained
+            .iter()
+            .any(|retained| retained.target.target_workspace == logical)
+        {
+            return false;
+        }
+        if self.retained.iter().any(|retained| {
+            (!retained.source_workspace.is_empty() && retained.source_workspace == logical)
+                || retained.migration_refill.as_deref() == Some(logical)
+        }) {
+            return false;
+        }
+        if self
+            .retained_creations
+            .iter()
+            .any(|retained| retained.logical_workspace == logical)
+        {
+            return false;
+        }
+        if self
+            .pending_source_releases
+            .iter()
+            .any(|(out, workspace)| out == output && workspace == logical)
+        {
+            return false;
+        }
+        if self
+            .displaced
+            .values()
+            .any(|entry| entry.workspaces.iter().any(|id| id == logical))
+        {
+            return false;
+        }
+        if self.creation_hold_for(report, output, logical) {
+            return false;
+        }
+        self.staged
+            .domains
+            .iter()
+            .find(|domain| domain.key == homed)
+            .is_some_and(|domain| domain.readable && domain.hold.is_none())
     }
 
     /// Exact-correlated raw creation attempt for one retained op (op plus

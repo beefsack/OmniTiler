@@ -6,7 +6,7 @@
 // digit arrays. `.length` is an exact byte count only for validated ASCII
 // payloads; utf8ByteLength measures actual UTF-8 bytes for the 4 MiB gates.
 
-export const WORLD_CONTRACT_VERSION = 2;
+export const WORLD_CONTRACT_VERSION = 3;
 export const WORLD_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 export const WORLD_MAX_REPLY_BYTES = 4 * 1024 * 1024;
 export const WORLD_MAX_ID_LEN = 128;

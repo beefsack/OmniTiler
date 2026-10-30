@@ -255,15 +255,15 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                 }
             }
         },
@@ -310,7 +310,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
 }
 
 const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
+    v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
     windows: [], transfers: [], effects: [], result: null,
     gestureSettled: null,  operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -333,7 +333,7 @@ function discover(h: Harness, gen = "gen-1"): void {
 
 function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
+        v: 3, adapter: "broker-1", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -375,7 +375,7 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req = requestOf(h);
-        assert.equal(req["v"], 2);
+        assert.equal(req["v"], 3);
         assert.equal(req["gen"], "gen-1");
         const inner = req["report"] as Record<string, unknown>;
         assert.equal(inner["mode"], "per-output-local");
@@ -590,7 +590,7 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const callsBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 2, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            v: 3, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
             source: "", nativeInvalid: "0", clock: "0",
         }));
         // A fresh discovery goes out; the dropped command is NOT redispatched
@@ -1003,7 +1003,7 @@ describe("world entry rapid directional FIFO", () => {
         // Core busy: the filed head ends without replay.
         h.handle?.requestFocus("right");
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 2, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            v: 3, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
             source: "", nativeInvalid: "0", clock: "0",
         }));
         // No native event and no new press: the terminal failure alone
@@ -1069,7 +1069,7 @@ describe("world entry rapid directional FIFO", () => {
         // Poison while one head flies and two tails wait: the whole queue
         // belongs to the dead generation.
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 2, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            v: 3, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
             source: "", nativeInvalid: "0", clock: "0",
         }));
         assert.ok(h.logs.some((l) => l.includes("queue-dropped reason=generation-mismatch depth=2")));
@@ -1209,8 +1209,8 @@ describe("world entry aligned bindings", () => {
             { out: "out-2", view: "" },
         ]);
         assert.deepEqual(second["native"], [
-            { out: "out", order: ["ws1", "ws2"], current: "ws1" },
-            { out: "out-2", order: ["ws1", "ws2"], current: "ws1" },
+            { out: "out", order: ["ws1", "ws2"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 1 }] },
+            { out: "out-2", order: ["ws1", "ws2"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 1 }] },
         ]);
     });
 
@@ -1235,7 +1235,7 @@ describe("world entry aligned bindings", () => {
         // Shared is unchanged: one native order/current row, and the
         // logical binding stays core-owned with the views lane empty.
         assert.deepEqual(second["views"], [{ out: "out", view: "" }]);
-        assert.deepEqual(second["native"], [{ out: "out", order: ["ws1", "ws2"], current: "ws1" }]);
+        assert.deepEqual(second["native"], [{ out: "out", order: ["ws1", "ws2"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 1 }] }]);
     });
 });
 
@@ -1352,10 +1352,10 @@ describe("world entry all-mode native coverage", () => {
                 calls.push({ method, payload, callback });
                 if (method === "QueueWorldCommand") {
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                         client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
                 } else if (method === "TakeCommandResult") {
-                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                 }
             },
             scheduleOnce: (delay, cb) => {
@@ -1431,8 +1431,8 @@ describe("world entry all-mode native coverage", () => {
             // The global native desktop list projects per output with an
             // independent current each; every order has the same length.
             assert.deepEqual(report["native"], [
-                { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws1" },
-                { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws4" },
+                { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws1", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
+                { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws4", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
             ]);
             assert.equal(report["equalCount"], true);
             assert.equal(report["hostOwned"], true);
@@ -1465,6 +1465,7 @@ describe("world entry all-mode native coverage", () => {
         assert.equal(report["mode"], "shared");
         assert.deepEqual((report["native"] as Array<Record<string, unknown>>)[1], {
             out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws4",
+            occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }],
         });
         assert.equal(report["equalCount"], true);
         const wins = report["windows"] as Array<Record<string, unknown>>;
@@ -1484,8 +1485,8 @@ describe("world entry all-mode native coverage", () => {
             assert.equal(report["mode"], "shared");
             // The shared currentDesktop is current on every output.
             assert.deepEqual(report["native"], [
-                { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2" },
-                { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2" },
+                { out: "out-A", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
+                { out: "out-B", order: ["ws1", "ws2", "ws3", "ws4"], current: "ws2", occupancy: [{ native: "ws1", count: 1 }, { native: "ws2", count: 0 }, { native: "ws3", count: 0 }, { native: "ws4", count: 1 }] },
             ]);
             assert.equal(report["equalCount"], true);
             h.handle?.stop();
@@ -2640,7 +2641,7 @@ describe("world entry float-intent reconcile controls", () => {
                 if (method === "QueueWorldCommand") {
                     calls.push({ method, payload, callback });
                     const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                         client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
                     return;
                 }
@@ -2649,9 +2650,9 @@ describe("world entry float-intent reconcile controls", () => {
                     const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                     if (stagedTake !== undefined) {
                         delete (globalThis as Record<string, unknown>)["__takeResult"];
-                        callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                        callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                     } else {
-                        callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                        callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                     }
                     return;
                 }
@@ -2833,8 +2834,10 @@ describe("world entry trace probe", () => {
     }
 
     // A live window arriving after bind, instrumented exactly like the
-    // harness natives plus a fake frameGeometryChanged signal for the
-    // probe-only one-shot. setFrameRaw moves the live frame without
+    // harness natives plus a fake frameGeometryChanged signal. The signal
+    // serves the persistent production homing listener (attached on
+    // windowAdded) and, on trace-enabled builds, the probe-only one-shot
+    // armed per requested write. setFrameRaw moves the live frame without
     // recording a production geometry write.
     function addTracedWindow(h: Harness, id: string): TracedWindow {
         const home = h.world.desktops[0] as FakeDesktop;
@@ -2929,9 +2932,9 @@ describe("world entry trace probe", () => {
             assert.match(line, / t=\d+/);
         }
         assert.match(lines[lines.length - 1] as string, /req=10,10,300,300 seen=10,10,300,300 match=1/);
-        // The one-shot detaches on first fire: no second observed line and
-        // no surviving handler.
-        assert.equal(added.frameChanged.handlers.length, 0);
+        // The one-shot detaches on first fire: no second observed line.
+        // The persistent production homing listener remains.
+        assert.equal(added.frameChanged.handlers.length, 1);
         const count = traceLines(h, "win-c").length;
         fireFrameChanged(added);
         assert.equal(traceLines(h, "win-c").length, count);
@@ -3026,8 +3029,8 @@ describe("world entry trace probe", () => {
             traceEvs(traceLines(h, "win-d")),
             ["added", "debounce-fire", "send", "reply", "write", "debounce-start", "observed"],
         );
-        assert.equal(first.frameChanged.handlers.length, 0);
-        assert.equal(second.frameChanged.handlers.length, 0);
+        assert.equal(first.frameChanged.handlers.length, 1, "one-shot detached, persistent production listener remains");
+        assert.equal(second.frameChanged.handlers.length, 1, "one-shot detached, persistent production listener remains");
         assert.deepEqual(
             h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
             ["win-c@10,10,300,300"],
@@ -3101,9 +3104,9 @@ describe("world entry trace probe", () => {
         const pending = addTracedWindow(stopped, "win-e");
         fireWindowAdded(stopped, pending.ref);
         replyWithFrame(stopped, "1", "win-e", ws.id, [30, 30, 120, 120]);
-        assert.equal(pending.frameChanged.handlers.length, 1);
+        assert.equal(pending.frameChanged.handlers.length, 2, "persistent production listener plus the armed trace one-shot");
         stopped.handle?.stop();
-        assert.equal(pending.frameChanged.handlers.length, 0);
+        assert.equal(pending.frameChanged.handlers.length, 0, "stop detaches the persistent listener and the trace one-shot");
         fireFrameChanged(pending);
         assert.ok(!traceLines(stopped, "win-e").some((l) => l.includes("ev=observed")), "no observation after stop");
     });
@@ -3170,11 +3173,11 @@ describe("world entry trace probe", () => {
         const frameHandlers = added.frameChanged.handlers.length;
         fireFrameChanged(added);
         flushQuietCycle(h, "2");
-        assert.equal(added.frameChanged.handlers.length, 0);
+        assert.equal(added.frameChanged.handlers.length, 1, "one-shot detached, persistent production listener remains");
         return { h, frameHandlers };
     }
 
-    it("trace-off bundle matches direct production behavior with no probe lines or frame listener", () => {
+    it("trace-off bundle matches direct production behavior with probe lines stripped and only the persistent frame listener", () => {
         const direct = runBundledAdmission(startWorldAdapterEntry);
         const off = runBundledAdmission(loadBundledEntry(false));
         direct.h.handle?.stop();
@@ -3183,8 +3186,8 @@ describe("world entry trace probe", () => {
         assert.deepEqual(traceEvs(traceLines(direct.h, "win-c")), ADMISSION_EVS);
         assert.equal(traceLines(off.h, "win-c").length, 0);
         assert.ok(!off.h.logs.some((l) => l.includes("omnitiler:world:trace")), "trace-off emits no probe lines");
-        assert.equal(off.frameHandlers, 0, "trace-off attaches no frame listener");
-        assert.equal(direct.frameHandlers, 1, "direct trace-enabled attaches the one-shot");
+        assert.equal(off.frameHandlers, 1, "trace-off keeps only the persistent production frame listener");
+        assert.equal(direct.frameHandlers, 2, "direct trace-enabled arms the one-shot beside the persistent listener");
         assert.deepEqual(
             off.h.world.geometryWrites.filter((w) => w.startsWith("win-c@")),
             ["win-c@10,10,300,300"],
@@ -3202,7 +3205,7 @@ describe("world entry trace probe", () => {
             traceLines(on.h, "win-c").map(normText),
             traceLines(direct.h, "win-c").map(normText),
         );
-        assert.equal(on.frameHandlers, 1, "trace-on attaches exactly the one-shot frame listener");
+        assert.equal(on.frameHandlers, 2, "trace-on keeps the persistent listener plus exactly one one-shot frame listener");
     });
 
     it("trace-on probe log failure never perturbs the production geometry write", () => {
@@ -3235,7 +3238,7 @@ describe("world entry trace probe", () => {
             [],
         );
         assert.ok(traceEvs(traceLines(h, "win-c")).includes("write"), "attempted write is still logged");
-        assert.equal(added.frameChanged.handlers.length, 0, "refused write holds no frame listener");
+        assert.equal(added.frameChanged.handlers.length, 1, "refused write detaches the one-shot, persistent production listener remains");
         fireFrameChanged(added);
         assert.ok(!traceEvs(traceLines(h, "win-c")).includes("observed"), "no observation after refusal");
         h.handle?.stop();
@@ -3263,7 +3266,7 @@ describe("world entry trace probe", () => {
         );
         assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied")), "apply completes after a throwing setter");
         assert.ok(traceEvs(traceLines(h, "win-c")).includes("write"), "attempted write is still logged");
-        assert.equal(added.frameChanged.handlers.length, 0, "thrown write holds no frame listener");
+        assert.equal(added.frameChanged.handlers.length, 1, "thrown write detaches the one-shot, persistent production listener remains");
         fireFrameChanged(added);
         assert.ok(!traceEvs(traceLines(h, "win-c")).includes("observed"), "no observation after throw");
         h.handle?.stop();
@@ -3282,7 +3285,7 @@ describe("world entry trace probe", () => {
             ["win-c@10,10,300,300"],
         );
         assert.ok(traceEvs(traceLines(h, "win-c")).includes("write"), "attempted write is still logged");
-        assert.equal(added.frameChanged.handlers.length, 0, "no listener attaches without a signal");
+        assert.equal(added.frameChanged.handlers.length, 1, "production listener predates the deletion and remains; no trace one-shot attaches without a signal");
         fireFrameChanged(added);
         assert.ok(!traceEvs(traceLines(h, "win-c")).includes("observed"), "no observation without a signal");
         h.handle?.stop();
@@ -3316,7 +3319,7 @@ describe("world entry trace probe", () => {
         );
         const observed = traceLines(h, "win-c").filter((l) => l.includes("ev=observed"));
         assert.equal(observed.length, 1, "synchronous first signal is captured once before the setter returns");
-        assert.equal(added.frameChanged.handlers.length, 0, "one-shot detaches on the synchronous fire");
+        assert.equal(added.frameChanged.handlers.length, 1, "one-shot detaches on the synchronous fire, persistent production listener remains");
         fireFrameChanged(added);
         assert.equal(traceLines(h, "win-c").filter((l) => l.includes("ev=observed")).length, 1);
         h.handle?.stop();

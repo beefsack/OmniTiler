@@ -173,7 +173,8 @@ interface FakeWindow {
     readonly outputChanged: FakeSignal["signal"];
     readonly desktopsChanged: FakeSignal["signal"];
     readonly hiddenChanged: FakeSignal["signal"];
-    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal };
+    readonly frameGeometryChanged: FakeSignal["signal"];
+    readonly __signals?: { readonly outputChanged: FakeSignal; readonly desktopsChanged: FakeSignal; readonly hiddenChanged: FakeSignal; readonly frameGeometryChanged: FakeSignal };
 }
 
 interface CapturedCall {
@@ -207,7 +208,7 @@ interface Harness {
     activeRef: FakeWindow | null;
     readonly handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
     fire: (name: string, payload?: unknown) => void;
-    fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged") => void;
+    fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged" | "frameGeometryChanged") => void;
     runTimers: (maxDelay?: number) => void;
     flush: () => Promise<number>;
     flushAll: () => Promise<void>;
@@ -233,6 +234,7 @@ async function makeHarness(): Promise<Harness> {
         const outputChanged = makeSignal();
         const winDesktopsChanged = makeSignal();
         const winHiddenChanged = makeSignal();
+        const winFrameChanged = makeSignal();
         return {
             internalId: id, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             normalWindow: true,
@@ -249,7 +251,8 @@ async function makeHarness(): Promise<Harness> {
             outputChanged: outputChanged.signal,
             desktopsChanged: winDesktopsChanged.signal,
             hiddenChanged: winHiddenChanged.signal,
-            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged },
+            frameGeometryChanged: winFrameChanged.signal,
+            __signals: { outputChanged, desktopsChanged: winDesktopsChanged, hiddenChanged: winHiddenChanged, frameGeometryChanged: winFrameChanged },
         };
     };
     const wins: FakeWindow[] = [
@@ -284,7 +287,7 @@ async function makeHarness(): Promise<Harness> {
                 handler(payload);
             }
         },
-        fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged"): void => {
+        fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged" | "frameGeometryChanged"): void => {
             const sig = win.__signals?.[name];
             assert.ok(sig !== undefined, `window ${win.internalId} exposes ${name}`);
             for (const handler of [...sig.handlers]) {
@@ -684,6 +687,7 @@ describe("world native homing", () => {
             const freshOutputChanged = makeSignal();
             const freshDesktopsChanged = makeSignal();
             const freshHiddenChanged = makeSignal();
+            const freshFrameChanged = makeSignal();
             const fresh = {
                 internalId: "win-new", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
                 normalWindow: true,
@@ -700,7 +704,8 @@ describe("world native homing", () => {
                 outputChanged: freshOutputChanged.signal,
                 desktopsChanged: freshDesktopsChanged.signal,
                 hiddenChanged: freshHiddenChanged.signal,
-                __signals: { outputChanged: freshOutputChanged, desktopsChanged: freshDesktopsChanged, hiddenChanged: freshHiddenChanged },
+                frameGeometryChanged: freshFrameChanged.signal,
+                __signals: { outputChanged: freshOutputChanged, desktopsChanged: freshDesktopsChanged, hiddenChanged: freshHiddenChanged, frameGeometryChanged: freshFrameChanged },
             } as unknown as FakeWindow;
             let freshDesks = fresh.desktops;
             Object.defineProperty(fresh, "desktops", {
@@ -751,6 +756,9 @@ describe("world native homing", () => {
             for (const handler of [...(fresh.__signals?.hiddenChanged.handlers ?? [])]) {
                 handler();
             }
+            for (const handler of [...(fresh.__signals?.frameGeometryChanged.handlers ?? [])]) {
+                handler();
+            }
             h.runTimers();
             assert.equal(h.calls.length, callsAfterRemove, "removed window emits no further dispatch (stale callbacks detached)");
 
@@ -759,6 +767,9 @@ describe("world native homing", () => {
             const callsAtStop = h.calls.length;
             const winA = h.wins.find((w) => w.internalId === "win-a") as FakeWindow;
             for (const handler of [...(winA.__signals?.desktopsChanged.handlers ?? [])]) {
+                handler();
+            }
+            for (const handler of [...(winA.__signals?.frameGeometryChanged.handlers ?? [])]) {
                 handler();
             }
             h.fire("desktopsChanged");
@@ -785,6 +796,187 @@ describe("world native homing", () => {
             assert.ok(h.calls.length > callsBefore, "hiddenChanged autonomously dispatches");
             await h.settle();
             assert.deepEqual(transfersOf(lastReply(h)), [], "hidden change settles with no retained transfers");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("external frameGeometryChanged autonomously dispatches a recapture with no workspace signal", { timeout: 240000 }, async () => {
+        const h = await makeHarness();
+        try {
+            await discover(h);
+            h.fire("desktopsChanged");
+            await h.settle();
+            const winA = h.wins.find((w) => w.internalId === "win-a") as FakeWindow;
+            assert.ok(
+                (winA.__signals?.frameGeometryChanged.handlers.length ?? 0) > 0,
+                "frame homing subscribed (fail-before: no frameGeometryChanged subscription)",
+            );
+            const firesBefore = h.workspaceFires.length;
+            const callsBefore = h.calls.length;
+            h.fireWindow(winA, "frameGeometryChanged");
+            assert.equal(h.workspaceFires.length, firesBefore, "frame change fires no workspace signal");
+            h.runTimers();
+            assert.ok(h.calls.length > callsBefore, "frameGeometryChanged autonomously dispatches (fail-before: no dispatch without frame subscription)");
+            await h.settle();
+            assert.deepEqual(transfersOf(lastReply(h)), [], "frame change settles with no retained transfers");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("safe synchronous own frame echoes defer to one post-apply observation with all writes", { timeout: 240000 }, async () => {
+        const h = await makeHarness();
+        try {
+            await discover(h);
+            h.fire("desktopsChanged");
+            await h.settle();
+            const winLeft = h.wins.find((w) => w.internalId === "win-left") as FakeWindow;
+            const winB = h.wins.find((w) => w.internalId === "win-b") as FakeWindow;
+            const settledLeft = { ...winLeft.frameGeometry };
+            const settledB = { ...winB.frameGeometry };
+            // Production-like synchronous echo: the native setter emits
+            // frameGeometryChanged before returning.
+            const events: string[] = [];
+            const armEcho = (win: FakeWindow): void => {
+                let backing = win.frameGeometry;
+                Object.defineProperty(win, "frameGeometry", {
+                    configurable: true,
+                    enumerable: true,
+                    get: () => backing,
+                    set: (rect: { x: number; y: number; width: number; height: number }) => {
+                        backing = rect;
+                        events.push(`write:${win.internalId}`);
+                        for (const handler of [...(win.__signals?.frameGeometryChanged.handlers ?? [])]) {
+                            handler();
+                        }
+                    },
+                });
+            };
+            armEcho(winLeft);
+            armEcho(winB);
+            const timers = h.timers as Timer[];
+            const origPush = timers.push.bind(timers);
+            (timers as unknown as { push: (...items: Timer[]) => number }).push = (...items: Timer[]): number => {
+                for (const item of items) {
+                    events.push(`timer:${item.delayMs}`);
+                }
+                return origPush(...items);
+            };
+            try {
+                // Perturb both frames: one dispatch carries both mismatches,
+                // so one apply writes both back with synchronous safe echoes.
+                const callsBefore = h.calls.length;
+                winLeft.frameGeometry = { x: 1, y: 1, width: 10, height: 10 };
+                winB.frameGeometry = { x: 2, y: 2, width: 11, height: 11 };
+                h.runTimers();
+                assert.ok(h.calls.length > callsBefore, "perturbed frames dispatch (fail-before: no frame subscription, no dispatch)");
+                events.length = 0;
+                await h.flush();
+                const writes = events.filter((e) => e.startsWith("write:"));
+                const debounce = events.filter((e) => e === `timer:${WORLD_DEBOUNCE_MS}`);
+                assert.equal(writes.length, 2, `one apply writes both frames, got ${JSON.stringify(events)}`);
+                assert.ok(
+                    writes.some((e) => e === "write:win-left") && writes.some((e) => e === "write:win-b"),
+                    `both windows written, got ${JSON.stringify(events)}`,
+                );
+                assert.equal(debounce.length, 1, `safe own echoes coalesce to one post-apply observation, got ${JSON.stringify(events)}`);
+                const lastTimer = events.lastIndexOf(`timer:${WORLD_DEBOUNCE_MS}`);
+                const lastWrite = Math.max(
+                    events.lastIndexOf("write:win-left"),
+                    events.lastIndexOf("write:win-b"),
+                );
+                assert.ok(lastTimer > lastWrite, `safe echoes defer past all writes (fail-before: mid-apply invalidation), got ${JSON.stringify(events)}`);
+                assert.deepEqual(winLeft.frameGeometry, settledLeft, "win-left frame restored by the single apply");
+                assert.deepEqual(winB.frameGeometry, settledB, "win-b frame restored by the single apply");
+            } finally {
+                (timers as unknown as { push: (...items: Timer[]) => number }).push = origPush;
+            }
+            await h.settle();
+            assert.deepEqual(transfersOf(lastReply(h)), [], "deferred observation settles with no retained transfers");
+            assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no busy loops");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("unsafe own frame echo invalidates immediately and halts the apply", { timeout: 240000 }, async () => {
+        const h = await makeHarness();
+        try {
+            await discover(h);
+            h.fire("desktopsChanged");
+            await h.settle();
+            const winLeft = h.wins.find((w) => w.internalId === "win-left") as FakeWindow;
+            const winB = h.wins.find((w) => w.internalId === "win-b") as FakeWindow;
+            const settledLeft = { ...winLeft.frameGeometry };
+            const settledB = { ...winB.frameGeometry };
+            // Unsafe echo: each setter corrupts live safety (unreadable
+            // `hidden` fails readLiveSafety) before emitting, so the
+            // suppressed own echo must invalidate immediately instead of
+            // deferring. Both windows corrupt so the timer lands between
+            // the writes regardless of apply row order.
+            const events: string[] = [];
+            const armUnsafeEcho = (win: FakeWindow): void => {
+                let backing = win.frameGeometry;
+                Object.defineProperty(win, "frameGeometry", {
+                    configurable: true,
+                    enumerable: true,
+                    get: () => backing,
+                    set: (rect: { x: number; y: number; width: number; height: number }) => {
+                        backing = rect;
+                        events.push(`write:${win.internalId}`);
+                        (win as unknown as Record<string, unknown>)["hidden"] = "corrupt";
+                        for (const handler of [...(win.__signals?.frameGeometryChanged.handlers ?? [])]) {
+                            handler();
+                        }
+                    },
+                });
+            };
+            armUnsafeEcho(winLeft);
+            armUnsafeEcho(winB);
+            const timers = h.timers as Timer[];
+            const origPush = timers.push.bind(timers);
+            (timers as unknown as { push: (...items: Timer[]) => number }).push = (...items: Timer[]): number => {
+                for (const item of items) {
+                    events.push(`timer:${item.delayMs}`);
+                }
+                return origPush(...items);
+            };
+            try {
+                const callsBefore = h.calls.length;
+                winLeft.frameGeometry = { x: 1, y: 1, width: 10, height: 10 };
+                winB.frameGeometry = { x: 2, y: 2, width: 11, height: 11 };
+                (winLeft as unknown as Record<string, unknown>)["hidden"] = false;
+                (winB as unknown as Record<string, unknown>)["hidden"] = false;
+                h.runTimers();
+                assert.ok(h.calls.length > callsBefore, "perturbed frames dispatch (fail-before: no frame subscription, no dispatch)");
+                events.length = 0;
+                await h.flush();
+                (winLeft as unknown as Record<string, unknown>)["hidden"] = false;
+                (winB as unknown as Record<string, unknown>)["hidden"] = false;
+                const writes = events.filter((e) => e.startsWith("write:"));
+                const debounce = events.filter((e) => e === `timer:${WORLD_DEBOUNCE_MS}`);
+                // Unsafe echo stops the apply: the first write lands, the
+                // immediate invalidation freshens the watermark, and the
+                // remaining row waits for the follow-up observation.
+                assert.equal(writes.length, 1, `unsafe echo halts the apply after one write, got ${JSON.stringify(events)}`);
+                assert.equal(debounce.length, 1, `one immediate invalidation, got ${JSON.stringify(events)}`);
+                const timerIdx = events.indexOf(`timer:${WORLD_DEBOUNCE_MS}`);
+                assert.equal(timerIdx, events.length - 1, `unsafe echo invalidates immediately with no subsequent in-apply write, got ${JSON.stringify(events)}`);
+                assert.ok(timerIdx > 0, `invalidation follows the first write, got ${JSON.stringify(events)}`);
+                const writtenId = writes[0] as string;
+                const writtenWin = writtenId === "write:win-left" ? winLeft : winB;
+                const pendingWin = writtenId === "write:win-left" ? winB : winLeft;
+                const settledWritten = writtenId === "write:win-left" ? settledLeft : settledB;
+                assert.deepEqual(writtenWin.frameGeometry, settledWritten, "first window frame restored in-apply");
+                assert.notDeepEqual(pendingWin.frameGeometry, pendingWin === winLeft ? settledLeft : settledB, "second window waits for the follow-up observation");
+            } finally {
+                (timers as unknown as { push: (...items: Timer[]) => number }).push = origPush;
+            }
+            await h.settle();
+            assert.deepEqual(transfersOf(lastReply(h)), [], "unsafe-echo observation settles with no retained transfers");
+            assert.deepEqual(winLeft.frameGeometry, settledLeft, "win-left frame restored after follow-up");
+            assert.deepEqual(winB.frameGeometry, settledB, "win-b frame restored after follow-up");
         } finally {
             await h.stop();
         }

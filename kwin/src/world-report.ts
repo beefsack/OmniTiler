@@ -1,4 +1,4 @@
-// World v2 report/reply/envelope JSON shapes (strict v2, no v1 route).
+// World v3 report/reply/envelope JSON shapes (strict v3, no v1/v2 route).
 // Keys mirror tiler-protocol/src/world_protocol.rs exactly; the broker
 // (crates/omnitiler/src/world_broker.rs) owns sequencing, so the inner
 // report below carries NO broker-owned keys (owner, adapter, gen, obs,
@@ -14,14 +14,14 @@ import type { MigrationSourceRefill } from "./world-settings-live";
 
 export type WorldMode = "per-output-local" | "global-unique" | "shared";
 
-// Typed send source (v2 exact): a genuinely semantic explicit output, or
+// Typed send source (v3 exact): a genuinely semantic explicit output, or
 // one of the two core-owned implicit fallbacks. Legacy string/null `out`
 // payloads refuse server-side.
 export type SendSource =
     | { explicit: string }
     | { implicit: "home-then-action" | "home-then-cached-live" };
 
-// Exact v2 command vocabulary (tiler-protocol world_protocol.rs
+// Exact v3 command vocabulary (tiler-protocol world_protocol.rs
 // decode_command). direction-only intents carry no endpoint; selection
 // outputs are null for core-resolved (cursor-first) or an opaque id for a
 // genuinely semantic explicit output; send-numbered index 0 is the trailing
@@ -603,7 +603,7 @@ export function parseDiscoveryReply(text: string): WorldReply | WorldRejection |
 
 // Strict reply parse: ready full-state shape, bounded rejection, or the
 // queue/take/presentation lane shapes. Unknown fields on the core reply
-// refuse; counters must be canonical decimal strings. v2 only: v1 refuses.
+// refuse; counters must be canonical decimal strings. v3 only: v1/v2 refuse.
 export function parseWorldReply(
     text: string,
 ): WorldReply | WorldRejection | WorldQueueReply | WorldTakeReply | WorldPresentationReply | WorldWaitReply | null {
@@ -766,7 +766,7 @@ function parseScopeRow(e: unknown): WorldReplyScope {
 
 function parseWorkspaceRow(e: unknown): WorldReplyWorkspace {
     const o = e as Record<string, unknown>;
-    // Exact v2 workspace shape: id/out/bind/scope/order/mode/exist/hold
+    // Exact v3 workspace shape: id/out/bind/scope/order/mode/exist/hold
     // plus the optional explicit `trailing` marker (present only when
     // true; absent means false). The retired v1 `logical` field (like
     // any unknown field) refuses.
@@ -948,7 +948,7 @@ function parseNativeCreationRow(e: unknown): WorldNativeCreation {
     return { op, ws, out };
 }
 
-// Exact v2 core reply shape: the 20 core keys the Rust canonical encoder
+// Exact v3 core reply shape: the 20 core keys the Rust canonical encoder
 // emits, plus source/nativeInvalid/clock/gestureAssoc on the bound (capture)
 // lane. Any unknown key refuses. The bootstrap lane (no capture flown yet)
 // carries exactly the 20 core keys; the bindings default without validation.
@@ -1381,7 +1381,7 @@ export function buildPresentationReadRequest(req: string): string | null {
     if (!isCorrelationId(req)) {
         return null;
     }
-    return JSON.stringify({ v: 2, req });
+    return JSON.stringify({ v: WORLD_CONTRACT_VERSION, req });
 }
 
 const RESULT_OPS = new Set(["drag-preview", "toggle-float", "maximize", "active-group", "no-group", "migrate-workspace"]);
@@ -1640,7 +1640,7 @@ export function buildReadRequest(req: string): string {
     return `{"v":${WORLD_CONTRACT_VERSION},"req":${JSON.stringify(req)}}`;
 }
 
-// Compact canonical inner-report encoder: the FULL projected v2 observation
+// Compact canonical inner-report encoder: the FULL projected v3 observation
 // WITHOUT the broker-owned namespace (service stamps owner/adapter/gen,
 // obs/reqSeq/req/cmdSeq/command/monotonicMs). Validated wire ids/tokens use
 // JSON.stringify so every value stays exact. Minimal injected context: the
@@ -1706,7 +1706,7 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
     ).join(",");
     // Raw broker-classified window lane: KWin-shaped native facts plus the
     // adapter-retained intent lanes. The broker normalizes these into
-    // projected v2 facts via the shared Rust predicates before the strict
+    // projected v3 facts via the shared Rust predicates before the strict
     // decode; no projected verdict rides here. Exact keys per row; the
     // broker's exact-keys gate refuses any drift.
     // Fractional native numbers ride verbatim (JSON round-trips f64
@@ -1749,7 +1749,8 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
     ).join(",");
     const closed = observation.closed.map(esc).join(",");
     const native = observation.native.map((n) =>
-        `{"out":${esc(n.out)},"order":[${n.order.map(esc).join(",")}],"current":${esc(n.current)}}`,
+        `{"out":${esc(n.out)},"order":[${n.order.map(esc).join(",")}],"current":${esc(n.current)},` +
+        `"occupancy":[${n.occupancy.map((o) => `{"native":${esc(o.native)},"count":${o.count === null ? "null" : String(o.count)}}`).join(",")}]}`,
     ).join(",");
     const cursor = observation.cursor === null ? "null" : `[${observation.cursor.x},${observation.cursor.y}]`;
     const actionOutputs = observation.actionOutputs.map(esc).join(",");

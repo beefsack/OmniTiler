@@ -150,7 +150,7 @@ function makeEntryHarness(): {
             if (method === "DiscoverWorld") {
                 const body = JSON.parse(payload) as { req: string };
                 callback(JSON.stringify({
-                    v: 2, adapter: "broker-1", gen: GEN, req: body.req, obs: "0", rev: "0",
+                    v: 3, adapter: "broker-1", gen: GEN, req: body.req, obs: "0", rev: "0",
                     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
                     windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
                     operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -165,7 +165,7 @@ function makeEntryHarness(): {
                 const body = JSON.parse(payload) as { source: string; nativeInvalid: string };
                 rev += 1;
                 callback(JSON.stringify({
-                    v: 2, adapter: "broker-1", gen: GEN, req: body.source, obs: body.nativeInvalid,
+                    v: 3, adapter: "broker-1", gen: GEN, req: body.source, obs: body.nativeInvalid,
                     rev: String(rev), ready: true, consumed: false,
                     source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                     gestureSettled: null, gestureAssoc: null, operationSettled: [],

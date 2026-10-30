@@ -498,6 +498,12 @@ pub struct WorldEngine {
     /// [`Self::frames`]; cleared on incarnation reset, fresh on a new
     /// core generation with the engine itself.
     pub(crate) consumed_frames: BTreeMap<WindowId, crate::world_report::FrameAttempt>,
+    /// Tiled burst budget (anti-loop): consumed mechanical attempts per
+    /// lifetime and unchanged desired target inside a continuous observed
+    /// frame-change burst. Same lifetime bound and pruning as
+    /// [`Self::frames`]; cleared on incarnation reset, fresh on a new core
+    /// generation with the engine itself.
+    pub(crate) frame_bursts: BTreeMap<WindowId, crate::world_frames::FrameBurst>,
     /// Conservative learned minimum sizes per exact lifetime (stage 3b):
     /// proven app-held growth merged into the normalized hint path before
     /// layout projection. Separate from transient pair suppression: exact
@@ -798,6 +804,7 @@ impl WorldEngine {
             born_keep_overlay: BTreeSet::new(),
             frames: BTreeMap::new(),
             consumed_frames: BTreeMap::new(),
+            frame_bursts: BTreeMap::new(),
             learned_mins: BTreeMap::new(),
             creation_counter: 0,
             native_creation_seq: 0,
@@ -909,6 +916,7 @@ impl WorldEngine {
         self.pending_source_releases.clear();
         self.frames.clear();
         self.consumed_frames.clear();
+        self.frame_bursts.clear();
         self.learned_mins.clear();
         self.gesture = None;
         self.consumed_gesture_seq = 0;

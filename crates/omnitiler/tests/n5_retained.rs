@@ -120,7 +120,7 @@ fn presentation() -> Value {
 
 fn inner_report(windows: &[Value]) -> Value {
     json!({
-        "v": 2,
+        "v": 3,
         "mode": "per-output-local",
         "screens": [{"out": "DP-1", "full": [0, 0, 1920, 1080],
             "work": [0, 0, 1920, 1040], "gap": 8, "outer": 4,
@@ -131,7 +131,7 @@ fn inner_report(windows: &[Value]) -> Value {
         "hostOwned": true,
         "equalCount": false,
         "birthClear": false,
-        "native": [{"out": "DP-1", "order": [UUID_A], "current": UUID_A}],
+        "native": [{"out": "DP-1", "order": [UUID_A], "current": UUID_A, "occupancy": [{"native": UUID_A, "count": null}]}],
         "predicate": "both-axes-fixed",
         "refill": "last-remaining-workspace",
         "defaultTiled": true,
@@ -154,7 +154,7 @@ fn inner_report(windows: &[Value]) -> Value {
 /// migrated workspace, DP-2 a settled bystander.
 fn two_output_inner(windows: &[Value]) -> Value {
     json!({
-        "v": 2,
+        "v": 3,
         "mode": "per-output-local",
         "screens": [
             {"out": "DP-1", "full": [0, 0, 1920, 1080],
@@ -171,8 +171,8 @@ fn two_output_inner(windows: &[Value]) -> Value {
         "equalCount": false,
         "birthClear": false,
         "native": [
-            {"out": "DP-1", "order": [UUID_A], "current": UUID_A},
-            {"out": "DP-2", "order": [UUID_B], "current": UUID_B},
+            {"out": "DP-1", "order": [UUID_A], "current": UUID_A, "occupancy": [{"native": UUID_A, "count": null}]},
+            {"out": "DP-2", "order": [UUID_B], "current": UUID_B, "occupancy": [{"native": UUID_B, "count": null}]},
         ],
         "predicate": "both-axes-fixed",
         "refill": "last-remaining-workspace",
@@ -194,7 +194,7 @@ fn two_output_inner(windows: &[Value]) -> Value {
 
 fn capture(generation: &str, seq: u64, inner: &Value) -> String {
     json!({
-        "v": 2,
+        "v": 3,
         "adapter": ADAPTER,
         "gen": generation,
         "source": format!("src-{seq}-t"),
@@ -207,7 +207,7 @@ fn capture(generation: &str, seq: u64, inner: &Value) -> String {
 
 fn queue_req(generation: &str, client_cmd: &str, command: &Value) -> String {
     json!({
-        "v": 2,
+        "v": 3,
         "gen": generation,
         "client": "panel-1",
         "clientCmd": client_cmd,
@@ -218,7 +218,7 @@ fn queue_req(generation: &str, client_cmd: &str, command: &Value) -> String {
 
 fn take_req(generation: &str, client_cmd: &str) -> String {
     json!({
-        "v": 2,
+        "v": 3,
         "gen": generation,
         "client": "panel-1",
         "clientCmd": client_cmd,

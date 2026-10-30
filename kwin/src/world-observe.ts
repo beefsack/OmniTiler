@@ -158,6 +158,13 @@ export interface ObservedNativeFact {
     out: string;
     order: string[];
     current: string;
+    // Exact per-desktop native occupancy: one row per ordered desktop id,
+    // counting every raw enumerated window (including unmanaged, deleted,
+    // minimized, non-normal, and scope-foreign windows; never derived from
+    // managed WindowFacts). Sticky windows (onAllDesktops true) count toward
+    // every ordered desktop. Explicit null counts ride when membership is
+    // unreadable, never zero.
+    occupancy: Array<{ native: string; count: number | null }>;
 }
 
 export interface ObservedPresentation {
@@ -225,7 +232,7 @@ export interface WorldObservation {
     gesture: boolean;
     focusedGlobal: string;
     // Raw KWin-shaped classification facts (Stage 4 broker-classified
-    // lane). The broker normalizes these into projected v2 facts via the
+    // lane). The broker normalizes these into projected v3 facts via the
     // shared Rust predicates; the adapter never preselects verdicts here.
     screens: ObservedScreenFact[];
     windowFacts: RawWindowFact[];
@@ -1324,7 +1331,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     }));
     const complete = topologyCompleteAll && windowsReadable && desktopsReadable && !domainsTruncated && !inventoryTruncated;
     const predicateWire = predicate === FIXED_SIZE_PREDICATE_EITHER ? FIXED_SIZE_PREDICATE_EITHER : FIXED_SIZE_PREDICATE_DEFAULT;
-    // Projected v2 facts. hostOwned requires a readable native inventory
+    // Projected v3 facts. hostOwned requires a readable native inventory
     // with a known current per screen; without it every nativeWs reads null
     // and native rides empty (core refuses nativeWs without hostOwned).
     const hostOwned = desktopsReadable && screenEntries.every((s) => s.current !== "");
@@ -1336,6 +1343,73 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     const nativeOrderFull = hostOwned
         ? (orderTruncated ? nativeOrder.slice(0, MAX_NATIVE_PER_OUTPUT) : nativeOrder)
         : [];
+    // Native occupancy (v3 wire `native[].occupancy`): a dedicated pass over
+    // the raw capped window list, BEFORE any managed/unmanaged filtering, so
+    // counts cover every enumerated native window (including unmanaged,
+    // deleted, minimized, non-normal, and scope-foreign windows). Sticky
+    // windows (onAllDesktops true, whose desktop list is empty on KWin) count
+    // toward every ordered desktop; other windows count toward each listed
+    // member desktop that is in the ordered set. Any unreadable membership
+    // (non-object item, non-list or truncated desktops, present-but-
+    // non-boolean onAllDesktops, non-opaque or duplicate member id) marks the
+    // whole occupancy unknown: every ordered id then rides count null, never
+    // zero. A truncated window inventory is likewise unprovable (null).
+    const nativeOrderSet = new Set<string>(nativeOrderFull);
+    const occupancyCounts = new Map<string, number>();
+    let occupancyUnknown = !winListCapped.complete;
+    if (!occupancyUnknown) {
+        for (const item of winList) {
+            if (typeof item !== "object" || item === null) {
+                occupancyUnknown = true;
+                break;
+            }
+            const ref = item as object;
+            const membersCapped = decodeListCapped(readProp(ref, "desktops"), MAX_WINDOW_DESKTOPS);
+            const allDesktopsRaw = readProp(ref, "onAllDesktops");
+            let sticky: boolean | null = null;
+            if (typeof allDesktopsRaw === "boolean") {
+                sticky = allDesktopsRaw;
+            } else if (allDesktopsRaw === undefined) {
+                const alias = readNativeAlias(readProp, ref, "sticky");
+                sticky = typeof alias === "boolean" ? alias : null;
+            }
+            if (membersCapped === null || !membersCapped.complete || sticky === null) {
+                occupancyUnknown = true;
+                break;
+            }
+            const seen = new Set<string>();
+            const ids: string[] = [];
+            let membershipBad = false;
+            for (const m of membersCapped.items) {
+                if (typeof m !== "object" || m === null) {
+                    membershipBad = true;
+                    break;
+                }
+                const id = readProp(m as object, "id");
+                if (!isOpaqueId(id) || seen.has(id as string)) {
+                    membershipBad = true;
+                    break;
+                }
+                seen.add(id as string);
+                ids.push(id as string);
+            }
+            if (membershipBad) {
+                occupancyUnknown = true;
+                break;
+            }
+            if (sticky) {
+                for (const id of nativeOrderFull) {
+                    occupancyCounts.set(id, (occupancyCounts.get(id) ?? 0) + 1);
+                }
+            } else {
+                for (const id of ids) {
+                    if (nativeOrderSet.has(id)) {
+                        occupancyCounts.set(id, (occupancyCounts.get(id) ?? 0) + 1);
+                    }
+                }
+            }
+        }
+    }
     const screenFacts: ObservedScreenFact[] = screenEntries.map((s, index) => {
         const full = screenRects[index] ?? null;
         let work: { x: number; y: number; w: number; h: number } | null = null;
@@ -1389,7 +1463,15 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         return { out: s.name, view };
     });
     const native: ObservedNativeFact[] = hostOwned
-        ? screenEntries.map((s) => ({ out: s.name, order: [...nativeOrderFull], current: s.current }))
+        ? screenEntries.map((s) => ({
+            out: s.name,
+            order: [...nativeOrderFull],
+            current: s.current,
+            occupancy: nativeOrderFull.map((id) => ({
+                native: id,
+                count: occupancyUnknown ? null : (occupancyCounts.get(id) ?? 0),
+            })),
+        }))
         : [];
     const equalCount = native.every((n) => n.order.length === (native[0]?.order.length ?? 0));
     // Fresh cursor sample on each event/command/gesture capture only: no

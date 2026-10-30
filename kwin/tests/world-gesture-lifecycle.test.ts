@@ -116,7 +116,7 @@ describe("native gesture lifecycle transport", () => {
                 if (method === "DiscoverWorld") {
                     const body = JSON.parse(payload) as { req: string };
                     callback(JSON.stringify({
-                        v: 2, adapter: "broker-1", gen: "gen-1", req: body.req, obs: "0", rev: "0",
+                        v: 3, adapter: "broker-1", gen: "gen-1", req: body.req, obs: "0", rev: "0",
                         ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
                         windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
                         operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -136,7 +136,7 @@ describe("native gesture lifecycle transport", () => {
                         }
                         : null;
                     callback(JSON.stringify({
-                        v: 2, adapter: "broker-1", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
+                        v: 3, adapter: "broker-1", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                         ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                         windows: [], transfers: [], effects: [], result: null,
                         gestureSettled: (globalThis as Record<string, unknown>)["__gestureSettled"] ?? null,
@@ -180,7 +180,7 @@ describe("native gesture lifecycle transport", () => {
         const discover = calls.find((c) => c.method === "DiscoverWorld");
         assert.ok(discover !== undefined);
         discover.callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req, obs: "0", rev: "0",
+            v: 3, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req, obs: "0", rev: "0",
             ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
             windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
             operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -317,7 +317,7 @@ describe("native gesture broker cutover", () => {
             const assoc = harnessAssocFor(report);
             const settled = opts.settledHook?.(report, assoc) ?? null;
             callback(JSON.stringify({
-                v: 2, adapter: "broker-1", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
+                v: 3, adapter: "broker-1", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -383,7 +383,7 @@ describe("native gesture broker cutover", () => {
                 if (method === "DiscoverWorld") {
                     const body = JSON.parse(payload) as { req: string };
                     callback(JSON.stringify({
-                        v: 2, adapter: "broker-1", gen: "gen-1", req: body.req, obs: "0", rev: "0",
+                        v: 3, adapter: "broker-1", gen: "gen-1", req: body.req, obs: "0", rev: "0",
                         ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
                         windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
                         operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -422,7 +422,7 @@ describe("native gesture broker cutover", () => {
         const discover = calls.find((c) => c.method === "DiscoverWorld");
         assert.ok(discover !== undefined);
         discover.callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req, obs: "0", rev: "0",
+            v: 3, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req, obs: "0", rev: "0",
             ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
             windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
             operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -1216,7 +1216,7 @@ describe("native gesture broker cutover", () => {
                 }
             }
             const text = JSON.stringify({
-                v: 2, adapter: "broker-1", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
+                v: 3, adapter: "broker-1", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: [], transfers: [], effects: [], result: null,
                 gestureSettled: settled, gestureAssoc: assoc, operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -1462,7 +1462,7 @@ describe("native gesture broker cutover", () => {
             assert.ok(first !== undefined);
             h.heldDescribes.splice(0, 1);
             first.callback(JSON.stringify({
-                v: 2, outcome: "queued", gen: "gen-1",
+                v: 3, outcome: "queued", gen: "gen-1",
                 client: "test-adapter", clientCmd: "1", globalCmd: "1",
             }));
             assert.equal(h.gestureCalls.filter((c) => c.method === "AckGesture").length, 0, "wrong lane never acks");

@@ -57,7 +57,7 @@ Prioritise by return toward these goals
   full tabs stay after 0.1.
   [Record](changes/windows-workspace-return-focus.md).
   [Coordinated bump design](changes/windows-workspace-return-focus.md#coordinated-visibility-contract-design-2026-10-30):
-  exclusive responsibility table, tentative v3 messages/capabilities, phased
+  exclusive responsibility table, v4 messages/capabilities, phased
   failing-first plan and separate open decisions. Phase 1 core gap foundations
   are complete offline (23 regressions); no producer/wire cutover or staged
   switch implementation. Focus-failure outcome decided 2026-10-29
@@ -74,7 +74,7 @@ Prioritise by return toward these goals
   [Answer](changes/windows-workspace-return-focus.md#kde-answer-option-a-stable-native-ownership-2026-10-28).
 - P1 | Visibility-ready protocol bump (tabs investigation complete) |
   **User 2026-10-29:** full tab core/protocol stays after 0.1 (P3 Tabbed stacks
-  below); coordinated v3 includes the visibility-ready slice: per-window
+  below); coordinated v4 includes the visibility-ready slice: per-window
   suppression authority and correlation independent of workspace ownership,
   its own capability flag, core-composed workspace vs inactive-tab suppression,
   and truthful hidden observations. No requirement to avoid a later tab protocol
@@ -442,16 +442,42 @@ Prioritise by return toward these goals
     Tier 1 empty non-viewed cleanup. Preserve global native-occupancy/view/
     trailing/protection checks, readable facts only, required equal-count padding
     and the minimum-two floor; unmapped desktops stay outside management.
+    **User 2026-10-29:** adapters report neutral complete/readable native
+    occupancy (all windows, managed or not) through a coordinated exact-version
+    protocol cutover; core retains logical rows/bindings until native deletion
+    readback; KDE keeps its fresh safety vetoes. No adapter-owned occupant
+    eligibility or v2-only side channel. `keepAboveTiles` joins the same version.
+    **User 2026-10-29:** this bundle is its own exact bump to v3 now; the
+    Windows visibility cutover renumbers to v4. v3 neutral native occupancy
+    prerequisite delivered offline 2026-10-29
+    ([record](changes/kde-world-v2-port.md#native-occupancy-v3-cutover-2026-10-29));
+    core-directed retirement with readback retention delivered offline
+    2026-10-29 (no independent review; native/physical checks pending: fixture
+    deletion/readback across modes, unmanaged/sticky occupancy, visibility races,
+    floor, staggered readback, stable identities); `keepAboveTiles` separate
+    same-v3 follow-up. **User 2026-10-29:** retirement retains a bound
+    row needed as equal-count padding (no delete-and-replace); joint reductions
+    are allowed where parity survives; surviving logical/native identities are
+    preserved while ordinals compact.
     [Investigation](changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29).
   - **Check | User 2026-10-29:** dogfooding suggested the empty trailing
     workspace was not created on KDE. Investigate trailing workspace creation
-    first, using upstream `e422f59f`'s explicit trailing designation; no native
-    creation failure or remedy is established yet.
-  - **Implementation | User 2026-10-29 (R-MAX-02):** core directional focus
+    first, using upstream `e422f59f`'s explicit trailing designation. Investigated
+    offline 2026-10-29: the idle trailing spare intentionally stays logical-only
+    and gains native backing only when used (viewed, targeted or occupied); KDE
+    consumes explicit on-demand creations. No on-demand creation failure is
+    established; eager native backing would change decided behavior.
+    [Outcome](changes/kde-world-v2-port.md).
+  - **Core delivered offline 2026-10-29 | R-MAX-02:** core directional focus
     from fullscreen skips same-output siblings, continues to an adjacent output
     in that direction, otherwise stays. Wire through all adapters; explicit click,
     focus-by-window and workspace switch unchanged. Tier 1 majority: Hyprland,
-    i3, sway ([reference row](spec/reference-outcomes/maximize-fullscreen.md#r-max-02-fullscreen-focus-and-exit)).
+    i3, sway. Fifteen core regressions and all scoped gates pass; KDE uses core
+    unchanged. Adapter parity remains open: Windows native fullscreen-foreground
+    safety veto can block departure; macOS hotkeys remain local-only (existing
+    deferred integration). No native acceptance claim.
+    [Record](changes/archive/fullscreen-directional-focus.md),
+    [reference row](spec/reference-outcomes/maximize-fullscreen.md#r-max-02-fullscreen-focus-and-exit).
   - Fullscreen float/maximize (user 2026-10-28, from
     [R-MAX-10/11](spec/reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen)):
     float toggle on a fullscreen window follows the Tier 1 majority: the
@@ -520,6 +546,11 @@ Prioritise by return toward these goals
   and reconciliation to retained tile geometry under existing safety, clamp and
   write-suppression rules; no write loop against a persistently resizing client.
   Consistent with D2. Exact native buffer/ack outcomes remain TBD.
+  **Implemented offline 2026-10-29:** KWin `frameGeometryChanged` drives
+  reconciliation to the retained tile; at most two attempts per window and
+  unchanged target per resize burst (target change or >=500ms quiet re-arms).
+  Wayland/X11 fixture self-resize, persistent-resize and visuals pending native
+  acceptance. [Outcome](changes/archive/kde-client-frame-drift.md).
   [Record](changes/archive/kde-dev-scope-fixture-integration.md).
   [Research](research/live-test-window.md),
   [record](changes/archive/controllable-live-test-window.md).
@@ -1435,7 +1466,7 @@ Prioritise by return toward these goals
   current" intent resolved at execution; explicit `Send` unchanged
   ([decision](decisions.md#windows-decisions-2026-10-29),
   [audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
-  Check KDE/macOS for the same pattern; if wire-visible, land with v3.
+  Check KDE/macOS for the same pattern; if wire-visible, land with v4.
 - P1 | macOS: first-float placement under execution-time float toggle
   (decided 2026-10-29; implementation pending) | User adopts option A for macOS
   with no exception ([decision](decisions.md#kde-port-and-race-decisions-2026-10-26)):
@@ -1856,7 +1887,7 @@ Prioritise by return toward these goals
   **User 2026-10-29:** full tab core/protocol remains here after 0.1; a later
   protocol bump is accepted, expected around 0.2. Tab-close survivor provisionally
   defaults to positional-next (clamped at the end), to confirm against Tier 1
-  source when tab work starts; coordinated v3 is visibility-ready, not tab-complete.
+  source when tab work starts; coordinated v4 is visibility-ready, not tab-complete.
 
 ## Future
 

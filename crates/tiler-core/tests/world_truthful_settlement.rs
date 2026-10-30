@@ -285,11 +285,25 @@ fn host_owned_unknown_holds_exact_settles() {
                 output: OutputId("out-a".to_owned()),
                 native_order: vec![NA1.to_owned(), NA2.to_owned()],
                 current_native: Some(NA1.to_owned()),
+                occupancy: vec![
+                    tiler_core::world_report::NativeOccupancy {
+                        native: NA1.to_owned(),
+                        count: None,
+                    },
+                    tiler_core::world_report::NativeOccupancy {
+                        native: NA2.to_owned(),
+                        count: None,
+                    },
+                ],
             },
             NativeObservation {
                 output: OutputId("out-b".to_owned()),
                 native_order: vec![NB1.to_owned()],
                 current_native: Some(NB1.to_owned()),
+                occupancy: vec![tiler_core::world_report::NativeOccupancy {
+                    native: NB1.to_owned(),
+                    count: None,
+                }],
             },
         ]
     }

@@ -67,7 +67,7 @@ function windowRow(over: Record<string, unknown> = {}): Record<string, unknown> 
 
 function projection(req: string, preview: Record<string, unknown> | null, rev = "9", obs = "9"): string {
     return JSON.stringify({
-        v: 2, outcome: "presentation", gen: GEN, req, rev, obs,
+        v: 3, outcome: "presentation", gen: GEN, req, rev, obs,
         coveredInstance: EFFECT, coveredInvalid: "0",
         scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
         workspaces: [{ id: "ws1", out: "out-1", bind: "ws1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" }],
@@ -164,7 +164,7 @@ function setup(): Harness {
             if (method === "DiscoverWorld") {
                 const body = JSON.parse(payload) as { req: string };
                 callback(JSON.stringify({
-                    v: 2, adapter: BROKER, gen: GEN, req: body.req, obs: "0", rev: "0",
+                    v: 3, adapter: BROKER, gen: GEN, req: body.req, obs: "0", rev: "0",
                     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
                     windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
                     operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -236,7 +236,7 @@ function setup(): Harness {
             }
             const settled = make(report, assoc);
             call.callback(JSON.stringify({
-                v: 2, adapter: BROKER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
+                v: 3, adapter: BROKER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
                 windows: describeWindows, transfers: [], effects: [], result: null,
                 gestureSettled: settled.settled, gestureAssoc: assoc,

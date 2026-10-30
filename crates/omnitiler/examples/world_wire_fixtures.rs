@@ -13,7 +13,7 @@
 //! correlation it minted. Every other byte is the verbatim broker output:
 //! workspace rows carry no `logical` key (the retired v1 field), window
 //! rows carry both write tokens, and the actuator lane carries `result`
-//! null. The writer asserts the exact v2 key sets and fails loudly if the
+//! null. The writer asserts the exact v3 key sets and fails loudly if the
 //! core shape drifts, so regeneration doubles as a producer-side shape
 //! gate. Run with:
 //!
@@ -104,7 +104,7 @@ fn capture_envelope(
 ) -> String {
     let source = js_source(seq);
     format!(
-        "{{\"v\":2,\"adapter\":\"{lifetime}\",\"gen\":\"{generation}\",\
+        "{{\"v\":3,\"adapter\":\"{lifetime}\",\"gen\":\"{generation}\",\
          \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\
          \"nativeInvalid\":\"{watermark}\",\"report\":{inner}}}"
     )
@@ -118,7 +118,7 @@ fn check_keys(value: &Value, keys: &[&str], what: &str) {
     got.sort_unstable();
     let mut want: Vec<&str> = keys.to_vec();
     want.sort_unstable();
-    assert_eq!(got, want, "exact v2 keys for {what}");
+    assert_eq!(got, want, "exact v3 keys for {what}");
 }
 
 /// Discover once; returns the serving generation and broker incarnation.
@@ -160,7 +160,7 @@ fn discover(service: &WorldService, request_id: &str) -> (String, String) {
     (generation, incarnation)
 }
 
-/// Dispatch one capture; asserts the exact bound v2 shape (no retired
+/// Dispatch one capture; asserts the exact bound v3 shape (no retired
 /// `logical` workspace key, both window write tokens, null actuator
 /// result) and returns the parsed reply.
 fn dispatch(service: &WorldService, envelope: &str) -> Value {
@@ -168,7 +168,7 @@ fn dispatch(service: &WorldService, envelope: &str) -> Value {
         .evaluate_capture(envelope)
         .expect("capture accepted");
     let reply: Value = serde_json::from_str(&text).expect("reply parses");
-    assert_eq!(reply["v"], 2);
+    assert_eq!(reply["v"], 3);
     assert_eq!(reply["ready"], true);
     assert!(
         reply["result"].is_null(),
@@ -185,7 +185,12 @@ fn dispatch(service: &WorldService, envelope: &str) -> Value {
     );
     check_keys(&reply, &BOUND_KEYS, "bound reply");
     for ws in reply["workspaces"].as_array().expect("workspaces") {
-        check_keys(ws, &WORKSPACE_KEYS, "workspace row");
+        let mut keys = WORKSPACE_KEYS.to_vec();
+        if let Some(trailing) = ws.get("trailing") {
+            assert_eq!(trailing, true, "optional trailing marker is true");
+            keys.push("trailing");
+        }
+        check_keys(ws, &keys, "workspace row");
     }
     reply
 }
@@ -303,7 +308,7 @@ fn main() {
         );
         map.insert(
             "native".to_owned(),
-            serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]),
+            serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]),
         );
         map.insert("hostOwned".to_owned(), Value::Bool(true));
         map.insert("focused".to_owned(), Value::String(focused.to_owned()));
@@ -328,7 +333,7 @@ fn main() {
         // terminal result; the snapshot stays result-free.
         let presentation: Value = serde_json::from_str(
             &service
-                .read_presentation("{\"v\":2,\"req\":\"pager-1\"}")
+                .read_presentation("{\"v\":3,\"req\":\"pager-1\"}")
                 .expect("presentation reads"),
         )
         .expect("presentation parses");
@@ -350,7 +355,7 @@ fn main() {
                 .queue_command(
                     SENDER,
                     &format!(
-                        "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+                        "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
                          \"command\":{{\"op\":\"operation\",\"command\":\
                          {{\"op\":\"toggle-float\",\"win\":\"win-a\",\"rect\":null}}}}}}"
                     ),
@@ -378,7 +383,7 @@ fn main() {
                 .take_result(
                     SENDER,
                     &format!(
-                        "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                        "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                          \"clientCmd\":\"1\"}}"
                     ),
                 )
@@ -422,8 +427,8 @@ fn main() {
         map.insert(
             "native".to_owned(),
             serde_json::json!([
-                {"out": "out-a", "order": ["wa1"], "current": "wa1"},
-                {"out": "out-b", "order": ["wb1"], "current": "wb1"},
+                {"out": "out-a", "order": ["wa1"], "current": "wa1", "occupancy": [{"native": "wa1", "count": null}]},
+                {"out": "out-b", "order": ["wb1"], "current": "wb1", "occupancy": [{"native": "wb1", "count": null}]},
             ]),
         );
         map.insert("hostOwned".to_owned(), Value::Bool(true));
@@ -458,7 +463,7 @@ fn main() {
                 .queue_command(
                     SENDER,
                     &format!(
-                        "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+                        "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
                          \"command\":{{\"op\":\"migrate-workspace\",\"from\":\"out-a\",\
                          \"to\":\"out-b\",\"ws\":\"{logical}\"}}}}",
                     ),
@@ -483,7 +488,7 @@ fn main() {
                 .take_result(
                     SENDER,
                     &format!(
-                        "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                        "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                          \"clientCmd\":\"1\"}}"
                     ),
                 )

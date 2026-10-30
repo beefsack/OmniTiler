@@ -1550,6 +1550,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // gate below keys on the native id only, so the first row decides and
     // repeats skip silently (no duplicate native call, no double hold).
     const removalSeen = new Set<string>();
+    const removalDispatched = new Set<string>();
     for (const ws of reply.workspaces) {
         if (ws.exist || ws.bind === "" || ws.hold !== "") {
             continue;
@@ -1602,7 +1603,23 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
-        if (observation.topology.length > 0 && liveDesktopIds.size <= env.minDesktops) {
+        let removalIds = liveDesktopIds;
+        if (env.listDesktops !== undefined) {
+            let fresh = null;
+            try {
+                fresh = env.listDesktops();
+            } catch (error) {
+                void error;
+            }
+            if (fresh === null) {
+                result.held += 1;
+                continue;
+            }
+            removalIds = new Set(fresh.map((desktop) => desktop.id));
+            for (const id of removalDispatched) removalIds.delete(id);
+        }
+        if ((observation.topology.length > 0 || env.listDesktops !== undefined) &&
+            (!removalIds.has(ws.bind) || removalIds.size <= env.minDesktops)) {
             result.held += 1;
             continue;
         }
@@ -1619,6 +1636,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         if (removed) {
             result.removals += 1;
+            removalDispatched.add(ws.bind);
+            liveDesktopIds.delete(ws.bind);
         } else {
             result.held += 1;
         }

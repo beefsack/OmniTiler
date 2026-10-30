@@ -15,7 +15,7 @@ function projection(
     extra?: Record<string, unknown>, gen: string = GEN,
 ): string {
     return JSON.stringify({
-        v: 2, outcome: "presentation", gen, req, rev, obs,
+        v: 3, outcome: "presentation", gen, req, rev, obs,
         coveredInstance: "effect-1", coveredInvalid: "0",
         scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
         workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],

@@ -19,7 +19,7 @@ function projection(
     extra?: Record<string, unknown>, gen: string = GEN,
 ): string {
     return JSON.stringify({
-        v: 2, outcome: "presentation", gen, req, rev, obs,
+        v: 3, outcome: "presentation", gen, req, rev, obs,
         coveredInstance: "effect-1", coveredInvalid: "5",
         scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
         workspaces: [{ id: "ws", out: "out", bind: "ws", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
@@ -255,7 +255,7 @@ describe("world presentation subscriber", () => {
         assert.equal(h.paints.length, 0);
         // A queued-lane reply on the read hides too.
         h.sub.notifyInvalidated();
-        h.answerAll(() => JSON.stringify({ v: 2, outcome: "queued", gen: GEN, client: "c", clientCmd: "1", globalCmd: "1" }));
+        h.answerAll(() => JSON.stringify({ v: 3, outcome: "queued", gen: GEN, client: "c", clientCmd: "1", globalCmd: "1" }));
         assert.equal(h.paints.length, 0);
         // A mismatched correlation hides instead of painting.
         h.sub.notifyInvalidated();

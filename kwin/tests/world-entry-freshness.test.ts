@@ -51,7 +51,7 @@ function projection(
     },
 ): string {
     return JSON.stringify({
-        v: 2, outcome: "presentation", gen: GEN, req, rev, obs,
+        v: 3, outcome: "presentation", gen: GEN, req, rev, obs,
         coveredInstance: opts.coveredInstance === undefined ? EFFECT : opts.coveredInstance,
         coveredInvalid: opts.coveredInvalid === undefined ? "0" : opts.coveredInvalid,
         scopes: [{ scope: "out/ws", auth: "controlled", reason: "" }],
@@ -211,7 +211,7 @@ function setup(onLog?: (message: string) => void): Harness {
         const assoc = assocFor(report);
         const settled = h.settledHook?.(report) ?? null;
         call.callback(JSON.stringify({
-            v: 2, adapter: BROKER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
+            v: 3, adapter: BROKER, gen: GEN, req: body.source, obs: String(rev), rev: String(rev),
             ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
             windows: [], transfers: [], effects: [], result: null,
             gestureSettled: settled, gestureAssoc: assoc,
@@ -254,7 +254,7 @@ function setup(onLog?: (message: string) => void): Harness {
             if (method === "DiscoverWorld") {
                 const body = JSON.parse(payload) as { req: string };
                 callback(JSON.stringify({
-                    v: 2, adapter: BROKER, gen: GEN, req: body.req, obs: "0", rev: "0",
+                    v: 3, adapter: BROKER, gen: GEN, req: body.req, obs: "0", rev: "0",
                     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
                     windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
                     operationSettled: [], nativeCreations: [], warpCursor: null,

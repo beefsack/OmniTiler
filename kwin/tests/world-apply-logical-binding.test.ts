@@ -101,7 +101,7 @@ const PRESENTATION = { foreground: "", border: { visible: false, reason: "disabl
 
 function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<Record<string, unknown>>): Record<string, unknown> {
     return {
-        v: 2, adapter: "broker-1", gen: "gen-1", req: "req-1",
+        v: 3, adapter: "broker-1", gen: "gen-1", req: "req-1",
         obs: "1", rev: "1", ready: true, consumed: false,
         source: "req-1", nativeInvalid: "1", clock: "0",
         gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,

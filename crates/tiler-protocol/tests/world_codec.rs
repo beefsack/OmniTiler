@@ -1,4 +1,4 @@
-//! Portable JSON codec coverage for the logical-first world boundary (v2):
+//! Portable JSON codec coverage for the logical-first world boundary (v3):
 //! DTO validation, u64-as-string enforcement, encoder equality with the
 //! core canonical writer, golden bootstrap bytes, and budget gates.
 //! Offline only: no D-Bus, no KWin.
@@ -9,7 +9,7 @@ use tiler_protocol::world_protocol::{
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, decode_request, encode_reply,
 };
 
-/// Minimal observation-only request envelope (v2): screens plus facts only,
+/// Minimal observation-only request envelope (v3): screens plus facts only,
 /// no native workspace concept.
 fn request_json(
     owner: &str,
@@ -21,7 +21,7 @@ fn request_json(
     facts: &str,
 ) -> String {
     format!(
-        "{{\"v\":2,\"owner\":\"{owner}\",\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+        "{{\"v\":3,\"owner\":\"{owner}\",\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
          \"obs\":\"{obs}\",\"reqSeq\":\"{req_seq}\",\"req\":\"{req}\",\"cmdSeq\":null,\
          \"command\":null,\
          \"screens\":[{{\"out\":\"out\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
@@ -64,7 +64,7 @@ fn one_window_request() -> String {
 fn decode_minimal_observation_only_request() {
     let report: WorldReport = decode_request(&one_window_request()).expect("decodes");
     assert_eq!(report.contract_version, WORLD_CONTRACT_VERSION);
-    assert_eq!(report.contract_version, 2);
+    assert_eq!(report.contract_version, 3);
     assert_eq!(report.owner, "owner-a");
     assert_eq!(report.observation_seq, 1);
     assert_eq!(report.request_seq, 1);
@@ -115,11 +115,14 @@ fn unknown_fields_and_values_refuse() {
     value["extra"] = serde_json::Value::Bool(true);
     let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
     assert_eq!(error.kind, "unknown-field");
-    // The v1 contract is gone: v1 refuses as unsupported-version.
-    let old_version = one_window_request().replace("\"v\":2", "\"v\":1");
+    // The v1 and v2 contracts are gone: both refuse as unsupported-version.
+    let old_version = one_window_request().replace("\"v\":3", "\"v\":1");
     let error = decode_request(&old_version).expect_err("v1 refuses");
     assert_eq!(error.kind, "unsupported-version");
-    let bad_version = one_window_request().replace("\"v\":2", "\"v\":3");
+    let stale_version = one_window_request().replace("\"v\":3", "\"v\":2");
+    let error = decode_request(&stale_version).expect_err("v2 refuses");
+    assert_eq!(error.kind, "unsupported-version");
+    let bad_version = one_window_request().replace("\"v\":3", "\"v\":4");
     let error = decode_request(&bad_version).expect_err("version refuses");
     assert_eq!(error.kind, "unsupported-version");
     // Command without sequence (and sequence without command) refuse.
@@ -149,13 +152,13 @@ fn unknown_fields_and_values_refuse() {
 fn native_observations_require_the_capability() {
     // Native observations without hostOwned refuse at the core gate.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
     let error = decode_request(&value.to_string()).expect_err("native refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     // With the capability they decode as observations for adoption.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
     let report = decode_request(&value.to_string()).expect("host-owned decodes");
     assert!(report.host_owned_workspace_domains);
     assert_eq!(report.native.len(), 1);
@@ -1016,7 +1019,7 @@ fn native_attempt_keys_decode_tolerantly_gate_capability_and_bound() {
     // the same way, never to proof.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["d1", "d2"], "current": "d1"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["d1", "d2"], "current": "d1", "occupancy": [{"native": "d1", "count": null}, {"native": "d2", "count": null}]}]);
     value["memberAttempts"] = serde_json::json!([{
         "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
         "setter": "accepted", "pre": null, "post": null,
@@ -1039,8 +1042,7 @@ fn native_attempt_keys_decode_tolerantly_gate_capability_and_bound() {
     // Present native keys decode with the capability on.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] =
-        serde_json::json!([{"out": "out", "order": ["space-277"], "current": "space-277"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["space-277"], "current": "space-277", "occupancy": [{"native": "space-277", "count": null}]}]);
     value["memberAttempts"] = serde_json::json!([{
         "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
         "setter": "accepted", "pre": null, "post": null,
@@ -1107,7 +1109,7 @@ fn native_attempt_keys_decode_tolerantly_gate_capability_and_bound() {
     // Space-style native ids on both attempt lanes.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["space-11", "space-277"], "current": "space-11"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["space-11", "space-277"], "current": "space-11", "occupancy": [{"native": "space-11", "count": null}, {"native": "space-277", "count": null}]}]);
     value["memberAttempts"] = serde_json::json!([{
         "op": "op-11", "win": "win-a", "out": "out", "ws": "ws-2",
         "setter": "accepted", "pre": null, "post": null,
@@ -1266,7 +1268,7 @@ fn reply_encode_matches_core_canonical_writer() {
     // The reply carries logical workspaces (stable core ids), screens as
     // outputs, and echo views.
     let parsed: WorldReplyWire = serde_json::from_str(&wire).expect("valid json");
-    assert_eq!(parsed.v, 2);
+    assert_eq!(parsed.v, 3);
     assert!(parsed.ready);
     assert!(!parsed.workspaces.is_empty());
     assert!(!parsed.outputs.is_empty());
@@ -1331,16 +1333,16 @@ fn native_current_null_strict_and_creation_attempts_decode() {
     // strings and missing keys refuse (no compatibility tolerance).
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": null}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": null, "occupancy": [{"native": "ws", "count": null}]}]);
     let report = decode_request(&value.to_string()).expect("null current decodes");
     assert_eq!(report.native[0].current_native, None);
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": ""}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "", "occupancy": [{"native": "ws", "count": null}]}]);
     assert!(decode_request(&value.to_string()).is_err());
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "occupancy": [{"native": "ws", "count": null}]}]);
     assert!(decode_request(&value.to_string()).is_err());
     // Creation attempts decode tolerantly (missing backfills) and strictly
     // when present; the estimate bounds the wire.
@@ -1348,7 +1350,7 @@ fn native_current_null_strict_and_creation_attempts_decode() {
     assert!(report.creation_attempts.is_empty());
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
     value["creationAttempts"] = serde_json::json!([{
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws", "ws-new"], "attemptMs": "5",
@@ -1371,13 +1373,13 @@ fn native_current_null_strict_and_creation_attempts_decode() {
 
 #[test]
 fn golden_bootstrap_reply_bytes_lock_wire_shape() {
-    // The discovery reply is fixed shape: v2, ready false, empty sections.
+    // The discovery reply is fixed shape: v3, ready false, empty sections.
     let engine = WorldEngine::new("gen-1").expect("generation");
     let reply = engine.bootstrap_reply("adapter-1", "req-1");
     let wire = encode_reply(&reply);
     assert_eq!(
         wire,
-        "{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
+        "{\"v\":3,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
          \"obs\":\"0\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\
          \"scopes\":[],\"workspaces\":[],\"outputs\":[],\"windows\":[],\
          \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\"warpCursor\":null,\
@@ -1612,7 +1614,7 @@ fn native_ws_field_decodes_and_gates() {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
         value["hostOwned"] = serde_json::Value::Bool(true);
-        value["native"] = serde_json::json!([{"out": "out", "order": ["d1"], "current": "d1"}]);
+        value["native"] = serde_json::json!([{"out": "out", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}]}]);
         value["windows"] = serde_json::json!([{
             "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
             "floating": false, "fitExcluded": false, "fullscreen": false,
@@ -1659,7 +1661,7 @@ fn native_ws_estimate_bounds_actual_wire() {
     // a wire message carrying a realistic Space-style id.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["9f1c-0005-space"], "current": "9f1c-0005-space"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["9f1c-0005-space"], "current": "9f1c-0005-space", "occupancy": [{"native": "9f1c-0005-space", "count": null}]}]);
     value["windows"] = serde_json::json!([{
         "win": "win-a", "out": "out", "rect": [0, 0, 200, 200],
         "floating": false, "fitExcluded": false, "fullscreen": false,
@@ -1692,7 +1694,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
         value["hostOwned"] = serde_json::Value::Bool(true);
-        value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+        value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
         let mut attempt = serde_json::json!({
             "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
             "before": ["ws"], "after": ["ws"], "attemptMs": "5",
@@ -1726,7 +1728,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
     // A missing key also backfills: predates-the-field adapters stay valid.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
     value["creationAttempts"] = serde_json::json!([{
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws"], "attemptMs": "5",
@@ -1745,7 +1747,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
     // Unknown receipt fields refuse.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["hostOwned"] = serde_json::Value::Bool(true);
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws"}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
     value["creationAttempts"] = serde_json::json!([{
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws"], "createdId": "ws-new", "attemptMs": "5",

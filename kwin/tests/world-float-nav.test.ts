@@ -158,21 +158,21 @@ function makeHarness(
             }
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const failed = (globalThis as Record<string, unknown>)["__takeFailed"] as { kind: string; message: string } | undefined;
                 if (failed !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeFailed"];
-                    callback(JSON.stringify({ v: 2, outcome: "failed", gen: "gen-1", globalCmd: "1", kind: failed.kind, message: failed.message }));
+                    callback(JSON.stringify({ v: 3, outcome: "failed", gen: "gen-1", globalCmd: "1", kind: failed.kind, message: failed.message }));
                     return;
                 }
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                 }
             }
         },
@@ -212,7 +212,7 @@ function makeHarness(
 }
 
 const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
+    v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
     gestureSettled: null,
     operationSettled: [], nativeCreations: [],
@@ -230,7 +230,7 @@ function discover(h: Harness, gen = "gen-1"): void {
     assert.ok(auto !== undefined);
     const autoBody = JSON.parse(auto.payload);
     auto.callback(JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: autoBody.source, obs: "1", rev: "1",
+        v: 3, adapter: "broker-1", gen, req: autoBody.source, obs: "1", rev: "1",
         ready: true, consumed: false,
         source: autoBody.source,
         nativeInvalid: autoBody.nativeInvalid,
@@ -342,7 +342,7 @@ describe("command-only directional intents for float subjects", () => {
         assert.ok(head !== undefined);
         const headBody = JSON.parse(head.payload) as Record<string, unknown>;
         head.callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen: "gen-1", req: headBody["source"], obs: "2", rev: "2",
+            v: 3, adapter: "broker-1", gen: "gen-1", req: headBody["source"], obs: "2", rev: "2",
             ready: true, consumed: false,
             source: headBody["source"],
             nativeInvalid: headBody["nativeInvalid"],
@@ -414,7 +414,7 @@ describe("command-only directional intents for float subjects", () => {
         assert.ok(head !== undefined);
         const headBody = JSON.parse(head.payload) as Record<string, unknown>;
         head.callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen: "gen-1", req: headBody["source"], obs: "2", rev: "2",
+            v: 3, adapter: "broker-1", gen: "gen-1", req: headBody["source"], obs: "2", rev: "2",
             ready: true, consumed: false,
             source: headBody["source"],
             nativeInvalid: headBody["nativeInvalid"],
@@ -445,7 +445,7 @@ describe("command-only directional intents for float subjects", () => {
             assert.ok(last !== undefined);
             const body = JSON.parse(last.payload) as Record<string, unknown>;
             last.callback(JSON.stringify({
-                v: 2, adapter: "broker-1", gen: "gen-1", req: body["source"], obs: "2", rev: "2",
+                v: 3, adapter: "broker-1", gen: "gen-1", req: body["source"], obs: "2", rev: "2",
                 ready: true, consumed: false,
                 source: body["source"],
                 nativeInvalid: body["nativeInvalid"],
@@ -544,7 +544,7 @@ describe("command-only directional intents for float subjects", () => {
         assert.ok(flight !== undefined);
         const body = JSON.parse(flight.payload) as Record<string, unknown>;
         flight.callback(JSON.stringify({
-            v: 2, adapter: "broker-1", gen: "gen-1", req: body["source"], obs: "2", rev: "2",
+            v: 3, adapter: "broker-1", gen: "gen-1", req: body["source"], obs: "2", rev: "2",
             ready: true, consumed: false,
             source: body["source"],
             nativeInvalid: body["nativeInvalid"],

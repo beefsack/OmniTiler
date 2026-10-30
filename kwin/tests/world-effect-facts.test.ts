@@ -86,7 +86,7 @@ function makeHarness() {
             if (method === "DiscoverWorld") {
                 const body = JSON.parse(payload) as { req: string };
                 callback(JSON.stringify({
-                    v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
+                    v: 3, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
                     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
                     windows: [], transfers: [], effects: [], result: null, gestureSettled: null,
                     operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -105,7 +105,7 @@ function makeHarness() {
                 const body = JSON.parse(payload) as { source: string; nativeInvalid: string };
                 describeRev += 1;
                 callback(JSON.stringify({
-                    v: 2, adapter: "broker-1", gen, req: body.source, obs: body.nativeInvalid, rev: String(describeRev),
+                    v: 3, adapter: "broker-1", gen, req: body.source, obs: body.nativeInvalid, rev: String(describeRev),
                     ready: true, consumed: false,
                     source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                     gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -333,7 +333,7 @@ describe("native effect presentation-facts waiter", () => {
             if (!mismatched) {
                 mismatched = true;
                 call.callback(JSON.stringify({
-                    v: 2, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
+                    v: 3, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
                     gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 }));
                 return;
@@ -342,7 +342,7 @@ describe("native effect presentation-facts waiter", () => {
             // Fall through to a production-shaped accept for this call.
             const rev = String(100 + h.describeCount());
             call.callback(JSON.stringify({
-                v: 2, adapter: "broker-1", gen: "gen-2", req: body.source, obs: body.nativeInvalid, rev,
+                v: 3, adapter: "broker-1", gen: "gen-2", req: body.source, obs: body.nativeInvalid, rev,
                 ready: true, consumed: false,
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
@@ -393,7 +393,7 @@ describe("native effect presentation-facts waiter", () => {
             if (!mismatched) {
                 mismatched = true;
                 call.callback(JSON.stringify({
-                    v: 2, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
+                    v: 3, outcome: "rejected", kind: "generation-mismatch", message: "superseded",
                     gen: "gen-1", source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 }));
                 return;
@@ -401,7 +401,7 @@ describe("native effect presentation-facts waiter", () => {
             h.setDescribeBehavior(null);
             const rev = String(100 + h.describeCount());
             call.callback(JSON.stringify({
-                v: 2, adapter: "broker-1", gen: "gen-2", req: body.source, obs: body.nativeInvalid, rev,
+                v: 3, adapter: "broker-1", gen: "gen-2", req: body.source, obs: body.nativeInvalid, rev,
                 ready: true, consumed: false,
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 gestureSettled: null, gestureAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,

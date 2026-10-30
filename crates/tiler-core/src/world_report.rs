@@ -12,10 +12,9 @@
 //! [`crate::world_sizing`] and re-export here, so downstream paths
 //! (`world_engine`, protocol codec) keep one stable import root.
 //!
-//! Contract version 2 is logical-first: the core owns stable logical
-//! workspace ids, and screens (FULL rectangles plus work areas) with window
-//! facts are the only observation prerequisites. Native workspace domains
-//! are an explicit capability-named opt-in observation, never authority.
+//! Contract version 3 is logical-first plus the required neutral
+//! all-native-window occupancy lane on every native row (complete,
+//! readable, or explicit unknown; strict coverage of each ordered id).
 
 pub use crate::world_sizing::{
     encode_reply_canonical, int_len, json_string_len, reply_estimate, reply_exact_bytes,
@@ -32,11 +31,14 @@ use crate::gesture::{GestureIngress, GestureSettled};
 use crate::session::{DomainKey, DragHoverPrior};
 use crate::workspace_scope::WorkspaceMode;
 
-/// World envelope version (single source for the wire `v`). Version 2 is
-/// the logical-first contract: stable core workspace ids authorize mapping,
-/// screens plus window facts are the only observation prerequisites, and
-/// native workspace domains are an explicit capability-named opt-in.
-pub const WORLD_CONTRACT_VERSION: u32 = 2;
+/// World envelope version (single source for the wire `v`). Version 3 is
+/// the logical-first contract plus the required neutral all-native-window
+/// occupancy lane: stable core workspace ids authorize mapping, screens
+/// plus window facts are the only observation prerequisites, native
+/// workspace domains are an explicit capability-named opt-in, and every
+/// native row carries an explicit occupancy row per ordered desktop
+/// (`count: null` is unknown, never an inferred zero).
+pub const WORLD_CONTRACT_VERSION: u32 = 3;
 /// D4 selected transport budget: 4 MiB request AND reply.
 pub const WORLD_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// D4 selected transport budget: 4 MiB request AND reply.
@@ -75,6 +77,10 @@ pub const MAX_PRESENTATION_ORDER: usize = 1024;
 /// Bound on host-scaled presentation style numbers per report: adapter DPI
 /// scaling already applied, so values stay in ordinary pixel range.
 pub const MAX_PRESENTATION_STYLE_PX: i32 = 1024;
+/// Bound on one native occupant count: neutral all-window occupancy per
+/// ordered desktop (managed, unmanaged, and deleted occupants alike).
+/// `None` on the wire (`null`) is explicit unknown, never an inferred zero.
+pub const MAX_NATIVE_OCCUPANTS_PER_DESKTOP: u32 = 10_000;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, set through
@@ -725,6 +731,15 @@ pub struct ScreenView {
     pub view: String,
 }
 
+/// Neutral all-native-window occupancy for one ordered desktop, independent
+/// of management. `None` (wire `null`) means unreadable or incomplete, never
+/// empty. Exact zero requires a complete readable native window inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeOccupancy {
+    pub native: String,
+    pub count: Option<u32>,
+}
+
 /// Host-owned native domain observation (optional, capability-gated): the
 /// adapter-observed native workspace order and current native view for one
 /// screen. Pure observation, never mapping authority: core logical
@@ -754,11 +769,14 @@ pub struct ScreenView {
 ///
 /// Capability-named note: `None` keeps the retained view; only ordered
 /// desktops in `native_order` ever adopt.
+/// `occupancy` is keyed coverage: exactly one row per ordered desktop, in
+/// any order. Unknown counts cannot prove native retirement eligibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeObservation {
     pub output: OutputId,
     pub native_order: Vec<String>,
     pub current_native: Option<String>,
+    pub occupancy: Vec<NativeOccupancy>,
 }
 
 /// Neutral host-owned native creation desire (capability-gated): one
@@ -1704,6 +1722,16 @@ pub fn report_digest(report: &WorldReport) -> u64 {
             feed(&mut hash, id);
             sep(&mut hash);
         }
+        for row in &native.occupancy {
+            feed(&mut hash, &row.native);
+            sep(&mut hash);
+            feed(
+                &mut hash,
+                &row.count.map(|count| count.to_string()).unwrap_or_default(),
+            );
+            sep(&mut hash);
+            flag(&mut hash, row.count.is_some());
+        }
     }
     feed(&mut hash, &report.monotonic_ms.to_string());
     sep(&mut hash);
@@ -2204,6 +2232,36 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
                     }
                     if !seen_ids.insert(id.clone()) {
                         return Some("duplicate-native");
+                    }
+                }
+            }
+            {
+                // v3 required complete occupancy: exactly one row per
+                // ordered id, no uncovered order id, no occupancy id
+                // outside the order, no duplicate occupancy rows.
+                // `count: None` is explicit unknown (never fabricated
+                // zero); exact zero is only valid on readable empty.
+                if native.occupancy.len() != native.native_order.len() {
+                    return Some("native-occupancy-incomplete");
+                }
+                let mut seen_occupancy = BTreeSet::new();
+                for row in &native.occupancy {
+                    if !is_opaque_id(&row.native) {
+                        return Some("native-occupancy-invalid");
+                    }
+                    if !seen_occupancy.insert(row.native.clone()) {
+                        return Some("duplicate-native-occupancy");
+                    }
+                    if row
+                        .count
+                        .is_some_and(|count| count > MAX_NATIVE_OCCUPANTS_PER_DESKTOP)
+                    {
+                        return Some("native-occupancy-invalid");
+                    }
+                }
+                for id in &native.native_order {
+                    if !seen_occupancy.contains(id) {
+                        return Some("native-occupancy-incomplete");
                     }
                 }
             }

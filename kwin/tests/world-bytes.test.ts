@@ -265,15 +265,15 @@ function startFlow(surface: object): Flow {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -314,7 +314,7 @@ function replyCall(flow: Flow, method: string): (reply: unknown) => void {
 
 function seedBinds(source: unknown, nativeInvalid: string, rev: string): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen: "gen-1", req: source,
+        v: 3, adapter: "broker-1", gen: "gen-1", req: source,
         obs: rev, rev, ready: true, consumed: false,
         source,
         nativeInvalid,
@@ -334,7 +334,7 @@ function seedBinds(source: unknown, nativeInvalid: string, rev: string): string 
 
 function bootstrap(gen: string, req: string): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
+        v: 3, adapter: "broker-1", gen, req, obs: "0", rev: "0",
         ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
@@ -345,7 +345,7 @@ function bootstrap(gen: string, req: string): string {
 
 function acceptEmpty(source: unknown, nativeInvalid: string, rev: string): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen: "gen-1", req: source,
+        v: 3, adapter: "broker-1", gen: "gen-1", req: source,
         obs: rev, rev, ready: true, consumed: false,
         source,
         nativeInvalid,
@@ -567,7 +567,7 @@ describe("world rejection log vocabulary", () => {
         const flow = startFlow(surface);
         replyCall(flow, "DiscoverWorld")(bootstrap("gen-1", "disc-1"));
         replyCall(flow, "DescribeWorld")(JSON.stringify({
-            v: 2, outcome: "rejected", kind: "snapshot-invalid", message, gen: "gen-1",
+            v: 3, outcome: "rejected", kind: "snapshot-invalid", message, gen: "gen-1",
             source: "", nativeInvalid: "0", clock: "0",
         }));
         const logs = [...flow.logs];

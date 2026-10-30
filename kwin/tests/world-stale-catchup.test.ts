@@ -194,15 +194,15 @@ function makeHarness(): Harness {
             calls.push({ method, payload, callback });
             if (method === "QueueWorldCommand") {
                 const queueBody = JSON.parse(payload) as Record<string, unknown>;
-                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                callback(JSON.stringify({ v: 3, outcome: "queued", gen: "gen-1",
                     client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
             } else if (method === "TakeCommandResult") {
                 const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
                 if (stagedTake !== undefined) {
                     delete (globalThis as Record<string, unknown>)["__takeResult"];
-                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
                 } else {
-                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
                 }            }
         },
         scheduleOnce: (delay, cb) => {
@@ -256,7 +256,7 @@ function discover(h: Harness, gen = "gen-1"): void {
     assert.ok(disc !== undefined);
     const req = (JSON.parse(disc.payload) as Record<string, unknown>)["req"];
     disc.callback(JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req,
+        v: 3, adapter: "broker-1", gen, req,
         obs: "0", rev: "0", ready: false, consumed: false,
         gestureSettled: null,
         operationSettled: [], nativeCreations: [],
@@ -273,7 +273,7 @@ function discover(h: Harness, gen = "gen-1"): void {
 
 function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: string, extra: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
+        v: 3, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
         ready: true, consumed: false,
         source: dispatched["source"],
         nativeInvalid: dispatched["nativeInvalid"],
@@ -294,7 +294,7 @@ function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: st
 // differing controlled frame, a view transfer, and a focus effect.
 function staleReply(gen: string, dispatched: Record<string, unknown>, rev: string, overrides: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
+        v: 3, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
         ready: true, consumed: false,
         source: dispatched["source"],
         nativeInvalid: dispatched["nativeInvalid"],

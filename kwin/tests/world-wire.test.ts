@@ -1,13 +1,13 @@
-// Integrated wire coverage (strict v2, sole broker): the ACTUAL production
+// Integrated wire coverage (strict v3, sole broker): the ACTUAL production
 // entry's wire shapes must equal the exact Rust broker contract, and ACTUAL
 // Rust-shaped bound replies must parse through the TS parser and apply.
 // Offline only: scripted in-memory transport, no D-Bus, no KWin.
 //
-// Flow under test: DiscoverWorld {v:2,adapter,req} -> bootstrap (broker
+// Flow under test: DiscoverWorld {v:3,adapter,req} -> bootstrap (broker
 // incarnation + gen) -> DescribeWorld envelope
-// {v:2,adapter,gen,source,nativeInvalid,report} with a commandless inner
+// {v:3,adapter,gen,source,nativeInvalid,report} with a commandless inner
 // report -> bound core reply + source/nativeInvalid/clock -> user commands
-// via QueueWorldCommand {v:2,client,clientCmd,command} drained by the next
+// via QueueWorldCommand {v:3,client,clientCmd,command} drained by the next
 // fresh capture, terminal results requester-only via TakeCommandResult.
 
 import { describe, it } from "node:test";
@@ -146,7 +146,7 @@ function lastCall(calls: Call[], method: string): Call {
 
 function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: string, extra: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
+        v: 3, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
         ready: true, consumed: false,
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [], outputs: [],
@@ -171,7 +171,7 @@ function discoverFlow(flow: ReturnType<typeof startFlow>, gen = "gen-1"): { inca
     const bootReq = (JSON.parse(disc.payload) as Record<string, unknown>)["req"] as string;
     assert.deepEqual(JSON.parse(disc.payload), JSON.parse(buildDiscoveryRequest("test-adapter", bootReq)));
     disc.callback(JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: bootReq,
+        v: 3, adapter: "broker-1", gen, req: bootReq,
         obs: "0", rev: "0", ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
@@ -199,21 +199,21 @@ function isCanonicalU64(text: unknown): boolean {
 const BROKER_KEYS = ["owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"];
 
 describe("world wire fixture (TS construction <-> Rust codec)", () => {
-    it("production entry discovery is strict v2 and binds the broker incarnation", () => {
+    it("production entry discovery is strict v3 and binds the broker incarnation", () => {
         const flow = startFlow();
         const { incarnation } = discoverFlow(flow);
         assert.equal(incarnation, "broker-1");
         // Discovery binds generation: the auto capture carries it.
         const auto = lastCall(flow.calls, "DescribeWorld");
         const body = JSON.parse(auto.payload) as Record<string, unknown>;
-        assert.equal(body["v"], 2);
+        assert.equal(body["v"], 3);
         assert.equal(body["adapter"], "test-adapter");
         assert.equal(body["gen"], "gen-1");
         assert.ok(isCanonicalU64(body["nativeInvalid"]));
         flow.handle.stop();
     });
 
-    it("production entry capture is a commandless v2 envelope with a full projected inner report", () => {
+    it("production entry capture is a commandless v3 envelope with a full projected inner report", () => {
         const flow = startFlow();
         discoverFlow(flow);
         const auto = lastCall(flow.calls, "DescribeWorld");
@@ -223,7 +223,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
             [...Object.keys(body)].sort(),
             ["adapter", "gen", "nativeInvalid", "report", "source", "sourceSeq", "v"].sort(),
         );
-        assert.equal(body["v"], 2);
+        assert.equal(body["v"], 3);
         // Per-capture sequence mints 1-based alongside the source: the
         // first capture of the lifetime carries "1".
         assert.equal(body["sourceSeq"], "1");
@@ -282,7 +282,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const queue = lastCall(flow.calls, "QueueWorldCommand");
         const filed = JSON.parse(queue.payload) as Record<string, unknown>;
         queue.callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: filed["client"], clientCmd: filed["clientCmd"], globalCmd: "1",
         }));
         const drained = lastCall(flow.calls, "DescribeWorld");
@@ -299,7 +299,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const inner = (JSON.parse(auto.payload) as Record<string, unknown>)["report"] as Record<string, unknown>;
         // Re-encode through the shared builder path shape: the same keys,
         // the same v2 version, no broker namespace.
-        assert.equal(inner["v"], 2);
+        assert.equal(inner["v"], 3);
         assert.equal(inner["mode"], "per-output-local");
         assert.equal(inner["switchTarget"], "focused-output");
         assert.equal(inner["freshPlacement"], "focused-output-last-focused");
@@ -354,7 +354,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const queue = lastCall(flow.calls, "QueueWorldCommand");
         const filed = JSON.parse(queue.payload) as Record<string, unknown>;
         assert.deepEqual([...Object.keys(filed)].sort(), ["client", "clientCmd", "command", "gen", "v"].sort());
-        assert.equal(filed["v"], 2);
+        assert.equal(filed["v"], 3);
         assert.equal(filed["gen"], "gen-1", "queue binds the serving generation");
         assert.ok(isCanonicalU64(filed["clientCmd"]));
         const command = filed["command"] as Record<string, unknown>;
@@ -364,7 +364,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.deepEqual(command["source"], { implicit: "home-then-cached-live" });
         // Reply queued: the entry drains with a fresh commandless capture.
         queue.callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: filed["client"], clientCmd: filed["clientCmd"], globalCmd: "1",
         }));
         const drained = lastCall(flow.calls, "DescribeWorld");
@@ -377,10 +377,10 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const take = lastCall(flow.calls, "TakeCommandResult");
         const takeBody = JSON.parse(take.payload) as Record<string, unknown>;
         assert.deepEqual(takeBody, {
-            v: 2, gen: "gen-1", client: filed["client"], clientCmd: filed["clientCmd"],
+            v: 3, gen: "gen-1", client: filed["client"], clientCmd: filed["clientCmd"],
         });
-        take.callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
-        const parsedTake = parseWorldReply(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
+        take.callback(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
+        const parsedTake = parseWorldReply(JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }));
         assert.ok(parsedTake !== null && !isWorldRejection(parsedTake) && !isCoreWorldReply(parsedTake) && !isWorldQueueReply(parsedTake));
         flow.handle.stop();
     });
@@ -396,7 +396,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
     // coverage the cached capture covered (nulls when unproven).
     function projectPresentation(gen: string, req: string, rev: string, obs: string): string {
         return JSON.stringify({
-            v: 2, outcome: "presentation", gen, req, rev, obs,
+            v: 3, outcome: "presentation", gen, req, rev, obs,
             coveredInstance: "effect-1", coveredInvalid: "5",
             scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
             workspaces: [{ id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
@@ -481,9 +481,9 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         }
         // Core full-state shape never parses as presentation (no outcome).
         const coreShaped = parseWorldReply(acceptCapture("gen-1", {
-            v: 2, adapter: "test-adapter", gen: "gen-1",
+            v: 3, adapter: "test-adapter", gen: "gen-1",
             source: "src-1", sourceSeq: "1", nativeInvalid: "1",
-            report: { v: 2 },
+            report: { v: 3 },
         }, "1"));
         assert.ok(coreShaped !== null && isCoreWorldReply(coreShaped));
     });
@@ -557,7 +557,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.equal(queues.length, 2, "exactly one redelivery, no duplicate numbering");
         assert.equal((queues[1] as { payload: string }).payload, firstPayload, "redelivery is byte-identical");
         (queues[1] as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: firstBody["client"], clientCmd: firstBody["clientCmd"], globalCmd: "1",
         }));
         const drained = lastCall(flow.calls, "DescribeWorld");
@@ -570,7 +570,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const takeBody = JSON.parse((takes[0] as { payload: string }).payload) as Record<string, unknown>;
         assert.equal(takeBody["clientCmd"], firstBody["clientCmd"]);
         (takes[0] as { callback: (reply: unknown) => void }).callback(
-            JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }),
+            JSON.stringify({ v: 3, outcome: "ready", gen: "gen-1", globalCmd: "1", result: null }),
         );
         flow.handle.stop();
     });
@@ -596,10 +596,10 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         // Codec level: pending and ready-null are distinct terminal
         // shapes; a null result is success, never a failure.
         assert.deepEqual(
-            parseWorldReply('{"v":2,"outcome":"pending","gen":"gen-1"}'),
+            parseWorldReply('{"v":3,"outcome":"pending","gen":"gen-1"}'),
             { outcome: "pending", gen: "gen-1" },
         );
-        const readyNull = parseWorldReply('{"v":2,"outcome":"ready","gen":"gen-1","globalCmd":"3","result":null}');
+        const readyNull = parseWorldReply('{"v":3,"outcome":"ready","gen":"gen-1","globalCmd":"3","result":null}');
         assert.ok(readyNull !== null && (readyNull as { outcome?: unknown }).outcome === "ready");
         // Entry level: a pending take still applies the accepted snapshot
         // (the command stays undecided server-side) and a later null
@@ -609,14 +609,14 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const queue = lastCall(flow.calls, "QueueWorldCommand");
         const filed = JSON.parse(queue.payload) as Record<string, unknown>;
         queue.callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: filed["client"], clientCmd: filed["clientCmd"], globalCmd: "1",
         }));
         const drained = lastCall(flow.calls, "DescribeWorld");
         const drainedBody = JSON.parse(drained.payload) as Record<string, unknown>;
         drained.callback(acceptCapture("gen-1", drainedBody, "2"));
         const take = lastCall(flow.calls, "TakeCommandResult");
-        take.callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+        take.callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
         assert.ok(flow.world.geometryWrites.some((w) => w.startsWith("win-a@10,10")), "pending take still applies");
         flow.handle.stop();
     });
@@ -649,7 +649,16 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const golden = JSON.parse(readFileSync(join("..", "test-fixtures", "world-wire", "reply-golden.json"), "utf8")) as Record<string, unknown>;
         const clone = (): Record<string, unknown> => JSON.parse(JSON.stringify(golden)) as Record<string, unknown>;
         // Legacy rows carry no key on either lane: absent means false.
-        const legacy = parseWorldReply(JSON.stringify(golden));
+        const unmarked = clone();
+        for (const row of unmarked["workspaces"] as Array<Record<string, unknown>>) {
+            delete row["trailing"];
+        }
+        for (const output of (unmarked["presentation"] as Record<string, unknown>)["pager"] as Array<Record<string, unknown>>) {
+            for (const row of output["workspaces"] as Array<Record<string, unknown>>) {
+                delete row["trailing"];
+            }
+        }
+        const legacy = parseWorldReply(JSON.stringify(unmarked));
         assert.ok(legacy !== null && isCoreWorldReply(legacy));
         if (!isCoreWorldReply(legacy)) {
             return;
@@ -687,24 +696,24 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
             null,
         );
         assert.equal(
-            parseWorldReply('{"v":2,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"1","globalCmd":"1","extra":1}'),
+            parseWorldReply('{"v":3,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"1","globalCmd":"1","extra":1}'),
             null,
         );
         assert.equal(
-            parseWorldReply('{"v":2,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"03","globalCmd":"1"}'),
+            parseWorldReply('{"v":3,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"03","globalCmd":"1"}'),
             null,
             "non-canonical clientCmd refuses",
         );
         const takeReq = JSON.parse(buildTakeRequest("c", "gen-1", "4")) as Record<string, unknown>;
-        assert.deepEqual(takeReq, { v: 2, gen: "gen-1", client: "c", clientCmd: "4" });
+        assert.deepEqual(takeReq, { v: 3, gen: "gen-1", client: "c", clientCmd: "4" });
         assert.equal(
-            parseWorldReply('{"v":2,"outcome":"ready","gen":"gen-1","globalCmd":"07","result":null}'),
+            parseWorldReply('{"v":3,"outcome":"ready","gen":"gen-1","globalCmd":"07","result":null}'),
             null,
         );
         assert.ok(isWorldQueueReply(parseWorldReply(
-            '{"v":2,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"1","globalCmd":"9"}',
+            '{"v":3,"outcome":"queued","gen":"gen-1","client":"c","clientCmd":"1","globalCmd":"9"}',
         )));
         const queueReq = JSON.parse(buildQueueRequest("c", "gen-1", "1", { op: "focus", win: "w", direction: "left" })) as Record<string, unknown>;
-        assert.deepEqual(queueReq, { v: 2, gen: "gen-1", client: "c", clientCmd: "1", command: { op: "focus", win: "w", direction: "left" } });
+        assert.deepEqual(queueReq, { v: 3, gen: "gen-1", client: "c", clientCmd: "1", command: { op: "focus", win: "w", direction: "left" } });
     });
 });

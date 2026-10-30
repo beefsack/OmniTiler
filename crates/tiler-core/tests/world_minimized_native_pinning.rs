@@ -14,8 +14,8 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    HoldReason, NativeObservation, ScopeAuthority, WORLD_CONTRACT_VERSION, WindowFact,
-    WorldCommand, WorldReport,
+    HoldReason, NativeObservation, NativeOccupancy, ScopeAuthority, WORLD_CONTRACT_VERSION,
+    WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -175,6 +175,13 @@ fn native_obs(output: &str, order: &[&str], current: Option<&str>) -> NativeObse
         output: OutputId(output.to_owned()),
         native_order: order.iter().map(|s| (*s).to_owned()).collect(),
         current_native: current.map(str::to_owned),
+        occupancy: order
+            .iter()
+            .map(|s| NativeOccupancy {
+                native: (*s).to_owned(),
+                count: None,
+            })
+            .collect(),
     }
 }
 

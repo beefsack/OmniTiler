@@ -3336,6 +3336,10 @@ fn host_owned_capability_gates_native_observations() {
         output: OutputId("out-a".to_owned()),
         native_order: vec!["ws".to_owned()],
         current_native: Some("ws".to_owned()),
+        occupancy: vec![crate::world_report::NativeOccupancy {
+            native: "ws".to_owned(),
+            count: None,
+        }],
     });
     match engine.handle_report(&bad) {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
@@ -3362,6 +3366,10 @@ fn host_owned_capability_gates_native_observations() {
         output: OutputId("out-a".to_owned()),
         native_order: vec!["ws".to_owned()],
         current_native: Some("ws".to_owned()),
+        occupancy: vec![crate::world_report::NativeOccupancy {
+            native: "ws".to_owned(),
+            count: None,
+        }],
     });
     let reply = accepted(&mut engine, &good);
     assert!(reply.ready);

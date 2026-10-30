@@ -1,4 +1,4 @@
-// External-command wait wake delivery (B1, strict v2): a foreign queued
+// External-command wait wake delivery (B1, strict v3): a foreign queued
 // command completes the long-held WaitWorldWake, and the adapter drains it
 // with a fresh capture WITHOUT any native event. Re-arming, lease,
 // watchdog, stale, in-flight, and rotation behavior included. Offline only:
@@ -195,7 +195,7 @@ function liveHostTimers(flow: ReturnType<typeof startFlow>): number {
 
 function bootstrap(gen: string, req: string): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req,
+        v: 3, adapter: "broker-1", gen, req,
         obs: "0", rev: "0", ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
@@ -210,7 +210,7 @@ function acceptCapture(
     rev: string,
 ): string {
     return JSON.stringify({
-        v: 2, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
+        v: 3, adapter: "broker-1", gen, req: envelope["source"], obs: rev, rev,
         ready: true, consumed: false,
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [], outputs: [],
@@ -224,23 +224,23 @@ function acceptCapture(
 
 function captureRejection(gen: string, envelope: Record<string, unknown>): string {
     return JSON.stringify({
-        v: 2, outcome: "rejected", kind: "snapshot-invalid",
+        v: 3, outcome: "rejected", kind: "snapshot-invalid",
         message: "snapshot is invalid", gen,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
     });
 }
 
 function wakeReply(gen: string, cursor: string): string {
-    return JSON.stringify({ v: 2, outcome: "wake", gen, cursor });
+    return JSON.stringify({ v: 3, outcome: "wake", gen, cursor });
 }
 
 function leaseReply(gen: string, cursor: string): string {
-    return JSON.stringify({ v: 2, outcome: "lease", gen, cursor });
+    return JSON.stringify({ v: 3, outcome: "lease", gen, cursor });
 }
 
 function generationMismatch(gen: string): string {
     return JSON.stringify({
-        v: 2, outcome: "rejected", kind: "generation-mismatch",
+        v: 3, outcome: "rejected", kind: "generation-mismatch",
         message: "generation mismatch", gen, source: "", nativeInvalid: "0", clock: "1",
     });
 }
@@ -340,7 +340,7 @@ describe("external-command wait wake delivery", () => {
         runShortTimers(flow);
         const queued = lastCall(flow.calls, "QueueWorldCommand");
         queued.callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(queued.payload) as Record<string, unknown>)["client"],
             clientCmd: (JSON.parse(queued.payload) as Record<string, unknown>)["clientCmd"],
             globalCmd: "1",
@@ -437,7 +437,7 @@ describe("external-command wait wake delivery", () => {
         runShortTimers(flow);
         const queued = lastCall(flow.calls, "QueueWorldCommand");
         queued.callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(queued.payload) as Record<string, unknown>)["client"],
             clientCmd: (JSON.parse(queued.payload) as Record<string, unknown>)["clientCmd"],
             globalCmd: "1",
@@ -458,7 +458,7 @@ describe("external-command wait wake delivery", () => {
         const body = JSON.parse(flight.payload) as Record<string, unknown>;
         flight.callback(acceptCapture("gen-1", body, "2"));
         const take = lastCall(flow.calls, "TakeCommandResult");
-        take.callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+        take.callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
         runShortTimers(flow);
         assert.equal(
             countCalls(flow.calls, "DescribeWorld"),
@@ -508,7 +508,7 @@ describe("external-command wait wake delivery", () => {
                 if (c.method === "WaitWorldWake" && (c as unknown as Record<string, unknown>)["answered"] !== true) {
                     (c as unknown as Record<string, unknown>)["answered"] = true;
                     c.callback(JSON.stringify({
-                        v: 2, outcome: "rejected", kind: "unknown-adapter",
+                        v: 3, outcome: "rejected", kind: "unknown-adapter",
                         message: "unknown adapter", gen: "gen-1",
                         source: "", nativeInvalid: "0", clock: "1",
                     }));
@@ -566,7 +566,7 @@ describe("external-command wait wake delivery", () => {
         const queued = lastCall(flow.calls, "QueueWorldCommand");
         assert.equal((JSON.parse(queued.payload) as Record<string, unknown>)["gen"], "gen-1");
         queued.callback(JSON.stringify({
-            v: 2, outcome: "queued", gen: "gen-1",
+            v: 3, outcome: "queued", gen: "gen-1",
             client: (JSON.parse(queued.payload) as Record<string, unknown>)["client"],
             clientCmd: (JSON.parse(queued.payload) as Record<string, unknown>)["clientCmd"],
             globalCmd: "7",
@@ -574,7 +574,7 @@ describe("external-command wait wake delivery", () => {
         const drain = lastCall(flow.calls, "DescribeWorld");
         drain.callback(acceptCapture("gen-1", JSON.parse(drain.payload) as Record<string, unknown>, "9"));
         const take = lastCall(flow.calls, "TakeCommandResult");
-        take.callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+        take.callback(JSON.stringify({ v: 3, outcome: "pending", gen: "gen-1" }));
         assert.ok(flow.logs.some((l) => l.startsWith("omnitiler:world:applied rev=9")));
         flow.handle.stop();
     });
@@ -586,7 +586,7 @@ describe("external-command wait wake delivery", () => {
             for (const c of flow.calls) {
                 if (c.method === "WaitWorldWake" && (c as unknown as Record<string, unknown>)["answered"] !== true) {
                     (c as unknown as Record<string, unknown>)["answered"] = true;
-                    c.callback(JSON.stringify({ v: 2, outcome: "superseded", gen: "gen-1" }));
+                    c.callback(JSON.stringify({ v: 3, outcome: "superseded", gen: "gen-1" }));
                 }
             }
         };
@@ -691,12 +691,12 @@ describe("external-command wait wake delivery", () => {
             parseWorldReply(leaseReply("w-1", "4")),
             { outcome: "lease", gen: "w-1", cursor: "4" },
         );
-        const superseded = { v: 2, outcome: "superseded", gen: "w-1" };
+        const superseded = { v: 3, outcome: "superseded", gen: "w-1" };
         assert.ok(isWorldWaitReply(parseWorldReply(JSON.stringify(superseded))));
         assert.equal(parseWorldReply(JSON.stringify({ v: 1, outcome: "wake", gen: "w-1", cursor: "4" })), null);
-        assert.equal(parseWorldReply(JSON.stringify({ v: 2, outcome: "wake", gen: "w-1", cursor: "04" })), null);
+        assert.equal(parseWorldReply(JSON.stringify({ v: 3, outcome: "wake", gen: "w-1", cursor: "04" })), null);
         assert.equal(
-            parseWorldReply(JSON.stringify({ v: 2, outcome: "wake", gen: "w-1", cursor: "4", extra: 1 })),
+            parseWorldReply(JSON.stringify({ v: 3, outcome: "wake", gen: "w-1", cursor: "4", extra: 1 })),
             null,
         );
         assert.ok(!isWorldWaitReply(parseWorldReply(generationMismatch("w-1"))));

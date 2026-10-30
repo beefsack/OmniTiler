@@ -314,7 +314,7 @@ pending:
   adapters stop sampling current and sending an explicit `Send`. The explicit
   `Send` contract stays unchanged. Check KDE and macOS for the same pattern so
   one shared intent serves all; if the intent crosses the wire, it joins the
-  coordinated v3 bump
+  coordinated v4 bump
   ([audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
 - **Synthetic shortcuts for testing:** an opt-in startup flag lets the normal
   owner accept injected shortcuts with fixture scope; default unchanged. No
@@ -3988,7 +3988,7 @@ platform API behavior.
   tabs with own evidence when designed. No tab or stack carrier, controls,
   or bindings are selected. (User decision 2026-10-09: Custom Tile
   stability-proof precondition removed; first item after 0.1 unchanged.)
-- **User 2026-10-29:** full tab core/protocol stays after 0.1. Coordinated v3
+- **User 2026-10-29:** full tab core/protocol stays after 0.1. Coordinated v4
   is visibility-ready: per-window suppression authority/correlation independent
   of workspace ownership, its own capability flag, core-composed workspace vs
   inactive-tab suppression, and truthful hidden observations. A later tab
@@ -5631,8 +5631,24 @@ User-approved 2026-10-24; core implementation delivered, native acceptance TBD:
   occupants), every output's view/trailing/protection checks, readable facts only,
   required equal-count padding and the minimum-two floor. Unmapped desktops
   remain outside management; KDE applies core eligibility mechanically. This
-  supersedes blanket native-bound retention as policy; implementation pending
+  supersedes blanket native-bound retention as policy; delivered offline
   ([investigation](changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29)).
+- **User 2026-10-29:** adapters report neutral complete/readable native
+  occupancy for all windows, including unmanaged occupants, or explicit unknown.
+  Core retains logical rows and bindings until native deletion readback confirms;
+  KDE preserves fresh safety vetoes. No adapter-owned occupant eligibility or
+  version-2 side channel. This coordinated exact cutover is v3; the planned
+  Windows visibility cutover becomes v4. `keepAboveTiles: null|false|true`
+  belongs to the same v3 but remains a separate implementation follow-up.
+- **User 2026-10-29, padding option 1:** retain a bound row needed for required
+  equal-count padding; never delete and replace it with logical-only padding.
+  Joint reductions are allowed where parity survives. Staggered native-absence
+  readback clears the absent binding but preserves the old logical identity
+  while needed for parity. Surviving logical/native identities remain stable
+  while ordinal positions compact. Shared-mode parity counts the mirrored
+  logical footprint separately from each output's native minimum-two floor.
+  [Offline retirement evidence](changes/kde-world-v2-port.md#native-retirement-implementation-2026-10-29);
+  native/physical outcomes remain TBD.
 - **Tentative native attempt settlement (option 1), user-selected 2026-10-25;
   review after KDE and macOS land:** optional capability-gated native
   before/after/baseline ids extend `MemberAttempt`/`ViewAttempt`. Non-null

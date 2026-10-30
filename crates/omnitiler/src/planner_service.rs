@@ -1774,7 +1774,7 @@ mod tests {
         let discovery: serde_json::Value = serde_json::from_str(&call_intent(
             &owner_proxy,
             DISCOVERY_METHOD,
-            r#"{"v":2,"adapter":"test-adapter","req":"d-1"}"#,
+            r#"{"v":3,"adapter":"test-adapter","req":"d-1"}"#,
         ))
         .expect("discovery reply is JSON");
         assert_eq!(discovery["ready"], false);
@@ -1787,9 +1787,9 @@ mod tests {
             &outsider_proxy,
             WORLD_METHOD,
             &format!(
-                "{{\"v\":2,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
+                "{{\"v\":3,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
                   \"source\":\"outsider-1\",\"sourceSeq\":\"1\",\
-                  \"nativeInvalid\":\"1\",\"report\":{{\"v\":2}}}}"
+                  \"nativeInvalid\":\"1\",\"report\":{{\"v\":3}}}}"
             ),
         ))
         .expect("rejection is JSON");
@@ -1798,7 +1798,7 @@ mod tests {
         let denied: serde_json::Value = serde_json::from_str(&call_intent(
             &outsider_proxy,
             DISCOVERY_METHOD,
-            r#"{"v":2,"adapter":"outsider","req":"d-9"}"#,
+            r#"{"v":3,"adapter":"outsider","req":"d-9"}"#,
         ))
         .expect("rejection is JSON");
         assert_eq!(denied["outcome"], "rejected");
@@ -1808,7 +1808,7 @@ mod tests {
         let not_ready: serde_json::Value = serde_json::from_str(&call_intent(
             &outsider_proxy,
             READ_METHOD,
-            r#"{"v":2,"req":"r-0"}"#,
+            r#"{"v":3,"req":"r-0"}"#,
         ))
         .expect("rejection is JSON");
         assert_eq!(not_ready["outcome"], "rejected");
@@ -1818,14 +1818,14 @@ mod tests {
             &outsider_proxy,
             QUEUE_METHOD,
             &format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
                  \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
             ),
         ))
         .expect("queue reply is JSON");
         assert_eq!(queued["outcome"], "queued");
         // The owner's fresh capture drains the outsider's queued command.
-        let inner = "{\"v\":2,\"mode\":\"per-output-local\",\
+        let inner = "{\"v\":3,\"mode\":\"per-output-local\",\
           \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}],\
           \"windows\":[],\"views\":[{\"out\":\"DP-1\",\"view\":\"\"}],\"closed\":[],\
@@ -1842,7 +1842,7 @@ mod tests {
           \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
           \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}";
         let envelope = format!(
-            "{{\"v\":2,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
+            "{{\"v\":3,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
               \"source\":\"actuator-1\",\"sourceSeq\":\"1\",\
               \"nativeInvalid\":\"1\",\"report\":{inner}}}"
         );
@@ -1860,7 +1860,7 @@ mod tests {
             &owner_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
             ),
         ))
         .expect("take reply is JSON");
@@ -1872,7 +1872,7 @@ mod tests {
             &outsider_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
             ),
         ))
         .expect("take reply is JSON");
@@ -1880,7 +1880,7 @@ mod tests {
         let projection: serde_json::Value = serde_json::from_str(&call_intent(
             &owner_proxy,
             READ_METHOD,
-            r#"{"v":2,"req":"pager-1"}"#,
+            r#"{"v":3,"req":"pager-1"}"#,
         ))
         .expect("presentation reply is JSON");
         assert_eq!(projection["outcome"], "presentation");
@@ -1924,13 +1924,13 @@ mod tests {
         let discovery: serde_json::Value = serde_json::from_str(&call_intent(
             &owner_proxy,
             DISCOVERY_METHOD,
-            r#"{"v":2,"adapter":"test-adapter","req":"d-wait-e2e"}"#,
+            r#"{"v":3,"adapter":"test-adapter","req":"d-wait-e2e"}"#,
         ))
         .expect("discovery reply is JSON");
         assert_eq!(discovery["ready"], false);
         let generation = discovery["gen"].as_str().expect("gen").to_owned();
         let wait_req = format!(
-            "{{\"v\":2,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+            "{{\"v\":3,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
               \"nonce\":\"wait-e2e-1\",\"cursor\":\"0\"}}"
         );
         // Park the KWin-owner waiter on its own thread: the blocking proxy
@@ -1952,7 +1952,7 @@ mod tests {
             &outsider_proxy,
             WAIT_METHOD,
             &format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+                "{{\"v\":3,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
                   \"nonce\":\"wait-outsider\",\"cursor\":\"0\"}}"
             ),
         ))
@@ -1966,7 +1966,7 @@ mod tests {
             &outsider_proxy,
             QUEUE_METHOD,
             &format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                   \"clientCmd\":\"1\",\
                   \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
             ),
@@ -1987,14 +1987,14 @@ mod tests {
             &outsider_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                   \"clientCmd\":\"1\"}}"
             ),
         ))
         .expect("take reply is JSON");
         assert_eq!(pending["outcome"], "pending");
         // The follow-up capture drains exactly once for the issuer.
-        let inner = "{\"v\":2,\"mode\":\"per-output-local\",\
+        let inner = "{\"v\":3,\"mode\":\"per-output-local\",\
           \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}],\
           \"windows\":[],\"views\":[{\"out\":\"DP-1\",\"view\":\"\"}],\"closed\":[],\
@@ -2011,7 +2011,7 @@ mod tests {
           \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
           \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}";
         let envelope = format!(
-            "{{\"v\":2,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
+            "{{\"v\":3,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
               \"source\":\"actuator-1\",\"sourceSeq\":\"1\",\
               \"nativeInvalid\":\"1\",\"report\":{inner}}}"
         );
@@ -2023,7 +2023,7 @@ mod tests {
             &outsider_proxy,
             TAKE_METHOD,
             &format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
                   \"clientCmd\":\"1\"}}"
             ),
         ))

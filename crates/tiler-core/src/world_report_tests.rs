@@ -1,4 +1,4 @@
-//! World report shape tests (contract v2): digest stability, validation
+//! World report shape tests (contract v3): digest stability, validation
 //! gates, and typed fixtures through the report constructors.
 //!
 //! Split from [`crate::world_report`]: submodule of the report module with
@@ -129,6 +129,10 @@ fn digest_covers_every_section() {
         output: OutputId("out".to_owned()),
         native_order: vec!["ws".to_owned()],
         current_native: Some("ws".to_owned()),
+        occupancy: vec![NativeOccupancy {
+            native: "ws".to_owned(),
+            count: None,
+        }],
     });
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
@@ -312,6 +316,7 @@ fn validation_gates_shapes() {
         output: OutputId("out".to_owned()),
         native_order: Vec::new(),
         current_native: None,
+        occupancy: Vec::new(),
     });
     assert_eq!(
         validate_report_reason(&bad),
@@ -341,6 +346,16 @@ fn validation_gates_shapes() {
         output: OutputId("out".to_owned()),
         native_order: vec!["d1".to_owned(), "d1".to_owned()],
         current_native: Some("d1".to_owned()),
+        occupancy: vec![
+            NativeOccupancy {
+                native: "d1".to_owned(),
+                count: None,
+            },
+            NativeOccupancy {
+                native: "d1".to_owned(),
+                count: None,
+            },
+        ],
     });
     assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
     // Contradictory native rows for the same output refuse.
@@ -349,11 +364,19 @@ fn validation_gates_shapes() {
         output: OutputId("out".to_owned()),
         native_order: vec!["d1".to_owned()],
         current_native: None,
+        occupancy: vec![NativeOccupancy {
+            native: "d1".to_owned(),
+            count: None,
+        }],
     });
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
         native_order: vec!["d2".to_owned()],
         current_native: None,
+        occupancy: vec![NativeOccupancy {
+            native: "d2".to_owned(),
+            count: None,
+        }],
     });
     assert_eq!(validate_report_reason(&bad), Some("duplicate-native"));
     // Native on unknown screen refuses.
@@ -362,6 +385,7 @@ fn validation_gates_shapes() {
         output: OutputId("out".to_owned()),
         native_order: Vec::new(),
         current_native: None,
+        occupancy: Vec::new(),
     });
     bad.native[0].output = OutputId("nope".to_owned());
     assert_eq!(validate_report_reason(&bad), Some("native-output-unknown"));

@@ -30,10 +30,10 @@
 //!   alongside it so a renderer without take-lane authority can paint
 //!   exactly what core published.
 //!
-//! Wire shapes (strict v2, no v1 compatibility route):
+//! Wire shapes (strict v3, no v1 compatibility route):
 //!
 //! ```text
-//! discovery: {"v":2,"adapter":A,"req":R}
+//! discovery: {"v":3,"adapter":A,"req":R}
 //!   `adapter` is the producer capture lifetime (the actuator's opaque
 //!   incarnation, e.g. `kwin-world-adapter-...`), NOT the broker
 //!   incarnation. Discovery binds exactly one active lifetime: rediscovery
@@ -42,9 +42,9 @@
 //!   capture/queue/result/presentation state dropped) so no old capture can
 //!   ever apply again. Replies `ready=false` with the serving generation,
 //!   the broker incarnation in `adapter`, and no applicable desired state.
-//! capture:  {"v":2,"adapter":A,"gen":G,"source":S,"sourceSeq":Q,
+//! capture:  {"v":3,"adapter":A,"gen":G,"source":S,"sourceSeq":Q,
 //!            "nativeInvalid":"N","report":{...}}
-//!   `report` is the full projected v2 observation WITHOUT the broker-owned
+//!   `report` is the full projected v3 observation WITHOUT the broker-owned
 //!   keys (owner, adapter, gen, obs, reqSeq, req, cmdSeq, command,
 //!   monotonicMs): carrying any of them refuses as unknown-field, so there
 //!   is exactly one sequencing namespace. `adapter` is the producer capture
@@ -67,11 +67,11 @@
 //!   and "clock" (the broker dispatch-clock reading in milliseconds, the
 //!   epoch raw attempt timestamps must fit), with the terminal "result"
 //!   always nulled for the actuator lane; or the bounded in-band error
-//!   {"v":2,"outcome":"rejected","kind","message","gen"} extended with
+//!   {"v":3,"outcome":"rejected","kind","message","gen"} extended with
 //!   "source", "nativeInvalid" and "clock". Unknown envelopes bind source
 //!   "" and watermark "0", which never match a real source. Every response
 //!   stays within the reply cap, including the bound envelope expansion.
-//! queue:    {"v":2,"gen":G,"client":C,"clientCmd":"N","command":{...}}
+//! queue:    {"v":3,"gen":G,"client":C,"clientCmd":"N","command":{...}}
 //!   `gen` must equal the serving generation (stale generations refuse as
 //!   generation-mismatch before any high-water or queue state is touched, so
 //!   a delayed old-generation call can never file an old intent into the new
@@ -79,21 +79,21 @@
 //!   or below the per-sender per-client high-water it is a duplicate and
 //!   never re-executes. The client namespace binds the authenticated D-Bus
 //!   sender: one sender can neither take another's results nor move its
-//!   high-water. Replies {"v":2,"outcome":"queued","gen","client",
+//!   high-water. Replies {"v":3,"outcome":"queued","gen","client",
 //!   "clientCmd","globalCmd":"G"} (or "duplicate" with the same body).
-//! take:     {"v":2,"gen":G,"client":C,"clientCmd":"N"}
+//! take:     {"v":3,"gen":G,"client":C,"clientCmd":"N"}
 //!   `gen` binds like the queue lane: stale generations refuse before any
-//!   settlement or high-water access. Replies {"v":2,"outcome":"pending",
+//!   settlement or high-water access. Replies {"v":3,"outcome":"pending",
 //!   "gen"} while queued or undispatched;
-//!   {"v":2,"outcome":"ready","gen","globalCmd":"G","result":R|null} once the
+//!   {"v":3,"outcome":"ready","gen","globalCmd":"G","result":R|null} once the
 //!   command dispatches (re-readable while remembered, never replaying
-//!   effects); {"v":2,"outcome":"failed","gen","globalCmd":"G","kind",
+//!   effects); {"v":3,"outcome":"failed","gen","globalCmd":"G","kind",
 //!   "message"} when the world rejected the dispatched command (truthful
 //!   terminal settlement, never a null result masquerading as success);
-//!   {"v":2,"outcome":"duplicate","gen"} when forgotten through bounded
+//!   {"v":3,"outcome":"duplicate","gen"} when forgotten through bounded
 //!   eviction (never re-executes); or an unknown-command rejection.
-//! read:     {"v":2,"req":R}
-//!   Replies {"v":2,"outcome":"presentation","gen","req","rev","obs",
+//! read:     {"v":3,"req":R}
+//!   Replies {"v":3,"outcome":"presentation","gen","req","rev","obs",
 //!   "scopes","workspaces","outputs","windows","presentation","preview"} from
 //!   the last accepted capture, or a not-ready rejection before the first
 //!   one. Window rows carry no frame_op/clear_op tokens. `preview` is the
@@ -127,27 +127,27 @@
 //! wait route never executes native work or engine logic; the follow-up
 //! capture does that.
 //!
-//! Wait wire (strict v2, same auth as capture/discover: same-UID plus the
+//! Wait wire (strict v3, same auth as capture/discover: same-UID plus the
 //! live KWin owner plus the bound producer lifetime and generation):
-//! wait:     {"v":2,"gen":G,"adapter":A,"nonce":N,"cursor":"C"}
+//! wait:     {"v":3,"gen":G,"adapter":A,"nonce":N,"cursor":"C"}
 //!   `adapter` is the discovery-bound producer lifetime, `nonce` the
 //!   waiter correlation fencing stale completions, `cursor` the last
 //!   delivered wake cursor ("0" before the first wake), all canonical.
-//!   Immediate `{"v":2,"outcome":"wake","gen":G,"cursor":"E"}` when the
+//!   Immediate `{"v":3,"outcome":"wake","gen":G,"cursor":"E"}` when the
 //!   broker event epoch `E` advanced past `cursor` AND a command is
 //!   pending; otherwise the single bounded server waiter parks (new
 //!   waiters supersede parked ones, rotations drop them). Epoch `E`
 //!   advances only on a newly queued command or an actual head drain
 //!   (never on exact-capture replay, malformed captures, or
 //!   rejected/no-drain captures), and the reply cursor only advances on a
-//!   delivered wake, so a lease `{"v":2,"outcome":"lease","gen":G,
+//!   delivered wake, so a lease `{"v":3,"outcome":"lease","gen":G,
 //!   "cursor":"C"}` (idle server lease, cursor unchanged) or a lost reply
 //!   re-armed with the old cursor can never skip unseen work.
-//!   `{"v":2,"outcome":"superseded","gen":G}` answers a replaced waiter.
+//!   `{"v":3,"outcome":"superseded","gen":G}` answers a replaced waiter.
 //!
 //! Raw classification capture (Stage 4): the inner `windows` lane carries
 //! KWin-shaped native facts plus the tolerant intent lanes; the broker
-//! normalizes them into projected v2 `WindowFact`s via
+//! normalizes them into projected v3 `WindowFact`s via
 //! `crate::kde_raw` before stamping, sequencing, or draining. Carrying
 //! legacy projected verdict keys inside a raw row refuses as
 //! `unknown-field`: there is no projected-fact fallback lane.
@@ -196,7 +196,7 @@ use tiler_protocol::world_protocol::{
 /// Broker-owned logical owner stamped on every core report.
 pub const BROKER_OWNER: &str = "omnitiler-broker";
 /// Broker wire contract version (equals the core/world protocol version).
-pub const BROKER_VERSION: u32 = 2;
+pub const BROKER_VERSION: u32 = 3;
 /// FIFO cap for commands awaiting the next actuator capture.
 pub const MAX_PENDING_COMMANDS: usize = 128;
 /// Cap for settled terminal results awaiting collection (oldest evicted).
@@ -563,7 +563,7 @@ impl WorldBroker {
     }
 
     /// Evaluate one capture envelope end to end: bound the bytes, parse the
-    /// strict v2 envelope, replay byte-identical redeliveries of remembered
+    /// strict v3 envelope, replay byte-identical redeliveries of remembered
     /// sources without touching the engine (never draining from an old
     /// capture), otherwise bind generation/lifetime/watermark/source
     /// sequence, stamp the broker-owned sequencing namespace, validate
@@ -643,7 +643,7 @@ impl WorldBroker {
             ));
         }
         // Stage 4 raw classification capture: normalize the KWin-shaped raw
-        // `windows` lane into projected v2 facts before any sequencing,
+        // `windows` lane into projected v3 facts before any sequencing,
         // floor, watermark, queue, or presentation change. A malformed raw
         // envelope is remembered for exact replay like any other rejection
         // but drains nothing and consumes no counters. Legacy projected
@@ -1265,7 +1265,7 @@ impl WorldBroker {
             return;
         }
         let reply = format!(
-            "{{\"v\":2,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
+            "{{\"v\":3,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
             self.generation, self.wake_epoch
         );
         self.wait_ready = Some((waiter.nonce.clone(), reply));
@@ -1374,7 +1374,7 @@ impl WorldBroker {
     /// is already established by the caller).
     fn wait_wake_body(&self) -> String {
         format!(
-            "{{\"v\":2,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
+            "{{\"v\":3,\"outcome\":\"wake\",\"gen\":\"{}\",\"cursor\":\"{}\"}}",
             self.generation, self.wake_epoch
         )
     }
@@ -1384,7 +1384,7 @@ impl WorldBroker {
     #[must_use]
     pub fn wait_lease_body(&self, cursor: u64) -> String {
         format!(
-            "{{\"v\":2,\"outcome\":\"lease\",\"gen\":\"{}\",\"cursor\":\"{cursor}\"}}",
+            "{{\"v\":3,\"outcome\":\"lease\",\"gen\":\"{}\",\"cursor\":\"{cursor}\"}}",
             self.generation
         )
     }
@@ -1393,7 +1393,7 @@ impl WorldBroker {
     #[must_use]
     pub fn wait_superseded_body(&self) -> String {
         format!(
-            "{{\"v\":2,\"outcome\":\"superseded\",\"gen\":\"{}\"}}",
+            "{{\"v\":3,\"outcome\":\"superseded\",\"gen\":\"{}\"}}",
             self.generation
         )
     }
@@ -1505,8 +1505,8 @@ fn is_generation_token(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Strict v2 capture envelope parse: exact keys
-/// (`v,adapter,gen,source,sourceSeq,nativeInvalid,report`), v2 versions in
+/// Strict v3 capture envelope parse: exact keys
+/// (`v,adapter,gen,source,sourceSeq,nativeInvalid,report`), v3 versions in
 /// both layers, opaque lifetime, generation alphabet, opaque source
 /// correlation, canonical per-lifetime source sequence, canonical watermark,
 /// object report, and no broker-owned key inside the report.
@@ -1603,7 +1603,7 @@ fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailur
     })
 }
 
-/// Strict queue-request parse: exact keys, v2, serving generation binding,
+/// Strict queue-request parse: exact keys, v3, serving generation binding,
 /// opaque client, canonical per-client command id, object command.
 fn parse_queue_request(
     request: &str,
@@ -1661,7 +1661,7 @@ fn parse_queue_request(
     ))
 }
 
-/// Strict take-request parse: exact keys, v2, serving generation binding,
+/// Strict take-request parse: exact keys, v3, serving generation binding,
 /// opaque client, canonical id.
 fn parse_take_request(
     request: &str,
@@ -1708,7 +1708,7 @@ fn parse_take_request(
 }
 
 /// Strict wait-request parse: exact keys (`v,gen,adapter,nonce,cursor`),
-/// v2, serving-generation binding, discovery-bound producer lifetime,
+/// v3, serving-generation binding, discovery-bound producer lifetime,
 /// opaque waiter correlation, canonical cursor.
 pub fn parse_wait_request(
     request: &str,
@@ -1765,7 +1765,7 @@ pub fn parse_wait_request(
     ))
 }
 
-/// Strict read-request parse: exact keys, v2, opaque correlation.
+/// Strict read-request parse: exact keys, v3, opaque correlation.
 fn parse_read_request(request: &str) -> Result<String, (&'static str, &'static str)> {
     let value: serde_json::Value =
         serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
@@ -1814,7 +1814,7 @@ fn command_shape_valid(generation: &str, command: &serde_json::Value) -> bool {
 /// inventory, so only inventory-free commands queue.
 fn minimal_skeleton() -> serde_json::Map<String, serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(
-        "{\"v\":2,\"mode\":\"per-output-local\",\
+        "{\"v\":3,\"mode\":\"per-output-local\",\
           \"screens\":[],\"windows\":[],\"views\":[],\"closed\":[],\
           \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
           \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
@@ -1981,14 +1981,14 @@ fn queue_reply(
         None => "null".to_owned(),
     };
     format!(
-        "{{\"v\":2,\"outcome\":\"{outcome}\",\"gen\":\"{generation}\",\
+        "{{\"v\":3,\"outcome\":\"{outcome}\",\"gen\":\"{generation}\",\
           \"client\":\"{client}\",\"clientCmd\":\"{client_cmd}\",\
           \"globalCmd\":{global_json}}}"
     )
 }
 
 fn take_pending_reply(generation: &str) -> String {
-    format!("{{\"v\":2,\"outcome\":\"pending\",\"gen\":\"{generation}\"}}")
+    format!("{{\"v\":3,\"outcome\":\"pending\",\"gen\":\"{generation}\"}}")
 }
 
 /// Terminal take reply for one settlement: `ready` with the core result
@@ -1997,7 +1997,7 @@ fn take_pending_reply(generation: &str) -> String {
 fn take_settlement_reply(generation: &str, settlement: &Settlement) -> String {
     match settlement {
         Settlement::Ready { global_seq, result } => format!(
-            "{{\"v\":2,\"outcome\":\"ready\",\"gen\":\"{generation}\",\
+            "{{\"v\":3,\"outcome\":\"ready\",\"gen\":\"{generation}\",\
               \"globalCmd\":\"{global_seq}\",\"result\":{result}}}"
         ),
         Settlement::Failed {
@@ -2005,14 +2005,14 @@ fn take_settlement_reply(generation: &str, settlement: &Settlement) -> String {
             kind,
             message,
         } => format!(
-            "{{\"v\":2,\"outcome\":\"failed\",\"gen\":\"{generation}\",\
+            "{{\"v\":3,\"outcome\":\"failed\",\"gen\":\"{generation}\",\
               \"globalCmd\":\"{global_seq}\",\"kind\":\"{kind}\",\"message\":\"{message}\"}}"
         ),
     }
 }
 
 fn take_duplicate_reply(generation: &str) -> String {
-    format!("{{\"v\":2,\"outcome\":\"duplicate\",\"gen\":\"{generation}\"}}")
+    format!("{{\"v\":3,\"outcome\":\"duplicate\",\"gen\":\"{generation}\"}}")
 }
 
 /// Causal coverage witness of one accepted capture: the
@@ -2304,9 +2304,9 @@ mod tests {
 
     #[test]
     fn capture_envelope_rejects_broker_keys_and_v1() {
-        let inner = r#"{"v":2,"obs":"1"}"#;
+        let inner = r#"{"v":3,"obs":"1"}"#;
         let with_owner = format!(
-            r#"{{"v":2,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{inner}}}"#
+            r#"{{"v":3,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{inner}}}"#
         );
         // `obs` inside the report is broker-owned, but the outer envelope
         // parsed, so the rejection still binds the source watermark.
@@ -2315,25 +2315,29 @@ mod tests {
         assert_eq!(failure.message, "request contains an unknown field");
         assert_eq!(failure.source, "src-1");
         assert_eq!(failure.native_invalid, 3);
-        let v1 = r#"{"v":1,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":2}}"#;
+        let v1 = r#"{"v":1,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":3}}"#;
         let failure = parse_capture_envelope(v1).expect_err("v1 refuses");
         assert_eq!(failure.kind, "unsupported-version");
         assert_eq!(failure.source, "");
-        let bad_watermark = r#"{"v":2,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"03","report":{"v":2}}"#;
+        let v2 = r#"{"v":2,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":2}}"#;
+        let failure = parse_capture_envelope(v2).expect_err("v2 refuses after v3 cutover");
+        assert_eq!(failure.kind, "unsupported-version");
+        assert_eq!(failure.source, "");
+        let bad_watermark = r#"{"v":3,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"03","report":{"v":3}}"#;
         let failure = parse_capture_envelope(bad_watermark).expect_err("watermark refuses");
         assert_eq!(failure.kind, "unknown-value");
         assert_eq!(failure.source, "");
         // The per-lifetime source sequence is mandatory and canonical: a
         // missing, non-canonical, or overflowing sequence refuses as a
         // value, never as a match.
-        let no_seq = r#"{"v":2,"adapter":"a","gen":"w-1","source":"src-1","nativeInvalid":"3","report":{"v":2}}"#;
+        let no_seq = r#"{"v":3,"adapter":"a","gen":"w-1","source":"src-1","nativeInvalid":"3","report":{"v":3}}"#;
         assert_eq!(
             parse_capture_envelope(no_seq)
                 .expect_err("sourceSeq required")
                 .kind,
             "malformed"
         );
-        let bad_seq = r#"{"v":2,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"01","nativeInvalid":"3","report":{"v":2}}"#;
+        let bad_seq = r#"{"v":3,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"01","nativeInvalid":"3","report":{"v":3}}"#;
         assert_eq!(
             parse_capture_envelope(bad_seq)
                 .expect_err("sequence canonical")
@@ -2341,14 +2345,14 @@ mod tests {
             "unknown-value"
         );
         // Generation and adapter are mandatory envelope bindings now.
-        let no_gen = r#"{"v":2,"adapter":"a","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":2}}"#;
+        let no_gen = r#"{"v":3,"adapter":"a","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":3}}"#;
         assert_eq!(
             parse_capture_envelope(no_gen)
                 .expect_err("gen required")
                 .kind,
             "malformed"
         );
-        let no_adapter = r#"{"v":2,"gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":2}}"#;
+        let no_adapter = r#"{"v":3,"gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":3}}"#;
         assert_eq!(
             parse_capture_envelope(no_adapter)
                 .expect_err("adapter required")
@@ -2368,9 +2372,9 @@ mod tests {
 
     #[test]
     fn queue_and_take_bind_the_serving_generation() {
-        // Strict v2: the generation is mandatory and token-shaped on both
+        // Strict v3: the generation is mandatory and token-shaped on both
         // lanes; a missing key is malformed, a bad token an unknown value.
-        let no_gen_queue = "{\"v\":2,\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+        let no_gen_queue = "{\"v\":3,\"client\":\"panel-1\",\"clientCmd\":\"1\",\
             \"command\":{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}";
         assert_eq!(
             parse_queue_request(no_gen_queue)
@@ -2378,7 +2382,7 @@ mod tests {
                 .0,
             "malformed"
         );
-        let bad_gen_queue = "{\"v\":2,\"gen\":\"GEN STALE!\",\"client\":\"panel-1\",\
+        let bad_gen_queue = "{\"v\":3,\"gen\":\"GEN STALE!\",\"client\":\"panel-1\",\
             \"clientCmd\":\"1\",\"command\":{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}";
         assert_eq!(
             parse_queue_request(bad_gen_queue)
@@ -2386,14 +2390,14 @@ mod tests {
                 .0,
             "unknown-value"
         );
-        let no_gen_take = "{\"v\":2,\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
+        let no_gen_take = "{\"v\":3,\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
         assert_eq!(
             parse_take_request(no_gen_take)
                 .expect_err("take gen required")
                 .0,
             "malformed"
         );
-        let bad_gen_take = "{\"v\":2,\"gen\":\"\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
+        let bad_gen_take = "{\"v\":3,\"gen\":\"\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}";
         assert_eq!(
             parse_take_request(bad_gen_take)
                 .expect_err("take gen token")
@@ -2412,13 +2416,13 @@ mod tests {
         let gen_a = broker.generation().to_owned();
         let queue = |generation: &str, cmd: &str| {
             format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\",\
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\",\
                   \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
             )
         };
         let take = |generation: &str, cmd: &str| {
             format!(
-                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\"}}"
+                "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"{cmd}\"}}"
             )
         };
         let filed = broker
@@ -2474,12 +2478,12 @@ mod tests {
 
     #[test]
     fn strip_result_nulls_only_the_terminal_lane() {
-        let reply = "{\"v\":2,\"result\":{\"op\":\"toggle-float\"},\"effects\":[]}";
+        let reply = "{\"v\":3,\"result\":{\"op\":\"toggle-float\"},\"effects\":[]}";
         let stripped: serde_json::Value = serde_json::from_str(&strip_result(reply)).expect("JSON");
         assert!(stripped["result"].is_null());
         assert!(stripped["effects"].is_array());
         // Error bodies carry no result lane and pass through untouched.
-        let error = "{\"v\":2,\"outcome\":\"rejected\",\"kind\":\"k\",\"message\":\"m\"}";
+        let error = "{\"v\":3,\"outcome\":\"rejected\",\"kind\":\"k\",\"message\":\"m\"}";
         let passthrough: serde_json::Value =
             serde_json::from_str(&strip_result(error)).expect("JSON");
         assert_eq!(
@@ -2490,7 +2494,7 @@ mod tests {
 
     #[test]
     fn projection_drops_write_tokens_and_one_shot_lanes() {
-        let reply = "{\"v\":2,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+        let reply = "{\"v\":3,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[{\"win\":\"w\",\"frame_op\":\"op-1\",\"clear_op\":\"op-1\",\
             \"alloc\":null}],\"transfers\":[{}],\"effects\":[{}],\"result\":{},\
             \"operationSettled\":[{}],\"gestureSettled\":null,\"presentation\":{}}";
@@ -2522,7 +2526,7 @@ mod tests {
             \"domainWs\":\"ws-1\",\"sourceOut\":\"out-1\",\"sourceWs\":\"ws-1\",\
             \"rect\":[0,0,396,600],\"hover\":null,\"win\":\"win-a\"}";
         let reply = format!(
-            "{{\"v\":2,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+            "{{\"v\":3,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\"result\":{preview},\
             \"operationSettled\":[],\"gestureSettled\":null,\"presentation\":{{}}}}"
         );
@@ -2598,7 +2602,7 @@ mod tests {
         // Missing and malformed preview shapes fail closed to null, never a
         // fabricated geometry: no rect, a non-quad rect, or a missing
         // subject identity carries nothing.
-        assert!(drag_preview_of("{\"v\":2}").is_none());
+        assert!(drag_preview_of("{\"v\":3}").is_none());
         assert!(drag_preview_of("not json").is_none());
         let no_rect = reply.replace("[0,0,396,600]", "null");
         assert!(drag_preview_of(&no_rect).is_none());
@@ -2613,7 +2617,7 @@ mod tests {
         // A suspended output matching the preview's resolution (pointer)
         // domain omits the renderer preview; the command result itself is
         // untouched (the take lane still settles the issuer).
-        let suspended = "{\"v\":2,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
+        let suspended = "{\"v\":3,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
             \"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
             \"result\":{\"op\":\"drag-preview\",\"rev\":\"7\",\"domainOut\":\"out-1\",\
             \"domainWs\":\"ws-1\",\"sourceOut\":\"out-2\",\"sourceWs\":\"ws-2\",\
@@ -2640,7 +2644,7 @@ mod tests {
         assert!(!preview_suspended_by_presentation(&no_result));
         let other = suspended.replace("\"drag-preview\"", "\"toggle-float\"");
         assert!(!preview_suspended_by_presentation(&other));
-        assert!(!preview_suspended_by_presentation("{\"v\":2}"));
+        assert!(!preview_suspended_by_presentation("{\"v\":3}"));
         assert!(!preview_suspended_by_presentation("not json"));
         // The conversion over a suspended reply carries no preview, so the
         // projection (and its cache) cannot retain an older preview across
@@ -2698,7 +2702,7 @@ mod tests {
         // A well-formed witness validates and strips, binding as coverage.
         let mut proven: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str::<serde_json::Value>(
-                "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":\"7\"},\"v\":2}",
+                "{\"nativeInvalidWitness\":{\"instance\":\"effect-1\",\"counter\":\"7\"},\"v\":3}",
             )
             .expect("object")
             .as_object()
@@ -2714,7 +2718,7 @@ mod tests {
         assert!(!proven.contains_key("nativeInvalidWitness"));
         assert_eq!(
             proven.get("v").expect("other keys survive").as_u64(),
-            Some(2)
+            Some(3)
         );
         // Malformed proof refuses: mistyped, wrong keys, non-canonical
         // counters, and non-opaque instances.

@@ -3593,3 +3593,185 @@ Two outputs, ordinary tiled windows.
   `git diff --check` pass; executable gates were not run for this documentation-only
   change. This is not a new regression or mode-specific physical result. Native
   desktop add/remove acceptance remains user-owned; no live test performed.
+- Implementation scoping found a contract prerequisite: `NativeObservation`
+  (`world_report.rs`) carries native order/current only, and core lifecycle
+  occupancy (`world_model.rs::converge_logical_post`) comes from managed homing.
+  KDE's global `desktopOccupants` read (`world-native.ts`) reaches only the
+  apply-time veto (`world-apply.ts`), not core observation. Thus core cannot yet
+  enforce the decided unmanaged-occupant protection from readable native facts.
+  Removing blanket retention alone is unsafe for logical identity: lifecycle
+  drops the ring row before the native veto, while `native_map` survives until
+  observed deletion; an occupied native desktop can remain bound to a removed
+  logical row. This is source analysis, not an executed regression.
+- Implementation paused at the contract boundary. Recommendation, not a new
+  decision: add neutral complete/readable per-native-desktop occupancy facts
+  through a coordinated exact-version cutover, retain logical rows/bindings
+  until native absence is observed, and preserve KDE's fresh safety vetoes.
+  Confirm the contract expansion/cutover before implementation; do not silently
+  move occupant eligibility into KDE or add a v2-only side channel. Core/KDE
+  failing-first regressions and executable gates remain pending; no production
+  or test changes, and no native mutation performed. Documentation whitespace
+  check passes.
+
+### Native occupancy v3 cutover (2026-10-29)
+
+- Scope: coordinated exact v3 prerequisite for the approved native retirement
+  policy above. Required `native[].occupancy: [{native, count: integer|null}]`
+  covers every ordered native desktop exactly once by id; row order is not
+  semantic. Counts are neutral all-native-window totals, capped at 10,000;
+  `null` means incomplete/unreadable, never empty. Version 2 refuses. Codec,
+  validation, digest, size accounting, broker, canonical fixtures and typed
+  builders move together; no compatibility side channel.
+- KDE counts the raw native inventory before managed filtering, including
+  unmanaged, deleted, minimized, non-normal and multi-desktop windows; sticky
+  windows count on every ordered desktop. Any unreadable membership or capped
+  inventory yields unknown counts. Native order/screen/inventory completeness
+  retains its existing fences. The Rust raw normalizer preserves this separate
+  neutral lane. macOS reports explicit unknown, not managed-only counts;
+  Windows remains native-free with the capability false.
+- Acceptance: v2 refusal and strict occupancy coverage; readable empty versus
+  occupied versus unknown roundtrips; raw unmanaged/multi-desktop/sticky capture;
+  all existing portable and KDE gates. New protocol and KDE regressions failed
+  before implementation and passed after it. Final gate results follow below.
+- Boundary: retirement is not implemented in this slice. Existing blanket
+  native-bound retention remains, so unknown cannot authorize removal. Next:
+  core-owned global occupancy/view/trailing/protection and equal-padding/minimum
+  eligibility, explicit removal desires with rows/bindings retained through
+  complete native deletion readback, plus failing-first core/KDE regressions.
+  On-demand backing for idle logical spares is unchanged. `keepAboveTiles`
+  remains the separate v3 follow-up; planned Windows visibility is v4.
+- Integration repair: regenerated broker fixtures exposed the existing optional
+  `trailing:true` field. The generator now checks that optional marker and the
+  absence-parser test explicitly removes it instead of assuming golden fixtures
+  omit it. A draft requiring it on every row failed and was corrected to the
+  existing optional contract. No trailing policy or parser behavior changed.
+- Offline outcome: occupancy prerequisite delivered, retirement still pending.
+  Protocol regressions (4) rejected the old accepted v2/missing-occupancy route
+  before the fix; KDE regressions (8) failed on version/missing occupancy before
+  capture/encoder changes. Independent contract review's stale send fixture was
+  regenerated; keyed coverage semantics are explicit. Runtime service tests also
+  exposed stale private-bus payload versions and Stage 5 trailing markers; those
+  fixtures now match the production route without changing acceptance semantics.
+- Final verification in the declared environment: core/Windows/protocol tests,
+  workspace strict all-target clippy excluding macOS, KDE tests **867/867**, KDE
+  typecheck, workspace format, portable-boundary check and whitespace check pass.
+  Additional service tests **306/306** pass, including recorded-route projection
+  equality. `cargo check -p tiler-macos` passes on the portable host with 25
+  existing unused-code/import warnings; native macOS compilation/execution and
+  physical occupancy readback remain unverified.
+- Native desktop add/remove acceptance remains TBD; no live mutation performed.
+
+### Native retirement padding boundary (2026-10-29)
+
+- Retirement remains unimplemented after the accepted v3 occupancy prerequisite.
+  Source inspection confirms `world_publish.rs::plan_workspaces` still emits
+  only `existence:true`; blanket bound retention still protects logical identity.
+- Existing decisions already require global native occupancy, every output's
+  view/trailing/protection checks, readable evidence and the minimum-two floor.
+  These are not new open questions. Native reordering preserves logical ids and
+  bindings; ordinal positions compact without renaming surviving identities.
+- Remaining decision: with differing per-output native orders and equal-count
+  rings, must an otherwise removable bound row stay when its removal would only
+  be replaced by parity padding? `world_model.rs::converge_logical_post` runs
+  ordinary cleanup before padding the shorter ring; blindly extending that
+  sequence to native rows would retire backing and mint replacement logical-only
+  padding. Tier 1 empty-middle cleanup and the requirement to preserve required
+  padding do not unambiguously select that delete/replace behavior.
+- Added the minimal [padding discriminator](../spec/reference-outcomes.md#native-empty-workspace-retirement),
+  leaving unsupported outcomes TBD. Recommendation, not a decision: retain
+  required padding rather than delete and replace it; allow joint reductions
+  where parity survives, retaining all surviving logical/native identities.
+  Retirement implementation is paused at this boundary.
+- Evidence is source analysis only, not a reproduced executable failure. No
+  retirement production/test changes or native mutation; no failing-first or
+  executable acceptance claimed. Documentation whitespace check passes.
+  After the padding decision, implement explicit
+  core removal eligibility with row/binding retention through complete native
+  absence readback, then offline KDE apply/readback regressions and full gates.
+  `keepAboveTiles` remains a separate v3 follow-up.
+
+### Native retirement implementation (2026-10-29)
+
+- User selected padding option 1: retain a bound row needed for required
+  equal-count padding, never delete and replace it with logical-only padding.
+  Joint reductions may proceed where parity survives; surviving logical/native
+  identities remain stable while ordinal positions compact. This resolves the
+  padding boundary above and the discriminator now records the decision.
+- Scope: core eligibility from v3 all-native occupancy and global protection
+  claims, explicit removal desires with rows/bindings retained through complete
+  native absence readback, padding retention, and offline KDE mechanical
+  apply/readback regressions. Unknown/incomplete evidence never proves removal;
+  idle trailing backing and `keepAboveTiles` are unchanged.
+- Verification: failing-first core and KDE regressions, initial destructive
+  behavior review, then sequential core/Windows/protocol tests, strict workspace
+  clippy excluding macOS, KDE tests/typecheck, format, portable and whitespace
+  checks; portable macOS check separately. Service tests also run if service or
+  fixtures change. Native/physical acceptance remains separate.
+- Implementation: core publication derives explicit removal eligibility from
+  globally joined native occupancy and protection claims while leaving bound
+  logical rows intact. Independent native orders are supported; required parity
+  is a separate selection constraint. Initial review caught an overly restrictive
+  all-output intersection and a non-discriminating spare oracle; both are
+  corrected. Complete-absence regressions cover ordinary row deletion when a
+  spare exists and unchanged trailing-spare reuse otherwise.
+- Padding cleanup now plans all outputs before applying removals, retaining old
+  logical ids needed during staggered joint readback rather than minting
+  replacements. Shared parity counts mirrored logical rows separately from
+  native projections. KDE fresh occupant reads treat sticky windows as occupying
+  every desktop and malformed/unreadable membership as unknown. Visibility
+  remains unknown if any output current is unreadable unless positively visible.
+  Each removal rechecks the native floor and consumes budget even when native
+  deletion readback is deferred; snapshot-only hosts also consume that budget.
+- Direct mutation evidence: disabling the core fixes fails the shared-footprint
+  and staggered-padding regressions (27 pass, 2 fail). Disabling fresh native
+  occupant/visibility fixes fails 6 KDE regressions; restoring those while
+  disabling floor accounting fails the real-host loop (2 removals versus 1).
+  All mutations restored. Initial blanket-retention failing-first evidence was
+  reported during implementation. Strict fixture parsing is retained; its
+  missing invalidation watermark was repaired without relaxing the protocol.
+- Offline outcome: retirement delivered. Core/Windows/protocol tests pass,
+  including 29 retirement regressions; strict workspace clippy excluding macOS,
+  all 875 KDE tests (8 retirement cases), KDE typecheck, formatting, portable
+  boundary scan and whitespace check pass. Typecheck initially found two unused
+  test-result bindings; removing those bindings preserves the assertions and
+  the rerun passes. Portable macOS compilation passes with 25 existing
+  platform-gated unused/dead-code warnings. No service or fixture changes were
+  needed for retirement.
+- Selection is deterministic and conservative, not an exhaustive optimizer for
+  complex overlapping native orders. Native desktop add/remove and physical
+  acceptance remain TBD: verify unmanaged/sticky/multi-desktop occupants, fresh
+  visibility races, native floor, staggered readback, stable surviving identities
+  and compact ordinals in every workspace mode. The broader port remains active;
+  idle trailing native backing and `keepAboveTiles` remain separate work.
+
+### Trailing native creation outcome (2026-10-29)
+
+- No creation defect established offline. An idle ordinary trailing spare stays
+  logical-only; core deliberately emits no `nativeCreations` for it. The existing
+  [decision](../decisions.md#kde-port-and-race-decisions-2026-10-26) says native backing is gained only
+  when used. Eager native spare creation would change that behavior, not repair
+  a missing KDE actuator; recommendation: preserve on-demand creation.
+- `e422f59f` adds an explicit `trailing` designation, not creation authority:
+  `world_publish.rs::plan_workspaces` publishes the marker separately from
+  `world_native.rs::native_creation_desires`. PerOutputLocal and GlobalUnique use
+  `logical_needs_backing` / `ensure_native_creations`; Shared uses
+  `ensure_native_creations_shared`. Unbound rows need backing when viewed,
+  targeted by a retained flight, or effectively occupied. Creation requires
+  complete relevant native inventory; Shared also requires complete screens.
+- `kwin/src/world-apply.ts` executes only explicit `nativeCreations`, once per
+  stable operation, with fresh-reply and readable pre-order gates; unbound or
+  `trailing:true` workspace rows alone never authorize `createDesktop`.
+- Offline verification through the declared environment:
+  `cargo test -p tiler-core trailing` passes 21; `world_host_owned_stage1b` passes 32;
+  `world_host_owned_gap_holds` passes 23; `npm test --prefix kwin` passes 856,
+  zero failed/skipped/cancelled. Existing tests pin logical-only idle spares,
+  send-triggered backing/correlation, shared inventory-gap recovery and KDE
+  desire consumption. Host-owned GlobalUnique creation and select-trailing
+  creation lack direct targeted regressions; those paths are source evidence,
+  not separately demonstrated native outcomes.
+- No production/test changes or failing-first fix: no defect reproduced. The
+  reported physical sequence/mode remains unspecified, so this explains absent
+  eager backing, not a proven failure of on-demand creation. Native outcomes
+  remain TBD in the [discriminator](../spec/reference-outcomes.md#kde-trailing-native-creation).
+  Managed-native removal remains the separate pending implementation above;
+  no shared creation defect was found.
