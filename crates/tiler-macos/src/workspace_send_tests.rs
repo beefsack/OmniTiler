@@ -3862,7 +3862,7 @@ fn cg_alive_unreadable_membership_holds_target_scope() {
         WorldOutcome::Accepted(reply) => {
             assert!(
                 reply.scopes.iter().any(|s| s.scope.contains("ws-2")
-                    && s.authority == ScopeAuthority::Hold(HoldReason::Unreadable)),
+                    && s.authority == ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
                 "adoption fence holds the existing off-current target scope, scopes={:?}",
                 reply.scopes,
             );
@@ -3940,7 +3940,7 @@ fn cg_unreadable_oracle_holds_target_scope() {
         WorldOutcome::Accepted(reply) => {
             assert!(
                 reply.scopes.iter().any(|s| s.scope.contains("ws-2")
-                    && s.authority == ScopeAuthority::Hold(HoldReason::Unreadable)),
+                    && s.authority == ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
                 "adoption fence holds the target scope, scopes={:?}",
                 reply.scopes,
             );

@@ -1896,22 +1896,28 @@ fn space_type_gap_retains_hidden_layout_without_release() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    let c = wait_applied(&fixture, "1001_3");
-    assert!(
-        within(c.3, work_areas()[0]),
-        "switched-to Space tiles d1: {:?}",
-        c.3
-    );
+    // Whole-report hold: the gap fences every scope, so the new
+    // window on the current Space takes no writes either.
     // Settlement fence proves every worker pass drained, so the single
     // drain below is exact — no fixed window.
     settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
     while let Ok(record) = fixture.applied_rx.try_recv() {
         // Generation-gated: only frames planned under the gap revision
         // count.
-        if (record.2 == "1001_1" || record.2 == "1001_2") && record.4 == revision2 {
-            panic!("unreadable-typed hidden pair takes no writes: {record:?}");
+        if record.4 == revision2 {
+            panic!("unreadable-typed gap takes no writes: {record:?}");
         }
     }
+    let gap_desired: Vec<String> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| f.window.clone())
+        .collect();
+    assert!(
+        gap_desired.is_empty(),
+        "type gap holds the whole report, never a partial tile: {gap_desired:?}"
+    );
     assert!(
         fixture.focus_rx.try_recv().is_err(),
         "no focus dispatches around a type gap"
@@ -2075,7 +2081,11 @@ fn skipped_display_parks_layout_then_resumes_exact() {
         .iter()
         .map(|f| f.window.clone())
         .collect();
-    assert_eq!(desired, vec!["1002_9".to_owned()]);
+    // Whole-report hold: nothing tiles while parked, healthy or not.
+    assert!(
+        desired.is_empty(),
+        "skipped display holds the whole report, never a partial tile: {desired:?}"
+    );
     assert!(
         !fixture
             .handle
@@ -2231,6 +2241,19 @@ fn skip_then_actual_removal_releases() {
         Some(true),
     );
     let revision3 = fixture.handle.update_topology_with(single, &user_space);
+    // The parked app reports covering-but-homeless (unplugged display),
+    // riding unknown so its stale hold stops fencing the inventory.
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            30,
+            vec![(win(1), vec![])],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
     assert_eq!(
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_B,
@@ -3342,18 +3365,19 @@ fn hidden_space_roundtrip_preserves_per_window_slots_across_blind_interval() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    let c_first = wait_applied(&fixture, "1003_1");
-    assert!(
-        within(c_first.3, work_areas()[0]),
-        "new helper must tile on the current Space, got {:?}",
-        c_first.3
-    );
-    // Exactly one frame dispatched this leg — the helper's own — so no
-    // hidden Space-11 row actuated.
+    // Whole-report hold: the blind apps fence every scope, so the
+    // helper admitted here takes no writes either.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        if record.4 == revision {
+            panic!("blind-interval admission takes no writes: {record:?}");
+        }
+    }
+    // No frames this leg, so no hidden Space-11 row actuates either.
     assert_eq!(
         fixture.handle.diagnostics().frames_emitted,
-        emitted_before + 1,
-        "admission on 12 must dispatch only the new helper frame"
+        emitted_before,
+        "held admission on 12 must dispatch no frames"
     );
     // Retained occupancy still homes every hidden Space-11 member.
     let occupied = fixture
@@ -3426,7 +3450,7 @@ fn hidden_space_roundtrip_preserves_per_window_slots_across_blind_interval() {
             APP_C,
             gen_c,
             11,
-            vec![],
+            vec![(win(1), vec![12])],
             None,
             revision
         )),

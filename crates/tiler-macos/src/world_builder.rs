@@ -1400,24 +1400,54 @@ mod tests {
             "unreadable Space fences its scope and the inventory, never screen geometry"
         );
         let reply = accepted(&report, &mut engine);
+        // Whole-report hold: every scope holds IncompleteInventory,
+        // so no scope authorizes writes until complete truth lands.
         assert!(
-            reply
-                .windows
-                .iter()
-                .filter(|w| w.output.0 == "macos-display-1" && w.workspace == bound_12)
-                .all(
-                    |w| w.frame_authority != tiler_core::world_report::ScopeAuthority::Controlled
-                        && w.allocation.is_none()
-                        && w.effective_frame.is_none()
-                ),
-            "no controlled frame authority and no geometry inside the held scope"
+            reply.scopes.iter().all(|s| s.authority
+                == tiler_core::world_report::ScopeAuthority::Hold(HoldReason::IncompleteInventory)),
+            "gap holds every host-owned scope, scopes={:?}",
+            reply.scopes,
         );
         assert!(
-            reply
+            reply.windows.iter().all(|w| w.frame_authority
+                != tiler_core::world_report::ScopeAuthority::Controlled
+                && w.allocation.is_none()
+                && w.effective_frame.is_none()),
+            "no controlled frame authority and no geometry anywhere in the held reply"
+        );
+        // Recovery: readable again with live-only members completes
+        // inventory and retiles.
+        members.remove(&hidden);
+        let third = assemble(
+            &ctx,
+            &members,
+            &memory,
+            &closed,
+            &BTreeMap::new(),
+            &[],
+            "",
+            3,
+            3,
+        );
+        assert!(validate_report(&third));
+        assert!(
+            third.inventory_complete,
+            "readable return completes inventory"
+        );
+        let resumed = accepted(&third, &mut engine);
+        assert!(
+            resumed
                 .windows
                 .iter()
                 .any(|w| w.frame_authority == tiler_core::world_report::ScopeAuthority::Controlled),
-            "healthy scopes keep tiling through the gap"
+            "healthy scope tiles again after the gap, reply={resumed:?}"
+        );
+        assert!(
+            resumed
+                .workspaces
+                .iter()
+                .any(|row| row.id == bound_12 && row.native_binding.as_deref() == Some("space-12")),
+            "recovery retains the hidden Space binding, never releases it"
         );
     }
 
