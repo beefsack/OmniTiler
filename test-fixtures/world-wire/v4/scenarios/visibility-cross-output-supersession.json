@@ -16,7 +16,6 @@
         {
           "win": "win-old",
           "out": "out-a",
-          "ws": "ws-a",
           "frame": [
             8,
             8,
@@ -36,7 +35,6 @@
         {
           "win": "win-a",
           "out": "out-a",
-          "ws": "ws-a",
           "frame": [
             8,
             8,
@@ -56,7 +54,6 @@
         {
           "win": "win-b",
           "out": "out-b",
-          "ws": "ws-b",
           "frame": [
             8,
             8,
@@ -93,6 +90,7 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "handshake-a",
+          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,
@@ -101,7 +99,7 @@
             "windowSuppression": true,
             "maximize": true,
             "fullscreen": true,
-            "sticky": true,
+            "nativeSticky": true,
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
@@ -784,11 +782,13 @@
         "status": "settled",
         "assertions": [
           ".output.focusFeedback | any(.id == \"fx-2\" and .foregroundProven == true)",
-          ".output.actions | all(.kind != \"hide\")"
+          ".output.actions | all(.kind != \"hide\")",
+          "[.output.focusFeedback[].arrival[]] | all(.kind == \"output\" and .out != null and (has(\"home\") | not))"
         ]
       },
       "rules": [
-        "normative-apply-rule"
+        "normative-apply-rule",
+        "raw-visibility-evidence"
       ]
     },
     {

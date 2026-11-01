@@ -147,6 +147,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `v` | integer 4 | no | Exact contract version. |
 | | `adapter` | Id | no | Sole adapter lifetime. |
 | | `req` | Id | no | Handshake correlation. |
+| | `applicationIdentity` | executable identity | yes | Adapter application's own identity, fixed for this connection; null only when executable is unavailable. |
 | | `capabilities` | HostCapabilities | no | Fixed hard host limits. |
 | `HandshakeReply` | `type` | `handshake-reply` | no | New routing tag. |
 | | `v` | integer 4 | no | Selected version, not negotiation of dual shapes. |
@@ -157,9 +158,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `HostCapabilities` | `hostOwned,equalCount,birthClear` | bool | no | Existing native-domain/equal-count/automatic-birth-clear mechanisms. |
 | | `nativeSelectorScope` | `per-output/all-outputs` | no | Native view selector coupling; ignored when hostOwned=false. |
 | | `windowSuppression` | bool | no | Independent recoverable per-window hide mechanism. |
-| | `maximize,fullscreen,sticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not permission. |
+| | `maximize,fullscreen,nativeSticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not semantic command support or permission. |
 | | `tiledFloatTransfer` | bool | no | Tiled source can become a float while crossing outputs without unsupported remap. |
-| | `unavailableFacts` | FactName[] | no | Fixed unsupported classification inputs, unique and in FactName catalog order, <=19 entries. |
+| | `unavailableFacts` | FactName[] | no | Fixed unsupported classification inputs, unique and in FactName catalog order, <=20 entries. |
 
 - `ready:false` is normal after an accepted handshake; readiness requires a
   complete usable report and initial settings. Hard support cannot flip per
@@ -358,7 +359,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `nativeWs` | NativeWorkspaceId | omit/null/empty | Actual native membership under hostOwned only. |
 | `hostHidden,privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below` | bool | yes | Raw native facts; applicability is specified below, never adapter membership verdicts. |
 | `owner,parent` | WindowId | yes | Known live relationship, null if unavailable/unmanaged binding unknown. |
-| `role,appId,class,title` | bounded text | yes | Native role/application/class/title values without policy verdicts. |
+| `role,appId` | bounded text | yes | Native role/application values without policy verdicts. |
+| `executable` | executable identity | yes | Neutral native executable identity, not an appId alias or eligibility verdict. |
+| `class,title` | bounded text | yes | Native class/title values without policy verdicts. |
 | `type` | WindowType | yes | Mechanically normalized native kind, not admission or eligibility. |
 | `activationPolicy` | `regular/accessory/prohibited` | yes | Native application activation policy, not inferred from acceptsInput. |
 | `layer` | signed 32-bit integer | yes | Native window layer, not a tiling or above verdict. |
@@ -416,7 +419,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   placement, not a persistent below flag. GetParent can return a popup's owner;
   do not publish that as a parent relationship without distinguishing the arms.
 - `FactName` is closed, in order:
-  `privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below,owner,parent,role,appId,class,title,activationPolicy,layer`.
+  `privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below,owner,parent,role,appId,executable,class,title,activationPolicy,layer`.
   A listed unavailable fact must be null in every window row; a non-null
   contradiction holds that row as conflicting-fact. Unknown names, duplicates,
   wrong ordering/types or missing unavailableFacts refuse the handshake.
@@ -429,7 +432,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   Available managed=false excludes host-unmanaged candidates. Available native
   privileged/toolWindow/owned/activationInhibited facts feed their existing
   safety gates; owned is not inferred from a KDE transient relationship.
-  Core derives shell/generic-Win32-dialog safety from native class/type, with
+  Core derives shell/generic-Win32-dialog safety from native class/type/executable, with
   existing product exceptions; KDE dialogs and AX dialogs/sheets remain float
   origins, not Windows owned-dialog exclusions. Existing transient/modal and
   fixed-size predicates remain core-owned; resizable is carried without a new
@@ -447,10 +450,41 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   transient/above/below/owner/parent producers. These are source-fit inputs for
   platform review, not fabricated negatives or live acceptance. The
   [Windows review](../changes/v4-migration.md#phase-0b-windows-platform-fit-review)
-  records the remaining application-identity and native-free sticky gaps.
+  records the W2-W4 technical resolutions pending 0c approval.
   Metadata availability follows actual capture support; all other unreadable
   observations stay nullable. Core rules requiring unavailable optional metadata
   do not apply; required identity/geometry/type are never waived by this list.
+
+### Executable identity
+
+- `executable` and handshake `applicationIdentity` are required nullable fields.
+  A non-null identity is nonempty text <=4096 UTF-8 bytes, with no NUL. It is a
+  native executable identity in the host's normalized encoding, never a title,
+  display name, shell/own-settings boolean or substituted application id. Hosts
+  without this input list executable in unavailableFacts, use null for both
+  fields and skip only the predicates requiring it. Supported-but-unreadable
+  window identity stays null and holds only the dependent predicate. Supplying
+  self identity while declaring executable unavailable, or omitting readable
+  self identity when declaring support, refuses the handshake.
+- Windows uses the full executable path: replace `/` with `\`, then ASCII
+  lowercase, exactly the existing executable comparison. Do not canonicalize
+  dot segments, resolve relative paths, consult the filesystem or Unicode-fold.
+  Core compares normalized full identities for own Settings together with exact
+  class `OmniTilerSettings`; neither class alone nor own executable with another
+  class suffices. Separate-process, proof/control and other safety gates remain.
+  The existing generic-dialog membership gate refuses unowned `#32770`, not
+  arbitrary dialog types or foreign reuse of the Settings class.
+- Core preserves the border-only generic-XAML exception: exact classes
+  `Windows.UI.Core.CoreWindow` or `XamlExplorerHostIslandWindow` require basename
+  `startmenuexperiencehost.exe,shellexperiencehost.exe,searchhost.exe,searchui.exe,widgets.exe,textinputhost.exe`.
+  Split executable on either slash; normalized Windows values already have
+  lowercase basenames. Exact unconditional shell classes remain unchanged;
+  ordinary explorer file browsers and foreign generic-XAML windows are not
+  excluded by executable/class resemblance. This is not a membership verdict.
+- KDE/macOS may supply native executable identity when available; otherwise
+  declare it unavailable. Identity stays on the local wire only: do not add it
+  to logs, telemetry or persisted intent. Fixtures use synthetic identities.
+  W4 is a technical resolution pending 0c approval, not native acceptance.
 
 ### Native observation
 
@@ -536,8 +570,21 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   not only tiler ownership. Unknown fullscreen state stays untouched. Windows
   app-owned exits remain refused until each [baseline case](../changes/windows-fullscreen-exit-baseline.md)
   is accepted. Bindings do not change; Alt+Enter stays app-owned. macOS sticky
-  remains unsupported until an all-Spaces route is proven.
+  native-Spaces behavior remains unsupported until its route is proven.
   [R14](../decisions/contract.md#window-state-commands-r14).
+- Sticky command support is semantic: nativeSticky permits native sticky
+  StateTarget/StateAttempt actuation. Without nativeSticky, windowSuppression
+  permits core to compose visibility across its managed workspaces from retained
+  sticky intent, persisting stickyPrior in the opaque record. No native sticky
+  target, attempt or projected fact is fabricated: WindowFact.sticky must be
+  null when nativeSticky=false (non-null is a conflicting-fact row hold).
+  Core emits no sticky StateTarget on that route (a reply containing one is
+  invalid); unsolicited sticky attempts
+  are conflicting-fact attempt rows, not completion. Commands reject with
+  state-unsupported only when both routes are absent; per-window suppression
+  unreadability/recovery gates still hold the affected visibility lane. This
+  retains Windows sticky behavior without native actuation. W3 is a technical
+  resolution pending 0c approval, not an all-Spaces or implementation claim.
 
 ### CommandResult and diagnostics
 
@@ -691,7 +738,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `data` | opaque bounded string | yes | Save value; null explicitly clears native slot. |
 | Core intent data (inside string) | `v` | integer 1 | no | Storage format version, independent of wire v. |
 | | `float` | bool | yes | Explicit float/tile override; null means no override. |
-| | `stickyPrior` | bool | yes | Prior float/tile intent for sticky-off. |
+| | `stickyPrior` | bool | yes | Non-null means retained sticky intent and prior float/tile intent for sticky-off; null means not sticky, independent of native fact availability. |
 
 ## Raw attempts and settlement
 
@@ -749,7 +796,10 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `pre,post` | VisibilitySample | yes | Identity-bound reads immediately around action/no-call. |
 | `ArrivalBracket` | `win,obs` | WindowId, Counter | no | Required arrival subject and common source watermark. |
 | | `before` | VisibilitySample | no | First lifetime/visibility read. |
-| | `home,frame` | WorkspaceRef, Rect | yes | Native reads BETWEEN before/after; null cannot prove readiness. |
+| | `kind` | `native/output` | no | Native-home arm only with hostOwned; observed-output arm only without hostOwned. |
+| | `home` | WorkspaceRef | null; omit in output arm | Native membership read BETWEEN before/after; non-null must have kind=native. |
+| | `out` | OutputId | null; omit in native arm | Observed native output affinity BETWEEN before/after, never copied from desired home. |
+| | `frame` | Rect | yes | Native frame read BETWEEN before/after; null cannot prove readiness. |
 | | `after` | VisibilitySample | no | Final lifetime/visibility read with no intervening invalidation. |
 | `FocusFeedback` | `id,target,rev` | EffectId, WindowId, Counter | no | Existing focus grant correlation. |
 | | `setter` | SetterOutcome or `not-called` | no | At-most-once call/no-call. |
@@ -768,8 +818,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   `identity-stale,scope-held,unreadable,unsupported,preimage-unavailable,foreground-changed,fullscreen,game,show-blocked,focus-unproven,superseded,native-refused`.
   Samples are facts, never a copied target. Arrival requires the same live
   subject, matched lifetime/applicable tag and watermark, visible/non-minimized/non-hidden
-  before/after, and coherent observed home/frame inside that bracket. Home must
-  match the frozen core target; frame must equal its target when non-null. A
+  before/after, and coherent native-home or observed-output/frame inside that
+  bracket. With hostOwned, translate the observed native home and compare it
+  to the frozen core target. Without hostOwned, core compares its retained logical
+  home and the bracket's observed output to that frozen target; no logical home
+  is returned by the adapter. A mismatched retained home/output, tag/lifetime,
+  watermark or frame cannot prove readiness. Frame must equal its target when non-null. A
   null desired frame waives equality, never the requirement for a readable live
   frame. Unknown never proves readiness. Suppression is unavailable without
   both handshake support and
@@ -781,11 +835,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   null visibility targets and no visibility writes. Readable native visibility,
   lifetime, home and frame can still prove arrival for focus; no suppression
   recovery tag is required for a window that has never been project-suppressed.
-- OPEN: Windows has no native logical-workspace home to read inside an arrival
-  bracket. W2 in the Windows review must reconcile this requirement with G1;
-  an applied-homing map or copied core target is not an independent native read.
-  W3 separately covers sticky intent versus a native sticky state/target on a
-  native-free host. Neither gap authorizes an adapter policy substitute.
+- ArrivalBracket is an exclusive union: missing, mixed or wrong-host arms and
+  logical home in the native arm refuse the wire message. Readable-shape null
+  home/output/frame is valid evidence but cannot prove readiness. Core retains
+  the frozen target set and compares facts; no applied-homing receipt, logical
+  workspace echo or ScreenView is restored. W2 is a technical resolution pending
+  0c approval; static fixtures do not establish native arrival or focus success.
 
 ### Normative apply rule
 

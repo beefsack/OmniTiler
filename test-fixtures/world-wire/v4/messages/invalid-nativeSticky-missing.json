@@ -1,0 +1,1 @@
+{"type":"handshake","v":4,"adapter":"adapter-a","req":"handshake-a","applicationIdentity":"c:\\synthetic\\omnitiler.exe","capabilities":{"hostOwned":true,"equalCount":true,"birthClear":true,"nativeSelectorScope":"per-output","windowSuppression":true,"maximize":true,"fullscreen":true,"above":true,"warp":true,"tiledFloatTransfer":true,"unavailableFacts":[]}}

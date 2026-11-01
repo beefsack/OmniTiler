@@ -22,6 +22,7 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "handshake-a",
+          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,
@@ -30,7 +31,7 @@
             "windowSuppression": true,
             "maximize": true,
             "fullscreen": true,
-            "sticky": true,
+            "nativeSticky": false,
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
@@ -146,7 +147,7 @@
               ],
               "fullscreen": false,
               "maximized": false,
-              "sticky": false,
+              "sticky": null,
               "minimized": false,
               "hints": {
                 "minW": 1,
@@ -170,6 +171,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -251,7 +253,8 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.windows | any(.win == \"win-a\" and .floating == false)"
+          ".output.message.windows | any(.win == \"win-a\" and .floating == false)",
+          "[.output.message.windows[]?.state[]?] | all(.property != \"sticky\")"
         ]
       },
       "rules": [
@@ -313,7 +316,7 @@
               ],
               "fullscreen": false,
               "maximized": false,
-              "sticky": false,
+              "sticky": null,
               "minimized": false,
               "hints": {
                 "minW": 1,
@@ -337,6 +340,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -419,7 +423,8 @@
         "status": "settled",
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == true)",
-          ".output.message.intentWrites | any(.win == \"win-a\" and ((.data | fromjson).float == true))"
+          ".output.message.intentWrites | any(.win == \"win-a\" and ((.data | fromjson).float == true))",
+          "[.output.message.windows[]?.state[]?] | all(.property != \"sticky\")"
         ]
       },
       "rules": [
@@ -455,6 +460,7 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "restart-handshake",
+          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,
@@ -463,7 +469,7 @@
             "windowSuppression": false,
             "maximize": false,
             "fullscreen": false,
-            "sticky": false,
+            "nativeSticky": false,
             "above": false,
             "warp": false,
             "tiledFloatTransfer": false,
@@ -578,7 +584,7 @@
               ],
               "fullscreen": false,
               "maximized": false,
-              "sticky": false,
+              "sticky": null,
               "minimized": false,
               "hints": {
                 "minW": 1,
@@ -602,6 +608,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -688,7 +695,8 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.windows | any(.win == \"win-a\" and .floating == true and .frame_auth == \"untouched\")"
+          ".output.message.windows | any(.win == \"win-a\" and .floating == true and .frame_auth == \"untouched\")",
+          "[.output.message.windows[]?.state[]?] | all(.property != \"sticky\")"
         ]
       },
       "rules": [
@@ -696,7 +704,7 @@
       ]
     },
     {
-      "id": "invalid-inner-version",
+      "id": "verified-native-free-sticky-return",
       "input": {
         "kind": "wire",
         "to": "core",
@@ -746,7 +754,7 @@
               ],
               "fullscreen": false,
               "maximized": false,
-              "sticky": false,
+              "sticky": null,
               "minimized": false,
               "hints": {
                 "minW": 1,
@@ -770,6 +778,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -785,7 +794,7 @@
               "lastWrite": null
             },
             {
-              "win": "win-b",
+              "win": "win-sticky",
               "out": "out-a",
               "rect": [
                 8,
@@ -795,7 +804,7 @@
               ],
               "fullscreen": false,
               "maximized": false,
-              "sticky": false,
+              "sticky": null,
               "minimized": false,
               "hints": {
                 "minW": 1,
@@ -819,6 +828,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -890,6 +900,498 @@
             },
             "foregroundOut": "out-a"
           },
+          "monotonicMs": "100",
+          "intentRecords": [
+            {
+              "win": "win-sticky",
+              "data": "{\"v\":1,\"float\":true,\"stickyPrior\":false}"
+            }
+          ],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.windows | any(.win == \"win-sticky\" and .floating == true and .visibility.shown == true)",
+          "[.output.message.windows[].state[]] | all(.property != \"sticky\")"
+        ]
+      },
+      "rules": [
+        "opaque-intent-storage",
+        "window-state-policy"
+      ]
+    },
+    {
+      "id": "restored-sticky-off-remembers-tile",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-b",
+          "obs": "3",
+          "reqSeq": "3",
+          "req": "request-3",
+          "cmdSeq": "1",
+          "command": {
+            "op": "set-sticky",
+            "win": "win-sticky",
+            "value": false
+          },
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-a",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            },
+            {
+              "win": "win-sticky",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [],
+          "focused": "win-a",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-a",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-a"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-a",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-a",
+              "obs": "3",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-a"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "100",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.windows | any(.win == \"win-sticky\" and .floating == false and .ws == \"ws-1\")",
+          "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
+          ".output.message.intentWrites | any(.win == \"win-sticky\" and (.data | fromjson | .stickyPrior == null))"
+        ]
+      },
+      "rules": [
+        "opaque-intent-storage",
+        "window-state-policy"
+      ]
+    },
+    {
+      "id": "invalid-inner-version",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-b",
+          "obs": "4",
+          "reqSeq": "4",
+          "req": "request-4",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-a",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            },
+            {
+              "win": "win-b",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            },
+            {
+              "win": "win-sticky",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [],
+          "focused": "win-a",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-a",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-a"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-a",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-a",
+              "obs": "4",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-a"
+            },
+            "foregroundOut": "out-a"
+          },
           "monotonicMs": "200",
           "intentRecords": [
             {
@@ -905,7 +1407,8 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.windows | any(.win == \"win-b\" and .floating == false)"
+          ".output.message.windows | any(.win == \"win-b\" and .floating == false)",
+          "[.output.message.windows[]?.state[]?] | all(.property != \"sticky\")"
         ]
       },
       "rules": [

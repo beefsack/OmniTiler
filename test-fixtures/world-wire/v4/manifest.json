@@ -978,7 +978,10 @@
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
       "json": true,
-      "canonical": true
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      }
     },
     {
       "id": "report-focus-feedback-unreadable",
@@ -1000,7 +1003,10 @@
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
       "json": true,
-      "canonical": true
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      }
     },
     {
       "id": "report-focus-feedback-threw",
@@ -1009,7 +1015,10 @@
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
       "json": true,
-      "canonical": true
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      }
     },
     {
       "id": "report-intent-null",
@@ -2295,9 +2304,9 @@
       "expectation": "reject-wire",
       "json": true,
       "canonical": true,
-      "note": "Invalid value at /capabilities/sticky.",
+      "note": "Invalid value at /capabilities/nativeSticky.",
       "invalid": {
-        "pointer": "/capabilities/sticky",
+        "pointer": "/capabilities/nativeSticky",
         "rule": "capability-type",
         "source": "handshake-native"
       }
@@ -5911,6 +5920,714 @@
         "rule": "unavailable-facts-over-bound",
         "source": "handshake-native"
       }
+    },
+    {
+      "id": "report-arrival-native",
+      "file": "messages/report-arrival-native.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": true
+      },
+      "note": "Native membership arm; core translates native home before frozen-target comparison."
+    },
+    {
+      "id": "report-arrival-output-null",
+      "file": "messages/report-arrival-output-null.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false,
+        "frozenTarget": {
+          "win": "win-a",
+          "out": "out-a",
+          "ws": "ws-a",
+          "frame": [
+            8,
+            8,
+            800,
+            600
+          ]
+        },
+        "retainedHome": {
+          "out": "out-a",
+          "ws": "ws-a"
+        }
+      },
+      "note": "Valid raw unknown output cannot prove arrival."
+    },
+    {
+      "id": "report-arrival-wrong-output",
+      "file": "messages/report-arrival-wrong-output.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false,
+        "frozenTarget": {
+          "win": "win-a",
+          "out": "out-a",
+          "ws": "ws-a",
+          "frame": [
+            8,
+            8,
+            800,
+            600
+          ]
+        },
+        "retainedHome": {
+          "out": "out-a",
+          "ws": "ws-a"
+        }
+      },
+      "note": "Well-shaped evidence does not match the frozen target and must not prove readiness."
+    },
+    {
+      "id": "report-arrival-wrong-frame",
+      "file": "messages/report-arrival-wrong-frame.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false,
+        "frozenTarget": {
+          "win": "win-a",
+          "out": "out-a",
+          "ws": "ws-a",
+          "frame": [
+            8,
+            8,
+            800,
+            600
+          ]
+        },
+        "retainedHome": {
+          "out": "out-a",
+          "ws": "ws-a"
+        }
+      },
+      "note": "Well-shaped evidence does not match the frozen target and must not prove readiness."
+    },
+    {
+      "id": "report-arrival-wrong-lifetime",
+      "file": "messages/report-arrival-wrong-lifetime.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false,
+        "frozenTarget": {
+          "win": "win-a",
+          "out": "out-a",
+          "ws": "ws-a",
+          "frame": [
+            8,
+            8,
+            800,
+            600
+          ]
+        },
+        "retainedHome": {
+          "out": "out-a",
+          "ws": "ws-a"
+        }
+      },
+      "note": "Well-shaped evidence does not match the frozen target and must not prove readiness."
+    },
+    {
+      "id": "report-arrival-wrong-watermark",
+      "file": "messages/report-arrival-wrong-watermark.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false,
+        "frozenTarget": {
+          "win": "win-a",
+          "out": "out-a",
+          "ws": "ws-a",
+          "frame": [
+            8,
+            8,
+            800,
+            600
+          ]
+        },
+        "retainedHome": {
+          "out": "out-a",
+          "ws": "ws-a"
+        }
+      },
+      "note": "Well-shaped evidence does not match the frozen target and must not prove readiness."
+    },
+    {
+      "id": "report-arrival-wrong-retained-home",
+      "file": "messages/report-arrival-wrong-retained-home.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false,
+        "frozenTarget": {
+          "win": "win-a",
+          "out": "out-a",
+          "ws": "ws-a",
+          "frame": [
+            8,
+            8,
+            800,
+            600
+          ]
+        },
+        "retainedHome": {
+          "out": "out-a",
+          "ws": "ws-other"
+        }
+      },
+      "note": "Well-shaped evidence does not match the frozen target and must not prove readiness."
+    },
+    {
+      "id": "invalid-arrival-missing-kind",
+      "file": "messages/invalid-arrival-missing-kind.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      },
+      "note": "W2-W4: arrival-missing-kind.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/kind",
+        "rule": "arrival-missing-kind",
+        "source": "report-focus-feedback-proven"
+      }
+    },
+    {
+      "id": "invalid-arrival-unknown-kind",
+      "file": "messages/invalid-arrival-unknown-kind.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      },
+      "note": "W2-W4: arrival-unknown-kind.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/kind",
+        "rule": "arrival-unknown-kind",
+        "source": "report-focus-feedback-proven"
+      }
+    },
+    {
+      "id": "invalid-arrival-missing-output",
+      "file": "messages/invalid-arrival-missing-output.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      },
+      "note": "W2-W4: arrival-missing-output.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/out",
+        "rule": "arrival-missing-output",
+        "source": "report-focus-feedback-proven"
+      }
+    },
+    {
+      "id": "invalid-arrival-mixed-arms",
+      "file": "messages/invalid-arrival-mixed-arms.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      },
+      "note": "W2-W4: arrival-mixed-arms.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/home",
+        "rule": "arrival-mixed-arms",
+        "source": "report-focus-feedback-proven"
+      }
+    },
+    {
+      "id": "invalid-arrival-output-type",
+      "file": "messages/invalid-arrival-output-type.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      },
+      "note": "W2-W4: arrival-output-type.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/out",
+        "rule": "arrival-output-type",
+        "source": "report-focus-feedback-proven"
+      }
+    },
+    {
+      "id": "invalid-arrival-empty-output",
+      "file": "messages/invalid-arrival-empty-output.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      },
+      "note": "W2-W4: arrival-empty-output.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/out",
+        "rule": "arrival-empty-output",
+        "source": "report-focus-feedback-proven"
+      }
+    },
+    {
+      "id": "invalid-arrival-output-on-native-host",
+      "file": "messages/invalid-arrival-output-on-native-host.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": true
+      },
+      "note": "W2-W4: arrival-output-on-native-host.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/kind",
+        "rule": "arrival-output-on-native-host",
+        "source": "report-focus-feedback-proven"
+      }
+    },
+    {
+      "id": "invalid-arrival-native-on-tiler-host",
+      "file": "messages/invalid-arrival-native-on-tiler-host.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": false
+      },
+      "note": "W2-W4: arrival-native-on-tiler-host.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/kind",
+        "rule": "arrival-native-on-tiler-host",
+        "source": "report-arrival-native"
+      }
+    },
+    {
+      "id": "invalid-arrival-missing-home",
+      "file": "messages/invalid-arrival-missing-home.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": true
+      },
+      "note": "W2-W4: arrival-missing-home.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/home",
+        "rule": "arrival-missing-home",
+        "source": "report-arrival-native"
+      }
+    },
+    {
+      "id": "invalid-arrival-logical-home",
+      "file": "messages/invalid-arrival-logical-home.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "hostOwned": true
+      },
+      "note": "W2-W4: arrival-logical-home.",
+      "invalid": {
+        "pointer": "/focusFeedback/0/arrival/0/home/kind",
+        "rule": "arrival-logical-home",
+        "source": "report-arrival-native"
+      }
+    },
+    {
+      "id": "handshake-sticky-native-free",
+      "file": "messages/handshake-sticky-native-free.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true
+    },
+    {
+      "id": "report-sticky-native-free",
+      "file": "messages/report-sticky-native-free.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "handshake": "handshake-sticky-native-free"
+      },
+      "note": "No native sticky fact; retained sticky intent is not projected into this row."
+    },
+    {
+      "id": "invalid-sticky-projected-fact",
+      "file": "messages/invalid-sticky-projected-fact.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "accepted-held-row",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "handshake": "handshake-sticky-native-free"
+      },
+      "note": "W2-W4: sticky-projected-fact.",
+      "invalid": {
+        "pointer": "/windows/0/sticky",
+        "rule": "sticky-projected-fact",
+        "source": "report-sticky-native-free"
+      }
+    },
+    {
+      "id": "invalid-sticky-native-free-attempt",
+      "file": "messages/invalid-sticky-native-free-attempt.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "accepted-held-row",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "handshake": "handshake-sticky-native-free"
+      },
+      "note": "Unsolicited native sticky attempt with nativeSticky=false is conflicting-fact, not settlement.",
+      "invalid": {
+        "pointer": "/stateAttempts/0/property",
+        "rule": "sticky-native-free-attempt",
+        "source": "report-attempt-state"
+      }
+    },
+    {
+      "id": "invalid-nativeSticky-missing",
+      "file": "messages/invalid-nativeSticky-missing.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: nativeSticky-missing.",
+      "invalid": {
+        "pointer": "/capabilities/nativeSticky",
+        "rule": "nativeSticky-missing",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-nativeSticky-null",
+      "file": "messages/invalid-nativeSticky-null.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: nativeSticky-null.",
+      "invalid": {
+        "pointer": "/capabilities/nativeSticky",
+        "rule": "nativeSticky-null",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-legacy-sticky-capability",
+      "file": "messages/invalid-legacy-sticky-capability.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "invalid": {
+        "pointer": "/capabilities/sticky",
+        "rule": "legacy-sticky-capability",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "report-executable-null",
+      "file": "messages/report-executable-null.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Synthetic native identity; supported null is unknown, not unavailable."
+    },
+    {
+      "id": "report-executable-bound",
+      "file": "messages/report-executable-bound.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Synthetic native identity; supported null is unknown, not unavailable."
+    },
+    {
+      "id": "invalid-executable-empty",
+      "file": "messages/invalid-executable-empty.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "accepted-held-row",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: executable-empty.",
+      "invalid": {
+        "pointer": "/windows/0/executable",
+        "rule": "executable-empty",
+        "source": "report-observe"
+      }
+    },
+    {
+      "id": "invalid-executable-type",
+      "file": "messages/invalid-executable-type.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "accepted-held-row",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: executable-type.",
+      "invalid": {
+        "pointer": "/windows/0/executable",
+        "rule": "executable-type",
+        "source": "report-observe"
+      }
+    },
+    {
+      "id": "invalid-executable-overbound",
+      "file": "messages/invalid-executable-overbound.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "accepted-held-row",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: executable-overbound.",
+      "invalid": {
+        "pointer": "/windows/0/executable",
+        "rule": "executable-overbound",
+        "source": "report-observe"
+      }
+    },
+    {
+      "id": "invalid-executable-nul",
+      "file": "messages/invalid-executable-nul.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "accepted-held-row",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: executable-nul.",
+      "invalid": {
+        "pointer": "/windows/0/executable",
+        "rule": "executable-nul",
+        "source": "report-observe"
+      }
+    },
+    {
+      "id": "invalid-application-identity-empty",
+      "file": "messages/invalid-application-identity-empty.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: application-identity-empty.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-empty",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-application-identity-type",
+      "file": "messages/invalid-application-identity-type.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: application-identity-type.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-type",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-application-identity-overbound",
+      "file": "messages/invalid-application-identity-overbound.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: application-identity-overbound.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-overbound",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-application-identity-nul",
+      "file": "messages/invalid-application-identity-nul.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: application-identity-nul.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-nul",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-application-identity-supported-null",
+      "file": "messages/invalid-application-identity-supported-null.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: application-identity-supported-null.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-supported-null",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-application-identity-unavailable-value",
+      "file": "messages/invalid-application-identity-unavailable-value.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: application-identity-unavailable-value.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-unavailable-value",
+        "source": "handshake-unavailable-facts"
+      }
+    },
+    {
+      "id": "invalid-executable-missing",
+      "file": "messages/invalid-executable-missing.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: executable-missing.",
+      "invalid": {
+        "pointer": "/windows/0/executable",
+        "rule": "executable-missing",
+        "source": "report-observe"
+      }
+    },
+    {
+      "id": "invalid-application-identity-missing",
+      "file": "messages/invalid-application-identity-missing.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "W2-W4: application-identity-missing.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-missing",
+        "source": "handshake-native"
+      }
+    },
+    {
+      "id": "invalid-executable-unavailable-value",
+      "file": "messages/invalid-executable-unavailable-value.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "accepted-held-row",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "handshake": "handshake-unavailable-facts"
+      },
+      "note": "W2-W4: executable-unavailable-value.",
+      "invalid": {
+        "pointer": "/windows/0/executable",
+        "rule": "executable-unavailable-value",
+        "source": "report-unavailable-facts"
+      }
+    },
+    {
+      "id": "handshake-application-identity-bound",
+      "file": "messages/handshake-application-identity-bound.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true
+    },
+    {
+      "id": "invalid-sticky-native-free-target",
+      "file": "messages/invalid-sticky-native-free-target.json",
+      "family": "WorldReply",
+      "direction": "core-to-adapter",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "context": {
+        "handshake": "handshake-sticky-native-free"
+      },
+      "note": "Native sticky target is invalid without nativeSticky; semantic support does not authorize native actuation.",
+      "invalid": {
+        "pointer": "/windows/0/state/0",
+        "rule": "sticky-capability-false",
+        "source": "reply-state-authority"
+      }
     }
   ],
   "catalogs": {
@@ -5938,7 +6655,7 @@
       false,
       true
     ],
-    "HostCapabilities.sticky": [
+    "HostCapabilities.nativeSticky": [
       false,
       true
     ],
@@ -6363,6 +7080,7 @@
       "parent",
       "role",
       "appId",
+      "executable",
       "class",
       "title",
       "activationPolicy",
@@ -6385,6 +7103,10 @@
       "regular",
       "accessory",
       "prohibited"
+    ],
+    "ArrivalBracket.kind": [
+      "native",
+      "output"
     ]
   },
   "coverage": {
@@ -7130,6 +7852,10 @@
       "ArrivalBracket": [
         {
           "fixture": "report-focus-feedback-proven",
+          "pointer": "/focusFeedback/0/arrival/0"
+        },
+        {
+          "fixture": "report-arrival-native",
           "pointer": "/focusFeedback/0/arrival/0"
         }
       ],
@@ -7904,18 +8630,18 @@
           }
         ]
       },
-      "HostCapabilities.sticky": {
+      "HostCapabilities.nativeSticky": {
         "true": [
           {
             "fixture": "handshake-native",
-            "pointer": "/capabilities/sticky",
+            "pointer": "/capabilities/nativeSticky",
             "value": true
           }
         ],
         "false": [
           {
             "fixture": "handshake-emulated",
-            "pointer": "/capabilities/sticky",
+            "pointer": "/capabilities/nativeSticky",
             "value": false
           }
         ]
@@ -10672,31 +11398,38 @@
             "value": "appId"
           }
         ],
-        "class": [
+        "executable": [
           {
             "fixture": "handshake-unavailable-facts",
             "pointer": "/capabilities/unavailableFacts/15",
+            "value": "executable"
+          }
+        ],
+        "class": [
+          {
+            "fixture": "handshake-unavailable-facts",
+            "pointer": "/capabilities/unavailableFacts/16",
             "value": "class"
           }
         ],
         "title": [
           {
             "fixture": "handshake-unavailable-facts",
-            "pointer": "/capabilities/unavailableFacts/16",
+            "pointer": "/capabilities/unavailableFacts/17",
             "value": "title"
           }
         ],
         "activationPolicy": [
           {
             "fixture": "handshake-unavailable-facts",
-            "pointer": "/capabilities/unavailableFacts/17",
+            "pointer": "/capabilities/unavailableFacts/18",
             "value": "activationPolicy"
           }
         ],
         "layer": [
           {
             "fixture": "handshake-unavailable-facts",
-            "pointer": "/capabilities/unavailableFacts/18",
+            "pointer": "/capabilities/unavailableFacts/19",
             "value": "layer"
           }
         ]
@@ -10800,6 +11533,22 @@
             "fixture": "report-activation-prohibited",
             "pointer": "/windows/0/activationPolicy",
             "value": "prohibited"
+          }
+        ]
+      },
+      "ArrivalBracket.kind": {
+        "native": [
+          {
+            "fixture": "report-arrival-native",
+            "pointer": "/focusFeedback/0/arrival/0/kind",
+            "value": "native"
+          }
+        ],
+        "output": [
+          {
+            "fixture": "report-focus-feedback-proven",
+            "pointer": "/focusFeedback/0/arrival/0/kind",
+            "value": "output"
           }
         ]
       }
@@ -11090,6 +11839,46 @@
       "fixture": "report-unknown",
       "pointer": "/windows/0/activationPolicy",
       "value": null
+    },
+    {
+      "fixture": "report-focus-feedback-proven",
+      "pointer": "/focusFeedback/0/arrival/0/home",
+      "absent": true
+    },
+    {
+      "fixture": "report-arrival-native",
+      "pointer": "/focusFeedback/0/arrival/0/out",
+      "absent": true
+    },
+    {
+      "fixture": "report-arrival-output-null",
+      "pointer": "/focusFeedback/0/arrival/0/out",
+      "value": null
+    },
+    {
+      "fixture": "report-sticky-native-free",
+      "pointer": "/windows/0/sticky",
+      "value": null
+    },
+    {
+      "fixture": "report-executable-null",
+      "pointer": "/windows/0/executable",
+      "value": null
+    },
+    {
+      "fixture": "report-observe",
+      "pointer": "/windows/0/executable",
+      "value": "c:\\synthetic\\example.exe"
+    },
+    {
+      "fixture": "handshake-unavailable-facts",
+      "pointer": "/applicationIdentity",
+      "value": null
+    },
+    {
+      "fixture": "handshake-native",
+      "pointer": "/applicationIdentity",
+      "value": "c:\\synthetic\\omnitiler.exe"
     }
   ],
   "numericWitnesses": [
@@ -11127,12 +11916,12 @@
     "oracle": "Evaluate every expect.assertions jq expression against {output,history}, require boolean true. history maps completed step ids to their outputs. A core output exposes message (decoded response), bytes (exact response UTF-8 text), actions (empty at the pure-core boundary). Each model output exposes actions for this step only, native (current fake state), render (border/underlay descriptors, border including derived outer), storage (slots), retained (latest desired reply), lastWrites ([{win,write:LastWrite}]) and focusFeedback (FocusFeedback[]) emitted this step. These wrappers are fixture-only; ordinary reports carry LastWrite inside WindowFact. All assertion metadata stays outside the wire.",
     "gates": "settled steps must pass; OPEN/TBD steps are executed/recorded without an invented outcome, reported pending rather than passed. A scenario with pending steps is not full acceptance.",
     "modelTrace": "actions are ordered records with kind,win plus actual native arguments when applicable: persist-preimage,show,hide,focus,frame,state,restore. Models dispatch synchronously until a native callback is explicitly held/released; no timer/poll is allowed. Every native invalidation advances obs synchronously. lastWrites/focusFeedback are raw evidence, never injected settlement verdicts.",
-    "nativeEvents": "outside-change applies only supplied window fields and foreground, replacing refusals/callbacks only when present; obs is the exact new invalidation watermark. A refusal is an unchanged readable native pre/post. Held callbacks keep an already issued action pending until release-callback supplies its native result. late-write-evidence reports the original raw property write without changing native state or latest desired targets. Default mechanical gates are readable, identity/tag matched and supported unless initial.native or an event says otherwise.",
+    "nativeEvents": "outside-change applies only supplied window fields and foreground, replacing refusals/callbacks only when present; obs is the exact new invalidation watermark. A refusal is an unchanged readable native pre/post. Held callbacks keep an already issued action pending until release-callback supplies its native result. late-write-evidence reports the original raw property write without changing native state or latest desired targets. Default mechanical gates are readable, identity/tag matched and supported unless initial.native or an event says otherwise. In native-free domains fake windows have observed out/frame only, never a logical ws getter; arrival output arms sample these between lifetime/visibility reads. Core alone retains and compares logical home against the frozen target.",
     "rendererEvents": "frame-event joins the given native subject/frame/foreground/lifetime evidence to the accepted anchor through its causal chain; it never invents a new descriptor. foreground-event invalidates eligibility immediately. Keep underlay absolute or hide it; never translate it with the border anchor.",
     "storageEvents": "recoverable-hide exercises an already authorized hide with the supplied live native preimage and lifetime tag, persisting before mutation only if slotWritable. restart-and-restore checks the named lifetime tag before restoring and clearing only its owned slot. These are storage-unit inputs, not new adapter policy commands or protocol verbs. recoverable-state is the same storage-unit boundary for a supplied already-authorized StateTarget (not an automatic-float eligibility decision); property=above persists both keepAbove and keepBelow before the native state action, and restart-and-restore restores only the matching owned preimage. Failed slot storage authorizes no state action.",
     "selectionEvents": "resolve-action-context exercises the existing core selection rule on the complete listed cases independently of window admission; selected is the ordered result list. It is fixture-only access to core computation, not a product query message.",
     "connectionEvents": "disconnect destroys connection correlations, core lifetime state and model grants without replay; the next handshake consumes the next generationSequence value. deliver-stale-reply supplies a complete delayed reply after the declared newer binding/watermark, which must authorize no native action.",
-    "scope": "Core-only, adapter-model and renderer/storage-model legs are deterministic offline tests. Platform-probe events are explicit unresolved evidence gates; fixture success cannot establish native API availability or paint/recovery smoothness."
+    "scope": "Core-only, adapter-model and renderer/storage-model legs are deterministic offline tests. Platform-probe events are explicit unresolved evidence gates; fixture success cannot establish native API availability or paint/recovery smoothness. Executable identities are synthetic. Identity-dependent core cases preserve existing predicates; normalization mechanics and native producer acceptance remain separate."
   },
   "scenarios": [
     {
@@ -11445,6 +12234,12 @@
             "aba-new-authorization",
             "late-old-evidence"
           ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#raw-visibility-evidence",
+          "steps": [
+            "new-other-output-focus"
+          ]
         }
       ],
       "open": []
@@ -11619,7 +12414,7 @@
     {
       "id": "intent-restart-preimage",
       "file": "scenarios/intent-restart-preimage.json",
-      "steps": 15,
+      "steps": 17,
       "rules": [
         {
           "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
@@ -11642,8 +12437,17 @@
             "tile-admission",
             "explicit-float",
             "verified-opaque-return",
+            "verified-native-free-sticky-return",
+            "restored-sticky-off-remembers-tile",
             "invalid-inner-version",
             "host-storage-survival"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#window-state-policy",
+          "steps": [
+            "verified-native-free-sticky-return",
+            "restored-sticky-off-remembers-tile"
           ]
         },
         {
@@ -11669,21 +12473,24 @@
     {
       "id": "window-state",
       "file": "scenarios/window-state.json",
-      "steps": 20,
+      "steps": 28,
       "rules": [
         {
           "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
           "steps": [
             "handshake",
             "unsupported-mechanism-reconnect",
-            "sticky-unsupported-handshake"
+            "sticky-unsupported-handshake",
+            "native-sticky-reconnect",
+            "native-sticky-handshake"
           ]
         },
         {
           "contract": "../../../docs/porting/world-contract.md#revisioned-settings",
           "steps": [
             "settings",
-            "sticky-unsupported-settings"
+            "sticky-unsupported-settings",
+            "native-sticky-settings"
           ]
         },
         {
@@ -11696,6 +12503,8 @@
             "known-nonexitable-exit",
             "float-before-sticky",
             "sticky-on",
+            "sticky-visible-on-other-workspace",
+            "sticky-return-current-workspace",
             "sticky-off-preserves-float",
             "tile-before-sticky",
             "sticky-remembers-tile",
@@ -11703,7 +12512,35 @@
             "sticky-on-again",
             "float-on-sticky-always-tiles",
             "app-fullscreen-host-baseline",
-            "sticky-unsupported-command"
+            "sticky-unsupported-command",
+            "native-sticky-handshake",
+            "native-sticky-admit",
+            "native-sticky-target",
+            "native-sticky-observed"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#opaque-intent-storage",
+          "steps": [
+            "sticky-on",
+            "sticky-off-preserves-float",
+            "sticky-remembers-tile",
+            "sticky-off-preserves-tile",
+            "sticky-on-again",
+            "float-on-sticky-always-tiles"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#visibility-and-focus-ordering",
+          "steps": [
+            "sticky-visible-on-other-workspace"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#raw-attempts-and-settlement",
+          "steps": [
+            "native-sticky-target",
+            "native-sticky-observed"
           ]
         }
       ],
@@ -11903,6 +12740,173 @@
             "stacking-reused-lifetime-no-restore",
             "stacking-owned-coupled-restore",
             "stacking-storage-failure-no-write"
+          ]
+        }
+      ],
+      "open": []
+    },
+    {
+      "id": "arrival-mismatch-output",
+      "file": "scenarios/arrival-mismatch-output.json",
+      "steps": 7,
+      "rules": [
+        {
+          "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
+          "steps": [
+            "handshake"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#revisioned-settings",
+          "steps": [
+            "settings"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#visibility-and-focus-ordering",
+          "steps": [
+            "accounting-admit",
+            "accounting-send",
+            "accounting-member-observed-hidden",
+            "accounting-select"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#raw-visibility-evidence",
+          "steps": [
+            "mismatched-arrival"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#normative-apply-rule",
+          "steps": [
+            "mismatched-arrival"
+          ]
+        }
+      ],
+      "open": []
+    },
+    {
+      "id": "arrival-mismatch-frame",
+      "file": "scenarios/arrival-mismatch-frame.json",
+      "steps": 7,
+      "rules": [
+        {
+          "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
+          "steps": [
+            "handshake"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#revisioned-settings",
+          "steps": [
+            "settings"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#visibility-and-focus-ordering",
+          "steps": [
+            "accounting-admit",
+            "accounting-send",
+            "accounting-member-observed-hidden",
+            "accounting-select"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#raw-visibility-evidence",
+          "steps": [
+            "mismatched-arrival"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#normative-apply-rule",
+          "steps": [
+            "mismatched-arrival"
+          ]
+        }
+      ],
+      "open": []
+    },
+    {
+      "id": "arrival-mismatch-lifetime",
+      "file": "scenarios/arrival-mismatch-lifetime.json",
+      "steps": 7,
+      "rules": [
+        {
+          "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
+          "steps": [
+            "handshake"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#revisioned-settings",
+          "steps": [
+            "settings"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#visibility-and-focus-ordering",
+          "steps": [
+            "accounting-admit",
+            "accounting-send",
+            "accounting-member-observed-hidden",
+            "accounting-select"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#raw-visibility-evidence",
+          "steps": [
+            "mismatched-arrival"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#normative-apply-rule",
+          "steps": [
+            "mismatched-arrival"
+          ]
+        }
+      ],
+      "open": []
+    },
+    {
+      "id": "executable-identity",
+      "file": "scenarios/executable-identity.json",
+      "steps": 9,
+      "rules": [
+        {
+          "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
+          "steps": [
+            "handshake"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#revisioned-settings",
+          "steps": [
+            "settings"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#executable-identity",
+          "steps": [
+            "shell-xaml-popup",
+            "foreign-xaml-class",
+            "explorer-not-shell-popup",
+            "own-settings",
+            "foreign-settings-class",
+            "own-other-class",
+            "unowned-generic-dialog"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#neutral-classification-vocabulary-and-applicability",
+          "steps": [
+            "shell-xaml-popup",
+            "foreign-xaml-class",
+            "explorer-not-shell-popup",
+            "own-settings",
+            "foreign-settings-class",
+            "own-other-class",
+            "unowned-generic-dialog"
           ]
         }
       ],

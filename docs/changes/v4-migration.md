@@ -13,9 +13,10 @@
   spelling is now explicit. Milestone 2 source-checked corrections and the v3
   carry-forward checklist approach remain accepted. Phase-0b KDE source-fit
   review is recorded below. K1-K4 technical resolutions are drafted pending 0c
-   approval; their contract/fixture reconciliation is complete. Windows source-fit
-  review is recorded below with W1-W4 unresolved; macOS review and phase-0c
-  approval remain.
+  approval; their contract/fixture reconciliation is complete. Windows source-fit
+  review and W2-W4 technical resolutions pending 0c approval are recorded below.
+  W1 remains OPEN for user decision at the K3 automatic baseline; macOS review
+  and phase-0c approval remain.
 - Acceptance: every current wire record/enum/message has a disposition; every
   delta has an authority reference or a named gap; defaults cite core source;
   preserved shapes keep their current names and representation.
@@ -821,10 +822,11 @@
 
 ## Phase-0b Windows platform-fit review
 
-- Verdict: **needs draft fixes and W1-W4 resolution before freeze**. Win32
+- Source-review verdict: **needed draft fixes and W1-W4 resolution before freeze**. Win32
   geometry, suppression, maximize/fullscreen, topmost and cursor mechanisms fit;
-  native-free arrival/sticky semantics and sufficient application identity do
-  not yet fit the literal draft. This is source evidence, not v4 execution or
+  native-free arrival/sticky semantics and sufficient application identity did
+  not fit the reviewed literal draft. W2-W4 reconciliation follows below;
+  W1 remains OPEN for user decision. This is source evidence, not v4 execution or
   native acceptance. KDE conclusions are not Windows evidence.
 - Citation shorthand below: `T/` = `crates/tiler-windows/src/tiling_sys/`,
   `W/` = `crates/tiler-windows/src/`. Searches covered those sources and their
@@ -886,9 +888,9 @@
 | nativeSelectorScope | per-output, ignored | Required filler when hostOwned=false; no native selector scope is being claimed. |
 | windowSuppression | true | Existing durable independent hide/reveal/watcher mechanism; per-window gates/readability can still refuse. |
 | maximize / fullscreen / above / warp | true / true / true / true | Native mechanisms above; capability is not per-window authorization, safe app-owned fullscreen exit, or completed R12 recovery. |
-| sticky | Unresolved under draft wording (W3) | Logical sticky commands are supported; native sticky actuation is not. A single unconditional true/false under the present native-state definition misstates one of those facts. |
+| nativeSticky | false (W3 technical resolution pending 0c approval) | Logical sticky commands remain supported through windowSuppression=true; no native sticky target/attempt/fact is manufactured. |
 | tiledFloatTransfer | false | Correct polarity for the selected no-remap route, NOT a Windows API impossibility or a ban on ordinary floats. |
-| unavailableFacts | Ordered route list in section 1 | Include appId/title until actual metadata readers exist; W4 must settle sufficient identity. Do not declare supported-but-failed reads permanently unavailable. |
+| unavailableFacts | Ordered route list in section 1 | Include appId/title until actual metadata readers exist; W4 supplies executable separately. Do not declare supported-but-failed reads permanently unavailable. |
 
 - Exact float-no-remap mechanism: candidate clone runs the report once. For
   Send/SendDirectional/MoveDirectional and legacy equivalent output-send/move,
@@ -933,29 +935,30 @@
 
 | Gap/question | Options; recommendation; consequence |
 | --- | --- |
-| W1: which float origins acquire persistent above uniformly? | Options: KDE automatic-only; Windows explicit-only; union of qualified automatic and explicit float/sticky intent. Recommend the union, with one core-owned acquisition/release/fullscreen-suspension/external-clear latch and native-preowned preservation policy. Do not acquire merely from floating=true (workspace-floating/capacity fallback alone is not intent). This retains Windows explicit floats and adds automatic stacking there; it adds explicit stacking to the KDE baseline. Apply only when above is supported and durable preimages exist; sticky transitions retain/release the same ownership, not a second owner. macOS evidence still needed. Eligibility/scenario changes require 0c approval; current K3 fixtures prove only its automatic baseline. |
-| W2: what proves native-free arrival home after G1 removes logical echoes? | Options: native-home requirement only for hostOwned, with core-retained home plus bracketed native output/frame/visibility/lifetime for Windows; a core-authorized host property binding with explicit non-native provenance; leave arrival-ready focus unsupported. Recommend the first, specifying an observed-output bracket arm and core comparison to the frozen target. The present home-required bracket cannot be truthfully filled from applied_homing. Shape/settlement changes need fixture updates; no invented receipt or restored ScreenView. |
-| W3: how is sticky supported without a native sticky state? | Options: define sticky capability as semantic support with a core-only native-free route and no fabricated state target/attempt; split nativeSticky from command support; report unsupported Windows sticky. Recommend core-only native-free behavior, composing visibility from retained sticky intent and persisting it opaquely. Current capture uses state.sticky (`T/world_capture.rs:1072-1080,1159-1160`), not an OS fact. Literal native state/attempt semantics would copy projected intent back to core; false would regress existing commands. Clarify null applicability, capability and state-target rules before changing fixtures. |
-| W4: can core retain executable-dependent safety/presentation without adapter verdicts? | Class alone is insufficient: shell-popup exclusion also checks executable basename, and own Settings identity checks executable equality (`T/shell.rs:12-46`, `W/tiling/classification.rs:154-185`, `T/world_capture.rs:480-488`). Options: specify sufficient neutral executable/application identity plus the adapter application's identity; give appId a precise native identity encoding that supplies both; weaken the existing exceptions. Recommend sufficient raw identity, not a boolean shell/own-settings verdict or an undocumented AppUserModelID/executable conflation. Missing self identity and foreign class reuse must not force classification back into the adapter. Fields/encoding/privacy and fixture consequences require review. |
+| W1: which float origins acquire persistent above uniformly? | **OPEN for user decision at 0c.** Options: KDE automatic-only; Windows explicit-only; union of qualified automatic and explicit float/sticky intent. Recommend the union, with one core-owned acquisition/release/fullscreen-suspension/external-clear latch and native-preowned preservation policy. Do not acquire merely from floating=true (workspace-floating/capacity fallback alone is not intent). This retains Windows explicit floats and adds automatic stacking there; it adds explicit stacking to the KDE baseline. Apply only when above is supported and durable preimages exist; sticky transitions retain/release the same ownership, not a second owner. macOS evidence still needed. The draft and behavior assertions stay at K3's automatic baseline; no union fixture is introduced. |
+| W2: what proves native-free arrival home after G1 removes logical echoes? | **Technical resolution pending 0c approval.** ArrivalBracket has exclusive native/output arms. Only hostOwned uses bracketed native home; otherwise core compares retained logical home plus bracketed observed output/frame/visibility/lifetime/tag evidence to the frozen target. Null evidence is well-shaped but cannot prove readiness. No logical receipt, applied_homing proof or ScreenView revival. |
+| W3: how is sticky supported without a native sticky state? | **Technical resolution pending 0c approval.** nativeSticky governs native sticky StateTarget/StateAttempt; windowSuppression supplies the other semantic command route. Core composes visibility from retained sticky intent and persists stickyPrior opaquely. With nativeSticky=false the native sticky fact is null, never capture's projected state.sticky (`T/world_capture.rs:1072-1080,1159-1160`). Commands reject state-unsupported only if both routes are absent. Existing Windows behavior is retained. |
+| W4: can core retain executable-dependent safety/presentation without adapter verdicts? | **Technical resolution pending 0c approval.** Required nullable WindowFact.executable and handshake applicationIdentity carry <=4096-byte neutral normalized identity; executable joins unavailableFacts for hosts without a producer. Windows slash replacement plus ASCII lowercase preserves existing full-path equality and basename checks (`W/lifecycle.rs:42-45`, `T/shell.rs:12-46`, `W/tiling/classification.rs:154-185`, `T/world_capture.rs:480-488`). No appId conflation or shell/own-settings booleans. Identity is local-wire-only; fixtures are synthetic. |
 
 - Minimal unresolved behavioral discriminators are recorded in
   [reference outcomes](../spec/reference-outcomes.md#v4-windows-platform-fit-discriminators);
-  outcomes remain TBD, not approved by this source review.
+  native/reference outcomes remain TBD; technical reconciliation is not native
+  acceptance or 0c approval.
 - Windows source mechanisms resolved: physical scale units; explicit primary;
   EDID/connection API route with truthful nulls; independent unmanaged foreground
   capture; tagged-member reuse fencing; existing property survival; suppression
   recovery; warp=true; tiledFloatTransfer=false and its precise limitation.
   Native removal/creation gates do not apply with hostOwned=false.
-- Remaining OPEN: W1-W4; opaque-record and chrome/topmost crash recovery; empty-
+- Remaining OPEN: W1 user decision; W2-W4 0c approval; opaque-record and chrome/topmost crash recovery; empty-
   output scale-only notifications; untagged lifetime fencing; exact border
   witness/invalidation join and event coverage; physical identity normalization;
   app-fullscreen baseline acceptance; all macOS evidence. None of the eight
   shared scenario gates is promoted to a pass.
-- Mechanical draft fixes: Windows effective DPI/96; literal #32770 normalization;
+- Original source-review mechanical draft fixes: Windows effective DPI/96; literal #32770 normalization;
   independent topmost/below and parent/owner semantics; corrected route-level
   unavailable facts; explicit W1-W3 blockers. No wire shape/fixture bytes,
   implementation, dependencies or product decision changed.
-- Verification: `git diff --check` clean; added tracked lines and all untracked
+- Original source-review verification: `git diff --check` clean; added tracked lines and all untracked
   files contain zero non-ASCII bytes, with no untracked whitespace/NUL issues.
   Authority paragraph/anchors remain exact. Local Markdown links retain only
   the five known failures, zero new. Static fixture checks parse 483 JSON
@@ -963,5 +966,56 @@
   malformed message, and validate 466 message/17 scenario inventories, 207
   steps, 235 rule-step references and 71 contract pointers. Canonical messages
   retain no final LF; fixture bytes are unchanged. These checks do not execute
-  v4 codecs, native scenarios, recovery or paint. W1-W4 and the implementation/
-  native gates above remain unresolved; this review does not approve cutover.
+  v4 codecs, native scenarios, recovery or paint. These are historical counts,
+  before the W2-W4 fixture reconciliation below; this review does not approve cutover.
+
+### W2-W4 contract and fixture reconciliation
+
+- Status: technical resolution pending 0c approval for each of W2, W3 and W4.
+  W1 is OPEN for user decision, with the union recommendation above; persistent-
+  above behavior assertions remain unchanged at the K3 automatic baseline.
+- W2: explicit ArrivalBracket.kind native/output arms, conditional home/out and
+  core frozen-target comparison. Visibility scenarios no longer supply a fake
+  native logical ws; independent ordered core cases reject proof from wrong
+  output, frame or lifetime/tag. Message cases also distinguish null output,
+  wrong watermark/retained home, wrong-host/missing/mixed arms and logical-home
+  forgery. An observed native foreground alone does not establish arrival.
+- W3: nativeSticky replaces the ambiguous sticky capability. Native-free cases
+  keep sticky=null, emit no sticky target/attempt, save/restore opaque stickyPrior,
+  preserve prior float/tile intent and compose shown visibility across workspace
+  selection. A separate native route covers a sticky target plus raw attempt;
+  the no-route case disables both mechanisms before requiring typed refusal.
+- W4: executable and applicationIdentity distinguish supported unknown from
+  declared unavailable, preserve synthetic full-path/basename identity in core,
+  and cover required/null/type/empty/NUL/size/unavailable contradictions. Ordered
+  core cases retain shell-popup versus foreign generic-XAML/explorer presentation
+  and own/foreign Settings plus generic-dialog membership safeguards. No new
+  slotlessness policy is inferred from the Settings class. Windows identity
+  normalization is exactly slash replacement and ASCII lowercase, without dot
+  collapse, path resolution or Unicode folding (`W/lifecycle.rs:42-45`);
+  QueryFullProcessImageNameW supplies the original path (`W/native.rs:105-112`,
+  `W/ffi/process.rs:268-281`).
+- Fixture delta: 41 messages added (12 positive, 29 deliberate negatives), for
+  507 messages; four ordered scenarios added, for 21 scenarios and 247 steps
+  (+40). Existing 466 message dispositions are preserved. Catalogs are 66
+  (+1), with 345 arms (+3); all 70 records remain covered by 251 witnesses.
+  Distinctions are 65 (+8). All eight existing OPEN/TBD gates and all K3
+  persistent-above behavior assertions/rules remain unchanged by value.
+- Final static verification: 528 JSON artifacts parsed; two intentional
+  duplicate-key messages and one raw malformed message retained. All 504
+  canonical messages match independent byte re-encoding, with no final LF;
+  13026 numeric tokens and four numeric witnesses have zero lexical/value
+  errors. Actual-value catalog witnesses, 24 command orders, recursive positive
+  and scenario shapes/orders, 298 rule-step references and 95 contract pointers
+  are clean. All 377 scenario jq assertions compile. The bounded value checks
+  accept 275 positive messages, identify the intended violation in all 29 new
+  negatives and check all 203 scenario wire inputs, including the deliberate
+  held-row case. Nine native-free readiness comparisons and 12 synthetic
+  normalization/equality cases agree with the specified predicates; these are
+  static input/predicate checks, not the future engine implementation.
+- Hygiene: git diff --check clean; zero added non-ASCII bytes or untracked
+  whitespace/NUL issues; authority paragraph/anchors exact; no implementation
+  diff. Local Markdown links retain the five known baseline failures, zero new.
+  No v4 codec, engine, model scenario, recovery, paint or native execution is
+  implied by these checks. W1, 0c, macOS and the implementation/native gates
+  remain outstanding.

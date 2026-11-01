@@ -16,7 +16,6 @@
         {
           "win": "win-old",
           "out": "out-a",
-          "ws": "ws-a",
           "frame": [
             8,
             8,
@@ -36,7 +35,6 @@
         {
           "win": "win-a",
           "out": "out-a",
-          "ws": "ws-a",
           "frame": [
             8,
             8,
@@ -69,6 +67,7 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "handshake-a",
+          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,
@@ -77,7 +76,7 @@
             "windowSuppression": true,
             "maximize": true,
             "fullscreen": true,
-            "sticky": true,
+            "nativeSticky": true,
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
@@ -418,7 +417,8 @@
         "assertions": [
           "[.output.actions[] | select(.kind == \"show\" or .kind == \"focus\" or .kind == \"hide\") | .kind] == [\"show\",\"focus\",\"hide\"]",
           ".output.focusFeedback | any(.id == \"fx-1\" and .foregroundProven == true and (.arrival | length) == 1)",
-          ".output.lastWrites | any(.win == \"win-old\" and .write.path == \"staged\" and .write.setter == \"accepted\")"
+          ".output.lastWrites | any(.win == \"win-old\" and .write.path == \"staged\" and .write.setter == \"accepted\")",
+          "[.output.focusFeedback[].arrival[]] | all(.kind == \"output\" and .out != null and (has(\"home\") | not))"
         ]
       },
       "rules": [
@@ -1417,6 +1417,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -1466,6 +1467,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -1637,6 +1639,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -1686,6 +1689,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -1849,6 +1853,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -1898,6 +1903,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -2065,6 +2071,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -2114,6 +2121,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -2277,6 +2285,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -2326,6 +2335,7 @@
               "parent": null,
               "role": "normal",
               "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
               "type": "normal",
@@ -2451,11 +2461,8 @@
                     "minimized": false,
                     "hostHidden": false
                   },
-                  "home": {
-                    "kind": "logical",
-                    "out": "out-a",
-                    "ws": "ws-2"
-                  },
+                  "kind": "output",
+                  "out": "out-a",
                   "frame": [
                     8,
                     8,
