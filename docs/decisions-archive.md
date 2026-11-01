@@ -8,7 +8,7 @@ from each entry below. Nothing here authorizes implementation.
 - Core + Windows world-model rearchitecture (v2) is COMPLETE, with final
   native missing proofs accepted:
   [closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24).
-- Durable contracts: [adapter guide](porting/world-adapter-guide.md),
+- Durable contracts: [world contract](porting/world-contract.md),
   [KDE notes](porting/kde-port-notes.md),
   [macOS notes](porting/macos-port-notes.md). KDE/macOS remain unported.
 - Full stage-by-stage evidence stays in

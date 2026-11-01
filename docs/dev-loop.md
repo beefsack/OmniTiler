@@ -13,7 +13,7 @@ bundle and launches its existing preview via `scripts/macos-dev.sh`;
 `just dev-stop` uses its exact-owner stop path.
 
 Current-source status: shared core and Windows use v3. The KDE/macOS recipes
-remain present, but their consumers need the [v3 ports](porting/world-adapter-guide.md)
+remain present, but their consumers need the [v3 ports](porting/world-contract-v3.md)
 before current-core build/runtime acceptance. The platform workflow and earlier
 native evidence below are not a claim that those ports are complete.
 

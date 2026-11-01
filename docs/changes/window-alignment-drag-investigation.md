@@ -4,7 +4,7 @@
   mechanism below refers to removed modules; production uses the world route
   and world-drag per the [core
   closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
-  and [world adapter guide](../porting/world-adapter-guide.md). The
+  and [world adapter guide](../porting/world-contract-v3.md). The
   on-device oracle-delivery residual below remains open; this is not the
   current contract.
 

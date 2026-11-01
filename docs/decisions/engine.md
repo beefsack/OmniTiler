@@ -12,7 +12,7 @@
 - Why: not recorded.
 - Assumes / revisit if: host mechanics require synchronous operation; any additional exception requires separate decision and backlog entry.
 - Status: active, 2026-10-31
-- Evidence: [adapter guide](../porting/world-adapter-guide.md#6-lifetime-freshness-and-scope-vetoes), [review G4](../changes/core-interface-review.md).
+- Evidence: [adapter guide](../porting/world-contract-v3.md#6-lifetime-freshness-and-scope-vetoes), [review G4](../changes/core-interface-review.md).
 
 ### Portable engine and host seams
 - Decision: MVP uses portable `tiler-core` Engine behind `LayoutPolicy`; `tiler-protocol` is a thin codec, Linux service is separate, and KWin script observes/actuates while native effect renders. Host-synchronous paths may remain in adapter only where moving them changes latency/failure behavior; G4 limits exceptions. Compile compatibility is not behavioral adoption; deliver core/KDE together and track Windows/macOS adoption separately. Pre-0.1 breaking core changes are acceptable for correctness, performance and reliability.

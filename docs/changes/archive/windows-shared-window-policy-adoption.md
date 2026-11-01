@@ -66,7 +66,7 @@
 - Independent source review found no missing in-scope classification/admission
   extraction or test/documentation findings, and independently passed the new
   regression plus shared-fixture projection, format and whitespace checks.
-- [Adapter guide](../../porting/world-adapter-guide.md#classification-ingress-and-remote-transport-rough-edge)
+- [Adapter guide](../../porting/world-contract-v3.md#classification-ingress-and-remote-transport-rough-edge)
   now explains the reusable predicate/normalization boundary and latch-versus-
   setting risk. Native acquisition/actuation, game/fullscreen, elevation/UIPI
   and class exclusions are untouched. No KDE/macOS adapter changes.

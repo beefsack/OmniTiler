@@ -74,7 +74,7 @@ formatter, not a predicate.
   membership while projecting immediate ineligibility (K:494-497). Native
   candidate/lifecycle/readability checks remain acquisition. Richer control facts
   are not required merely to exercise every helper.
-- The [adapter guide](../../porting/world-adapter-guide.md#classification-ingress-and-remote-transport-rough-edge)
+- The [adapter guide](../../porting/world-contract-v3.md#classification-ingress-and-remote-transport-rough-edge)
   and [accepted birth cutover](../kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26)
   describe these boundaries; the port's historical N5/N6 investigations are not
   evidence of a current missing shared call. Native toggles remain documented in

@@ -3,7 +3,7 @@
 - Status: historical v1 record, archived 2026-10-24. Milestones and diagnostics
   below describe the superseded pre-Engine owner/lifecycle path, not current
   proof. Current Windows v2 contract: [world adapter
-  guide](../../porting/world-adapter-guide.md) and [core
+  guide](../../porting/world-contract-v3.md) and [core
   closeout](core-world-model-rearchitecture.md#closing-outcome-2026-10-24).
 
 - Goal: native owner/stop/restore and owned-window recovery, followed by physical

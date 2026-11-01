@@ -1,7 +1,7 @@
 # KDE port notes (world contract v2)
 
 How the KDE adapter moves to the strict v2 contract in
-[world-adapter-guide](world-adapter-guide.md). Status below is
+[world-contract-v3](world-contract-v3.md). Status below is
 implemented vs approved-not-implemented vs open. The v1 inventory below
 describes the delivered baseline, not an accepted v2 KDE runtime.
 The staged implementation and parked boundaries are tracked in
@@ -190,7 +190,7 @@ coordination only. See the [contract and outcome](../changes/kde-world-v2-port.m
 ## Host styling on KDE
 
 - Two independent host styling colors, never ring-coupled (see the
-  [generic rule](world-adapter-guide.md#8-border-underlay-drop-preview-and-pager)):
+  [generic rule](world-contract-v3.md#8-border-underlay-drop-preview-and-pager)):
   the active-window ring keeps its existing border color/theme tokens
   (default: live system accent), and the pager focused-window
   highlight gets independent highlight color/theme tokens (default:

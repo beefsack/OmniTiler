@@ -2,7 +2,7 @@
 
 ## Scope and method
 
-- Make the [adapter guide](../../porting/world-adapter-guide.md) the normative
+- Make the [world contract](../../porting/world-contract.md) the normative
   current core/platform interface under the [record model](../../principles.md),
   addressing M2/M6 in the [interface review](../core-interface-review.md).
 - Restore the pre-change guide and the contract, engine, and layout/admission

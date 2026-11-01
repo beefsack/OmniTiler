@@ -3,7 +3,7 @@
 - Status: historical pre-v2 evidence. The `entry.ts`/`startPlanAdapterEntry`
   route below is removed; production uses the world route per the [core
   closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
-  and [world adapter guide](../porting/world-adapter-guide.md). The live
+  and [world adapter guide](../porting/world-contract-v3.md). The live
   acceptance below remains the native residual; this is not the current contract.
 
 ## Delivered Boundary

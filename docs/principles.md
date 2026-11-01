@@ -15,15 +15,18 @@ this model):
 - [Functional spec](spec/functional-spec.md) and
   [reference outcomes](spec/reference-outcomes.md): all user-observable
   behavior, as rows.
-- [Adapter guide](porting/world-adapter-guide.md), becoming the contract
-  document: the normative core/platform interface (ownership, messages,
-  apply and ordering rules, capabilities, version, conformance fixtures).
+- [World contract](porting/world-contract.md): the normative interface target
+  (ownership, messages, apply and ordering rules, capabilities, version,
+  conformance fixtures); [world-contract-v3.md](porting/world-contract-v3.md)
+  is authoritative for current code until the coordinated v4 cutover.
 - [docs/decisions.md](decisions.md): the current choice per topic between
   viable alternatives with lasting cost (product, architecture, contract),
   with why, alternatives rejected, key assumption and when to revisit.
-  Replaced text lives in Git and the archive.
-- `docs/changes/`: designs, evidence, measurements and status; archived when
-  done. [docs/backlog.md](backlog.md): pending work only, one line per item.
+  Replaced text lives in Git.
+- `docs/changes/`: designs, evidence, measurements and status; deleted when
+  done.
+  [docs/backlog.md](backlog.md): pending work only, one line per item.
+- Deletion: delete a document once nothing current needs it, after moving anything worth keeping into decisions, the spec, the contract document or code comments. Git is the only archive. Where a current record cites a deleted document as evidence, it keeps a one-line summary of the decisive fact and a GitHub permalink pinned to the last commit containing the file (https://github.com/beefsack/OmniTiler/blob/<sha>/<path>); purely historical links are dropped.
 - Code comments: implementation choices and their reasons at point of use.
 - Placement: observable behavior goes in the spec; a lasting choice between
   alternatives in decisions; the core/platform interface in the contract
@@ -139,6 +142,7 @@ this model):
     platform checks.
   - Push shared logic down into core or a shared library; keep host-coupled
     code (scripts, effects, settings modules, OS hooks) thin.
+  - A platform acts without a core round trip only where the round trip would cause visible jank, a performance cost or an unsafe effect. Such an exception is limited to mechanical safety vetoes or applying a core decision in the same turn, never policy, and each is listed in the contract document.
 - Yields to: Simplicity and host-native behavior when pushing code down; the
   `absolute` parts of [Gaming Compatibility](#gaming-compatibility).
 - Contract rules that follow: [decisions: Contract](decisions.md#contract).
@@ -176,8 +180,8 @@ this model):
     tolerate them and converge without surprising the user.
   - Refuse or degrade the narrowest scope (row, command, window, domain),
     never a whole report for one bad row, while unaffected functionality and
-    later recovery stay available. Fail closed only when recovery is
-    impossible or continuing would cause harm.
+    later recovery stay available.
+  - When a scope cannot continue, prefer failing open: release it to the host so the user keeps a usable desktop (hidden windows shown, held input and shortcuts released, recoverable native changes undone). Fail closed, leaving windows, input or the desktop held, only where letting go would cause harm, break other system functions or leave a worse state, or the platform requires it; decide case by case and state the reason where it is implemented. Refusing one uncertain action is not failing closed.
 - Yields to: the `absolute` parts of
   [Gaming Compatibility](#gaming-compatibility).
 

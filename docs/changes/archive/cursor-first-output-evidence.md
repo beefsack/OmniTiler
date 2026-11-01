@@ -78,7 +78,7 @@
   (fixture-verified both outputs; rearchitecture closed 2026-10-24); active
   focus-follows-cursor and warp are stage 4 (default-off core/Windows delivered;
   native hover-follow unverified). KDE/macOS by their ports
-  ([guide](porting/world-adapter-guide.md), [KDE](porting/kde-port-notes.md),
+  ([guide](porting/world-contract-v3.md), [KDE](porting/kde-port-notes.md),
   [macOS](porting/macos-port-notes.md)).
   User-approved 2026-10-26: three-way placement subsumes launch targeting.
   Output-targeting race option A audited/implemented offline 2026-10-28:

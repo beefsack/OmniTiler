@@ -5,7 +5,7 @@
 - Make KDE capture/observe/actuate/render over the sole shared `WorldEngine`;
   Windows is the migrated reference. No v1 compatibility, policy copies or
   second owner. [Principles](../principles.md#layering) and the
-  [adapter guide](../porting/world-adapter-guide.md) are authoritative.
+  [adapter guide](../porting/world-contract-v3.md) are authoritative.
 - Stages 0/1/1b/2/3 are complete offline. Stage 4 is partial: strict raw capture,
   Rust fixed-size wire classification and obsolete selector deletion are
   delivered offline; directional shortcuts and implicit workspace selection/send
@@ -3784,7 +3784,7 @@ Two outputs, ordinary tiled windows.
 - P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v2 cutover and removal
   of the TypeScript born-maximized copy are delivered offline, with no dual
   route, per the finalized
-  [guide](porting/world-adapter-guide.md) and
+  [guide](porting/world-contract-v3.md) and
   [KDE notes](porting/kde-port-notes.md). Approved port work: host-owned
   bootstrap/bindings and outside native changes; remote raw classification facts
   via broker transport to shared policy entry; both separate-view modes (linked

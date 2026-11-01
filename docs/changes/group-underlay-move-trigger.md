@@ -4,7 +4,7 @@
   `kwin/src/plan-adapter-entry.ts` module. The trigger policy persists in
   shared core and the effect FFI consumed via the world route; see the [core
   closeout](archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
-  and [world adapter guide](../porting/world-adapter-guide.md).
+  and [world adapter guide](../porting/world-contract-v3.md).
 
 ## Goal And User Decisions
 

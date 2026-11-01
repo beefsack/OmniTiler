@@ -66,7 +66,7 @@ ownership before stage 1; accepted extractions are recorded below.
 ### KDE and macOS porting map
 
 Final requirements replace the interim inventory here:
-[generic world adapter guide](../../porting/world-adapter-guide.md),
+[generic world adapter guide](../../porting/world-contract-v3.md),
 [KDE port notes](../../porting/kde-port-notes.md) and
 [macOS port notes](../../porting/macos-port-notes.md). They distinguish delivered
 v2 interfaces from approved core work the ports must deliver; no compatibility
@@ -2911,7 +2911,7 @@ of cursor-first fresh placement or the entire rearchitecture.
 
 ## Finalized port contract and remaining native acceptance (2026-10-24)
 
-- Delivered the [generic adapter guide](../../porting/world-adapter-guide.md),
+- Delivered the [generic adapter guide](../../porting/world-contract-v3.md),
   [KDE notes](../../porting/kde-port-notes.md) and
   [macOS notes](../../porting/macos-port-notes.md), linked from the repository and
   macOS READMEs. They specify report/command ownership, the single remote broker,
@@ -2989,7 +2989,7 @@ of cursor-first fresh placement or the entire rearchitecture.
 - Uniform wire presentation includes border/underlay shapes and ordered pager
   content; drop shapes use the same core gesture result. Windows independently
   styles its active-window border and pager highlight. The three stable
-  [port guides](../../porting/world-adapter-guide.md) distinguish delivered v2
+  [port guides](../../porting/world-contract-v3.md) distinguish delivered v2
   interfaces from approved work still required by the later ports.
 - The accepted local gates remain **2,732 passed, zero failed, one ignored
   across 50 suites**, locked build and strict all-target clippy for core,

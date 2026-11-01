@@ -91,7 +91,7 @@
   only the adoption-baseline implementation and its individually accepted
   live-check path are queued. No live checks were run.
 - [Contract authority and migration decision](../../decisions/contract.md#contract-authority-and-v4-migration)
-  is canonical; the [adapter guide rule](../../porting/world-adapter-guide.md#contract-authority-rule)
+  is canonical; the [adapter guide rule](../../porting/world-contract.md#contract-authority-rule)
   and [phase-ordered backlog](../../backlog.md#open-work) link to it. The
   [Windows decision](../../decisions/windows.md#state-centric-v4-visibility)
   defers to that authority rather than duplicating it. The approved migration

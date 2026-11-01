@@ -3,7 +3,7 @@
 //! Independent pager focused-window highlight style (macOS host styling).
 //!
 //! Two independent colours, never ring-coupled (see the generic rule in
-//! `world-adapter-guide` section 8 and the macOS port notes): the
+//! `world-contract-v3.md` section 8 and the macOS port notes): the
 //! active-window ring keeps its own [`crate::active_border::ActiveBorderStyle`]
 //! colour/theme tokens, and the pager's focused miniature keeps this one.
 //! Both default to the live system accent with the `#2a82da` fallback; an

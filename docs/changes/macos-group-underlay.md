@@ -25,7 +25,9 @@ teardown restoration. Appearance alone remains a short physical check.
 2. Integrate shared policy, observation/fences, configuration and regression tests.
 3. Exercise production live acceptance and independent safety review.
 4. Verify tests, strict clippy, formatting, signed build/verification and hosted CI;
-   record differences, decisions and evidence, then archive this note.
+   record differences and evidence, promote anything worth keeping into
+   decisions, the spec, the contract document or code comments, then delete
+   this note once nothing current needs it.
 
 ## Established semantics
 

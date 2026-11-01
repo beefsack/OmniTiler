@@ -1,7 +1,7 @@
 # macOS port notes (world contract v2)
 
 How the macOS adapter moves to the strict v2 contract in
-[world-adapter-guide](world-adapter-guide.md). Status below is
+[world-contract-v3](world-contract-v3.md). Status below is
 implemented vs approved-not-implemented vs open as of `01a73798`.
 The [v2 migration plan and abstraction-fit review](../changes/macos-world-v2-port.md)
 confirm that inventory at `a0f54105` and record current build failures and gates.
@@ -71,7 +71,7 @@ with the fixture-first rules and the signed bundle in
 ## Host styling on macOS
 
 - Two independent host styling colors, never ring-coupled (see the
-  [generic rule](world-adapter-guide.md#8-border-underlay-drop-preview-and-pager)).
+  [generic rule](world-contract-v3.md#8-border-underlay-drop-preview-and-pager)).
   The active-window ring keeps its existing border color/theme tokens
   (`--active-border-color`, `--active-border-theme` default on: live
   system accent with the `#2a82da` fallback). The menu-bar workspace

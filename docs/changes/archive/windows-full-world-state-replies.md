@@ -5,7 +5,7 @@
   rearchitecture](core-world-model-rearchitecture.md#closing-outcome-2026-10-24)
   is the accepted implementation and preserves the T2 staged-transaction
   semantics unless a later boundary supersedes them. Current port contract:
-  [world adapter guide](../../porting/world-adapter-guide.md).
+  [world adapter guide](../../porting/world-contract-v3.md).
 
 ## Goal and status
 
@@ -694,7 +694,7 @@
   rearchitecture (closed 2026-10-24) delivered that mapping
   authority with observed member/view/refill settlement; KDE's `world-apply.ts`
   bypass must be aligned with the contract by the KDE port
-  ([guide](porting/world-adapter-guide.md)). The parked KDE
+  ([guide](porting/world-contract-v3.md)). The parked KDE
   global-native-inventory migration-confirmation mismatch stays parked.
   (2) T2 crossing refusal: delivered in the v2 world route - staged-clone refusal
   preserves unchanged source Engine and membership on unsupported directional

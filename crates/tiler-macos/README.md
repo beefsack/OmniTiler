@@ -1,7 +1,7 @@
 # tiler-macos — scoped tiling preview and capability probes
 
 Port contract: [macOS port notes](../../docs/porting/macos-port-notes.md)
-and the generic [world-adapter guide](../../docs/porting/world-adapter-guide.md).
+and the generic [world-adapter guide](../../docs/porting/world-contract-v3.md).
 
 Status 2026-10-24: the macOS consumer is not ported to the completed shared-core
 v2 contract. The preview, API descriptions and native evidence below describe

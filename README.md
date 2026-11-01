@@ -8,7 +8,7 @@ Guarded Custom Tile automation for KWin.
   [close-out evidence and remaining acceptance gaps](docs/changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24).
 - KDE and macOS consumers remain unported to v2. Their earlier setup and native
   evidence below do not establish compatibility with the current core. Start
-  their separate ports from the [adapter guide](docs/porting/world-adapter-guide.md),
+  their separate ports from the [adapter guide](docs/porting/world-contract-v3.md),
   [KDE notes](docs/porting/kde-port-notes.md) and
   [macOS notes](docs/porting/macos-port-notes.md).
 - [Documentation index](docs/README.md), [active work](docs/backlog.md),
@@ -646,7 +646,7 @@ These observations remain pending and require the reviewed live-test protocol:
 
 ## World contract and porting notes
 
-- [World-contract platform adapter guide](docs/porting/world-adapter-guide.md):
+- [World-contract platform adapter guide](docs/porting/world-contract-v3.md):
   the strict v2 report/reply contract every adapter (Windows reference,
   KDE and macOS ports) implements.
 - [KDE port notes](docs/porting/kde-port-notes.md) and

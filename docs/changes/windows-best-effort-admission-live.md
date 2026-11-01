@@ -59,8 +59,9 @@
   using the source-bound native numbers as offline regression inputs.
 - Prove the no-space precondition in fixtures before specifying a new native
   exhaustion/retry/send journey.
-- Review accepted evidence, update the prior outcome table and backlog, and
-  archive this note once the runnable scope is resolved.
+- Review accepted evidence, update the prior outcome table and backlog, promote
+  anything worth keeping into decisions, the spec, the contract document or
+  code comments, then delete this note once nothing current needs it.
 
 ## Decisions and evidence
 
