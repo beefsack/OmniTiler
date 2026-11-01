@@ -8,7 +8,7 @@ own separate user authorization.
 
 For native tools, permissions, signing identity, and sandbox limitations,
 use the [macOS development environment](macos-dev-environment.md). Product
-scope remains in [macOS decisions](decisions.md#scope-and-platform-goals).
+scope remains in [macOS decisions](./decisions/platforms.md#platform-scope).
 Tier 2 (public plus scoped private APIs, SIP left enabled) is the only
 selected route; Dock injection and SIP reduction are out of scope.
 

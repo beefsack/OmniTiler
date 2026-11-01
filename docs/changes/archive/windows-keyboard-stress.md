@@ -75,3 +75,39 @@ full shortcut run. No batch-file/stdin product CLI or filter exception is chosen
   mutation or coalescing changes. No new product decision is made. The bounded
   prerequisite delivery is complete; keyboard baseline work remains blocked on
   the parked question above.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 452-480
+
+````markdown
+- P1 | Keyboard stress runner | Offline `-KeyboardCoverage` map delivered
+  (`6c850ae0`, [outcome](changes/archive/windows-keyboard-stress.md)): 100 of
+  102 commands per case are default-bound; the two stay-sends are unbound by
+  default. The product hook rejects injected shortcuts. User 2026-10-29:
+  (a) run a user-driven physical shortcut burst baseline after the staged
+  switch lands, with trace and a short run sheet; and (b) add an opt-in startup
+  flag so the normal owner accepts synthetic shortcuts for testing. Default
+  behavior unchanged; flag only with fixture scope, logged in trace. Key safety
+  requirement: no injected key may reach a non-fixture window, especially an
+  agent terminal (a stray Esc can cancel agent sessions). The driver injects
+  only bound chords the owner swallows, verifies a fixture foreground and an
+  active accepting hook immediately before each injection, never injects Esc or
+  unbound keys, and stops on any foreground change. Independent input-safety
+  review before live use.
+  Raised from P2 2026-10-28: first deliver the
+  current-order keyboard-burst baseline, which supplies the data for wider
+  coalescing. User 2026-10-27: share definitions and oracles
+  with the existing deterministic-correctness CLI mode; use injected real
+  shortcuts through the hook path for real-input bursts and the test window tool
+  for churn. First check injected-shortcut acceptance and shortcut coverage for
+  every stress action. CLI rate accepted for now: 3.4 actions/s overall, 101ms
+  between contiguous commands; about 100ms/action already exceeds typical human
+  input speed. No batch file/stdin CLI planned; possible follow-up only if
+  keyboard mode cannot cover a case, requiring user approval as a new public CLI
+  feature ([decision](./decisions/world-rendering.md#stress-acceptance)).
+  User 2026-10-28: after the staged switch, measure real keyboard-burst jank
+  before extending render-latest-only coalescing beyond selections. Goal:
+  coalesce fully and rapidly to any latest world state; command-contract changes
+  per family follow the data ([decision](./decisions/windows.md#windows-decision-set)).
+````

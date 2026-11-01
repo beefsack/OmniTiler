@@ -96,3 +96,17 @@
   shares the reviewed resolver but is not a new variant-specific regression.
 - Exact next action for this audit: none. Explicit-current sends and native
   platform acceptance remain separately scoped as above.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1719-1725
+
+````markdown
+- P2 | Sticky-off rehome to current: core intent (decided 2026-10-29) |
+  Windows sticky-rehome sends an explicit `Send` with an adapter-sampled
+  current workspace. User chose option (A): a core "sticky off, rehome to
+  current" intent resolved at execution; explicit `Send` unchanged
+  ([decision](./decisions/windows.md#switch-and-intent-decisions),
+  [audit](changes/archive/output-targeting-race-audit.md#parked-boundary)).
+  Check KDE/macOS for the same pattern; if wire-visible, land with v4.
+````

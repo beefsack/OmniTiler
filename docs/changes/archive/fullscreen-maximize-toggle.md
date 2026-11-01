@@ -73,3 +73,25 @@
   The known nine Linux dock-swipe test failures were not rerun or changed.
 - Follow-ups: native acceptance and Windows/macOS adoption of the shared
   maximize route are tracked in the backlog; no additional harness introduced.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1541-1546
+
+````markdown
+- P1 | Windows core maximize-toggle integration | Adopt the shared command-only
+  maximize result for ordinary/fullscreen toggles; fullscreen becomes maximized
+  with existing tiled/floating base retained. Only two compile-only diagnostic
+  match arms landed; no Windows runtime integration. Native restore/preimage
+  safety and acceptance remain pending. Review additive shape with staged-switch
+  protocol coordination. [Record](changes/archive/fullscreen-maximize-toggle.md).
+````
+
+### Original backlog lines 1763-1766
+
+````markdown
+- P1 | macOS core maximize-toggle integration | Adopt the shared ordinary/
+  fullscreen maximize intent/result with retained tiled/floating base. No macOS
+  adapter behavior changed; native fullscreen/zoom mechanism and acceptance
+  remain pending. [Record](changes/archive/fullscreen-maximize-toggle.md).
+````

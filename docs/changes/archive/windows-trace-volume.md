@@ -70,7 +70,7 @@
   source-side bounds therefore apply equally to file and console.
 - Binding observability/scheduling constraints:
    [principles](../../principles.md#observability) and
-   [Windows owner-threading decisions](../../decisions.md#windows-owner-threading).
+   [Windows owner-threading decisions](../../decisions/windows.md#windows-owner-thread-architecture).
 - Deterministic clock tests cover thresholds, flood volume, idle silence,
   trailing/end flushes, aggregate reset and throttle persistence across resets.
   File-sink tests cover 3,000 routine frames, 2,000 coalesced acknowledgements,

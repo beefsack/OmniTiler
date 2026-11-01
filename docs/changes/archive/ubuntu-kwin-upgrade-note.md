@@ -5,7 +5,7 @@ Status: delivered and verified, 2026-10-13; archived.
 ## Goal and scope
 
 Deliver the installation-guide and package-description explanation selected
-in the [Ubuntu exact-pin decision](../../decisions.md#kde-support-floor).
+in the [Ubuntu exact-pin decision](../../decisions/kde.md#kde-support-floor).
 The Debian effect keeps its exact compiled-against `libkwin6` dependency;
 RPM and Arch retain their deliberately unversioned KWin dependencies.
 

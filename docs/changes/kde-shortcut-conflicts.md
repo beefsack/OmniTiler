@@ -87,3 +87,18 @@
 - Risks for live acceptance: native empty assignments cannot identify why they became empty; restart/script-registration persistence and physical digit/symbol delivery require Plasma testing. Revert restores defaults rather than custom preimages.
 - Proposed backlog text: "P1 | Shortcut conflict model on KDE and macOS | KDE per-binding Keep/Disable and Compatible/Authentic presets delivered, hosted CI green; KDE physical/restart acceptance pending. Integrated rebind/first-run prompt deferred; macOS when its implementation starts."
 - Exact next action: on KDE, pull the accepted commit, build/stage with `just build-native-effect`, use `just dev-native-setup` and logout/login for delivery, then run the conflict-list/preset section of `docs/live-shortcut-override-verification.md` and record results here before archiving.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1671-1678
+
+````markdown
+- P1 | Shortcut conflict model on KDE and macOS | Per-binding conflict list
+  plus compatible/authentic presets (user 2026-10-03); KDE builds on its
+  existing shortcut override Apply/Force/Revert; macOS when it starts.
+  KDE catalog/presets and Keep-preserving Apply delivered offline (M13,
+  2026-10-09); live acceptance is in Pending live checks below.
+  Integrated rebind and KDE first-run prompt deferred. KDE live
+  acceptance pending: [checks](live-shortcut-override-verification.md),
+  [record](changes/kde-shortcut-conflicts.md).
+````

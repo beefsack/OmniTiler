@@ -44,3 +44,15 @@
 - Deferred: FancyWM core/submodules and web-only Linux source analysis; other
   unknown details explicitly labelled in the index. No live checks required
   for this research outcome; all units completed.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1714-1718
+
+````markdown
+- P3 | Prior-art catalogue upkeep | Catalogue delivered 2026-10-03; maintain
+  [the index](research/prior-art.md) as projects are studied. Deferred general
+  source analysis: FancyWM core submodules and niri/sway/river/awesome/dwm
+  (distinct from the completed bounded matrix source-fill passes).
+  [Evidence](changes/archive/prior-art-catalogue.md).
+````

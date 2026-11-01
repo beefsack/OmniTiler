@@ -90,7 +90,7 @@ four-launcher physical acceptance pending. Reported and corrected 2026-10-16.
 
 ## Approved decision and delivery
 
-- [Placement](../decisions.md#placement-minimums-and-startup-adoption) already
+- [Placement](../decisions/layout-and-admission.md#placement-and-minimums) already
   selects B6: keep slots, use tile origin plus declared minimum, permit last-
   resort overlap/overflow, no automatic float or alternative-axis optimizer.
   The incident does not establish whether these launchers were infeasible.
@@ -99,7 +99,7 @@ four-launcher physical acceptance pending. Reported and corrected 2026-10-16.
   next successful query (including a successful no-hint result), and drop on
   close/identity change. No timer or expiry. Failed/unperformed/budget-skipped
   queries remain unknown without erasing the retained successful state.
-- [Fixed-size admission D2](../decisions.md#fixed-size-admission) is
+- [Fixed-size admission D2](../decisions/layout-and-admission.md#fixed-size-admission-predicate) is
   admission-only classification, not a ban on reacting to self-resizes or
   ordinary minimum changes. No min=max evidence implicates fixed admission.
 
@@ -237,3 +237,23 @@ four-launcher physical acceptance pending. Reported and corrected 2026-10-16.
 - The earlier timeout-reuse supplement does not complete this acceptance. Next:
   user runs steps 1-6 above with the full disposable launcher/control fixture;
   retain correlated native observations and restoration readbacks.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1136-1148
+
+````markdown
+- P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
+  with repeated four-window writes. User-approved lifetime-bound declared-hint
+  reuse on timeout (no expiry), rate-limited per-window diagnostics and
+  log-derived synthetic regression delivered offline. Four-launcher plus
+  Notepad/Paint physical acceptance pending
+  ([record](changes/windows-launcher-geometry-fighting.md)).
+  Agent-live 2026-10-17: exact launcher journey skipped (complete approved app
+  set unavailable); ordinary Paint timeout reused declared hints with unchanged
+  targets, supplementary only. Full launcher acceptance remains pending.
+  Review 2026-10-18: full ordinary-app journey remains user-run under the live
+  guide; disposable helpers cannot substitute for launcher convergence or genuine
+  Paint hint changes. No new launcher or physical-resize acceptance.
+  Full launcher acceptance runs in the batched physical checks session.
+````

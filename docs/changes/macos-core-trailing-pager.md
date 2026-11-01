@@ -181,3 +181,18 @@ mise exec -- cargo test --locked -p tiler-macos --lib world_builder::tests::firs
   timed out while compiling, not during a test run.
 - Offline verification otherwise passes; this does not claim full semantic
   acceptance, native/live closure, or native pixel/physical-feel acceptance.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1733-1740
+
+````markdown
+- P1 | macOS: core hidden-focus blocker then pager publication (P1 next) | Eight
+  failures triaged: seven stale completeness expectations fixed in macOS tests,
+  preserving hold/no-write/no-release/exact-resume safety; one core regression
+  remains (`first_transition_same_report_focus_never_restores_hidden`). Incomplete
+  same-report minimization still mints hidden-target focus. Reviewed pager restored;
+  core/protocol and all macOS integrations pass, macOS lib has exactly this one
+  failure. Resolve the core blocker, rerun full gates, then publish
+  ([repro and evidence](changes/macos-core-trailing-pager.md#core-blocker-same-report-minimized-target-during-an-inventory-gap)).
+````

@@ -195,7 +195,7 @@ S6 is BLOCKED until all names are verified and no unrelated windows share their 
 | WDS-12 | BLOCKED chevron response: discover a verified chevron/overflow target and click it | BLOCKED/unrun: child discovery returned one classless entry with no verified target and no clicks; verified absence is not a pass | WX2-M (blocked) | [idle follow-up](archive/windows-owner-event-idle.md#scoped-native-follow-up-2026-10-18) |
 | WDS-13 | Edit gaps externally 8-12-8 and restore; verify wake/adoption and per-window planned/effective/readback entries | Wake/adoption observed with exact convergence entries; aggregate mismatches alone close nothing, host-vs-adapter cause stays open | N2-M (partial) | [idle follow-up](archive/windows-owner-event-idle.md#scoped-native-follow-up-2026-10-18) |
 | WDS-14 | Disable optional visuals and exercise preview/pager unavailability plus carrier creation-refusal and hide/teardown faults once a bounded fixture exists | Tiling continues without stale overlays or silent stop; optional border/underlay-off evidence alone is incomplete; refusal/fault legs remain fixture-dependent | N1-M (partial) | [threads](archive/windows-owner-threading-acceptance.md#optional-visuals-disabled-native-follow-up-2026-10-18) |
-| WDS-15 | BLOCKED installed lifecycle: login/startup, Settings/Stop, update channel | Blocked on the undecided package/update channel; development-owner evidence does not count | 37-K (blocked) | [scope](../decisions.md#scope-and-platform-goals) |
+| WDS-15 | BLOCKED installed lifecycle: login/startup, Settings/Stop, update channel | Blocked on the undecided package/update channel; development-owner evidence does not count | 37-K (blocked) | [scope](../decisions/platforms.md#platform-scope) |
 
 ## Games
 
@@ -282,3 +282,60 @@ not physical shortcut or physical-user acceptance.
 - Consolidated 2026-10-19: 67 pending rows (keyboard 11, apps/journeys 15, display/shell 15, games 5, lifecycle 8, two-monitor 13). Counts include explicitly blocked/fixture-dependent rows, not gate passes.
 - All 52 applicable base gate IDs and WX1-WX8 have source-linked partial mappings; excluded checks are absent. Added links/heading anchors, ASCII additions and `git diff --check` verified; independent source-fidelity review accepted the checklist. Documentation checks establish no native/physical acceptance.
 - Unsupported outcomes remain TBD in linked source discriminators. Removed Win+drag/underlay-C work, deferred D27 5b policy implementation and unselected package-channel choices are not invented runnable checks; their relevant acceptance dependencies remain explicit above.
+
+### Backlog detail moved 2026-11-01: Windows batched physical checks (original lines 326-341)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | Windows batched physical checks | One user session, not waiting on the
+  staged switch prototype. [Ordered run sheet](windows-physical-checklist.md#batched-physical-run-sheet-2026-10-29)
+  (capture availability and setup prerequisites explicit): Alt-Tab `EVENT_SYSTEM_SWITCHEND` capture between
+  fixture windows (about 10 Alt-Tabs plus non-Alt-Tab controls; trace-only
+  START/END + ordered foreground recording delivered, physical capture UNRUN;
+  no intent/memory-policy change);
+  wake-attribution same-tick confirmation during spam; exact-desktop WS1 ->
+  empty WS2 -> WS1 return; floating-window focus across a workspace round trip;
+  pending physical acceptance for Xbox shortcut conflicts and launcher geometry
+  (items below); two-monitor cross-output edge focus (`O1=W1`,
+  `O2=H[W2 W3]`, W3 last focused, Win+Right from W1 selects W2;
+  [outcome](archive/cross-output-edge-focus.md)). Only the
+  unknown-foreground A vs B decision waits on the prototype.
+  Exact-desktop arrival focus (approved 2026-10-27) is delivered offline and
+  fixture-verified; fixture scope cannot prove the desktop path
+  ([record](windows-workspace-return-focus.md)).
+
+### Original backlog lines 1034-1037
+
+````markdown
+- Windows physical/user-run acceptance is consolidated by setup in the
+  [Windows checklist](changes/windows-physical-checklist.md), including the
+  two-monitor migration/T2 checks paired with the preceding item. Each row
+  carries its approved gate IDs, pass criterion and source record.
+````
+
+### Original backlog lines 1649-1670
+
+````markdown
+- P1 | Windows handoff: reference-consensus additions | D1, user 2026-10-07:
+  all 24 Windows adapter items delivered offline (full checklists, seams and
+  user journeys archived 2026-10-24; retained as evidence, superseded as
+  planning detail). Native acceptance pending in [Pending
+  live checks](#pending-live-checks) and the
+  [physical checklist](changes/windows-physical-checklist.md). Shared-core
+  delivery serves Windows; Windows adapter/native work follows the shared
+  contract.
+  ### Common definition of done and live-check protocol
+  Archived with the handoff above. Current native/live acceptance runs through
+  the [Windows physical/user-run checklist](changes/windows-physical-checklist.md)
+  and [Pending live checks](#pending-live-checks); live work is user-owned per
+  [live Windows testing](live-windows-testing.md).
+
+  ### Source discrepancies to preserve and report
+
+  | Existing assertion | Current source / implementation gap | Handoff treatment |
+  | --- | --- | --- |
+  | [R-OUT-01](spec/reference-outcomes/multi-output.md#r-out-01-scrolling-assessment-move-left-onto-an-occupied-output) Ours Windows claimed exhausted-horizontal R4; [R-MOV-05](spec/reference-outcomes/move.md#r-mov-05-backfill-edge-move-with-no-left-neighbor-scrolling) claimed horizontal crossing with Up/Down excluded. | `src/tiling_sys.rs:6099/6105` sets `cross_output_transfer:false` in a single-domain event; no Windows cross actuation. Shared core supports four-direction R4. | Corrected both cells 2026-10-08 at `db31234` to local-only current-code facts. Handoff item 5 is sequenced after the single-output queue (18 before 10/11); no native acceptance claimed. |
+  | [R-WS-10](spec/reference-outcomes/workspaces.md#r-ws-10-send-b-away-empty-middle-retained-vs-removed) and [R-WS-16](spec/reference-outcomes/workspaces.md#r-ws-16-previous-after-the-visited-empty-workspace-is-removed) Ours Windows said no removal path; spec REQ-WS-10 repeated it. | `src/workspace.rs:508` removes stable IDs; `src/tiling_sys.rs:9228-9234` retirement cleanup and :10074-10080 selection invoke it. `core/workspace.rs:35` plans eligible invisible-empty removal, protecting the trailing spare and minimum count. | Corrected both cells and REQ-WS-10 2026-10-08 at `db31234`. Exact native scenarios remain TBD; handoff item 1 invalidates actually removed IDs and tests surviving empties separately. |
+  | Existing higher-level item-2 summary says Compatible disables arrows, while decision 2.1 identifies stock holders only on KDE and says Windows ownership unknown. | `src/settings.rs:954-957` currently returns None for all Ctrl/Alt chords; no Windows holder evidence for new send/output arms. Verified 2026-10-08 at `db31234`; status outstanding, no new policy selected. | KDE arrows are disabled by KDE Compatible. Windows unknown new arms keep defaults with unknown-ownership text until evidenced policy is recorded; do not manufacture Windows holder claims. |
+  | Current settings/rebind helpers assume every implemented action has a canonical default chord. | `src/settings.rs:1044` canonical helper returns None for empty defaults; `build_remap` :1182 skips that action; `validate_bindings` :1405 rejects it. Keep-empty is currently active/effective (:1082); UI `refresh_info` (`src/settings_ui.rs:248`) labels it disabled. Verified 2026-10-08 at `db31234`; status outstanding, plus `settings_ui.rs:286` resize note. | Items 2/5 must wire unbound ACTION targets explicitly, make Keep-empty non-intercepting and display unbound distinctly from Disabled. These are adapter limitations, not a decision reversal. |
+````

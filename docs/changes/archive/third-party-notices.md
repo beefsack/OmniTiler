@@ -3,7 +3,7 @@
 ## Goal And Status
 
 - Completed implementation for the pre-0.1 KDE delivery required by the
-  [Licensing decision](../../decisions.md#licensing): tool-generated dependency
+  [Licensing decision](../../decisions/development.md#licensing): tool-generated dependency
   notices, including full license texts, in GitHub Release binaries and
   Debian/RPM/Arch packages.
 - Phase 1 investigation is complete. Phase 2 implements the accepted design:
@@ -22,8 +22,8 @@
 | Artifact | Compiled Rust coverage | Evidence |
 | --- | --- | --- |
 | `omnitiler` planner/tray executable in the core package | Root `omnitiler`; `tiler-protocol`/`tiler-core`, serde/serde_json, zbus, rustix, async-io/async-lock and their selected transitive dependencies | `crates/omnitiler/Cargo.toml`; all three recipes build `-p omnitiler --release --locked --offline` |
-| `omnitiler-active-border.so` in `omnitiler-native-effect` | Root `tiler-kwin-effect-ffi`; MIT staticlib `libtiler_kwin_effect_ffi.a` linked into the GPL-covered effect, with tiler-core, serde/serde_json and selected transitives | `crates/tiler-kwin-effect-ffi/Cargo.toml`; `kwin/native-effect/CMakeLists.txt:105-159` |
-| Both shipping settings KCMs, in the core package | No Rust linkage; Qt/KF6 only. The KCM config test's Rust linkage is test-only | `kwin/native-effect/CMakeLists.txt:181-216,286-294`; Debian settings-only build |
+| `omnitiler-active-border.so` in `omnitiler-native-effect` | No Rust linkage; C++/Qt/KF6 and KWin APIs only. The combined effect binary remains GPL-covered | `kwin/native-effect/CMakeLists.txt:59-84` |
+| Both shipping settings KCMs, in the core package | No Rust linkage; Qt/KF6 only | `kwin/native-effect/CMakeLists.txt:109-128,134-153`; Debian settings-only build |
 | KWin script and assets | First-party code only; no npm runtime imports or third-party fonts/icons identified | [Vendored inventory](../../research/licensing.md#11-vendored-attribution-inventory-2026-10-12) |
 | Windows executable | `tiler-windows` and Windows-specific dependency closure; defer target-specific notices to Windows delivery | `crates/tiler-windows/Cargo.toml`; KDE-only 0.1 scope in `docs/decisions.md` |
 
@@ -154,7 +154,7 @@ Use the same basename for both packages and retain existing first-party texts.
 
 ## Remaining Verification And Delivery
 
-- Encoding follows the [Licensing decision](../../decisions.md#licensing).
+- Encoding follows the [Licensing decision](../../decisions/development.md#licensing).
 - Actual Debian/RPM/Arch package builds/extraction, including RPM's resolved
   license-directory policy and debhelper compression/doc-link behavior, are
   unverified. The representative actual-build evidence is the two Nix outputs.
@@ -166,3 +166,21 @@ Use the same basename for both packages and retain existing first-party texts.
   (non-fatal existing duplicate-syn warning).
 - Future binary-archive notice delivery remains separate from this
   implementation's accepted scope.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1247-1257
+
+````markdown
+- P1 | Licensing | Decision and declarations applied 2026-10-11: MIT default,
+  GPL-2.0-or-later native effect, MIT Rust staticlib and Settings KCMs.
+  [Research and dependency inventory](research/licensing.md). Third-party
+  notice implementation delivered 2026-10-13: committed generated union,
+  manual `just` regeneration, CI freshness lint, source archive and
+  Debian/RPM/Arch/Nix installation. Pending: actual distro package
+  builds/extraction; hosted CI execution;
+  notice delivery in future GitHub binary archives (producer outside this
+  change). [Evidence](changes/archive/third-party-notices.md). Audit gate delivered
+  2026-10-12: keep `licenses`, `bans`, `sources`; per-distro closure and vendored
+  inventory recorded; [evidence](changes/archive/licensing-audit-gate.md).
+````

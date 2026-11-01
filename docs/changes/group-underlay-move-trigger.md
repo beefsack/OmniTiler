@@ -222,3 +222,13 @@
 - Follow `docs/live-kwin-testing.md`; all live cases are user-owned. C remains
   parked. Next action: user single-output test-system acceptance, then multi-output checks; await a separate
   scope decision before any unfocused-subject work.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1989-1993
+
+- PARKED | Group underlay stage C (unfocused dragged window) | A/B delivered
+  and user-confirmed 2026-10-05; multi-output remap checks remain under K1 visual
+  policy below. C is parked
+  for reassessment with Windows parity item 7; stop/report if it grows complex.
+  [change](group-underlay-move-trigger.md)

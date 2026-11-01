@@ -169,3 +169,20 @@ files) remains open.
 | `2be88c0` | Rows/reconcile/geometry/focus-actuation | 25,630 | 906 / 289 / 529 / 391 |
 | `f13aeba` | Keyboard/chords/dispatch | 20,511 | 2,138 / 296 / 213 / 1,132 / 1,377 |
 | `4c0e069` | Directional/output-send/cross-drag | 16,917 | 368 / 626 / 1,175 / 1,455 |
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1494-1503
+
+````markdown
+- P1 | Module size refactoring | User 2026-10-14: split oversized sources toward
+  the [file-size](principles.md#file-size) soft caps; behavior-preserving moves
+  between features. Windows complete: `tiling_sys` 61,917 lines into a 103-file
+  family (max production 1,455), owner/snapkey/settings/tiling/input_pump/
+  render_pump split, tail split (`workspace` 2,918 -> 1,144, `product_hide`
+  1,836 -> 135, `winarrow` 1,774 -> 731); no Windows test file over 3,000.
+  Remaining: core `engine.rs`/`session.rs` large inline test modules as
+  extraction candidates; shared crates and KDE files split with their work
+  streams. ([split map](research/windows-port/tiling-sys-split-map.md),
+  [phase 2](changes/archive/windows-tiling-sys-split-phase2.md)).
+````

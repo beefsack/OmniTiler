@@ -85,3 +85,33 @@
 - Physical/native acceptance pending; no live tests planned for this unit.
 - Follow-ups: Windows/macOS adapter integration and native acceptance are
   tracked separately; maximize-on-fullscreen R-MAX-11 remains untouched.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1535-1540
+
+````markdown
+- P1 | Windows fullscreen float integration | User 2026-10-28: consume the
+  shared Session's fullscreen base toggle without native subject writes;
+  audit frame/topmost/focus writes in legacy float routes before removing
+  `float_toggle_refusal`'s retained safety fence. Preserve durable placement
+  and double-toggle fresh admission; add native/adapter acceptance.
+  [Shared/KDE record](changes/archive/fullscreen-float-toggle.md).
+````
+
+### Original backlog lines 1756-1761
+
+````markdown
+- P1 | macOS fullscreen float integration | User 2026-10-28: wire the shared
+  Session's fullscreen base toggle through the adapter, preserving native
+  fullscreen and durable float placement; verify zero AX geometry/focus/state
+  writes during fullscreen, sibling reflow and both exit states. No macOS
+  behavior acceptance inferred from shared core tests.
+  [Shared/KDE record](changes/archive/fullscreen-float-toggle.md).
+````
+
+### Original backlog lines 1762-1762
+
+````markdown
+- P1 | macOS Linux portable gates | Baseline reproduces 9 dock-swipe tests failing with `macOS major unreadable` and strict clippy unused/dead-code errors; pre-existing, unrelated to fullscreen float ([evidence](changes/archive/fullscreen-float-toggle.md)).
+````

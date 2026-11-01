@@ -5,11 +5,11 @@ Proposal B / N1-N4 classification approved 2026-10-12. Triage review complete;
 implementation and native/live acceptance remain pending.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
-([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
+([decisions](../decisions/platforms.md#platform-scope)) AND current KDE
 undefined/refusal/no-op/inconsistent/surprising; post-0.1 = niche,
 scrolling-only/COL, Windows/macOS-only, already acceptable, parked (LAY-04).
 Current defaults/settings follow the user's 2026-10-12
-[reference tiers](../decisions.md#reference-tiers); historical tallies below
+[reference tiers](../decisions/reference-and-shortcuts.md#reference-tiers-and-defaults); historical tallies below
 are evidence, not tier-weighted selections. Earlier decisions stand unless revisited.
 Gaming safety wins; overlap last resort; simplicity. TBD never invented.
 
@@ -42,13 +42,13 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
 ## User decisions 2026-10-12
 
 - D01, D03, D09, D10, D12 and D13 are user-decided (eight NORMATIVE rows).
-  Current rules are recorded once in [admission decisions](../decisions.md#placement-minimums-and-startup-adoption)
-  and [move decisions](../decisions.md#move-layout-and-output-commands):
+  Current rules are recorded once in [admission decisions](../decisions/layout-and-admission.md#placement-and-minimums)
+  and [move decisions](../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection):
   D01 (a) native activation ownership plus CLOSE-05 (a) removal/refill/focus;
   D03 After focused plus per-leg re-application, no setting; D09 Geometric
   middle and D10 Wrap, each with a two-option post-0.1 setting; D12 Extract
   to same axis and D13 Wrap locally, no settings.
-- The [tier rule](../decisions.md#reference-tiers) amends the 2026-10-07 rule.
+- The [tier rule](../decisions/reference-and-shortcuts.md#reference-tiers-and-defaults) amends the 2026-10-07 rule.
   P2 settings now contain approved D09, D10 and D27. D03/D12/D13 settings and
   D09/D10 swap-target-leaf options are dropped.
 - D27 (a) / REQ-ACT-01 / R-ACT-01 is user-decided: default `Mark urgent only`
@@ -66,7 +66,7 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   alternative qualifies via COSMIC Tier 1 plus xmonad Tier 2. Functional
   names/options; WM names only in tooltips. INS-07 no-steal covers tiling
   admission into inactive workspaces only, not existing-window activation;
-  explicit Alt+Tab/taskbar selection is separate. [Decision](../decisions.md#activation-requests).
+  explicit Alt+Tab/taskbar selection is separate. [Decision](../decisions/activation-requests.md#hidden-window-activation-default).
 - D27 KDE first step: trace KWin's native Wayland xdg-activation and Xwayland
   behavior under default focus-stealing prevention. Attention-only means
   verification-only; native workspace/focus switching would make urgency-only
@@ -78,7 +78,7 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   tiles untouched, for follow/stay and numbered/relative sends. No setting:
   Hyprland, i3 and sway (Tier 1) plus xmonad, qtile and awesome (Tier 2) retain
   float against COSMIC fresh re-tile; COSMIC's alternative has no second
-  Tier 1/2 reference. [Decision](../decisions.md#workspaces).
+  Tier 1/2 reference. [Decision](../decisions/workspaces.md#workspace-lifecycle-focus-and-history).
 - D16 ordinary and approved floating+fullscreen/maximized sends are delivered
   offline in shared core and KDE ([record](../changes/archive/d16-floating-transfer.md)).
   Same-output exact frame/no geometry write is confirmed; destination overlay
@@ -92,7 +92,7 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   family plus separate COSMIC observation. Verification-only: removal already
   retains survivor share ratios per the revision-bound gap assessment;
   native reflow live check remains pending.
-  [Decision](../decisions.md#window-state-float-sticky-maximize-fullscreen).
+  [Decision](../decisions/window-state.md#fullscreen-and-maximize-overlays).
 - D01 needs a KDE convergence fullscreen focus fence; close and the
   D03/D09/D10/D12/D13/D22 defaults are verification-only. [Gap assessment](../backlog.md).
   Native outcomes remain TBD; selection does not establish implementation.
@@ -103,7 +103,7 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   workspace, focus none, stored restore slot. No setting. COSMIC Tier 1
   source-proven default; qtile/awesome Tier 2 also vacate, awesome restores old
   slot; Hyprland/i3/sway no counterpart or untraced (non-voting); no evidenced
-  alternative to release. [Decision](../decisions.md#window-state-float-sticky-maximize-fullscreen).
+  alternative to release. [Decision](../decisions/window-state.md#fullscreen-and-maximize-overlays).
 - D23 needs KDE/shared-core code for stored old slot, no-focus-write restore
   and sole-minimize null focus. Shared core first; Windows follows later via
   handoff item 22. Current Windows retained allocation is a divergence to be
@@ -122,7 +122,7 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   reopened apps have new identities. Revisit cross-login memory after 0.1 with
   the shared restart store. No code; verification-only.
 - Native dogfood/live checks will assess D25/D26, per User 2026-10-12;
-  outcomes remain pending. [Decisions](../decisions.md#restart-persistence).
+  outcomes remain pending. [Decisions](../decisions/persistence.md#orderly-restart-adoption).
 - D28 (b) / REQ-MAX-09 fullscreen leg / REQ-MAX-09b / R-MAX-09 is
   user-decided for 0.1: explicit numbered/relative follow/stay send carries a
   fullscreen window to the target workspace still fullscreen, matching G-D2
@@ -138,7 +138,7 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   what native workspace movement requires. Native KDE fullscreen-send journey
   including a real game is must-pass; if native observation during implementation
   shows KWin cannot carry without dropping/corrupting fullscreen, stop and
-  return to the user. [Decision](../decisions.md#window-state-float-sticky-maximize-fullscreen).
+  return to the user. [Decision](../decisions/window-state.md#fullscreen-and-maximize-overlays).
 - User 2026-10-12 approved Proposal B exactly as listed: original 53 checks
   M39 / K12 / W2. K checks: 5, 24, 26, 29, 35, 36, 37, 38, 40, 41, 52, 53;
   W checks: 3, 4; all other original checks are M. N1-N4 are four new

@@ -1,7 +1,7 @@
 # OBS release handoff: tag to stable sources/checksums
 
 - Research date: 2026-10-13. Status: **Route 3 selected for 0.1 (user 2026-10-18)**;
-  [decision](../../decisions.md#delivery-and-installation).
+  [decision](../../decisions/kde.md#offline-packaging-and-release-delivery).
 - Prior recommendation (research only, not selected): GitHub Actions with a
   dedicated least-privilege OBS bot account to `osc commit` bumped recipes and
   real checksum, pinned `download_url` + `verify_file`, then `tag_push` webhook.
@@ -110,7 +110,7 @@
 
 ## Selected Route 3 consequences
 
-- Apply the [2026-10-18 release decision](../../decisions.md#delivery-and-installation),
+- Apply the [2026-10-18 release decision](../../decisions/kde.md#offline-packaging-and-release-delivery),
   not the prior Route 1 recommendation. The maintainer runs the handoff each release;
   no OBS bot password enters GitHub secrets for 0.1.
 - Both packages (`omnitiler`, `omnitiler-native-effect`) ride the same commit:
@@ -134,7 +134,7 @@
   stable-project-only write rights; human credentials never enter GitHub secrets.
 - T2 (single release-archive source), T3 (token unset until tested automation)
   and T4 (shared distro route, neon excluded): settled by the
-  [release decision](../../decisions.md#delivery-and-installation).
+  [release decision](../../decisions/kde.md#offline-packaging-and-release-delivery).
 
 ## Next action
 

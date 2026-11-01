@@ -185,3 +185,19 @@ diagnostic delivery. Product resource identities and local log paths omitted.
   No hook-thread/input-consumption/visual-policy change. Captionless metadata
   policy is recorded as decided. Physical residual-lag attribution, Linux
   handback and applicable CI remain pending. Next: user trace/profile comparison.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1434-1442
+
+````markdown
+- P0 | Windows owner threading | User direction 2026-10-12: rendering moves
+  off the input hook thread (target C staged: dedicated input thread, then
+  dedicated render thread). All three stages delivered offline 2026-10-12 with
+  agent-live evidence; user physical 2026-10-12: edge drag-resize much faster,
+  Win+arrow slowness fixed (`21a9e58`) and user-confirmed. Remaining: user
+  physical single-output pixel/feel check, multi-output/mixed-DPI and
+  gaming-cost legs. [Design](../../research/windows-port/owner-threading.md),
+  [evidence](windows-resize-hook-latency.md). Full stage history
+  archived 2026-10-24.
+````

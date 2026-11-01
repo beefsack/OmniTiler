@@ -31,7 +31,7 @@ reconfigure path. Source: [schema](https://raw.githubusercontent.com/KDE/kwin/v6
 | P0 `kwinrc [Windows] ElectricBorderTiling` | `true`; left/right edges and corners show KWin quick-tile outline and apply native quick tile on drop during a move, even during our Meta-drag. For uncluttered project drag preview: `false`. | Read effective boolean with KConfig (`kreadconfig6 --file kwinrc --group Windows --key ElectricBorderTiling` is a read-only diagnostic); explicitly write `false` on Fix, remove the local key on Revert (effective KDE default `true`). KWin `/KWin reconfigure` applies live. [Edge check](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/window.cpp) `checkQuickTilingMaximizationZones`, `finishInteractiveMoveResize`; [schema](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/kcms/screenedges/kwinscreenedgesettings.kcfg). |
 | P0 `kwinrc [Windows] ElectricBorderMaximize` | `true`; top edge shows native maximize preview and maximizes on drop. For no competing top-edge preview: `false`. | Read effective boolean; explicitly write `false` on Fix, remove the local key on Revert (effective default `true`). Same live reconfigure path. [Edge check](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/window.cpp) `checkQuickTilingMaximizationZones`; [schema](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/kwin.kcfg). |
 | P1 `kwinrc [Windows] ElectricBorders` | `0` (desktop switching at edges disabled). If configured to switch desktop while moving, KWin can carry a project drag to another desktop; this is a conditional conflict, **not** the stock edge-preview cause. Desired `0`. Separate `[ElectricBorders] Top/Left/...` actions default `None` and are suppressed while a window is grabbed; do not bulk-clear. | Read effective integer; show only when nonzero with Fix only; remove the local key on Fix (effective default `0`). KWin `ScreenEdges::reconfigure` on options change applies live. [Screen-edge schema](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/kcms/screenedges/kwinscreenedgesettings.kcfg), [handling](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/screenedge.cpp), [enum](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/screenedge.h). |
-| P1 KGlobalAccel `kwin/Window Quick Tile Left/Bottom/Top/Right`, `kwin/Switch Window Left/Down/Up/Right`, `kwin/Window to Previous/Next Screen` | Stock chords respectively `Meta+Left/Down/Up/Right`, `Meta+Alt+Left/Down/Up/Right`, `Meta+Shift+Left/Right`. They steal the project's focus/grow/move arrow aliases, **but do not cause edge-drag previews**. Desired: project's exact bindings own the chords. | Existing KCM keyed live occupancy check and explicit Apply/Force/Revert; no second config-file shortcut setter. Revert restores KDE defaults, not previous custom keys. KGlobalAccel writes/readback take effect live, no KWin restart. [KWin shortcut registration](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/useractions.cpp) `initShortcuts`, `docs/decisions.md#shortcuts-conflicts-and-presets`, `kwin/native-effect/shortcutreconciler.h`. |
+| P1 KGlobalAccel `kwin/Window Quick Tile Left/Bottom/Top/Right`, `kwin/Switch Window Left/Down/Up/Right`, `kwin/Window to Previous/Next Screen` | Stock chords respectively `Meta+Left/Down/Up/Right`, `Meta+Alt+Left/Down/Up/Right`, `Meta+Shift+Left/Right`. They steal the project's focus/grow/move arrow aliases, **but do not cause edge-drag previews**. Desired: project's exact bindings own the chords. | Existing KCM keyed live occupancy check and explicit Apply/Force/Revert; no second config-file shortcut setter. Revert restores KDE defaults, not previous custom keys. KGlobalAccel writes/readback take effect live, no KWin restart. [KWin shortcut registration](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/useractions.cpp) `initShortcuts`, `docs/../../decisions/reference-and-shortcuts.md#shared-shortcut-defaults-and-conflict-model`, `kwin/native-effect/shortcutreconciler.h`. |
 | P1 other exact project-required shortcut occupants | `ksmserver/Lock Session` stock `Meta+L` collides with project focus-right and is explicitly relocated to `Meta+Esc`. Known holders: `kwin/Grid View` on `Meta+G`, `kwin/KrohnkiteMonocleLayout` on `Meta+M`, `KDE Keyboard Layout Switcher/Switch to Next Keyboard Layout` on `Meta+Alt+K`, `KDE Keyboard Layout Switcher/Switch to Last-Used Keyboard Layout` on `Meta+Alt+L`. These latter defaults depend on plugins/layout and are **unverified as universal defaults**; detect actual live occupancy, including unknown holders of the 15 required chords. | Existing keyed KGlobalAccel occupancy and KCM Apply/Force/Revert (including read-only Force preview) already handle the exact required chords; restore KDE defaults for cleared IDs. Live KGlobalAccel, no KWin restart. See `kwin/native-effect/shortcutreconciler.h:167-242`, `kwin/native-effect/unifiedsettings_module.cpp:420-565`, `docs/decisions.md:681-766`. |
 | P2 built-in tiling editor, `kwin/Edit Tiles` | `Meta+T` opens KWin's default-enabled Tiling Editor. **No collision with current project shortcuts or automatic Meta-drag**; do not flag merely because enabled. User-rebound `Edit Tiles`, `Window Custom Quick Tile Left/Right/Top/Bottom` (stock unbound), or four corner quick-tile actions (stock unbound) matter only when they actually occupy a project-required chord. | Check exact live shortcut holder by chord using existing keyed KGlobalAccel check; if occupied, the existing Force preview/correction/revert applies. Do not disable `tileseditorEnabled` or delete `[Tiling]` layout data. Live shortcut setter/readback; plugin-enable-key reconfigure behavior unverified and unnecessary here. [Editor action](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/plugins/tileseditor/tileseditoreffect.cpp), [default enabled](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/plugins/tileseditor/metadata.json), [unbound custom/corner actions](https://raw.githubusercontent.com/KDE/kwin/v6.7.5/src/useractions.cpp). |
 
@@ -65,7 +65,7 @@ refusal. Simplification: delete the local key for either boolean
 Revert and `ElectricBorders` Fix, with no duplicate Borders Revert or retry
 state. Settings-page-only alert now; tray indicator/icon opening normal
 Settings later, not here. Uninstall should restore defaults, but its mechanism
-is not selected. `docs/decisions.md#settings-tray-and-first-run` is authoritative.
+is not selected. `docs/../../decisions/settings.md#shared-settings-catalog-and-platform-ownership` is authoritative.
 
 The shared native KCM (`kwin/native-effect/unifiedsettings_module.cpp`,
 `unifiedsettings.ui`) now reads effective KConfig at page open/load and after
@@ -82,7 +82,7 @@ visible after failure; button visibility follows only the re-read value.
 Normal Save, startup, and shortcut logic are
 unchanged. Existing shortcut Apply/Force/Revert already detects the 15 exact
 required-chord conflicts on this page (`shortcutreconciler.h`,
-`docs/decisions.md#shortcuts-conflicts-and-presets`); no second binding helper was added.
+`docs/../../decisions/reference-and-shortcuts.md#shared-shortcut-defaults-and-conflict-model`); no second binding helper was added.
 
 Offline evidence: `just build-native-effect` passed; host-matched separate
 `BUILD_TESTING=ON` native build and full CTest **30/30** passed (new
@@ -198,3 +198,15 @@ snapshot naturally: tray Status remains NeedsAttention even if the conflict
 warning remains. Red flags: changing `Status` solely for a host conflict,
 left-click opening Settings directly, stale row/overlay after effective values
 change, or repeated conflict logs while values are steady.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2170-2177
+
+- Automatic uninstall revert of host settings: parked research after 0.1
+  (user 2026-10-10), aiming for "uninstall leaves no changed KDE settings".
+  Possibly via package manager hooks; no verified per-user hook exists for
+  Nix/Home Manager, KDE Store or distro packages. For 0.1, document pressing
+  Revert in Settings before removal in install/uninstall docs, package
+  descriptions and a post-removal package note (P1 packaging acceptance).
+  [research](host-settings-conflicts.md)

@@ -18,7 +18,7 @@
   macOS captures native facts, actuates authorized desires and renders replies.
 - Contract: [adapter guide](../porting/world-adapter-guide.md),
   [macOS notes](../porting/macos-port-notes.md),
-  [decisions](../decisions.md#native-adoption-2026-10-24).
+  [decisions](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19).
 - Non-goals: compatibility/shims/dual routes, new workspace policy, a second
   native-adoption implementation, speculative asynchronous-settlement redesign,
   unparked passive titlebar drag, or resolution of parked product questions.
@@ -1174,7 +1174,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
 ## Dogfood review directions 2026-10-27
 
 - User review 2026-10-27 (durable product decisions live in
-  [decisions](../decisions.md#macos-dogfood-review-decisions-2026-10-27)):
+  [decisions](../decisions/macos.md#follow-up-review-and-investigation-priority)):
   T1 numbered-send backing desire, interim T2 coalesced pump with the approved
   direct-wake latency unit as selected next work, T3 held geometry plus
   queued-source fence, and T4 host-derived corner default are confirmed;
@@ -1550,3 +1550,225 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   cross-display clamps still need the planned fake-native coverage.
 - Targeting/receipt cutover is accepted offline above. Presentation and native
   acceptance remain open. Do not invent shared shapes in the adapter.
+
+### Backlog detail moved 2026-11-01: interface/API review (original lines 546-566)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | Full core/platform interface, API and ownership review | After the macOS
+  and KDE v2 ports land, review the complete Windows/KDE/macOS boundary together.
+  Start with the [macOS abstraction-fit review](macos-world-v2-port.md#abstraction-fit-review)
+  and [parked float-fact review](macos-world-v2-port.md#parked-post-port-review):
+  `WindowFact.floating` adapter echoes versus genuine host signals; tentative
+  [three-way shared classification](macos-world-v2-port.md#shared-transient-classification-2026-10-25);
+  `minimized` covering host-hidden; DPI/coordinate basis; and the neutral settling
+  marker investigation ([guide](../porting/world-adapter-guide.md#coordinates-and-safety)).
+  Include tentative host-owned native-only evidence, hybrid creation correlation,
+  native attempt preimages, released-source backing/fresh adoption and trailing
+  spare count; border presentation during motion decided 2026-10-31
+  ([anchored border](../decisions/contract.md#anchored-border-r20)); assess future GNOME
+  and ChromeOS fit as well as the three landed ports.
+  Review distinct `NativeWorkspaceId`/`LogicalWorkspaceId` newtypes (both plain
+  `String` today): adapters flatten composite native identities into canonical
+  opaque keys; core never parses them.
+  Decide whether fullscreen (and maximize/sticky) toggles become a neutral core
+  command; today KDE Meta+F11 and Windows Win+F11 are host-native toggles with
+  local safety checks (user deferral 2026-10-28). Decided 2026-10-31: neutral
+  core commands ([decision](../decisions/contract.md#window-state-commands-r14)).
+  Port delivery does not pre-approve these interface changes.
+
+### Original backlog lines 1767-1959
+
+- P1 | macOS port | Started 2026-10-14 (user), superseding the after-KDE-0.1
+  sequencing. Port contract finalized 2026-10-24:
+  [world adapter guide](../porting/world-adapter-guide.md) plus
+  [macOS port notes](../porting/macos-port-notes.md); macOS remains unported to
+  v2: legacy routes must be replaced together (no dual route), supplying
+  truthful native receipts/transport and host-owned bootstrap/outside-change
+  adoption (see boundaries item).
+  [Staged v2 plan and abstraction-fit review](macos-world-v2-port.md)
+  record the current build gaps, KDE adoption dependency and acceptance gates.
+  **Current 2026-10-16:** basic tiling dogfood preview
+  ([guide](macos-dogfood-preview.md)) user-accepted after
+  [hardening](archive/macos-dogfood-hardening.md): directional focus
+  (including same-app), move, 8-point outer/inner gaps and quiet idle logging pass
+  physically. [Physical results](archive/macos-dogfood-hardening.md#user-physical-results-2026-10-16):
+  OS disabled the tap under a stall without a timeout notification; health-check
+  re-enable recovered (accepted tentatively). Carbon physical delivery failed
+  (diagnostic-only). All three manual native Space-transfer routes moved an
+  ordinary window ([results](../research/macos-port/native-spaces-routes.md#user-manual-transfer-check--2026-10-16)).
+  **Next, in order (user-reviewed 2026-10-17):**
+  1. **Done 2026-10-17:** user-assisted synthetic-drag discriminator
+     ([results](macos-managed-workspaces.md#user-assisted-discriminator-results-2026-10-17)).
+     A synthetic drag plus a Desktop-N chord moved TextEdit to another Space.
+     Synthetic Ctrl+Right failed even alone, because Mission Control's arrow
+     holders require Control plus Fn and the executor sets only Control.
+     Transfer is unparked.
+   2. **Done 2026-10-18:** full world-state core replies, including native runtime
+      Ctrl+2/Ctrl+1, per-window retained-layout correction across blind hidden AX
+      snapshots, inspected ring/indicator screenshots and clean overlay teardown.
+      903 macOS tests, strict clippy, format and signed build/verify pass; unsafe
+      remains 114. [Outcome](archive/macos-full-state-replies.md#final-outcome-2026-10-18).
+    3. Finish managed native workspaces. **2026-10-19:** numbered select,
+       send-follow and default-unbound send-stay pass live; same-current send is
+       an unchanged no-op. Trailing select/send-follow/indicator are armed after
+       offline integration review; native procedure 3 remains pending.
+       Existing-contract bindings settle creation; stale clicks refuse; send
+       preparation runs off-main. Trailing sends above Desktop 9 refuse before
+       creation. Next: diagnostic-harness review and disposable TextEdit
+       procedure 3, then per-display attribution. Outward pixels, relative
+       actions and physical/two-display checks pending. Four-crate tests 2385
+       passed; unsafe 114, unchanged.
+       [Checkpoint and checklist](macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19).
+       Dogfood 2026-10-19: MC select animation and post-send tiling feel slow.
+       Offline investigation delivered: MC AX selector plus 300 ms
+       stabilization, 450 ms drag grab/hold, and no reconcile on Space change
+       (1 s backstop when AX is silent) are implementation costs; SIP-on
+       Dock-swipe selection is the leading candidate
+       ([findings](../research/macos-port/native-spaces-routes.md)). **Top macOS
+       priority (user 2026-10-19):** fast workspace switching and moving.
+       Delivered for dogfooding and user-approved 2026-10-20: yabai-style
+       Dock-swipe selection (43-62 ms native-current), Dock exit gating after
+       creation, bridged native sends with drag fallback and Dock-swipe follow
+       (arrival 88-98 ms), event-driven arrival rereads (first correct tile
+       1,000 -> 270 ms), trailing reuse (122 ms) and post-create select
+       (900-944 ms), and exact-shape AccessibilityUIServer/ControlCenter
+       removal exceptions. Next, in order:
+       0. Fixture-authenticated guarded input harness: extend the guarded
+          diagnostic controls (currently legacy-helper/TextEdit only) to
+          authenticate live-fixture windows, so product focus/move chords and
+          managed select/send/trailing checks run against the fixture
+          ([fixture integration](archive/macos-fixture-tiler-integration.md)).
+          Prerequisite for automated 3a.
+       a. Live-verify the trailing send-follow focus fix (yabai move ->
+          front-PSN -> selector): sole-window follow to reused and new Spaces,
+          inverse follow, stay/source focus, two create/auto-remove cycles,
+          with timings.
+       b. Restore MC AX selection as the automatic fallback when Dock-swipe is
+          unavailable (e.g. refused macOS >= 27 payload), per
+          [Host Integration](../principles.md#host-integration).
+       c. User-configurable route settings for selection (Dock-swipe / MC AX)
+          and sends (bridged / drag), per Host Integration.
+       d. Unproven: stay visit-to-tile latency, physical smoothness/input
+          readiness, multi-display, macOS 15 floor, user-run opened/pinned
+          ControlCenter contrast.
+       [Send checkpoint and checklist](macos-managed-workspaces.md#send-latency-work-2026-10-20).
+  4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
+     producer is a passively observed native title-bar drag of a managed
+     window, matching Windows' title-bar route, with physical user acceptance.
+     Offline Engine preview/drop plumbing and the above-target carrier exist;
+     the Meta+left diagnostic stays hard-gated until replaced.
+     [Earlier evidence](macos-drag-drop-overlays.md).
+  5. SkyLight-created window experiment for the group underlay and a
+     below-target active border
+     ([research](../research/macos-port/underlay-rendering-routes.md),
+     [decision](../decisions.md)): Experiments 1 and 3,
+     then remove the failed AppKit-relative and SkyLight-on-AppKit ordering
+     code. If it passes, ship the product underlay and move the border below
+     the target. [Underlay evidence](macos-group-underlay.md).
+  6. `ffi.rs` unsafe surface review straight after item 5 (unsafe blocks went
+     93 -> 114 on 2026-10-17, 114 -> 132 on 2026-10-20): minimise and isolate every unsafe use, prefer
+     maintained bindings, and remove diagnostics that no longer serve a live
+     route.
+  7. macOS 0.1 gate: keep the current definition (P0 0.1 item); decide after
+     dogfooding.
+  8. Reliability and game-safety work required by the gate (sleep/wake, display
+     plug/unplug, resolution changes, games): none exercised on macOS yet.
+  9. Smaller items: verify that Authentic can override each conflicting macOS
+     system shortcut for the default bindings (test-only slice of the shortcut
+     conflict model, user 2026-10-17); indicator icons (deferred) and the
+     indicator on multiple displays; `just launch` exits nonzero on successful
+     probes; `just dev` (`scripts/macos-dev.sh`) leaks its `tail -F` log
+     followers after the run ends (orphans found 2026-10-19), so reap them on
+     every exit path; split oversized macOS production files toward the
+     [file size](../principles.md#file-size) cap (several hotspots, including
+     `runtime.rs`); Mission Control Ctrl+Up/Down chords; macOS 15 floor; P2
+     classification discriminators.
+  10. Distribution: DMG and Homebrew, signing and notarisation (paid Apple
+      account), update channel, App Store.
+  **User review 2026-10-27 ordered follow-ups (details in
+  [decisions](../decisions/macos.md#follow-up-review-and-investigation-priority) and the
+  [port record](macos-world-v2-port.md#dogfood-review-directions-2026-10-27)):**
+  Test iteration: single integration target and non-lifecycle event waits
+  reduce full command wall time to 11.514s first-launch / 9.082s warm;
+  five lifecycle exit/reap polls remain for causal join synchronization
+  ([evidence](macos-world-v2-port.md#test-iteration-speed-2026-10-27));
+  an exact-generation join repair failed review and is parked (waits retained).
+  Focus-walk first-dispatch flake diagnosed 2026-10-28: first chord can precede
+  the startup observation; test-only repair (wait for applied startup
+  observation, fence, then one chord) pending.
+  (a) delivered offline 2026-10-28: direct event-driven claim/completion wake
+  replaces the 50 ms pump; native before/after measurement dropped (user
+  2026-10-28), feel checked in (g); the native latency harness and tracing are
+  shelved; the first fixture leg's window-join failure is unresolved and the
+  retained live receipt (two protected-window mismatches) awaits user
+  disposition before any live leg
+  ([decisions](../decisions/macos.md#follow-up-review-and-investigation-priority));
+  (b) delivered offline 2026-10-28: every user command reaches core FIFO, T3
+  supersession retained (`3d64b5c5`).
+  **ROI review (user 2026-10-28) - macOS order:** (1) propose 0.1 gate
+  exceptions (P0 item below; approved 2026-10-29, D4 amended, D5/D6 rejected); (2) small fixes:
+  focus-walk test fence (delivered offline `812eba82`), pager
+  core-trailing-workspace check (incomplete projection found: the `+` action
+  disappears when the last native Space is empty; direct core projection with a
+  separate trailing segment selected 2026-10-28; optional core trailing
+  designation delivered offline with publication/wire regressions; macOS
+  projection locally reviewed and restored; seven stale completeness test
+  expectations fixed, one core hidden-focus regression blocks publication; full
+  gate not waived ([record](macos-core-trailing-pager.md)); lazy backing retained), first-float
+  placement decision, `just dev`
+  log-follower leak, `just launch` exit code; (3) targeted redogfood, including
+  trailing send-follow (3a) and direct-wake feel; (4) fullscreen
+  logical-membership design plus one bounded probe; (5) best-effort admission
+  adoption; (6) gate reliability/game-safety work (item 8); (7) `ffi.rs` unsafe
+  review, decoupled from item 5; (8) drag/drop overlays; (9) file-size splits,
+  shortcut-override check, MC Ctrl+Up/Down, two-display checks, distribution.
+  **Shelved (high effort, questionable value now):** macOS native stress
+  runner against the shared spec (revisit after redogfood); fixture-driven
+  live input harness (3.0 and the live-fixture remainder; physical dogfood
+  checks instead); selection/send route settings (3c); dynamic per-window
+  corner radius (version-derived default stays). **Deferred:** SkyLight
+  underlay/below-target border experiment (5) to post-0.1 (superseded for
+  underlay 2026-10-29: underlay attempt is 0.1 scope, see the P1 underlay
+  item); MC AX fallback (3b)
+  until a macOS release refuses Dock-swipe; macOS 15 floor check; indicator
+  icons.
+  **Workspace model (user 2026-10-28):** native Spaces remain the default; virtual
+  parked/hidden workspaces are parked for possible post-0.1 opt-in investigation
+  (M prototype / L production, gain unquantified, sliver/recovery/fullscreen risks;
+  [review](../research/macos-port/workspace-model-review.md)). Learn from the pinned
+  existing tilers before remaining native-Spaces implementation; reuse proven
+  mechanisms. Decision 7 approves only the optional explicit core trailing marker
+  ([change](macos-core-trailing-pager.md)).
+  **Pending physical acceptance (dogfooding):** workspace selects, send-follow,
+  send-stay and trailing Space, plus the user-approved 2026-10-19 decisions
+  ([dogfood checklist](macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19));
+  Mission Control transition feel;
+  consume-first ([section 5](archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17));
+  active border appearance ([section 6](archive/macos-dogfood-hardening.md#6-active-border-appearance-check-pending-2026-10-17));
+  workspace indicator click and Space-switch updates
+  ([record](macos-workspace-indicator.md)). Delivered 2026-10-17:
+  consume-first input parity with Windows
+  ([evidence](archive/macos-consume-first-input.md)); active border
+  ([evidence](macos-active-border.md)); menu-bar workspace indicator
+  (user quick check passed).
+  Native-Space capability comparison ([verdict](../research/macos-port/native-spaces-routes.md#live-verdict--2026-10-16),
+  [record](archive/macos-native-workspaces.md)): MC AX create/select/remove
+   and gesture select work on owned fixtures; direct SLS window move dispatched
+   without effect; the old unmangled bridged lookup missed the dispatcher
+   (corrected by the send work above).
+   Earlier milestones (summarized; full evidence in linked records): kickoff and
+   Phase 0 decisions/probes (TCC/signing, owned-window AX legs, Carbon/tap
+   lifecycle, tier-2 yabai-style route), Phase 1 threading/lifecycle skeleton,
+   window-policy/classification slice (User option A 2026-10-15), scoped-tile
+   dev mode (406 macOS tests, signed bundle), dogfood hardening, consume-first
+   input parity, active border and menu-bar indicator (user quick-check passed).
+   Full history: [kickoff](archive/macos-port-kickoff.md),
+   [Phase 0](macos-phase-0.md),
+   [Phase 1](macos-phase-1-skeleton.md),
+   [classification](macos-window-classification.md),
+   [scoped tile](macos-scoped-tile.md),
+   [hardening](archive/macos-dogfood-hardening.md).
+  [setup](../macos-dev-environment.md)
+  [survey](../research/macos-port/prior-art.md)
+  [plan](../research/macos-port/plan.md)

@@ -69,7 +69,7 @@ default and the Windows CLI/constant.
   Preserve explicit colors. Live visual check over black/white/grey wallpapers
   before 0.1; selection is not native evidence.
 - Research decision is resolved; implementation/checks are in
-  [backlog](../../backlog.md), [decision](../../decisions.md#visuals-border-underlay-and-grouping).
+  [backlog](../../backlog.md), [decision](../../decisions/visuals.md#shared-visual-safety).
 
 ## 7. Pending live visual checks (not run)
 

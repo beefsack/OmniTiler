@@ -26,7 +26,7 @@
 
 ## Decisions
 
-- [Selected policy](../../decisions.md#window-state-float-sticky-maximize-fullscreen)
+- [Selected policy](../../decisions/window-state.md#fullscreen-and-maximize-overlays)
   owns geometry, ties, stateless repeats and layering. Item 18 clears a
   maximized float before this ordinary half-snap path.
 - Tentative 2026-10-12, pending user review: candidate encounter order is

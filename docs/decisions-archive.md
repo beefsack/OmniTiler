@@ -19,9 +19,9 @@ from each entry below. Nothing here authorizes implementation.
 ## 1. Windows per-domain API / ManagedWorkspaces / v1 authority (historical)
 
 Superseded 2026-10-24 by the delivered v2 boundary. Current:
-[decisions.md](decisions.md#engine-architecture-and-convergence),
-[decisions.md](decisions.md#core-platform-boundary),
-[decisions.md](decisions.md#logical-workspace-authority).
+[decisions.md](./decisions/engine.md#core-owned-world-and-platform-boundary),
+[decisions.md](./decisions/engine.md#core-owned-world-and-platform-boundary),
+[decisions.md](./decisions/engine.md#logical-workspace-authority-and-host-owned-observations).
 
 ### 1a. Transitional domain API (Workspaces, moved 2026-10-24)
 
@@ -30,7 +30,7 @@ Superseded 2026-10-24 by the delivered v2 boundary. Current:
 >   Windows/macOS behavioral adoption remains separate; their transitional
 >   domain API remains available.
 
-Current: [decisions.md](decisions.md#workspaces).
+Current: [decisions.md](./decisions/workspaces.md#workspace-lifecycle-focus-and-history).
 
 ### 1b. Retained-Engine multi-output wording (moved 2026-10-24)
 
@@ -40,7 +40,7 @@ Current: [decisions.md](decisions.md#workspaces).
 >   and workspace membership publish only after fresh topology, geometry
 >   readback and arrival verification.
 
-Current: [decisions.md](decisions.md#windows-multi-output-foundation).
+Current: [decisions.md](./decisions/windows.md#multi-output-foundation).
 
 ### 1c. Portable per-domain Sessions ownership (moved 2026-10-24)
 
@@ -50,12 +50,12 @@ Current: [decisions.md](decisions.md#windows-multi-output-foundation).
 >   divergence, or node identities into one permanent Session.
 >   Send/R4 assemble a transient canonical pair only for the synchronous planned-topology commit; no workspace/R4 pending pair state remains.
 
-Current: [decisions.md](decisions.md#logical-workspace-authority).
+Current: [decisions.md](./decisions/engine.md#logical-workspace-authority-and-host-owned-observations).
 
 ### 1d. Obsolete D1 framing fragments (moved 2026-10-24)
 
 The D1/D4/D5 invariants stay current in
-[decisions.md](decisions.md#engine-architecture-and-convergence). Only these
+[decisions.md](./decisions/engine.md#core-owned-world-and-platform-boundary). Only these
 framings are historical:
 
 >   revision while independent domain sessions/revisions remain independent.
@@ -76,22 +76,22 @@ framings are historical:
 >   alignment is not silently decided by ownership extraction.
 >   [Offline delivery and open questions](changes/archive/shared-core-owned-output-topology.md).
 
-Current: [decisions.md](decisions.md#engine-architecture-and-convergence).
+Current: [decisions.md](./decisions/engine.md#core-owned-world-and-platform-boundary).
 
 ### 1f. KDE legacy-route transitional sentence (moved 2026-10-24)
 
 >   production uses only DiscoverWorld/DescribeWorld plus float-intent persistence. Portable per-domain core APIs remain until Windows/macOS
 >   complete world adoption. [Removal evidence](changes/kde-legacy-route-removal.md).
 
-Current: [decisions.md](decisions.md#engine-architecture-and-convergence).
+Current: [decisions.md](./decisions/engine.md#core-owned-world-and-platform-boundary).
 
 ## 2. Pre-v2 Windows ActiveGroup group-underlay query (historical)
 
 Current (Windows, v2 2026-10-24):
-[decisions.md](decisions.md#visuals-border-underlay-and-grouping). The KDE
+[decisions.md](./decisions/visuals.md#shared-visual-safety). The KDE
 `SetGroupHighlight` effect bridge is live in the unported KDE adapter and
 stays current in
-[decisions.md](decisions.md#visuals-border-underlay-and-grouping), not
+[decisions.md](./decisions/visuals.md#shared-visual-safety), not
 archived here.
 
 ### 2a. Windows ActiveGroup group-underlay query (moved 2026-10-24)
@@ -112,15 +112,15 @@ archived here.
 ## 3. Superseded KDE workspace history (moved 2026-10-24)
 
 Superseded by the 2026-10-24 separate-view support and aligned startup
-adoption. Current: [decisions.md](decisions.md#workspaces),
-[decisions.md](decisions.md#workspace-vocabulary-2026-10-24).
+adoption. Current: [decisions.md](./decisions/workspaces.md#workspace-lifecycle-focus-and-history),
+[decisions.md](./decisions/workspaces.md#workspace-scope-vocabulary).
 
 ### 3a. Superseded mode-exposure restriction
 
 >     for both separate-view modes: `workspaceMode` exposed only
 >     `per-output-local` and `shared`.
 
-Current: [decisions.md](decisions.md#workspaces) (restriction superseded;
+Current: [decisions.md](./decisions/workspaces.md#workspace-lifecycle-focus-and-history) (restriction superseded;
 the protection and hotplug/focus rules around it stay active).
 
 ### 3b. Old per-output-local startup conversion
@@ -155,7 +155,7 @@ the protection and hotplug/focus rules around it stay active).
 
 ## 4. Completed owner-idle coverage probe (historical)
 
-Current outcome: [decisions.md](decisions.md#windows-owner-threading).
+Current outcome: [decisions.md](./decisions/windows.md#windows-owner-thread-architecture).
 Probe narrative moved 2026-10-24:
 
 > - User 2026-10-18 selected a controlled native-event coverage probe before 0.1,

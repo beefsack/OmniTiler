@@ -1,7 +1,7 @@
 # D01 / INS-06: admission and explicit focus over fullscreen
 
 - Status: native activation ownership selected by User 2026-10-12;
-  [current rule and KDE focus-fence gap](../decisions.md#placement-minimums-and-startup-adoption).
+  [current rule and KDE focus-fence gap](../decisions/layout-and-admission.md#placement-and-minimums).
   Research below records the pre-decision assessment. Source analysis only;
   no runtime tests or product implementation by this report.
 - Finding: "keep the game shown and focused" is not synonymous with native

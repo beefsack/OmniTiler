@@ -404,3 +404,46 @@
 - The verified-focus versus stale CLI-origin-cache race is repaired and all
   six native legs pass. Next for this Windows scope: none. Other-platform
   connectors and true input-burst starvation coverage remain separate work.
+
+### Backlog detail moved 2026-11-01: incomplete workspace hide (original lines 342-349)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | Windows intermittent incomplete workspace hide | Pair with the staged
+  switch prototype, which changes the same hide path. Stress home-away at
+  10ms once left a view transfer pending for 60s with one fixture member still
+  visible; a retry passed under the then-current harness, whose acceptance was
+  later withdrawn for unrelated trace-proof mixing. Preserve native failure
+  evidence; corrected home-away at 10ms and a separate repeat pass all hide/show
+  checkpoints but do not reproduce or disprove the race. Fix without weakening
+  lifetime/visibility fences ([record](platform-neutral-stress-acceptance.md)).
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 429-451
+
+````markdown
+- P1 | Platform-neutral spam/stress acceptance tests | User 2026-10-26, after
+  the P1 above: one set of platform-agnostic test definitions (high-volume
+  action sequences: sends, switches, directional focus, moves, window churn)
+  with an expected final world (layout, membership, focus, shown workspace,
+  pager). Each platform runs them through a native runner with a configurable
+  delay between actions (including none), then queries real platform state
+  (the live test window tool is the likely query route) and compares it with
+  the expectation. A core-only layer with batched/reordered simulated host
+  replies complements it, but the native layer is essential: the 2026-10-26
+  Windows starvation bugs lived in host-event servicing. Builds on the core-only
+  ordered baseline (`test-fixtures/world-actions.json`, `world_acceptance`) and
+  the native acceptance connector items below. Shared stress definitions and
+  three simulated-host schedules pass offline. Windows delay-zero testing found
+  and repaired stale hidden-frame facts; hide/reveal now passes that checkpoint.
+  Hidden-oracle semantics now follow the existing no-hidden-write safety fence
+  (user-approved 2026-10-27). Snapshot-bound paired proof, authored bootstrap
+  setup and departure cursor repair pass live. Windows delivery is complete:
+  after repairing directional CLI origin freshness, both cases pass all 102
+  commands at 0/10/50ms with strict joins and clean recovery. Remaining native
+  runners are KDE/macOS using these same definitions/oracles (macOS runner
+  shelved 2026-10-28 pending redogfood); physical burst
+  ingress remains the separate keyboard item below
+  ([Windows outcome](changes/archive/platform-neutral-stress-acceptance.md)).
+````

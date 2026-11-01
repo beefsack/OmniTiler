@@ -10,7 +10,7 @@
 - Sticky and automatic-fixed refusals remain unchanged. No setting.
 - Shared core first, then KDE; Windows adapter/native delivery is handoff
   item 22. Existing floating-workspace boundary behavior remains intact.
-- [Decision](../../decisions.md#workspaces),
+- [Decision](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history),
   [reference discriminators](../../spec/reference-outcomes/workspaces.md#d16-combo-and-arrival-frame-discriminators-2026-10-13).
 
 ## Approach and delivery

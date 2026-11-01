@@ -43,3 +43,12 @@ Repository initially clean at `da64ac1`; no live KWin testing. Destination is th
 **Remaining size versus the ~600-900 production target:** no further cut was found sound without changing the selected behavior. The +733 adapter is approximately 110 lines for pointer-domain selection/projection, 215 for read-only request, prior and stale-reply lifecycle, 240 for native lag transfer with output/desktop and fresh complete destination proof, and 168 for drop dispatch, correlation, terminal markers and source reconcile. The +190 entry owns stepped pointer coalescing, native overlay routing, start/finish lifetime and cancellation. The +249 protocol encodes and validates one preview/drop wire body, serializes the distinct read-only reply and shares its evaluation. The +191 Engine builds retained/fresh working sessions, shares preview/drop policy and commits only drops, including empty-target singleton projection. Session/boundary/drag ops (+92 combined) carry exact sticky hover prior and expose read-only preview with hints. Native effect (+103) provides the independent above-window ImageItem and minimal validation. Lag-transfer output/desktop readback and fresh complete destination observation are distinct proofs; removing either would undermine the KWin 6.7.5 finding. The two preview test suites are already case-matrix consolidated; remaining cases cover different failure modes. All cuts were net deletion without new machinery. No behavior deviation selected.
 
 **Next action:** user-owned live check after host-matched native effect delivery: multi-output test system - occupied and empty destination drops at the pointer (including native-output lag), source membership removal, preview/drop agreement at group edges with sticky carry, center snap-back/hidden preview, wrong-output/refusal recovery; single-output test system - same-output edge/center, preview overlay above windows independent of Meta outline, and Finish/Esc/cancel/no-Finished clearing. Use correlated preview/drop diagnostics without treating setter requests as rendered proof. No agent live KWin/Plasma test occurred.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2043-2046
+
+- P2 | Simplify drag preview + cross-output drop code | Post-live cleanup only:
+  cut advisory `hover_prior` validation, lag-only fences, verbose comments;
+  net deletion, no behavior change.
+  [change](cross-output-drag-preview.md)

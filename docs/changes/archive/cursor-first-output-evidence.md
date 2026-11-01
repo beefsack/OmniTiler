@@ -58,3 +58,31 @@
   non-Tier-1 and project cursor-first native outcomes.
 - Outcome: research complete; user review must select any normative override,
   default deviations and the definition of another output's standard anchor.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 378-398
+
+````markdown
+- P0 | Cross-platform cursor-first output targeting (User 2026-10-20) |
+  Decided on [Tier 1 evidence](changes/archive/cursor-first-output-evidence.md):
+  all-platform switch target cursor (default, COSMIC) or focused output (i3/sway);
+  three-way new-window placement COSMIC (default: cursor output/last-focused
+  window), Hyprland (cursor output/cursor-closest), i3/sway (focused
+  output/last-focused). Sends use the focused window's output; relative
+  next/previous targets count there too, no setting (Decision 1c). Focus-follows-
+  cursor on/off and cursor-warp are settings, both default off (Decision 1d);
+  i3/sway preset enables cross-output warp. Replaces R-OUT-05's old default.
+  Shared-core placement where approved; platforms supply cursor/settings. Core
+  switch/placement/send targeting and Windows delivered 2026-10-22
+  (fixture-verified both outputs; rearchitecture closed 2026-10-24); active
+  focus-follows-cursor and warp are stage 4 (default-off core/Windows delivered;
+  native hover-follow unverified). KDE/macOS by their ports
+  ([guide](porting/world-adapter-guide.md), [KDE](porting/kde-port-notes.md),
+  [macOS](porting/macos-port-notes.md)).
+  User-approved 2026-10-26: three-way placement subsumes launch targeting.
+  Output-targeting race option A audited/implemented offline 2026-10-28:
+  implicit callers already defer to core; execution-time cursor/focus/history
+  regressions added, all-platform production unchanged. Explicit-send current
+  sampling remains separate ([evidence](changes/archive/output-targeting-race-audit.md)).
+````

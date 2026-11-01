@@ -36,7 +36,7 @@ KDE source changes were required.
 - Latest-wins size → position → size transactions have per-leg identity,
   scope, membership, topology, stop/supersession and show-state fences, with
   partial-write readbacks. No parking, hiding, restyling or Space-management writes.
-- The [tentative selected focus oracle](../decisions.md#scope-and-platform-goals)
+- The [tentative selected focus oracle](../decisions/platforms.md#platform-scope)
   is SLPS-front PID == NSWorkspace-frontmost PID, plus that app's direct
   AXFocusedWindow (AXMainWindow fallback), `_AXUIElementGetWindow` and CG owner
   join. Foreground is checked around acquisition. Systemwide AXFocusedApplication

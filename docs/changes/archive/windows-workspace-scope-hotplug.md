@@ -108,6 +108,6 @@
   clean stop/restore. Nearest-survivor discrimination requires three outputs.
 - User 2026-10-15 approved mode schema/adoption, global swap/addressing, shared
   no displacement and shared startup anchor in
-  [Workspaces](../../decisions.md#workspaces). No additional product choice was
+  [Workspaces](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history). No additional product choice was
   introduced. Physical journeys and unsupported reference outcomes stay parked
   for that testing; offline item 12 implementation is complete.

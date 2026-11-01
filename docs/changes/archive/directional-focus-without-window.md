@@ -157,3 +157,12 @@ at `68ce0b75`.
   trigger is not established; same-signature failure on the unchanged parent
   proves the regression predates this feature. Raw build/provenance and all
   individual test outputs are retained outside the repository.
+
+### Backlog detail moved 2026-11-01: no-focus navigation (original lines 425-428)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | No-focus navigation remaining proof | Implementation complete
+  ([record](directional-focus-without-window.md)). User-owned
+  physical no-focus shortcut/output-crossing proof and COSMIC runtime outcome
+  remain TBD; fixture CLI origin and injected-key safety gates stay unchanged.

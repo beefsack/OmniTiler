@@ -1,7 +1,7 @@
-# World-contract platform adapter guide (v2)
+# World-contract platform adapter guide (v3)
 
 Durable generic guide for every platform adapter (Windows reference,
-KDE and macOS ports). The remote contract is strict v2 with no
+KDE and macOS ports). The remote contract is strict v3 with no
 compatibility route: v1 payloads, field names and discovery paths
 refuse and are never shimmed.
 
@@ -14,6 +14,182 @@ not be inferred from wire acceptance.
 Source roots below are relative to the repository root. Core symbols
 live in `crates/tiler-core/src/`; the JSON codec lives in
 `crates/tiler-protocol/src/world_protocol.rs`.
+
+## Current contract ownership
+
+| Decision or fact | Owner | Basis |
+| --- | --- | --- |
+| Logical workspaces, membership, ordering and lifecycle | Core | [Section 1](#1-one-core-model-and-policy) |
+| Native observation and truthful fact capture | Adapter | [Section 2](#2-report-complete-normalized-facts-every-time), [`WorldReport`](../../crates/tiler-core/src/world_report.rs#L1005-L1035) |
+| Native fact normalization and projection | Adapter | [Classification ingress](#classification-ingress-and-remote-transport-rough-edge), [Windows](../../crates/tiler-windows/src/tiling/classification.rs#L194-L215), [KDE](../../crates/omnitiler/src/kde_raw.rs#L426-L437), [macOS](../../crates/tiler-macos/src/classifier.rs#L314-L386) |
+| Shared classification and policy | Core | [Classification ingress](#classification-ingress-and-remote-transport-rough-edge), [`SafetyFacts`](../../crates/tiler-core/src/window_policy.rs#L46-L58), [`classify_geometry`/`classify_focus`](../../crates/tiler-core/src/window_policy.rs#L123-L173), [`classify_membership`/`classify_retained_membership`](../../crates/tiler-core/src/window_policy.rs#L187-L230) |
+| Native authority and limitations | Constrained by host | [Section 7](#7-host-limits-coordinates-dpi-and-gaming), [Section 6](#6-lifetime-freshness-and-scope-vetoes) |
+| Authorized writes and mechanical readback | Adapter | [Section 4](#4-desired-world-state-what-the-reply-authorizes), [Section 5](#5-raw-attempts-and-settlement) |
+| Completion, settlement and policy verdicts | Core | [Section 5](#5-raw-attempts-and-settlement) |
+| Capabilities and settings conveyed per report | Adapter reports; core consumes | [`WorldReport`](../../crates/tiler-core/src/world_report.rs#L1010-L1218) |
+| Presentation eligibility and published shapes | Core | [Section 8](#8-border-underlay-drop-preview-and-pager) |
+| Native rendering and immediate safety veto | Adapter and host | [Section 8](#8-border-underlay-drop-preview-and-pager) |
+
+## Approved, not yet implemented (v4)
+
+- [Facts versus classification](../decisions/contract.md#facts-versus-classification): v3 reports projected `WindowFact` ([source](../../crates/tiler-core/src/world_report.rs#L683-L721)); raw `SafetyFacts` are not on the wire ([decision](../decisions/contract.md#facts-versus-classification)).
+- [Host capabilities and settings](../decisions/contract.md#host-capabilities-and-settings): v3 carries report-level capability flags/settings ([source](../../crates/tiler-core/src/world_report.rs#L1043-L1100)); approved shape uses a connection handshake and revisioned settings.
+- [Intent ownership and persistence](../decisions/contract.md#intent-ownership-and-persistence): v3 carries `observed_workspace`, native membership, and retained presentation frame snapshots ([source](../../crates/tiler-core/src/world_report.rs#L582-L598)); the approved rule puts intent and last-known frame in core and returns opaque host storage unchanged.
+- [Send source fallback](../decisions/contract.md#send-source-fallback): v3 `SendSource` has `HomeThenAction` and `HomeThenCachedLive` ([source](../../crates/tiler-core/src/world_report.rs#L831-L844)); v4 retains one action-context chain.
+- [Primary output](../decisions/contract.md#primary-output): v3 `ScreenReport.primary` is a boolean ([source](../../crates/tiler-core/src/world_report.rs#L664-L681)); v4 uses one optional primary-output id.
+- [Command outcome in reply](../decisions/contract.md#command-outcome-in-reply): v3 has no `Rejected` `CommandResult` ([source](../../crates/tiler-core/src/world_report.rs#L1361-L1442)) and protocol errors are rejected bodies ([codec](../../crates/tiler-protocol/src/world_protocol.rs#L193-L248)); v4 makes rejection an outcome on an accepted reply.
+- [Decorations](../decisions/contract.md#decorations): v3 presentation ingress/reply use current typed structures ([ingress](../../crates/tiler-core/src/world_report.rs#L600-L652), [reply](../../crates/tiler-core/src/world_presentation.rs#L111-L127)); v4 uses named decoration fields and one shared revision rule.
+- [Size units and scaling (R10)](../decisions/contract.md#size-units-and-scaling-r10): v3 screen facts have no scale ([source](../../crates/tiler-core/src/world_report.rs#L664-L681)); v4 adds per-screen scale and logical-pixel settings.
+- [Output identity (R11)](../decisions/contract.md#output-identity-r11): v3 screen facts have no manufacturer/model/serial identity or duplicate fallback ([source](../../crates/tiler-core/src/world_report.rs#L664-L681)); v4 adds stable identity and connector fallback.
+- [Native writes difficult to undo (R12)](../decisions/contract.md#native-writes-difficult-to-undo-r12): v3 capability list has no per-window suppression advertisement ([source](../../crates/tiler-core/src/world_report.rs#L1043-L1059)); v4 gates suppression on recoverable preimage storage.
+- [Window-state commands (R14)](../decisions/contract.md#window-state-commands-r14): v3 has boolean fullscreen facts and no fullscreen/sticky commands ([source](../../crates/tiler-core/src/world_report.rs#L683-L721), [commands](../../crates/tiler-core/src/world_report.rs#L846-L1003)); v4 adds ownership/exitability facts and shared commands.
+- [Scripting command surface (R18)](../decisions/contract.md#scripting-command-surface-r18): v3 world/core command vocabularies are defined here ([world commands](../../crates/tiler-core/src/world_report.rs#L846-L1003), [core command codec](../../crates/tiler-protocol/src/world_protocol.rs#L1224-L1387)); their presence does not establish each platform's external route.
+- [Anchored border (R20)](../decisions/contract.md#anchored-border-r20): v3 presentation carries absolute shapes ([source](../../crates/tiler-core/src/world_presentation.rs#L1-L145)); v4 uses anchored border descriptors applied on native events.
+
+## Current message shapes (v3)
+
+The core contract version is `WORLD_CONTRACT_VERSION = 3`
+([`world_report.rs`](../../crates/tiler-core/src/world_report.rs#L34-L45));
+`WORLD_PROTOCOL_VERSION` aliases it
+([`world_protocol.rs`](../../crates/tiler-protocol/src/world_protocol.rs#L186-L191)).
+The following are the current typed message fields, not proposed future shape.
+
+- Report envelope and facts: `contract_version`, `owner`,
+  `adapter_incarnation`, `core_generation`, `observation_seq`, `request_seq`,
+  `request_id`, `command_seq`, `command`, `workspace_mode`, `screens`,
+  `windows`, `views`, `closed`, `host_owned_workspace_domains`,
+  `equal_workspace_count`, `birth_clear`, `native`, `fixed_size_predicate`,
+  `migration_source_refill`, `anchor_fallback`, `no_space_result`,
+  `switch_target`, `fresh_placement`, `focus_follows_cursor`, `cursor_warp`, `cursor`,
+  `cursor_hit`, `focused_global`, `action_foreground`, `action_cached`,
+  `action_outputs`, `default_tiled`, `born_maximized`, `inventory_complete`,
+  `gesture_barrier`, `gesture`, `monotonic_ms`, `frames`, `member_attempts`,
+  `view_attempts`, `clear_attempts`, `creation_attempts`, `presentation`.
+  ([`WorldReport`](../../crates/tiler-core/src/world_report.rs#L1010-L1218))
+- Screen facts: `output`, `full_rect`, `work_area`, `gap`, `outer_gap`,
+  `complete`, `primary`; window facts: `window`, `output`, `rect`, `floating`,
+  `fit_excluded`, `fullscreen`, `maximized`, `sticky`, `fixed_auto`,
+  `fixed_suppress`, `hints`, `minimized`, `observed_workspace`,
+  `native_workspace`. ([screen/window structs](../../crates/tiler-core/src/world_report.rs#L664-L721))
+- Reply envelope and desired state: `contract_version`, `adapter_incarnation`,
+  `core_generation`, `request_id`, `based_on_observation_seq`, `state_revision`,
+  `ready`, `command_consumed`, `scopes`, `workspaces`, `outputs`, `windows`,
+  `transfers`, `effects`, `command_result`, `gesture_settled`,
+  `operation_settled`, `native_creations`, `cursor_warp`, `presentation`.
+  ([`WorldReply`](../../crates/tiler-core/src/world_report.rs#L1286-L1359))
+- Desired-state rows: `ScopeStatus(scope, authority)`;
+  `WorkspaceDesire(id, output, native_binding, scope, order, tiling_mode,
+  existence, hold, trailing)`; `OutputDesire(output, logical_view,
+  tiling_mode, hold)`; `WindowDesire(lifetime, output, workspace, allocation,
+  effective_frame, frame_authority, membership_authority, floating,
+  float_origin, frame_operation, clear_operation)`; `TransferTarget(operation_id,
+  kind, target_output, target_workspace, follow, held)`; `OneShotEffect(id, kind,
+  target, issued_revision)`. ([row types](../../crates/tiler-core/src/world_report.rs#L215-L369))
+- Commands are optional and at most one per report. `WorldCommand` variants:
+  `Focus`, `Send`, `SwitchView`, `SelectWorkspace`, `SelectNumbered`,
+  `SelectRelative`, `SelectPrevious`, `SelectTrailing`, `SendRelative`,
+  `SendNumbered`, `SetWorkspaceTiling`, `ToggleWorkspaceTiling`,
+  `MigrateWorkspace`, `FocusDirectional`, `MoveDirectional`,
+  `SendDirectional`, `MigrateDirectional`, `ToggleMaximize`, `Operation`.
+  ([`WorldCommand`](../../crates/tiler-core/src/world_report.rs#L846-L1003))
+- Command payloads: `Focus(window, direction)`;
+  `Send(window, target_output, target_workspace, follow)`;
+  `SwitchView/SelectWorkspace(output, workspace)`;
+  `SelectNumbered(output?, index)`, `SelectRelative(output?, delta)`,
+  `SelectPrevious/SelectTrailing(output?)`;
+  `SendRelative(window, source, delta, follow)`,
+  `SendNumbered(window, source, index, follow)`;
+  `SetWorkspaceTiling(output, workspace, tiled)`,
+  `ToggleWorkspaceTiling(output, workspace)`;
+  `MigrateWorkspace(source_output, target_output, workspace)`;
+  `FocusDirectional(window, direction)`,
+  `MoveDirectional(window, direction, same_axis)`,
+  `SendDirectional(window, direction, follow)`,
+  `MigrateDirectional(direction)`, `ToggleMaximize(window)`,
+  `Operation(CoreCommand)`.
+  The nested `CoreCommand` wire vocabulary is defined by
+  [`decode_core_command`](../../crates/tiler-protocol/src/world_protocol.rs#L1224-L1387);
+  this guide does not duplicate that enum.
+- `CommandResult` variants are `DragPreview`, `Float`, `Migration`,
+  `Directional`, and `Maximize`, with fields respectively `rect, hover, domain,
+  source, target, revision`; `window, rect, no_space`; `direction, source,
+  target, members, floats`; `outcome, target, rect, cause`; and `window,
+  maximized, clear_fullscreen, was_maximized`. There is no typed `Rejected`
+  result.
+  ([`CommandResult`](../../crates/tiler-core/src/world_report.rs#L1361-L1442))
+- The current report carries three capability booleans (`host_owned_workspace_domains`,
+  `equal_workspace_count`, `birth_clear`) and settings in the report itself;
+  there is no separate capability handshake or revisioned settings message.
+  ([`WorldReport`](../../crates/tiler-core/src/world_report.rs#L1043-L1108))
+- Setting fields and types: `workspace_mode: WorkspaceMode`,
+  `fixed_size_predicate: FixedSizePredicate`,
+  `migration_source_refill: MigrationSourceRefill`,
+  `anchor_fallback: AnchorFallback`, `no_space_result: NoSpaceResult`,
+  `switch_target: SwitchTarget`, `fresh_placement: FreshPlacement`,
+  `focus_follows_cursor: bool`, `cursor_warp: bool`, `default_tiled: bool`,
+  `born_maximized: BornMaximized`, and per-screen `gap`/`outer_gap` plus
+  presentation style booleans/values. Optional observations include `cursor`,
+  `cursor_hit`, and action-context output ids; optional native membership and
+  attempt readbacks are capability/fact gated. See the report and codec field
+  declarations above.
+
+- Nested report rows: `ScreenView(output, view)`;
+  `NativeObservation(output, native_order, current_native, occupancy)`;
+  `FrameAttempt(window, target, setter, readback, dpi_before, dpi_after,
+  attempt_ms, operation_id, prewrite)`;
+  `MemberAttempt(operation_id, window, target_output, target_workspace, setter,
+  pre, post, native_pre, native_post, attempt_ms)`;
+  `ViewAttempt(operation_id, target_output, target_workspace, setter, pre, post,
+  baseline, native_pre, native_post, native_baseline, attempt_ms)`;
+  `ClearAttempt(operation_id, window, setter, pre_maximized, post_maximized,
+  attempt_ms)`;
+  `NativeCreationAttempt(operation_id, logical_workspace, target_output, setter,
+  order_before, order_after, created_native, attempt_ms)`.
+  ([report row types](../../crates/tiler-core/src/world_report.rs#L424-L829))
+- Other nested report rows: `NativeOccupancy(native, count)`;
+  `PresentationPagerFrame(window, live, float_frame, tile_frame)`;
+  `GestureIngress(id, window, kind, cursor, start_cursor, phase, esc,
+  modal_move, start_frame)`; `WindowSizeHints(min_w, min_h, max_w, max_h)`.
+  ([report types](../../crates/tiler-core/src/world_report.rs#L734-L780),
+  [gesture](../../crates/tiler-core/src/gesture.rs#L125-L135),
+  [size hints](../../crates/tiler-core/src/size_hints.rs#L1-L35))
+- Nested reply rows: `NativeCreationDesire(operation_id, logical_workspace,
+  target_output)`; `OperationEvent(operation_id, window, outcome, cause)`;
+  `GestureSettled(id, committed)`.
+  ([`NativeCreationDesire`](../../crates/tiler-core/src/world_report.rs#L788-L796),
+  [`OperationEvent`](../../crates/tiler-core/src/world_report.rs#L1279-L1285),
+  [gesture types](../../crates/tiler-core/src/gesture.rs#L125-L146))
+- `PresentationIngress` fields: `foreground`, `foreground_minimized`,
+  `foreground_maximized`, `foreground_fullscreen`, `foreground_cloaked`,
+  `foreground_hidden_workspace`, `foreground_shell`, `foreground_frame`,
+  `border_enabled`, `underlay_enabled`, `border_gap_px`, `border_width_px`,
+  `underlay_extension_px`, `chord_held`, `move_window`, `paused`,
+  `pager_order`, `pager_frames`; each pager frame is
+  `(window, live, float_frame, tile_frame)`.
+  ([`PresentationIngress`](../../crates/tiler-core/src/world_report.rs#L600-L652))
+- Presentation reply is `WorldPresentation`; its fields are
+  `foreground`, `suspended_output`, `border`, `underlay`, `pager`.
+  `BorderPresentation(visible, reason, inner, outer)`;
+  `PresentationUnderlay::Found(base_revision, home, group, focused_leaf,
+  focused_window, members, union_rect, outer_rect)` or
+  `PresentationUnderlay::Hidden(base_revision, reason)`;
+  `PagerScreen(output, workspaces)`, `PagerWorkspace(id, ordinal, label,
+  current, occupied, contains_focused, trailing, windows)`,
+  `PagerWindow(window, frame)`.
+  ([`WorldPresentation`](../../crates/tiler-core/src/world_presentation.rs#L111-L127),
+  [pager rows](../../crates/tiler-core/src/world_presentation.rs#L520-L555),
+  [border shape](../../crates/tiler-core/src/visual.rs#L197-L207),
+  [underlay shape](../../crates/tiler-core/src/world_presentation.rs#L85-L109))
+
+## Contract authority rule
+
+The v3 contract as implemented is authoritative now. Each approved change
+becomes authoritative only at one coordinated implementation cutover across
+core and all adapters. There are no dual message shapes: until that cutover,
+the v3 shape governs; at cutover, the coordinated v4 shape replaces it.
+The [approved v4 pointers](#approved-not-yet-implemented-v4) record target
+mismatches, not interim authority.
+See the [authority decision](../decisions/contract.md#contract-authority-and-v4-migration).
 
 ## Shared stress acceptance connectors
 
@@ -38,7 +214,7 @@ live in `crates/tiler-core/src/`; the JSON codec lives in
   model: stable logical workspace ids, per-screen rings, views, members,
   history, lifecycle and trailing. Native workspace domains are
   observations only, never mapping authority, commands or membership
-  owners ([decision](../decisions.md#logical-workspace-authority)).
+  owners ([decision](../decisions/engine.md#logical-workspace-authority-and-host-owned-observations)).
 - The adapter never decides tiling, order, membership, cleanup, focus
   policy, gesture outcome or presentation eligibility. It captures facts,
   observes native state, actuates exactly what the reply authorizes, and
@@ -70,7 +246,7 @@ missing facts. Shape:
 (`WorldReport`); wire form in
 [`crates/tiler-protocol/src/world_protocol.rs`](../../crates/tiler-protocol/src/world_protocol.rs).
 
-- `contract_version` is `WORLD_CONTRACT_VERSION` (2). The codec constant
+- `contract_version` is `WORLD_CONTRACT_VERSION` (3). The codec constant
   `WORLD_PROTOCOL_VERSION` equals it. Anything else refuses.
 - Screens (`ScreenReport`): stable output id, FULL rectangle and work
   area in one coherent adapter coordinate space, completeness and
@@ -151,7 +327,7 @@ missing facts. Shape:
   the current output by the shared entry-edge selector, otherwise no-ops; a contradictory
   nonempty observed focus refuses. Missing/null `win` still refuses. Move/send
   still require a subject. Observation-only host focus loss needs no recovery
-  command or focus setter. [Decision](../decisions.md#workspaces).
+  command or focus setter. [Decision](../decisions/workspaces.md#workspace-lifecycle-focus-and-history).
 - Directional output crossing now selects linked destination tiled leaves
   touching the entry edge in canonical projected allocation (including nested
   leaves), then candidate MRU, then perpendicular overlap and DFS child order.
@@ -162,7 +338,7 @@ missing facts. Shape:
   remain mandatory. Windows/KDE `FocusDirectional` share this core behavior;
   no adapter target heuristic is needed. macOS `FocusStep` still disables
   crossing; hotkey integration is deferred, not delivered by this core change.
-  [Policy and evidence](../decisions.md#cross-output-focus-edge-policy).
+  [Policy and evidence](../decisions/focus.md#cross-output-directional-focus).
 - Workspace return focus now uses one core-owned last-active identity for
   tiled, ordinary floating and sticky windows, then the existing tiled fallback.
   Sticky memory is per intentionally focused workspace, not every visible view.
@@ -280,10 +456,6 @@ Minimized path audit (core behavior preserved, 2026-10-25):
 | Transfer already pending at minimize | Publishes target membership, no geometry/unminimize | `world_publish.rs:743-750,837-855` |
 | Restore | Host-observed restoration reuses stored neighborhood; not a core restore command | `session/world.rs:1498-1575,1871-1877` |
 
-`tests/world_minimized_native_pinning.rs` pins ordinary refusal, close-reflow,
-pager click, occupancy/removal and unknown membership. It does not change the
-relocation paths or establish strict retained-unmanaged semantics.
-
 ### Classification ingress and remote transport rough edge
 
 The shared policy entry points also include
@@ -334,7 +506,7 @@ transient float, like fixed-size float (tentative precedence). Native `hidden`
 is required on the raw capture lane; the projected `WindowFact` wire is unchanged.
 
 Current `WorldReport::windows` is already the projected `WindowFact` roster;
-the v2 codec does not carry raw `SafetyFacts`, richer native role/app-rule facts,
+the v3 codec does not carry raw `SafetyFacts`, richer native role/app-rule facts,
 or a remote classification request. Windows calls the shared policy in-process.
 A remote broker must expose a fact-capture transport to its Rust policy owner
 and run these same core entry points there, not copy them into the observer.
@@ -508,6 +680,10 @@ native effect:
 - Generation/incarnation resets clear all retained flights, ordering
   and desired caches. Old effects, flights and desired rows never leak
   across the replacement: the adapter re-discovers and re-observes.
+- These vetoes and same-turn application of a core decision are the only
+  adapter-side decisions allowed. Any other needs its own dated decision
+  entry and a backlog item moving it into core
+  ([decision](../decisions/engine.md#core-owned-world-and-platform-boundary), G4).
 
 ## 7. Host limits, coordinates, DPI and gaming
 
@@ -525,7 +701,7 @@ native-bound logical workspaces in native order with members preserved and no
 launch workspace moves. Tentative count clarification retains the ordinary
 trailing spare under existing lifecycle rules; it does not require exactly
 four total rows. Core coverage is delivered; native outcome remains TBD.
-See [decision](../decisions.md#native-adoption-2026-10-24).
+See [decision](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19).
 
 Native-bound empty desktops retain identity; missing native rows never prove
 removal. Linked views use one compatible logical order; fresh native projections
@@ -590,6 +766,11 @@ the adapter never selects a replacement source refill by ordinal.
 
 ## 8. Border, underlay, drop preview and pager
 
+- F31/R20: a neutral settling representation may be proposed only after a
+  reproduced failure and only when the host exposes a completion signal the
+  adapter can read. Host discrepancies belong to [Shared: tolerate host-settled
+  geometry](../backlog.md#open-work). See the [anchored border decision](../decisions/contract.md#anchored-border-r20)
+  and [F31/R20 review](../changes/core-interface-review.md#f31-border-presentation-during-motion-is-decided-per-adapter-a-neutral-settling-marker-has-no-host-signal-to-carry).
 - Core publishes uniform per-reply presentation
   ([`crates/tiler-core/src/world_presentation.rs`](../../crates/tiler-core/src/world_presentation.rs), `WorldPresentation`:
   foreground token, border shape, underlay shape, pager content).
@@ -666,3 +847,34 @@ the adapter never selects a replacement source refill by ordinal.
   operations, omissions/fences, coverage defects and skipped
   intermediate hide/reveal before any broader claim. No new connector
   is built here.
+
+## Conformance fixtures
+
+- [World-wire fixtures](../../test-fixtures/world-wire/):
+  [`world_wire_fixtures.rs`](../../crates/omnitiler/examples/world_wire_fixtures.rs#L1-L21)
+  regenerates broker replies and byte-gates request fixtures; KWin consumes
+  the corpus in [`world-bytes.test.ts`](../../kwin/tests/world-bytes.test.ts#L1-L8),
+  [`world-wire.test.ts`](../../kwin/tests/world-wire.test.ts#L1-L8), and
+  [`world-command-result.test.ts`](../../kwin/tests/world-command-result.test.ts#L1-L20).
+  Consumption by Windows and macOS adapters is not verified.
+- [Window-policy fixture](../../test-fixtures/window-policy.json) is consumed
+  by the shared core test at
+  [`window_policy.rs`](../../crates/tiler-core/src/window_policy.rs#L1100-L1108),
+  Windows at [`tiling.rs`](../../crates/tiler-windows/tests/tiling.rs#L725-L735),
+  and macOS at
+  [`window_policy_conformance.rs`](../../crates/tiler-macos/tests/integration/window_policy_conformance.rs#L147-L155).
+- [World-actions fixture](../../test-fixtures/world-actions.json) is consumed
+  by [`world_acceptance.rs`](../../crates/tiler-protocol/examples/world_acceptance.rs#L820-L840);
+  the cursor fixture is consumed by core and Windows tests
+  ([core](../../crates/tiler-core/tests/world_actions_cursor.rs#L1-L35),
+  [Windows](../../crates/tiler-windows/src/tiling_sys/world_native_cursor_tests.rs#L1-L25)).
+- [World-stress fixtures](../../test-fixtures/world-stress.md) are consumed by
+  the shared protocol stress runner
+  ([`world_stress.rs`](../../crates/tiler-protocol/src/world_stress.rs#L2150-L2175)).
+- [Stage-5 fact fixtures](../../test-fixtures/stage5/facts-seed.json) are used
+  by the KWin TypeScript fixture route
+  ([`world-stage5-fixture.test.ts`](../../kwin/tests/world-stage5-fixture.test.ts#L1-L15)),
+  the native-effect recovery test
+  ([`presentation_stage5_recovery_test.cpp`](../../kwin/native-effect/presentation_stage5_recovery_test.cpp#L395-L412)),
+  and the Rust broker route
+  ([`stage5-fixture-route.rs`](../../crates/omnitiler/tests/stage5-fixture-route.rs#L1-L30)).

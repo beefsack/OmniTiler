@@ -67,3 +67,43 @@ its current behavior remains the baseline.
 - Core/conformance implementation complete; archived with the native compile
   gap explicit. KDE rewiring is queued in post-0.1 Push code down; Windows
   replacement and shared-table acceptance are specified in handoff item 23.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1263-1282
+
+````markdown
+- P2 | [Push code down](principles.md#layering) | Recurring post-0.1 passes: move logic from host-coupled
+  `kwin/src` TypeScript and `kwin/native-effect` C++ (including settings and
+  shortcut reconciliation) into system-specific Rust, then into the agnostic
+  shared core where appropriate. First pass after 0.1, aligned with or ahead
+  of deferred K2/K3. Born-maximized core policy is delivered offline;
+  user 2026-10-13 option C defers KDE rewiring to this pass. KDE retains its
+  conformance-pinned TypeScript copy because clear/keep runs synchronously
+  before dispatch and the planner protocol lacks the decision. Runtime
+  protocol changes and build-time generation were declined
+  ([record](changes/archive/born-maximized-shared-policy.md)).
+  User 2026-10-14 also defers D06 focused-output newcomer selection from the
+  KDE adapter into Rust core/Planner to this post-0.1 pass, alongside
+  born-maximized; adapter routing remains selected for 0.1
+  ([record](changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14)).
+  Link with KDE interaction performance/threading and
+  [Live sibling reflow while dragging](#open-work).
+  User 2026-10-17 accepted the staged KWin-to-Rust path as this item's
+  direction ([decision](./decisions/engine.md#core-owned-world-and-platform-boundary),
+  [research](research/kwin-rust-migration.md)); refresh its inventory first.
+  Route A: bounded admission (born-maximized, then D06 output selection), then decisions before lifecycles; route F: move Settings KCM catalog/conflict logic to Rust in coordination with KDE catalog migration; route C native replacement requires measured latency need ([decision](./decisions/engine.md#kwin-to-rust-migration-routes)).
+````
+
+### Original backlog lines 1451-1458
+
+````markdown
+- P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Delivered offline:
+  R-MAX-06 born-maximized setting (default tile), active border radius 6,
+  born-maximized shared-core policy (KDE keeps its conformance-pinned copy until
+  post-0.1 Push code down, User option C 2026-10-13), Windows adapter-copy
+  replacement, underlay candidate C `#662a82da` on both platforms (KDE
+  kcfg/KCM default delivered). Remaining live checks: Settings UI, both-values
+  launch, radius appearance, black/white/grey underlay visual check before 0.1.
+  ([records](changes/archive/born-maximized-shared-policy.md)).
+````

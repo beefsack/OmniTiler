@@ -96,8 +96,8 @@ paneru legs distinguish the native Space from virtual rows.
   counterpart). `S(S-kar-single)`.
 - Then paneru: stays (single-column strip has no western peer for
   `Swap(West)`; no display fall-through on West). `S(S-pan-swap)`.
-- Then Ours KDE: Local R1 wins first; selected Wrap locally, no setting (User 2026-10-12 D13, [decision](../../decisions.md#move-layout-and-output-commands)); native fixture TBD. `D(D-dec-cos)`.
-- Then Ours Windows: same selected Wrap locally, no setting; shared local-before-cross verification-only evidence 2026-10-13 ([record](../../changes/archive/windows-item22-verification.md)); native fixture TBD ([D13 decision](../../decisions.md#move-layout-and-output-commands)). `D(D-dec-cos)`.
+- Then Ours KDE: Local R1 wins first; selected Wrap locally, no setting (User 2026-10-12 D13, [decision](../../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection)); native fixture TBD. `D(D-dec-cos)`.
+- Then Ours Windows: same selected Wrap locally, no setting; shared local-before-cross verification-only evidence 2026-10-13 ([record](../../changes/archive/windows-item22-verification.md)); native fixture TBD ([D13 decision](../../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection)). `D(D-dec-cos)`.
 - Variant hook: V-R4-DIR.
 
 ## New scenarios (GWT; fixtures/actions/discriminators per the approved expansion record)
@@ -431,7 +431,7 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
 
 ## Selected addition (USER 2026-10-07; delivery status per profile)
 
-[Item 5](../../decisions.md#move-layout-and-output-commands) selects R-OUT-04's
+[Item 5](../../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection) selects R-OUT-04's
 explicit follow/stay output send; follow Meta/Win+Ctrl+Alt+arrows and +H/J/K/L,
 stay bindable unbound. Four-direction reciprocal edge-touch and
 positive-overlap adjacency uses FULL output rectangles; window-based selection
@@ -695,3 +695,69 @@ evidence is linked separately in the platform cells.
   focus-following defaults off in COSMIC but on in all other Tier 1
   references; output-warp defaults differ from general cursor-following;
   no selection).
+
+### R-OUT-11: directional focus between fullscreen or maximized outputs
+
+- Given: L and R are adjacent, occupied outputs with ordinary tiled members.
+  Fresh fullscreen leg: focus fullscreen A on L and fullscreen B on R. Fresh
+  maximize leg: focus maximized A on L and maximized B on R. Use each profile's
+  normal per-window/output fullscreen mode, not global fullscreen. Record
+  destination tiled allocations and native focus/overlay state before acting.
+- When: From A, issue directional focus toward R using the profile's native
+  focus verb.
+- Observe: Whether focus crosses outputs, whether B or an ordinary tiled member
+  is selected, and whether either overlay state changes.
+- Then COSMIC: Both legs follow `next_focus`: current keyboard target is
+  resolved against the tiled tree, then falls back to the workspace's last
+  active tiled window. A local directional miss propagates to output switch;
+  the source path does not identify the destination fullscreen/maximized
+  candidate. Final target/state TBD. `S(S-cos-fs-actions)`.
+- Then Hyprland/Dwindle: Both legs enter `moveFocus`'s directional query and
+  monitor fallback. Fullscreen windows are in the visible-window query, but
+  candidate gates, source-fullscreen blocking, `isAllowedOverFullscreen`, and
+  focus preference affect eligibility/rank; whether destination B wins is
+  TBD. Native state after focus TBD. `S(S-hyp-fs-actions)`.
+- Then bspwm: Fullscreen leg TBD; maximize has no native window-state
+  counterpart. Cross-output fullscreen-target focus and overlay state are not
+  source-established. `S(S-bsp-fs)`.
+- Then i3: Fullscreen directional focus can climb from the focused fullscreen
+  con to the output-directed workspace path. That path shows the adjacent
+  output's visible workspace and focuses its descended con; whether descent
+  selects B or an ordinary member, and overlay settlement, remain TBD.
+  Maximize has no native action/state counterpart. `S(S-i3-fs-actions)`.
+- Then xmonad/Tall+Navigation2D: Both legs TBD; no native maximize state and
+  the EWMH fullscreen float's cross-output directional focus target has not
+  been traced. `S(S-xmo-ewmh)`.
+- Then sway: Workspace-fullscreen leg sends directional focus to the adjacent
+  output; when its active workspace has a fullscreen container, output-entry
+  lookup directly returns that fullscreen node. Maximized leg is not a native
+  state. Overlay state after focus and native settlement TBD.
+  `S(S-sway-fs-actions)`.
+- Then qtile/Columns: Fullscreen leg TBD; maximize/fullscreen are floating
+  layer states, but cross-output directional focus with overlay candidates
+  has not been audited. `S(S-qti-fs)`.
+- Then awesome/tile: Both legs TBD; no cross-output fullscreen/maximized
+  focus result established for this fixture. `S(S-awe-fs)`.
+- Then niri: Both legs TBD; fullscreen/maximized state is column-held, but
+  cross-output directional focus eligibility is untraced. `S(S-nir-maxfs)`.
+- Then PaperWM: Both legs TBD; cross-output focus between fullscreen or
+  maximized windows is not established. `S(S-pap-fsframe)`.
+- Then karousel/Lazy: Fixture-inapplicable for the second output (single-screen
+  profile); no cross-output result. `S(S-kar-single)`.
+- Then paneru: Fullscreen strip focus leg and host-zoom/maximize analogue
+  TBD; cross-display focus does not use the ordinary tiled output path.
+  `S(S-pan-model)` + `S(S-pan-fsfocus)`.
+- Then Ours KDE: From a focused fullscreen or maximized A, directional focus
+  skips same-output siblings and crosses to eligible B on adjacent R, whether
+  B is fullscreen/maximized or ordinary; a fullscreen/maximized B retains its
+  overlay state. With no adjacent output focus stays. Retained-allocation
+  ranking and eligibility/safety are unchanged; native focus/state acceptance
+  remains TBD. Selected policy: [window-state decision](../../decisions/window-state.md#directional-maximize-and-fullscreen-operations),
+  [cross-output decision](../../decisions/focus.md#cross-output-directional-focus).
+  `S(S-ours-focus)` + `S(S-ours-out)`; [focus decision](../../decisions/focus.md#cross-output-directional-focus).
+- Then Ours Windows: Same selected origin/destination focus and state policy
+  as Ours KDE. Retained-allocation ranking and eligibility/safety are
+  unchanged; native focus/state acceptance remains TBD.
+  `S(S-ours-focus)` + `S(S-ours-out)`;
+  [focus decision](../../decisions/focus.md#cross-output-directional-focus).
+- Variant hook: fullscreen/maximized destination-focus eligibility and rank.

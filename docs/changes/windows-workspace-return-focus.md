@@ -103,7 +103,7 @@ The proven blocker is foreground safety, not target classification or core targe
 - Prove fresh foreground equality with the nonzero live `GetShellWindow()` handle, verified process identity/lifetime, matching user/session, and the system-shell executable. Recheck stability before actuation; unknown/mismatched proof or foreground supersession refuses. Existing target, hook, elevation, modal, lifetime and one-shot gates remain intact. Unsafe native calls stay within existing minimal unsafe modules.
 - Write a failing desktop-return regression before the fix. Cover competing fullscreen game/unknown app, unreadable foreground, spoofed Progman, other Explorer/shell surfaces, recycled HWND/process identity, foreground-to-game change, and observation-only desktop focus loss.
 - Run locked native core/protocol/Windows build/tests, strict all-target clippy, workspace fmt/diff and stress parser/mocks. Review safety invariants independently, then run a fixture-only normal-return leg without foreign input or hiding. Do not claim exact-desktop native acceptance if the unmanaged application remains foreground.
-- The decision is recorded in [fullscreen/focus safety](../decisions.md#window-state-float-sticky-maximize-fullscreen). No focus sink, departure choreography, broad shell exemption, retry, timer or geometry write is authorized.
+- The decision is recorded in [fullscreen/focus safety](../decisions/window-state.md#fullscreen-and-maximize-overlays). No focus sink, departure choreography, broad shell exemption, retry, timer or geometry write is authorized.
 
 ### Implementation and accepted evidence
 
@@ -146,7 +146,7 @@ The proven blocker is foreground safety, not target classification or core targe
 - Establish native actuation versus supersession from deduplicated trace rows;
   distinguish focus attempts, proven landings, view writes and visibility posts.
 - The subsequent binding unfinished-arrival constraint is recorded in
-  [decisions](../decisions.md#latest-world-rendering-2026-10-27). Its proposed
+  [decisions](../decisions/world-rendering.md#latest-world-convergence). Its proposed
   design is below; implementation depends on explicit boundary choices.
   Resolve the explicit boundary choices before failing-first implementation,
   native gates and fixture-only zero-delay switching/stress verification.
@@ -1702,7 +1702,7 @@ The proven blocker is foreground safety, not target classification or core targe
 
 ### Approved scope and current outcome
 
-- The [Windows decisions](../decisions.md#windows-decisions-2026-10-28)
+- The [Windows decisions](../decisions/windows.md#windows-decision-set)
   now authorize the narrow staged prototype and conditional R2. The earlier
   statements that those decisions are parked describe their historical scope.
 - The prototype is **not accepted**. Offline implementation separates arrival
@@ -2405,13 +2405,16 @@ investigation at `328c1469`; no code changed.
   phase-1 core gap foundations are complete offline. No native acceptance or
   latency claim follows. This is the current design entry point; the older
   arrival-transaction and defer/reconcile proposals above remain superseded.
-- Binding inputs: [Windows decisions](../decisions.md#windows-decisions-2026-10-28),
+- Binding inputs: [Windows decisions](../decisions/windows.md#windows-decision-set),
   [terminal partial hide](#terminal-partial-hide-decision-and-evidence-boundary-2026-10-28),
   the outcomes explicitly labelled "User decisions (2026-10-28)"
   (failed/blocked arrivals and gap-time retirement) in the
   [KDE proposal](#proposal-to-kde-stable-workspace-ownership-through-unreadable-desktop-facts-2026-10-28),
   and [KDE option (a)](#kde-answer-option-a-stable-native-ownership-2026-10-28).
-  Model A is selected; the platform-reconciles alternative is not reopened.
+  Model A was selected; superseded 2026-10-30 by the
+  [state-centric visibility direction](#state-centric-visibility-direction-2026-10-30),
+  which replaces the message delta's work, group, result, proof and settlement
+  rows.
 - Those explicit outcome decisions supersede the earlier recommendations in
   the per-write design check. The KDE proposal's "not a user decision" status
   concerns its then-unanswered ownership options, not its enumerated user
@@ -2670,7 +2673,7 @@ investigation at `328c1469`; no code changed.
 
 | Open decision | Recommendation (not selected by this design) |
 | --- | --- |
-| Focus refused or remains unproven after arrivals are ready: exact terminal group outcome and departure fallback accounting | **User-accepted 2026-10-29** ([decision](../decisions.md#windows-decisions-2026-10-29)). Finish with explicit failed/unproven focus and individually accounted visibility results, never staged success. No departure write under staged authority without foreground proof; use only the already authorized fallback under fresh existing gates, otherwise explicitly block those entries. No retry or indefinite wait. Pin this minimal sequence before implementation; do not decide the separate unknown-foreground A/B policy |
+| Focus refused or remains unproven after arrivals are ready: exact terminal group outcome and departure fallback accounting | **User-accepted 2026-10-29** ([decision](../decisions/windows.md#switch-and-intent-decisions)). Finish with explicit failed/unproven focus and individually accounted visibility results, never staged success. No departure write under staged authority without foreground proof; use only the already authorized fallback under fresh existing gates, otherwise explicitly block those entries. No retry or indefinite wait. Pin this minimal sequence before implementation; do not decide the separate unknown-foreground A/B policy |
 
 - User 2026-10-29 resolves the tab questions: full tab core/protocol stays
    after 0.1; coordinated v4 is visibility-ready with per-window suppression
@@ -2770,3 +2773,165 @@ investigation at `328c1469`; no code changed.
   certainty. No staged-switch, visibility-lifecycle, incomplete-hide fix or
   latency claim follows. The focus-failure outcome remains parked and was not
   needed for phase 1.
+
+## State-centric visibility direction (2026-10-30)
+
+- User-approved direction
+  ([decision](../decisions/windows.md#state-centric-v4-visibility)):
+  visibility in v4 is per-window desired state plus truthful per-window facts,
+  not core-issued work. Core keeps visibility policy, the per-switch target set,
+  composition and completion; correlation remains only for focus grants. Source
+  analysis: [interface review](core-interface-review.md) F5, F16, F17, G1.
+- This replaces the Model A wire shape in the design above. Everything below is
+  an implementation proposal for phase-0 review; names are TENTATIVE.
+
+### Kept from the coordinated design
+
+- Responsibility rows for policy and composition, eligibility and property
+  authority, failed show/blocked arrival, failed departure hide, gaps and
+  recovery, supersession and reset, reporting and the hard speed gate.
+- The 2026-10-29 focus-failure outcome, KDE option (a), native
+  `orderKnown`/`currentKnown`, the independent `windowSuppression` capability,
+  removal of `views`/`ScreenView` ingress and logical view-attempt pre/post,
+  the arrival evidence bracket (lifetime-matched before/home/frame/after), the
+  phase-1 foundations, and the phase 4-5 gates.
+
+### Replaced
+
+- `visibilityGroups`, `visibilityWork`, `visibilityResults`, `selectionProofs`,
+  `visibilitySettled`, core-minted work/group ids and typed lifecycle rows.
+- Staging moves from per-group wire data to one normative apply rule that
+  every adapter follows.
+
+### Proposed shape
+
+| Direction | Shape | Meaning |
+| --- | --- | --- |
+| Core -> platform, per window | `WindowDesire.visibility: { shown: bool }` plus `visibilityAuthority` | Composed target (suppress if any core reason requires it). Tied to the existing desired-state revision. Authority rules as in the design's property conflict rules |
+| Core -> platform, focus | Existing explicit-selection focus effect gains `awaitShown` | Arrival-ready authority; only explicit selection sets it. At most one attempt per effect, as today |
+| Platform -> core, per window | `WindowFact.visibility { visible, suppressionOwned }` | Unchanged from the design |
+| Platform -> core, per window | `WindowFact.lastWrite { property, target, revision, path, setter, reason, pre, post }` | Latest write per window and property, replaced by the next write. `property` is `visibility` now; the tag lets frame/member attempts migrate later without a bump. `path` is `staged`, `fallback` or `independent`; `setter` is `accepted`, `refused`, `threw` or `not-called` with a bounded reason. Samples reuse the design's lifetime-matched sample |
+| Platform -> core, focus | Existing correlated effect outcome plus `foregroundProven` and the arrival bracket | The only correlated visibility evidence |
+| Core -> platform, outcome | Terminal event on the existing transfer/view operation: complete, or completed with failures (failed windows, focus proven/refused/unproven, fallback used) | Replaces per-entry settlement rows |
+
+### Normative apply rule (contract text)
+
+1. Latest desired state wins; unissued writes for superseded targets are
+   dropped.
+2. Shows apply first, batched and nonactivating.
+3. An `awaitShown` focus effect runs once, after every controlled window
+   desired shown on its output has a fresh arrival bracket or a reported
+   not-called reason. Any failed or blocked required show withholds focus.
+4. Hides wait while an `awaitShown` effect from the same or an earlier
+   revision is outstanding. After proven foreground they run as staged. After
+   refused or unproven focus only the approved fallback hide runs, under fresh
+   existing gates, reported with `path: fallback`; otherwise the window stays
+   visible and is reported `not-called`.
+5. At most one write per (window lifetime, revision, target). A fact that
+   disagrees with the target never causes a rewrite at the same revision;
+   only new intent produces a new revision. This is the no-retry rule in
+   state form.
+6. Issued writes stay spent across supersession and reset; their
+   `lastWrite` is still reported when it lands.
+
+### Core derivation
+
+- Per window and revision, core derives confirmed, refused, ambiguous or
+  blocked from facts plus `lastWrite`, with the design's verdict rules
+  (refusal needs a readable unchanged preimage; ambiguity stays unknown).
+- Core freezes each switch's target set internally (not on the wire) and
+  finishes the switch when every member has a verdict; a failed hide retains
+  departure membership. A window admitted later gets the next revision, never
+  silent inclusion.
+- Composition stays core-internal: later inactive-tab suppression is another
+  OR term with no visibility wire change (interface review F16).
+
+### Platform execution
+
+- Windows: one event-driven executor per output. On each reply it compares
+  desired visibility with the last issued (lifetime, revision, target), batches
+  shows, evaluates rules 3-4 on fact events, and keys the existing
+  spent-before-write fence and recovery ledger by (lifetime, revision,
+  target). No timers or polling; no core roundtrip between phases.
+- KDE and macOS advertise suppression false, report visibility facts, and need
+  no executor. KDE option (a) also removes the per-capture `hostOwned` flip
+  (interface review F19).
+
+### Phase changes
+
+- Phase 0: pin rules 2-5 as minimal reference-outcome rows: arrive, focus,
+  then depart; failed show withholds focus; refused focus uses only the
+  fallback; supersession mid-switch; no rewrite on mismatch.
+- Phase 2: core desire composition, verdicts from facts plus `lastWrite`,
+  switch accounting, and logical-view decoupling (`retain_view_inner`,
+  `view_echo_for`, `settle_views_pre`). The design's execution branches 1-7
+  are restated against the apply rule and tested failing-first.
+- Phase 3: v4 cutover with the shape above; the design's removal and bounds
+  list applies, minus the replaced rows.
+- Phases 4-5: unchanged gates; the executor replaces per-group choreography.
+
+### Phase-0 questions
+
+- Resolved (user 2026-10-30): across outputs (follow, migration, refill),
+  hides wait for any outstanding `awaitShown` effect from the same or an
+  earlier revision. Confirm latency in phase 5.
+- Resolved (user 2026-10-30): v4 ships the generic property-tagged
+  `lastWrite`; frame/member attempt lanes migrate as separate work.
+- Open: whether the suppression capability moves to a per-incarnation
+  handshake in the same bump; follows the interface review R4 decision.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 39-72
+
+````markdown
+- P1 | Windows staged workspace switch prototype | Approved 2026-10-28
+  ([decision](./decisions/windows.md#windows-decision-set)): batch nonactivating
+  arrival shows, prove visible, one-shot focus, prove foreground, then hide
+  departures, under an explicit-selection arrival-ready authority with all
+  existing safety checks. Switch speed is a hard requirement: measure end-to-end
+  and per-phase latency before and after; any regression fails. Narrow R2 only
+  if the visible-proof wait crosses revisions; stop and report if R2 proves hard
+  or has side effects. Failing-first, live fixture stress at 0ms.
+  BEFORE latency accepted 2026-10-28 (practical per-phase method). Blocked on
+  the terminal partial-hide contract: user 2026-10-28 chose a finished switch
+  with a failed hide, and core-owned per-window visibility work with a
+  protocol version bump. Remaining decisions are recorded and KDE answered
+  (below). User 2026-10-30 replaced that model with state-centric visibility
+  ([decision](./decisions/windows.md#state-centric-v4-visibility)): core
+  publishes per-window `shown` targets and keeps policy, target sets, verdicts
+  and completion; platforms report visibility facts plus a last-write fact and
+  follow one normative arrive/focus/depart apply rule, at most one write per
+  lifetime/revision/target; only focus grants stay correlated. Windows gets an
+  event-driven per-output executor; KDE/macOS report facts only. Next: phase 0
+  pins the apply rule as reference-outcome rows (cross-output hide scope and
+  `lastWrite` lane migration decided; handshake capability follows R4 of the
+  interface review), then phase 2 core work
+  ([proposal](changes/windows-workspace-return-focus.md#state-centric-visibility-direction-2026-10-30)).
+  Core, protocol and
+  Windows land together, coordinated with the KDE and macOS ports. Tabs
+  investigation done (below): User 2026-10-29 approved the visibility-ready bump;
+  full tabs stay after 0.1.
+  [Record](changes/windows-workspace-return-focus.md).
+  [Coordinated bump design](changes/windows-workspace-return-focus.md#coordinated-visibility-contract-design-2026-10-30):
+  exclusive responsibility table, v4 messages/capabilities, phased
+  failing-first plan and separate open decisions. Phase 1 core gap foundations
+  are complete offline (23 regressions); no producer/wire cutover or staged
+  switch implementation. Focus-failure outcome decided 2026-10-29
+  ([decision](./decisions/windows.md#switch-and-intent-decisions)); phase 2 is unblocked.
+````
+
+### Original backlog lines 73-82
+
+````markdown
+- P1 | KDE: workspace ownership through unreadable desktop facts | DECIDED
+  2026-10-28, option (a): KDE always reports native ownership, unreadable
+  desktop/current facts are explicit unknowns, and the logical-view fallback
+  is removed in the coordinated protocol bump. Prerequisite for that bump:
+  core completeness fences are complete offline (view/member receipts, domain
+  readability, equal-count padding including empty `native[]`, shared native
+  creation/desires; 23 producer-shaped gap/recovery regressions). Ownership
+  stayed stable in fixtures. KDE producer work still lands with the bump;
+  no ownership flag or wire change yet.
+  [Answer](changes/windows-workspace-return-focus.md#kde-answer-option-a-stable-native-ownership-2026-10-28).
+````

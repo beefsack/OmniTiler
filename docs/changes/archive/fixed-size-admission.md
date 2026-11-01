@@ -2,7 +2,7 @@
 
 - Follow-up 2026-10-08: D1 predicate setting delivered offline in shared core
   and KDE; [D1 delivery](admission-and-move-settings.md). User decisions in
-  [decisions](../../decisions.md#fixed-size-admission) supersede the provisional
+  [decisions](../../decisions/layout-and-admission.md#fixed-size-admission-predicate) supersede the provisional
   clauses below; D5/D6/D7 changes remain pending.
 
 ## Goal and scope
@@ -97,7 +97,7 @@
 
 These are tentative selections for implementation, not user
 decisions. Each is recorded literally "Provisional, to discuss" in
-[decisions](../../decisions.md#fixed-size-admission), with review in backlog.
+[decisions](../../decisions/layout-and-admission.md#fixed-size-admission-predicate), with review in backlog.
 
 | ID / discriminator | Selected provisional clause / review alternative |
 |---|---|

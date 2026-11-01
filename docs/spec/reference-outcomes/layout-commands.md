@@ -72,7 +72,7 @@ implementation record. Selected intent and doc assertions alone are never eviden
   Real retained Engine H/V root flips preserve order/shares/focus and double
   toggle restores tree; native gates and agent-observed Settings/preset/live
   routing adoption passed. Positive physical toggle/OS suppression pending;
-  Authentic owns Win+O, Compatible disables ours. Held-repeat choice approved User 2026-10-14 as delivered ([decision](../../decisions.md#move-layout-and-output-commands)).
+  Authentic owns Win+O, Compatible disables ours. Held-repeat choice approved User 2026-10-14 as delivered ([decision](../../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection)).
 - Variant hook: provisional/TBD (orientation-scope hook, to discuss).
 
 ### R-LAY-02: rotate 90 degrees; mirror left/right (separate fresh legs)
@@ -243,7 +243,7 @@ implementation record. Selected intent and doc assertions alone are never eviden
 
 ## Selected addition (USER 2026-10-07; shared core/KDE implemented offline)
 
-[Item 4](../../decisions.md#move-layout-and-output-commands) selects R-LAY-01:
+[Item 4](../../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection) selects R-LAY-01:
 Meta+O / Win+O immediate-parent toggle including root, order/shares/focus
 preserved; sole root leaf no-op and no saved admission hint. KDE offline
 evidence is linked below; Windows adapter delivered 2026-10-11

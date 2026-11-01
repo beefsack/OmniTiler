@@ -84,7 +84,7 @@
   Local-first focus now also retains candidate MRU only after verified focus.
 - User 2026-10-14 accepted the transfer-refusal and follow-focus failure policy;
   see
-  [decisions](../decisions.md#windows-multi-output-foundation).
+  [decisions](../decisions/windows.md#multi-output-foundation).
 - Synthetic coverage includes all-four adjacent-output selection and occupied
   Engine plans; occupied/empty keyboard and drag destinations; independent
   current views; negative/stacked arrangements and differing physical work

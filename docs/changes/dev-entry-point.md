@@ -36,7 +36,7 @@ runbook's stop-command spelling.
 ## Material decisions
 
 - User 2026-10-14: platform-file layout and macOS stub accepted;
-  [decision](../decisions.md#development-entry-point).
+  [decision](../decisions/development.md#development-entry-point).
 - Windows cleanup belongs inside PowerShell `finally`, not subsequent just
   recipe lines. Do not register a PowerShell-scriptblock console cancel handler.
 - Final cleanup reports use direct console output because Ctrl+C can suppress
@@ -44,7 +44,7 @@ runbook's stop-command spelling.
   with the computed cleanup result; just's interrupted command-shell layer can
   still return 1, so the report and independent readbacks establish teardown.
 - User 2026-10-14: mixed-desktop dispatch and retained Windows payloads/current
-  pointer accepted; [decision](../decisions.md#development-entry-point).
+  pointer accepted; [decision](../decisions/development.md#development-entry-point).
 - The unique executable path attributes a broker launch before readiness.
   Cleanup compares the full captured owner identity when available, refuses
   foreign ledger owners, and waits up to five seconds for publication when
@@ -163,7 +163,7 @@ runbook's stop-command spelling.
 
 ## Bounded verification continuation
 
-- Use the [accepted standard test helper](../decisions.md#development-entry-point),
+- Use the [accepted standard test helper](../decisions/development.md#development-entry-point),
   independently checked, to establish non-hooking hide,
   graceful owner exit and post-exit independent restore before further native
   journeys. Dispose of the exact helper window after restoration.
@@ -207,7 +207,7 @@ runbook's stop-command spelling.
 ## Acceptance journeys
 
 - User 2026-10-14 accepted Windows `just dev`, including tray Stop and
-  whole-desktop use; [decision](../decisions.md#development-entry-point).
+  whole-desktop use; [decision](../decisions/development.md#development-entry-point).
   This supersedes the pending Windows dev-lifecycle acceptance above; specific
   feature checks remain in their own records. Linux KDE streaming/teardown
   acceptance remains pending, so this record stays active.
@@ -242,3 +242,16 @@ runbook's stop-command spelling.
 3. Repeat `just dev verbose` and teardown. Separately check GNOME/unknown
    dispatcher errors and case-insensitive colon-list selection in a harmless
    dispatcher fixture; do not mislabel a GNOME environment as KDE to launch it.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1428-1433
+
+````markdown
+- P1 | Unified foreground dev entry point | Delivered `8d379f1` (+ shell CI
+  harness fixes): plain `just dev [verbose|trace]` dispatches per platform.
+  User dogfooded Windows `just dev` 2026-10-13 (feels excellent). Remaining:
+  tray Stop UI, whole-desktop visual/physical shortcut specifics, Linux KDE
+  streaming/Ctrl+C teardown in devenv. [Record](changes/dev-entry-point.md)
+  stays active until the KDE check passes.
+````

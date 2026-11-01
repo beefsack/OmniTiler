@@ -109,7 +109,7 @@ Source shapes were checked in local reference checkouts; canonical pins are
 [rift observer](https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/sys/observer.rs)
 and [glide run loop](https://github.com/tmandry/glide/blob/ef3b30f88445fe4b517eb4c60023011f6d3725dd/src/sys/run_loop.rs).
 Source shape is not native acceptance evidence. Durable implementation choices
-are explicitly [tentative](../../decisions.md#scope-and-platform-goals).
+are explicitly [tentative](../../decisions/platforms.md#platform-scope).
 
 ## Limits and next action
 

@@ -17,7 +17,7 @@
   this changes no KDE behavior. Setting KDE applicability remains for design.
 - Evidence: KWin trace at 8438567a + v6.6.3; OmniTiler convergence check at
   15aa5e3. [Full trace](../../research/d27-kwin-activation-trace.md),
-  [decision](../../decisions.md#activation-requests).
+  [decision](../../decisions/activation-requests.md#hidden-window-activation-default).
 - Outcome: decision resolved 2026-10-13, no product code. KDE D27 is
   verification-only, no longer BLOCKED. Trace work complete, archived; native
   valid-token convergence/stale-token non-interference and must-pass real-game

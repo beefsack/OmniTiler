@@ -19,3 +19,18 @@ for conflicting Plasma-global bindings.
 ## Next Action
 
 Choose complete post-release layout support only after initial release.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2095-2098
+
+- P2 | Keyboard-layout support | After initial release; US keyboards only
+  for MVP. Read-only investigation queued: behavior of `Meta+Shift+1..9` and
+  the US shifted-symbol aliases on German, AZERTY, UK and Nordic layouts.
+  [change](shortcuts.md)
+
+### Original backlog lines 2129-2131
+
+- P3 | Post-MVP tiling profiles | Re-expose `shortcutProfile` with distinct
+  catalogs and live switching when adding new tiling types.
+  [change](shortcuts.md)

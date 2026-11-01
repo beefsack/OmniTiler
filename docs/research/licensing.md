@@ -1,8 +1,8 @@
 # Licensing research: provenance, dependencies, candidates, stores, recommendation
 
-Status: MIT project license applied by the 2026-10-11 decision, with a
-GPL-2.0-or-later native-effect exception (section 8). License-tool verification,
-the CI license gate and distribution-specific native closure audits remain pending.
+Status: MIT project license with a GPL-2.0-or-later native-effect exception.
+The cargo-deny CI license gate is delivered; `license_finder` verification and
+distribution-specific native closure audits remain pending.
 
 Pins: `Cargo.lock` (`--locked` throughout); Nix `nixpkgs`
 `54ba4bcec4043e72a4006d825e0d7aff5562008f`; devenv `nixpkgs`
@@ -16,9 +16,9 @@ tracked `crates/`, `kwin/src`, `kwin/native-effect`, `test-fixtures/` for licens
 markers (`ported`, `vendored`, `adapted from`, ...), `Krohnkite`,
 `Bismuth`, `Polonium`, `Karousel`, and COSMIC identifiers: no SPDX
 headers, no license texts, no `vendor/` dir, no third-party WM code.
-The only `vendored-sources` hit is Cargo's offline-build
-source-replacement (`kwin/native-effect/CMakeLists.txt:100-105`); no
-vendored sources are checked in.
+`vendored-sources` hits are Cargo offline-build source-replacement in the
+packaging recipes and `scripts/build-source-archive.sh`; no vendored sources
+are checked in.
 
 - COSMIC analogue is behavioral, not a copy:
   `crates/tiler-core/src/directional.rs:1608-1672` redistributes unit
@@ -37,6 +37,10 @@ vendored sources are checked in.
   `kwin/native-effect` call KWin/Qt/KF6 APIs without embedding sources.
 
 ## 2. Rust dependency inventory
+
+Historical snapshot from 2026-10-11: this inventory includes the then-existing
+`tiler-kwin-effect-ffi` staticlib, which has since been removed. Package counts,
+crate membership and dependency claims below are not current Cargo metadata.
 
 `cargo metadata --locked --format-version 1`: 93 packages = 88 external
 crates-io + 5 workspace. License strings are declared `license` fields,
@@ -143,11 +147,11 @@ Direct devDeps: `@types/node`, esbuild, typescript; `engines: node >= 24`.
 
 ## 4. Native link inventory
 
-Effect plugin links own staticlib + `Threads`, `${CMAKE_DL_LIBS}`,
+Effect plugin links `Threads`, `${CMAKE_DL_LIBS}`,
 `KWin::kwin`, `KF6::ConfigCore/ConfigGui/ColorScheme`, `Qt6::Core/Gui/DBus`
-(`CMakeLists.txt:149-160`). KCMs link only KF6
+(`CMakeLists.txt:76-84`). KCMs link only KF6
 (CoreAddons/ConfigCore/ConfigGui/I18n/KCMUtils/WidgetsAddons) +
-`Qt6::Core/DBus/Widgets` (`:182-192`, `:207-217`). ECM is build-time
+`Qt6::Core/DBus/Widgets` (`:109-128`, `:134-153`). ECM is build-time
 only. Nix pin evaluates kwin 6.7.4, qtbase 6.11.1, kconfig 6.29.0.
 `${CMAKE_DL_LIBS}` on Linux is `dl`
 (`cmake-4.4/Modules/Platform/Linux.cmake: set(CMAKE_DL_LIBS "dl")`):
@@ -166,10 +170,11 @@ The combined effect binary distributes under GPL-compatible terms
 (GPLv2 s2 / GPLv3 s5(c)); GPLv2 s9 permits the GPLv3 election
 ([GPLv2 s9](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)).
 This does not require our original effect source to be GPL: MIT source can
-be linked into a GPL-covered binary while retaining its MIT grant. The
-2026-10-11 decision instead chooses GPL-2.0-or-later for the effect sources
-to make the boundary explicit and permit KWin code reuse. It does not
-relicense the MIT Rust staticlib or the Settings KCMs.
+be linked into a GPL-covered binary while retaining its MIT grant. The current
+decision keeps GPL-2.0-or-later for effect sources that include KWin headers or
+reuse KWin implementation code. The 15 audited KWin-free logic/test files are
+MIT, including the independently implemented outline-behavior match. No MIT Rust
+crate is linked into the effect; the Settings KCMs remain MIT.
 KDE policy confirms the file-level regime
 ([Licensing Policy](https://community.kde.org/Policies/Licensing_Policy)).
 Transitive runtime closure unmapped: treat GPL compatibility as required.
@@ -234,8 +239,8 @@ Source scope: `packaging/debian/control`, `packaging/debian/rules`,
 `packaging/debian/copyright`, `packaging/rpm/omnitiler.spec`,
 `packaging/arch/PKGBUILD`, `packaging/arch/.SRCINFO`,
 `packaging/obs/_service`, plus the link lines in section 4
-(`kwin/native-effect/CMakeLists.txt`: effect 148-159, KCMs 181-191
-and 206-216; `find_package` floors: ECM 6.24.0, KWin 6.6.0) and the
+(`kwin/native-effect/CMakeLists.txt`: effect 59-84, KCMs 109-128
+and 134-153; `find_package` floors: ECM 6.24.0, KWin 6.6.0) and the
 license facts in sections 4.1-4.3 and 6. No distro packages were
 installed; no live builds were run. Anything not determinable from
 these sources is marked pending. Transitive `.so` closure per distro
@@ -466,6 +471,19 @@ no license-class restriction beyond accurate manifests.
 
 ## 8. Approved decision (2026-10-11)
 
+This is the historical 2026-10-11 decision, superseded by the current
+[Licensing decision](../decisions/development.md#licensing). The current
+KWin-free source audit is recorded in the
+[native-effect license audit](../changes/archive/native-effect-license-audit.md).
+The named `oraclepress.h` file and `tiler-kwin-effect-ffi` staticlib crate no
+longer exist.
+
+The 2026-11-01 decision confirms MIT for the 15 audited KWin-free native-effect
+logic/test sources, including the independently implemented
+`borderStrokeFromPublished` helper. Only `activewindowborder.cpp/.h` remain
+GPL-2.0-or-later at source level because they include KWin headers;
+`metadata.json` and the combined effect binary also remain GPL-2.0-or-later.
+
 - Project default: MIT, copyright 2026 Michael Alexander, confirmed against
   git authorship. Root `LICENSE` supplies the notice; `LICENSES/` supplies
   MIT and GPL-2.0-or-later texts. This is not a claim of full REUSE coverage.
@@ -538,8 +556,8 @@ predates the generated root `THIRD-PARTY-NOTICES` implementation below.
 
 | Item | Ships? | Attribution needed? |
 | --- | --- | --- |
-| Checked-in `vendor/` tree | No: no `vendor/` dir exists; the only `vendored-sources` hit is Cargo offline-build source-replacement (`kwin/native-effect/CMakeLists.txt:100-105`), repeated in the packaging recipes | No |
-| Third-party license headers / SPDX in shipped sources | None: the only SPDX headers are the four first-party GPL-2.0-or-later effect files (section 8); `crates/` carries no third-party headers (the sole `copied` hit is an English doc word in `crates/tiler-core/src/contract.rs:113`) | No |
+| Checked-in `vendor/` tree | No: no `vendor/` dir exists; Cargo offline-build source-replacement is in the packaging recipes and `scripts/build-source-archive.sh` | No |
+| Third-party license headers / SPDX in shipped sources | None: the only GPL-2.0-or-later SPDX headers are the two first-party KWin-header-dependent effect files; the other 15 native-effect files carry first-party MIT headers. `crates/` carries no third-party headers (the sole `copied` hit is an English doc word in `crates/tiler-core/src/contract.rs:113`) | No |
 | KWin script bundle (`contents/code/main.js`) | Built at build time by esbuild from first-party `kwin/src` (all imports relative; no npm runtime imports); git-ignored build output, never checked in | No |
 | npm package code in `main.js` | None: direct devDeps are `esbuild 0.28.2` (bundler), `typescript 7.0.2` (compiler), `@types/node 26.2.0` (types only), all `dev: true` in `kwin/package-lock.json`; the artifact-smoke test asserts no `__esm`/`__commonJS` helpers and no `import`/`export`/`node:` markers in the bundle | No |
 | Fonts / icons / assets in the bundle | None bundled: the only shipped icon is first-party `assets/icons/omnitiler.svg`, installed to hicolor by all three recipes | No |
@@ -567,4 +585,4 @@ tests and both Rust-bearing Nix payload builds pass; distro package extraction
 and future GitHub binary-archive delivery remain unverified, as does hosted CI
 execution.
 [Evidence](../changes/archive/third-party-notices.md).
-[Decision](../decisions.md#licensing), [queue](../backlog.md).
+[Decision](../decisions/development.md#licensing), [queue](../backlog.md).

@@ -132,3 +132,22 @@
   complete baseline/wire capture, repeat fixed-window/no-focus, concurrent
   fullscreen and modal/terminal legs on the corrected build. Leave the user's
   Steam retest pending. Keep this record active; acceptance is incomplete.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 837-848
+
+````markdown
+- P0 | KDE floating dialog pushed behind other windows | Implemented offline
+  2026-10-19 on the shipped world route: option A keep-above, focused automatic
+  float preservation and correlated diagnostics; no legacy edits, Windows
+  unchanged. D8 / REQ-SPC-04h / R-FLT-12 amended. KWin **1951**, Rust **3353**
+  pass; strict gates clean. Native stand-ins exposed an admission-focus write,
+  now fixed offline; corrected live repeat remains. **BLOCKED**: actual unload
+  leaves owned above without recoverable ownership across restart; matching
+  existing world behavior is unsafe. External lifecycle ownership question,
+  incomplete baseline restoration (pointer/views, two retired empty desktops)
+  and capture limits are in the [record](changes/kde-automatic-float-stacking.md).
+  Concurrent fullscreen/game, final modal/terminal checks and user's Steam
+  retest remain pending; no live acceptance claimed.
+````

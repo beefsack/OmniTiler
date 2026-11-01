@@ -68,12 +68,12 @@
 - Selected policies to preserve unless explicitly superseded: B6, clean-fit
   startup, D03 after-focused insertion, D16 float carry, D23 minimize slots,
   R4 whole-target wrap and native safety. See
-  [placement/minimum/startup](../../decisions.md#placement-minimums-and-startup-adoption).
+  [placement/minimum/startup](../../decisions/layout-and-admission.md#placement-and-minimums).
 
 ## User selections and historical options
 
 - The selected D1-D10 are promoted to
-  [durable decisions](../../decisions.md#best-effort-admission). The original
+  [durable decisions](../../decisions/layout-and-admission.md#best-effort-admission-fallback). The original
   options table is historical: the User selections override conflicting
   recommendations, especially float focus and persistence. Default capacity
   floating alone does **not** eliminate B6 minimum overlap.
@@ -343,3 +343,21 @@
    hidden finish-only float. Restore saved settings and close test clients.
 - Exact next action: user-owned live re-check above; Windows/macOS adoption is
   tracked separately. No open product decision.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 953-963
+
+````markdown
+- P1 | Best-effort admission live re-check | Core/KDE delivered offline
+  2026-10-18 under selected D1-D10; the full-state geometric-capacity hold is
+  cleared. Largest-splittable/float defaults, atomic mixed seed, ordinary
+  persisted capacity floats, newest-first protected repair and positive-overflow
+  alternative are wired through shared catalog settings and KDE. Rust workspace
+  **3092 passed**, KWin **1824 passed**, native effect/settings **34/27 passed**;
+  exporter/API/shell checks and all eight CI jobs pass (`b7da8fb9`, run
+  39076930351). No live acceptance claimed.
+  [Delivery and exact script-restart re-check](changes/archive/best-effort-admission.md#residual-risks-and-exact-live-re-check).
+  Windows/macOS consumption remains separate below. B6 declared-minimum overlap
+  is unchanged; review its UX during dogfooding.
+````

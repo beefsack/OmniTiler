@@ -310,7 +310,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   path), focusing B. The emptied source forces the Follow path, so
   the Stay run also switches the view and focuses B. `S(S-pan-ws)` +
   `S(S-pan-flt)`.
-- Then Ours KDE: ordinary/combo float send delivered offline via slotless deferred transfer, float/size and live overlay retained, destination/source tiles untouched; follow/stay, real numbered/relative routing, sticky refuses, no setting. Same-output exact frame/no geometry write confirmed User 2026-10-13; destination overlay exit remains floating in real-Planner fixtures ([record](../../changes/archive/d16-floating-transfer.md), [decision](../../decisions.md#workspaces)). Native roundtrip/combo exit pending, frames/focus TBD
+- Then Ours KDE: ordinary/combo float send delivered offline via slotless deferred transfer, float/size and live overlay retained, destination/source tiles untouched; follow/stay, real numbered/relative routing, sticky refuses, no setting. Same-output exact frame/no geometry write confirmed User 2026-10-13; destination overlay exit remains floating in real-Planner fixtures ([record](../../changes/archive/d16-floating-transfer.md), [decision](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history)). Native roundtrip/combo exit pending, frames/focus TBD
 - Then Ours Windows: adapter delivered offline 2026-10-13 through slotless MoveDeferred, exact float frame/intent retained, deferred follow/stay skip both geometry applications including drifted survivors. Real entry numbered/relative routing, refusals and shared Engine combo/exit regressions pass; combo native readback defers in fake-window fixtures, not successful native carry evidence ([record](../../changes/archive/windows-d16-floating-transfer.md)). Native roundtrip/combo exit pending, frames/focus TBD
 - Variant hook: V-FLOAT-GEO.
 
@@ -979,7 +979,7 @@ verb inventory); selected intent and doc assertions are never evidence.
 
 ## Selected additions (USER 2026-10-07; KDE items 1/2 delivered)
 
-Targets follow [items 1/2 and decision 1.5](../../decisions.md#workspaces).
+Targets follow [items 1/2 and decision 1.5](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history).
 KDE R-WS-08/11 and R-WS-15..17 carry offline adapter/fixture evidence;
 the user confirmed item 1's single-output native journey on 2026-10-07
 ("worked perfectly"), without specifying individual cases or presets.
@@ -1276,7 +1276,7 @@ outcomes stay TBD.
 
 | Variant | Minimal action sequence | Selected Ours target / evidence | Unsupported outcomes |
 | --- | --- | --- | --- |
-| One shared scope versus displaced per-output projects | On L/R in shared mode, visit occupied WS1 -> WS2 -> WS3; keep the active window on R; disconnect R; invoke previous twice on L; reconnect R; invoke previous twice again. Record stable workspace IDs, shared order, contents, current views and each observed change | Tentative per [decisions](../../decisions.md#workspaces): mirror KDE's shared hotplug branch, with no project displacement or return mapping; one shared history/ring records actual observed changes only. KDE `reconcileOutputDisplacement` skips displacement for shared mode; Windows topology integration delivered offline 2026-10-15 ([record](../../changes/archive/windows-workspace-scope-hotplug.md)), retaining shared history and sibling Engine domains. Reconnect never consults/restores history | Exact Tier 1/2 shared-model applicability, native evacuation/focus/frames, observed switch sequence and first/second toggle targets TBD for user testing; do not infer them from the local/global-unique R-WS-17 fixture |
+| One shared scope versus displaced per-output projects | On L/R in shared mode, visit occupied WS1 -> WS2 -> WS3; keep the active window on R; disconnect R; invoke previous twice on L; reconnect R; invoke previous twice again. Record stable workspace IDs, shared order, contents, current views and each observed change | Tentative per [decisions](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history): mirror KDE's shared hotplug branch, with no project displacement or return mapping; one shared history/ring records actual observed changes only. KDE `reconcileOutputDisplacement` skips displacement for shared mode; Windows topology integration delivered offline 2026-10-15 ([record](../../changes/archive/windows-workspace-scope-hotplug.md)), retaining shared history and sibling Engine domains. Reconnect never consults/restores history | Exact Tier 1/2 shared-model applicability, native evacuation/focus/frames, observed switch sequence and first/second toggle targets TBD for user testing; do not infer them from the local/global-unique R-WS-17 fixture |
 
 ### R-WS-18: relative next send fills the trailing empty
 
@@ -1527,7 +1527,7 @@ outcomes stay TBD.
 
 ## Selected addition (user-selected NORMATIVE 2026-10-08; delivery status per profile)
 
-Targets follow [workspace migration D1-D9](../../decisions.md#workspaces)
+Targets follow [workspace migration D1-D9](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history)
 (User 2026-10-08 selections, REQ-WS-12a..i). KDE
 R-WS-21..26 carry offline Engine/adapter/fixture evidence; D1-D9 native
 runtime outcomes are TBD (no live acceptance recorded here); D8 carry is

@@ -116,3 +116,31 @@
 - Removal and offline gates are delivered; full requested visual/group live
   acceptance remains incomplete. Keep this note active until that gap is
   resolved or explicitly separated from removal acceptance.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1478-1484
+
+````markdown
+- P1 | Remove legacy routes and code | User 2026-10-18: pre-0.1, prune legacy
+  aggressively. KDE removal delivered 2026-10-19: plan/workspace-send adapters,
+  DescribePlan service/protocol, exclusive tests/fixtures and obsolete custom-tile
+  harness removed; world formatter, native rendering/settings and intent store
+  retained. Remaining: portable per-domain core API after Windows/macOS world
+  adoption, plus reviewed native-only callers, fixtures and dead settings.
+  [Evidence and outstanding visual/group smoke gap](changes/kde-legacy-route-removal.md).
+````
+
+### Original backlog lines 1485-1493
+
+````markdown
+- P1 | Repository cleanup pass | User 2026-10-18: the repository has grown
+  large and cluttered; schedule a cleanup pass soon. Inventory and remove
+  obsolete harnesses/scripts, superseded routes and fixtures, stale records and
+  dead code, with a reviewed removal list before deleting. KDE's obsolete
+  custom-tile acceptance harness/test and legacy-route fixture are removed
+  ([evidence](changes/kde-legacy-route-removal.md)). Windows inventory complete: one
+  completed note archived unchanged; no source/scripts proven safe to delete.
+  Active acceptance records and parked implementation/test bases retained;
+  three cleanup groups await user review. [Windows inventory](changes/archive/windows-cleanup-inventory.md).
+````

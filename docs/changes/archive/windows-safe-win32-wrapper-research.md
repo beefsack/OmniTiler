@@ -1,7 +1,7 @@
 # Safe Win32 wrapper research
 
 - Goal: resolve research item 13g with evidence against the
-  [unsafe principle](../../principles.md#unsafe-code), leaving the dependency
+  [unsafe principle](../../principles.md#rust-and-memory-safety), leaving the dependency
   route an open decision.
 - Scope: inventory `tiler-windows` unsafe sites and dependencies; assess safe
   wrapper coverage and adoption; compare minimal FFI boundaries using

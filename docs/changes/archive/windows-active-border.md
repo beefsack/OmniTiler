@@ -37,7 +37,7 @@
 - Event-loop refresh reads fresh foreground/DWM geometry, avoids owned-overlay
   wake feedback, preserves scoped identity fences and emits bounded lifecycle
   diagnostics. Ordinary dialogs remain eligible; targeted shell surfaces hide.
-- Durable choices are recorded in `docs/decisions.md#visuals-border-underlay-and-grouping`.
+- Durable choices are recorded in `docs/../../decisions/visuals.md#shared-visual-safety`.
   KDE sources: `kwin/native-effect/activeborderconfig.kcfg`,
   `activeborderlogic.h`, `activewindowborder.cpp` (Selection theme and Z=-1).
   Upstream `OutlinedBorderItem` and OpenGL item renderer confirm inner radius

@@ -53,3 +53,19 @@
   refusal changes. No new durable product decision. Backlog and coverage matrix
   distinguish offline verification from renewed live diagnostic/B1 acceptance,
   which remains pending.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 973-981
+
+````markdown
+- P1 | KDE maximize/fullscreen asynchronous-settlement false refusals | Native
+  correction delivered: confirm once at the next fresh accepted observation,
+  preserving lifetime/scope/focus/generation/supersession fences and one setter
+  attempt without retry/replay. Producer-shaped delayed maximize/restore,
+  fullscreen enter/exit, silent refusal, intervening-command and restart
+  regressions pass with renewed wrappers, QML array-likes and native properties;
+  KDE tests/typecheck pass. Renewed live diagnostic/B1 acceptance remains pending.
+  [Record](changes/archive/kde-native-state-settlement.md);
+  [coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
+````

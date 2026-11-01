@@ -11,7 +11,7 @@
   Render-thread migration is stage 2.
 - Binding contracts: [design](../../research/windows-port/owner-threading.md#contracts-that-must-survive-the-split),
   [principles](../../principles.md), and the native
-  [common definition of done](../../backlog.md#common-definition-of-done-and-live-check-protocol).
+  [common definition of done](../windows-physical-checklist.md#original-backlog-lines-1649-1670).
 
 ## Acceptance and approach
 
@@ -108,7 +108,7 @@
   All-workspace fmt, locked four-package strict all-target Clippy with warnings
   denied and `git diff --check` PASS.
 - Stage 1 is complete offline. Durable implementation choices are in
-  [decisions](../../decisions.md#windows-owner-threading). No physical latency,
+  [decisions](../../decisions/windows.md#windows-owner-thread-architecture). No physical latency,
   hook-delivery or display acceptance is inferred from these fixtures.
 - Pending user checks: scoped edge drags, four profile/trace combinations, held
   chords/repeats/releases, preheld modifiers, live bindings, Win+drag/Esc,

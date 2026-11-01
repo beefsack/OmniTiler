@@ -43,3 +43,20 @@
   if it records both during-drag growth and the post-release result; snapback
   alone is not proof of a hard client or native cap because existing tiler
   resize policy can also act after release.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1994-2005
+
+- P1 | Ghostty/local native alignment | The ~56 px shortfall is unexplained
+  (source-only baseline fix is in; needs a fresh `just dev trace` local-move
+  plus follow-on command trace), and one requested `2032x1092` became
+  `1920x1036` while another primary Ghostty accepted full size (per-window
+  native cap or stale output-derived cap unproven). Hypothesis
+  (2026-09-28): 1920x1036 equals another output's work area, so the
+  window may be constrained to the other output. Next: `just dev trace`
+  with one tall tiled window on the source output; check output, bounds and constraints.
+  Gates reconciliation phase 2.
+  [bounds fix](multi-output-domain-bounds.md)
+  [phase 2 parked](../learned-size-limits.md)
+  [drag investigation](../window-alignment-drag-investigation.md)

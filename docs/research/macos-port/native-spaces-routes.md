@@ -44,7 +44,7 @@ rift, glide and paneru pins; historical plan citations are not advanced.
   AccessibilityUIServer, offscreen layer 3, 0x0, had partial membership
   `[434,1]` over user Spaces `[1,277,434]` and no AX windows. The existing
   every-Space sticky check therefore produced a false unknown. The
-  [user-approved exact-owner subset exception](../../decisions.md#scope-and-platform-goals)
+  [user-approved exact-owner subset exception](../../decisions/platforms.md#platform-scope)
   is narrower than ignoring a bundle, layer or all zero-area windows.
 - **EVIDENCE and limit:** positive trailing selection reuse confirms in 122 ms;
   MC create plus immediate selection confirms in 900-944 ms. Inherited 434
@@ -403,7 +403,7 @@ enabled on the development host; the minimum-supported release, multi-display
 and synthetic (agent-posted) drag remain unverified.
 
 User decision 2026-10-16: build managed native workspaces on these routes
-([decision](../../decisions.md#scope-and-platform-goals)).
+([decision](../../decisions/platforms.md#platform-scope)).
 
 The subsequent [synthetic drag diagnostic](../../changes/macos-managed-workspaces.md#diagnostic-milestone-2026-10-16)
 verified independent helper recovery but refused before any synthetic post on a

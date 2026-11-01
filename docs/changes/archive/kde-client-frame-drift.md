@@ -52,3 +52,28 @@
 - Native acceptance remaining: isolated self-resize and persistently resizing
   fixture on Wayland and X11; exact native buffer/ack and visual outcomes TBD.
   Burst continuity is based on observed frames, not unseen native buffer commits.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 794-811
+
+````markdown
+- P1 | KDE client self-resize while tiled (F1, 2026-10-20) | A tiled
+  client resizing itself leaves geometry inconsistent with its tile until an
+  unrelated subscribed event reconciles; reproduced on Wayland and X11 with
+  the live fixture. [Tier 1 source audit and current path](spec/reference-outcomes.md#client-driven-tiled-geometry)
+  recorded: X11 rejects tiled size requests promptly; Wayland commit paths
+  do not share an immediate resend policy. D2 already requires reacting to
+  self-resize. **Implementation | User 2026-10-29:** prompt frame-drift observation
+  and reconciliation to retained tile geometry under existing safety, clamp and
+  write-suppression rules; no write loop against a persistently resizing client.
+  Consistent with D2. Exact native buffer/ack outcomes remain TBD.
+  **Implemented offline 2026-10-29:** KWin `frameGeometryChanged` drives
+  reconciliation to the retained tile; at most two attempts per window and
+  unchanged target per resize burst (target change or >=500ms quiet re-arms).
+  Wayland/X11 fixture self-resize, persistent-resize and visuals pending native
+  acceptance. [Outcome](changes/archive/kde-client-frame-drift.md).
+  [Record](changes/archive/kde-dev-scope-fixture-integration.md).
+  [Research](research/live-test-window.md),
+  [record](changes/archive/controllable-live-test-window.md).
+````

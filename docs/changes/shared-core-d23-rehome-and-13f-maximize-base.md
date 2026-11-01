@@ -8,8 +8,8 @@
   guide](../porting/world-adapter-guide.md).
 - Approved behavior, not reopened: [D23 option B](../research/d23-minimized-rehome.md)
   and [13f option A](../research/fixed-override-born-maximized.md), recorded in
-  [window-state decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen)
-  and [fixed-size decisions](../decisions.md#fixed-size-admission).
+  [window-state decisions](../decisions/window-state.md#fullscreen-and-maximize-overlays)
+  and [fixed-size decisions](../decisions/layout-and-admission.md#fixed-size-admission-predicate).
 - Goal: one system-agnostic lifetime rule and one shared maximize-precedence
   rule, with host proof/actuation remaining adapter-owned, per
   [Layering and Simplicity](../principles.md).
@@ -212,3 +212,32 @@
 - Exact implementation next action: KDE stream reviews the rehome proof carrier
   and pre-clear override hydration ordering, then starts the core/protocol/KWin
   offline unit above; Windows and macOS reviews supply the listed host gaps.
+
+### Original backlog lines 1404-1427
+
+````markdown
+- P0 | Windows dogfood 2026-10-11 | User live run `tile --user-start --trace`
+  at `7f407ca`. All sub-items delivered offline (records in the archive);
+  remaining are live/physical acceptance plus two approved-but-unimplemented
+  shared policies: (a) pending-prompt stop cancels with no preset written;
+  (b) verified departure focus feeds remembered return focus incl. fullscreen;
+  (c) group projection honors minimum hints; (d) `core.born_maximized` default
+  tile-on-launch + `keep-maximized-overlay` (both born values Paint-launch
+  user-accepted physically 2026-10-12, scoped single-output); (e) border radius
+  default 6 (user-accepted 2026-10-12); Win+B/Win+T launchers delivered;
+  underlay candidate C `#662a82da` selected for both platforms (black/white/grey
+  at 100%/150% visual check pending); items 13+17 (bounded min/max, predicate,
+  current-hint exit/classification), 10+18 (float directional focus, half-snaps,
+  maximized focus fence) and 11+15 (R-MAX-03 retile, ordinary maximized unfloat)
+  delivered with scoped 2026-10-12 physical acceptances. Remaining user-run
+  acceptance: broader rebinding, real Explorer restart, tray toggle focus
+  observation, hidden retile/session restore/fixed marker/restart/failure/race/
+  game/DPI/multi-output legs. Follow-ups: 5b folded into the P2 triage settings
+  item; D23 source-slot option B (User 2026-10-17) shared-core implementation
+  approved, not implemented; 13f fixed-override born-maximized option A (User
+  2026-10-17) approved, not implemented
+  ([proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md)); 13g
+  safe-FFI route chosen (option A), implementation queued (see unsafe-FFI
+  item); taskbar indicator pulled forward as dogfood blocker (see presentation
+  research). Full sub-item history archived 2026-10-24.
+````

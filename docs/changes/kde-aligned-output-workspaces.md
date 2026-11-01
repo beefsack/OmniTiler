@@ -53,7 +53,7 @@
    positions and names are global. `shared` is unchanged.
 5. Minimum is two workspaces in total, including the trailing empty (keeps
    KDE Overview available). Correct the "two plus trailing" wording in
-   [decisions](../decisions.md#workspaces).
+   [decisions](../decisions/workspaces.md#workspace-lifecycle-focus-and-history).
 6. Holes: an empty cell stays while another output occupies that native.
    A native is removed when empty on every output, not a trailing empty, not
    shown, and not protected (flight-pinned, displaced, unmapped). KDE

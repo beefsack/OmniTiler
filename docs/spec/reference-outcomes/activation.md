@@ -140,7 +140,7 @@ sandboxed route exposes the workspace-level marker only.
   verification-only, no longer BLOCKED. No OmniTiler gaming guard, rely on
   KWin input freshness; real-game active/idle check must pass, reopen only on
   actual active-play switch-away. Post-0.1 setting KDE applicability reviewed
-  at design ([decision](../../decisions.md#activation-requests),
+  at design ([decision](../../decisions/activation-requests.md#hidden-window-activation-default),
   [trace](../../research/d27-kwin-activation-trace.md)). `S(S-ours-act)`
   establishes observation only, not native acceptance.
 - Then Ours Windows: partial native evidence 2026-10-14 at `f4b9f41`:

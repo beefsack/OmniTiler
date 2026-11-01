@@ -85,7 +85,7 @@ with the fixture-first rules and the signed bundle in
 
 - Shared-core directional crossing now ranks entry-edge tiled leaves by
   candidate history, then perpendicular overlap and DFS layout order
-  ([D1/D2 policy](../decisions.md#cross-output-focus-edge-policy), offline
+  ([D1/D2 policy](../decisions/focus.md#cross-output-directional-focus), offline
   verified). Production `FocusStep` in `world_command_map.rs` still sends
   `cross_output_transfer:false`. Tentative D5 defers enabling macOS hotkey
   crossing to this port; no macOS adapter implementation or native acceptance
@@ -132,7 +132,7 @@ with the fixture-first rules and the signed bundle in
   evidence, not native hide/reveal acceptance.
   [Mechanical coverage, blocker and sticky verification plan](../changes/macos-world-v2-port.md#stage-2-mechanical-evidence-and-policy-blocker-2026-10-25).
 - Activities default stays tentative pending KDE evidence (see
-  [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):
+  [decisions](../decisions/kde.md#deferred-activities-support)):
   inactive-activity windows stay retained unmanaged (never tile, move,
   focus or lose their slots) until active; all-desktop maps to sticky;
   subset-of-desktops floats and never rehomes. The port may propose an

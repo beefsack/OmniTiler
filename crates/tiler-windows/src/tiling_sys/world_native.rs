@@ -314,7 +314,7 @@ fn real_focus(hwnd: u64) -> bool {
 }
 
 /// Unassigned virtual key for the bounded last-input prime (the approved
-/// E8 menu-mask mechanism, `decisions.md` focus mechanism): down/up with
+/// E8 menu-mask mechanism, `docs/decisions/reference-and-shortcuts.md#windows-key-input-and-snap`): down/up with
 /// no scancode masquerading. The product input filter already drops
 /// injected E8 before command dispatch, so the prime never mints input.
 const FOCUS_PRIME_VK: u16 = 0xE8;

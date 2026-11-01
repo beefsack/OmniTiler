@@ -118,7 +118,7 @@ pub struct KdeEnumOverride {
 
 /// Native workspace-mode presentation: labels and tips genuinely differ
 /// from the catalog (approved user vocabulary in
-/// `docs/decisions.md#workspace-vocabulary-2026-10-24`, refined 2026-10-28:
+/// `docs/decisions/workspaces.md#workspace-scope-vocabulary`, refined 2026-10-28:
 /// separate modes use own-set/swap qualifiers, shared reads
 /// "Workspaces span displays"; KWin version notes vs scope notes).
 pub const KDE_ENUM_OVERRIDES: &[KdeEnumOverride] = &[

@@ -79,3 +79,28 @@ acceptance, exclusive display-mode changes, and core architecture changes.
   limits. Independent review corroborated the native evidence and cleanup;
   no behavioral defects or policy changes were needed. The Windows portion
   of fixture first-use acceptance is complete.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 771-788
+
+````markdown
+- P1 | Live fixture first use on macOS (2026-10-20) |
+  `crates/tiler-live-fixture` is the standard agent live-test window
+  (KDE live-verified, KDE `--scope-class`). Windows first use and
+  fixture-scoped tiler smoke passed 2026-10-21 on two outputs
+  ([evidence](changes/archive/windows-live-fixture-first-use.md)).
+  macOS: standalone first use, the two `deadline_reader_*` test races and
+  the bundle-scoping gap (signed regular-policy bundle
+  `io.github.omnitiler.live-fixture`) resolved 2026-10-20
+  ([evidence](changes/archive/macos-live-fixture-smoke.md)); fixture-scoped
+  integrated tiling with the tap also passed one-to-three admission,
+  socket/native geometry, focus, close/reflow and teardown
+  ([evidence](changes/archive/macos-fixture-tiler-integration.md)).
+  macOS remaining: product focus/move chords and managed select/send/trailing
+  need physical fixture checks or a fixture-aware guarded diagnostic driver
+  (driver shelved 2026-10-28 ROI review; physical checks instead);
+  existing owned controls/stay/trailing injections remain legacy-helper/TextEdit
+  only ([checklist](live-macos-testing.md#fixture-first-live-tests)).
+  [Reference](../crates/tiler-live-fixture/README.md).
+````

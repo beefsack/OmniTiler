@@ -65,3 +65,22 @@
 - Run the documented single-window recording and journal capture. Use the
   measured intervals and video to locate the jump;
   changing admission or animation behavior remains separate work.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 884-895
+
+````markdown
+- P1 (after floating dialog defect) | KDE open-animation tile jump | New
+  windows play the open effect at initial placement, then jump into the tile.
+  Source investigation 2026-10-16: no animation wait; 120 ms admission
+  debounce plus planner IPC, and Wayland resize needs a client round trip
+  after map. Tiling itself must not animate; goal is final geometry before
+  opening. Timing-probe draft removed 2026-10-18: it instrumented only legacy
+  `DescribePlan`, not the production `DescribeWorld` route; no native timing
+  evidence was collected. Trace-only world-route probe delivered offline:
+  admission, correlated planner send/reply, requested and first signal-observed
+  frame. Next: user-run single-window timing capture with screen recording
+  ([procedure](dev-loop.md#kde-open-animation-timing-probe-trace-only),
+  [active record](changes/kde-open-animation-timing.md)); no jump fix yet.
+````

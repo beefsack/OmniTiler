@@ -6,8 +6,8 @@ adapter, IPC topology, or implementation work. No live Plasma, DBus, panel,
 configuration, compositor, or manual test occurred.
 
 This record answers the request for a tiling-WM-style panel, chiefly a workspace
-overview. It follows the current [workspace decision](../decisions.md#workspaces),
-[tray boundary](../decisions.md#settings-tray-and-first-run), [cross-platform feasibility](cross-platform-support/feasibility.md),
+overview. It follows the current [workspace decision](../decisions/workspaces.md#workspace-lifecycle-focus-and-history),
+[tray boundary](../decisions/settings.md#shared-settings-catalog-and-platform-ownership), [cross-platform feasibility](cross-platform-support/feasibility.md),
 and [profile support research](reference-wm-profile-support.md). Panels and
 workspaces remain first-class product requirements under `VISION.md`; a panel
 must not become a second workspace or layout authority.

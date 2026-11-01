@@ -28,7 +28,7 @@
 - Provisional, to discuss: one Markdown document with tables by area, stable IDs,
   six outcome columns and variant hooks. Compact citations distinguish dated
   user tests, pinned source and linked docs; unknown cells stay TBD. Recorded in
-  [decisions](../../decisions.md#reference-matrix-and-spec-authority).
+  [decisions](../../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 - Existing product choices are not reselected. Hooks index evidence for the
   future specification; foreign outcomes do not automatically become supported.
 

@@ -50,7 +50,7 @@
   `Session::fixed_send_admission` otherwise refuses automatic-origin floats.
   Windows' approved 2026-10-16 D16 extension explicitly permits these sends;
   KDE/macOS behavior was deliberately unchanged
-  ([decision](../../decisions.md#workspaces)).
+  ([decision](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history)).
 - Maximized-policy parity also needs an explicit configuration route rather
   than assuming Linux's constructor policy is interchangeable. Windows'
   legacy event stamps leave maximized/sticky flags adapter-owned, whereas a
@@ -76,7 +76,7 @@
   WorldEngineConfig) -> Option<Self>` accepts exactly `fixed_send_admission`
   and `maximized_focus_fence`. `Default` remains `false`/`true`; Windows uses
   `true`/`false`. Fixed-size admission stays enabled in both profiles.
-  Delivered in `0869f08c`; [accepted architecture decision](../../decisions.md#engine-architecture-and-convergence).
+  Delivered in `0869f08c`; [accepted architecture decision](../../decisions/engine.md#core-owned-world-and-platform-boundary).
 - No KDE, macOS or wire/protocol changes in the constructor prerequisite.
   Their existing constructor calls and behavior remain unchanged. No D23/13f
   changes included. W2a now proves the Windows profile against a separately
@@ -431,7 +431,7 @@
 
 - **User direction 2026-10-20:** the narrow default-off migration-authority
   capability below is not approved in that form. Under the
-  [core-owned world model](../../decisions.md#core-owned-world-model), a
+  [core-owned world model](../../decisions/engine.md#core-owned-world-and-platform-boundary), a
   whole-workspace migration changes core's workspace-to-output mapping and the
   adapter actuates that new world state. Rework the contract with the
   core/platform boundary inventory and discussion before planning. T2's
@@ -680,3 +680,36 @@
 - **Next:** complete the linked world-owner cutover's strict gates, deletion
   audit and native verification. This historical offline proof does not
   establish acceptance of the currently incomplete runtime integration.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1008-1033
+
+````markdown
+- P1 | Core + Windows: world migration authority and T2 crossing refusal |
+  Assessed 2026-10-20 ([record](changes/archive/windows-full-world-state-replies.md)):
+  (1) the proposed default-off migration-only authority capability was NOT
+  approved in that form: whole-workspace migration is a [core-owned mapping
+  change](./decisions/engine.md#core-owned-world-and-platform-boundary) actuated by the adapter. The
+  rearchitecture (closed 2026-10-24) delivered that mapping
+  authority with observed member/view/refill settlement; KDE's `world-apply.ts`
+  bypass must be aligned with the contract by the KDE port
+  ([guide](porting/world-adapter-guide.md)). The parked KDE
+  global-native-inventory migration-confirmation mismatch stays parked.
+  (2) T2 crossing refusal: delivered in the v2 world route - staged-clone refusal
+  preserves unchanged source Engine and membership on unsupported directional
+  output-send/R4 crossings, fixture-accepted with the core close-out
+  ([closeout](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)).
+  Explicit-target sends keep the parked `cross-domain-mismatch` contract gap.
+  Physical two-output refusal validation remains unrun. Each fix lands as one
+  change across shared core and the Windows adapter.
+  **Caveat (user 2026-10-19): be extremely careful to avoid platform-specific
+  logic in core.** For each blocker, first assess whether a small, simple,
+  sensible alternative without core changes exists (adapter-side or
+  platform-neutral). Only if none exists, design the core change to add
+  minimal conditional logic or burden, expressed as a platform-neutral
+  capability rather than a host check; precedent is the KDE opt-in for
+  output-shared workspaces. Any core change needs explicit user approval
+  before implementation; bring the options, trade-offs and recommendation to
+  the user.
+````

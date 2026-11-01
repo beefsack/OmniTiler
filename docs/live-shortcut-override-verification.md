@@ -3,7 +3,7 @@
 ## Purpose
 
 User-run acceptance for the current Apply / Force / Revert contract in
-`docs/decisions.md#shortcuts-conflicts-and-presets`, `docs/changes/shortcut-override.md`, and
+`docs/./decisions/reference-and-shortcuts.md#shared-shortcut-defaults-and-conflict-model`, `docs/changes/shortcut-override.md`, and
 `docs/changes/kde-shortcut-conflicts.md` (full catalog and presets).
 Read `docs/live-kwin-testing.md` first. It does not grant authorization.
 No agent participates. Use physical keys only: `invokeShortcut` bypasses xkb

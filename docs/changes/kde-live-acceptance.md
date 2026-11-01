@@ -446,3 +446,22 @@
   correction and regressions above; renewed live acceptance remains pending.
   Native-maximize notification quietness and the isolated tile-order observation
   remain separate unclassified follow-ups.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 922-933
+
+````markdown
+- P1 | KDE Settings native re-check | Core-catalog migration delivered offline
+  2026-10-17: exporter, checked-in descriptors and CI freshness gate; existing
+  labels/placement, KConfig keys/fallback, both identities, settings-only
+  packaging and native operation isolation retained. Rust/KWin suites and
+  hermetic native settings/effect tests pass. Native targeted-accessibility
+  checks passed both identities 2026-10-18: all tabs/Status, gap draft/save/reopen,
+  Cancel, Defaults without save, both post-switch draft read-backs and unchanged
+  ordinary-Apply endpoints
+  ([partial evidence](changes/kde-live-acceptance.md#settings-targeted-native-interaction-2026-10-18)).
+  Physical traversal/buddies/visual UX and transient-operation non-invocation
+  remain pending;
+  [original steps](changes/archive/kde-settings-core-catalog.md).
+````

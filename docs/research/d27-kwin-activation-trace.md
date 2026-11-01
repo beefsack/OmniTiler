@@ -55,7 +55,7 @@
 - KDE D27 is verification-only: valid-token native switch convergence and
   stale-token mark-only without interference. Post-0.1 Activation request
   setting's KDE applicability is reviewed at design, not selected here.
-  [Current decision](../decisions.md#activation-requests).
+  [Current decision](../decisions/activation-requests.md#hidden-window-activation-default).
 
 ## Pending live checks (user-owned, not run)
 

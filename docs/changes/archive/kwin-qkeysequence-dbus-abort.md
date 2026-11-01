@@ -127,3 +127,12 @@ state or attributing a library fault to a caller without stack evidence.
   warranted or shipped.
 - Read-only investigation only; no KWin, Plasma, shortcut, configuration, or
   core-dump mutation occurred.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2068-2071
+
+- P2 | PID 3568836 SIGABRT (`QKeySequence` D-Bus abort) | Formally open;
+  needs sender, method, and fault-stack evidence before attributing it to
+  the effect or script.
+  [record](kwin-qkeysequence-dbus-abort.md)

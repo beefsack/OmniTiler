@@ -33,7 +33,7 @@
 ## Material decisions
 
 - The tier-2 default is already user-approved in
-  [decisions](../../decisions.md#scope-and-platform-goals). No new durable choice is needed.
+  [decisions](../../decisions/platforms.md#platform-scope). No new durable choice is needed.
 - Mechanism recommendations remain proposals until authorized Mac probes;
   absent source or runtime evidence remains explicitly unknown.
 

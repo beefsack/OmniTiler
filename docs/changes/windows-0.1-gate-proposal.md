@@ -3,7 +3,7 @@
 - Status: approved gate. User approved D1, D2, D3 and D4 exactly as written
   on 2026-10-19. Native/physical acceptance remains pending; this is not
   release acceptance.
-- Basis: [shared scope and platform goals](../decisions.md#scope-and-platform-goals)
+- Basis: [shared scope and platform goals](../decisions/platforms.md#platform-scope)
   (2026-10-18) and the approved
   [57-check inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2).
 
@@ -197,7 +197,7 @@
 
 ## Evidence sources
 
-[scope]: ../decisions.md#scope-and-platform-goals
+[scope]: ../decisions/platforms.md#platform-scope
 [triage]: ../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2
 [backlog]: ../backlog.md
 [world]: archive/windows-full-world-state-replies.md
@@ -233,3 +233,66 @@
 [bornmax]: archive/windows-born-maximized-setting.md
 [retile]: archive/windows-maximized-floating-retile-overlay.md
 [toggle]: archive/windows-workspace-tiling-shortcut.md
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1172-1227
+
+````markdown
+- P0 | 0.1 release (KDE Plasma, Windows, macOS) | User 2026-10-17: 0.1
+  covers all three platforms, aiming for feature parity with KDE as far as
+  is sensible per host ([scope](./decisions/platforms.md#platform-scope)).
+  User 2026-10-18: the KDE categories below and approved 57-check triage
+  classification are the shared 0.1 gate template. Windows and macOS each propose
+  applicable checks, documented host-difference exceptions and platform-specific
+  extras for user approval ([decision](./decisions/platforms.md#platform-scope)).
+  Originally the KDE-only MVP (user 2026-10-10). Must-pass gate: VISION
+  reliability (sleep/wake, output plug/unplug, resolution/scaling changes,
+  fullscreen applications, underlying configuration changes), gaming/fullscreen
+  non-interference, core journeys (tiling, focus/move, workspaces, multi-output,
+  border, shortcuts, settings, restart), and missing/failed/removed companion
+  leaves tiling working (and KWin stable on KDE). Other live checks may ship as
+  listed known issues provided none crashes or silently stops tiling; no separate
+  dogfood period. Includes these pending pieces:
+  - Windows gate D1-D4 approved exactly as written (User 2026-10-19):
+    [approved gate and pending evidence](changes/windows-0.1-gate-proposal.md).
+    Base 45 must-pass / 7 known-issue-allowed / 5 excluded plus WX1-WX8
+    must-pass; only the Authentic Win+G/Win+F11 exact-chord containment gap
+    is a listed limitation. Native/physical acceptance against the shipping
+    runtime route and delivery dependencies remain pending; gate definition
+    approval is not release acceptance.
+    Pending journeys are grouped in the [Windows physical/user-run checklist](changes/windows-physical-checklist.md).
+  - [OPEN-requirement triage and live-check gate](research/release-0.1-triage.md):
+    User 2026-10-10 approved recommendation (a) for 15 units: D02, D04, D05,
+    D06, D07, D08, D11, D14, D15, D17, D18 (no setting), D19, D20 (no lower
+    verb for now), D21, D24; 16 rows approved. User 2026-10-12 also approved
+    D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27, D28 (seventeen rows).
+    All 28 units and Proposal B / N1-N4 classification approved; triage review complete.
+    Spec now 138 NORMATIVE / 0 PROVISIONAL / 28 OPEN; verification and
+    implementation gaps are below.
+  - Proposal B classification approved exactly User 2026-10-12: original 53
+    checks = 39 must-pass / 12 known-issue-allowed / 2 Windows-release; N1-N4
+    add four must-pass checks, total 57 = 43 / 12 / 2. K checks: 5, 24, 26,
+    29, 35, 36, 37, 38, 40, 41, 52, 53; W checks: 3, 4; all others M.
+    D28 KDE fullscreen-send acceptance including a real game is explicitly
+    must-pass (User 2026-10-12), a sub-leg of the reference-comparison check;
+    counted once within original check 1. Multi-output must-pass checks require
+    a two-output setup (VM or hardware) and must pass before 0.1 can ship.
+    Implementation and native/live acceptance remain pending.
+  - Original 60 OPEN rows triaged: 32 relevant / 28 post-0.1. P2 settings now
+    contain approved D09/D10/D27; D03/D12/D13/D16/D22/D23/D25/D28
+    have no setting. [User decisions](research/release-0.1-triage.md#user-decisions-2026-10-12).
+  - Release gates owned by their own items: 0.1 packaging (mainstream install
+    path), External NixOS/Home Manager validation, Ubuntu 26.04/26.10
+    acceptance and Licensing (all below); OBS handoff scripting is part of packaging.
+  - Workspace tiling toggle Meta+Y (KDE) delivered offline 2026-10-11
+    ([record](changes/archive/kde-workspace-tiling-shortcut.md)); Win+Y (Windows
+    item 21) delivered offline 2026-10-13
+    ([record](changes/archive/windows-workspace-tiling-shortcut.md)).
+    Native/physical and preset acceptance remains in Pending live checks.
+  KDE current approach retained; no new
+  non-native-research items. Lessons persist linked
+  ([candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
+  [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
+  [evidence](changes/archive/non-native-tiler-host-interaction.md)).
+````

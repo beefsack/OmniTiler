@@ -117,3 +117,20 @@
 - Next evidence needs a complete failing operation/report and retained member
   bindings to select the exact predicate above. Tiled-send held-scope diagnosis
   remains a separate item.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 982-991
+
+````markdown
+- P1 | KDE D7 controller-restart precondition: exact-site reproduction |
+  Offline real-engine KDE regressions accept complete fixed-client explicit tile
+  immediately after enable and after two observes; full wire traces/bindings
+  retained. Nine core malformed-fact cases pin six fail-closed refusal predicates;
+  unreadable producer observations hold without writes. No product defect or
+  historic fixture cause established: missing historic payload/site still blocks
+  classification. Retain a complete failing operation/report before selecting a
+  fix; no delay workaround or controller-restart pass inferred.
+  [Diagnosis](changes/archive/kde-d7-tile-precondition.md);
+  [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
+````

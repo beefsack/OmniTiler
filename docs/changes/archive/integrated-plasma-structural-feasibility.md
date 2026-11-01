@@ -34,9 +34,9 @@ authority.
   impossibility, runtime safety, gaming compatibility or performance acceptance.
 - **Recommendation:** retain the selected portable Rust Engine and KWin direct
   geometry. Replacing Engine topology authority would revisit the approved
-  [architecture](../../decisions.md#engine-architecture-and-convergence);
+  [architecture](../../decisions/engine.md#core-owned-world-and-platform-boundary);
   mirroring it into native trees would add the second authority explicitly
-  excluded by [Engine Operations](../../decisions.md#engine-operations-and-policy).
+  excluded by [Engine Operations](../../decisions/engine.md#cosmicv1-lifecycle-semantics).
   No product direction changes follow from this verdict.
 - [Simplicity](../../principles.md#simplicity): native trees still require product
   admission, empty-branch, transfer and recovery policy plus version retesting;

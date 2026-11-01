@@ -240,3 +240,29 @@ Release codec/core samples use fresh Engines (11 repetitions); sizes are exact c
   the independent count cap also refused its below-byte-cap sample correctly.
   Padding, timings, isolation and exact-reply-boundary limitations are retained
   in the continuation record. Exact-4-MiB reply delivery remains pending.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 934-952
+
+````markdown
+- P0 | Core update replies carry workspace state | Core and KDE delivered
+  offline 2026-10-17 under selected D1-D5: complete world reports/replies,
+  generation/revision/input-watermark fences, Planner-owned workspace policy,
+  retained transfer/view/property targets, explicit holds and a bounded 4 MiB
+  transport. [Contract, measurements and live checks](changes/archive/core-full-state-replies.md).
+  User-owned live KDE acceptance remains pending (raised to P0 2026-10-17:
+  two live regressions, rejected actions and lost outer gap, were fixed in
+  `3c94a819`, `9eaea71a`, `9fe0e79b`; the outer gap fix was confirmed live).
+  The v1 KDE evidence above is historical; KDE-side acceptance now belongs to
+  the KDE v2 port item.
+  Bounded native callback/state passes 2026-10-18 cover sampled ordinary/safety/
+  restart paths, request-size transport limits, selection/history, floating-boundary
+  numbered/relative follow/stay and one tiled numbered send-follow. No complete
+  live inventory gate: D7 precondition and tiled return remain blocked; physical
+  input, drag/visual UX and remaining permutations are pending
+  ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
+  Windows/macOS adoption is
+  tracked separately below. The temporary geometric-capacity hold is cleared
+  by best-effort admission below; protected/invalid geometry still holds.
+````

@@ -310,7 +310,7 @@ request fixtures pin the JS producer, including populated raw attempts.
   first reproduce it natively and check whether KWin exposes pending/completion
   evidence before proposing a neutral settling representation. No new core
   signal is selected (see deferred work in
-  [decisions](../decisions.md#port-deferred-investigations-2026-10-24)).
+  [decisions](../decisions/kde.md#deferred-activities-support)).
 
 ## Workspace modes on KDE (user-approved 2026-10-24)
 
@@ -334,7 +334,7 @@ request fixtures pin the JS producer, including populated raw attempts.
   warning. The warning is required port work; direct settings action is
   conditional on feasibility.
 - These workspace decisions are user-approved in
-  [decisions](../decisions.md#workspace-vocabulary-2026-10-24) and
+  [decisions](../decisions/workspaces.md#workspace-scope-vocabulary) and
   supersede the stale tentative 2026-10-19 global-unique fallback. Core
   linked-vs-separate modes are valid on every platform; no new setting
   is added.

@@ -58,7 +58,7 @@ acceptance remain pending below.
   distro-agnostic source service remains usable once provisioning and the
   release source/checksum handoff are completed.
 - Durable support and package policy is recorded in
-  [decisions](../../decisions.md#kde-support-floor), with installation guidance
+  [decisions](../../decisions/kde.md#kde-support-floor), with installation guidance
   and a minimal [workspace row](../../spec/reference-outcomes.md#kwin-66-shared-workspace-fallback).
 
 ## Accepted offline verification

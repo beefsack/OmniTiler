@@ -17,7 +17,7 @@
   still record every outcome including failure. Open physical acceptance only;
   no new query-failure product decision beyond the 2026-10-17 rule. Correction B
   covers tray, badge, selected detail/actions and static binding-list/OS conflict text.
-- Windows D27 5b review is recorded in [activation decisions](../decisions.md#activation-requests):
+- Windows D27 5b review is recorded in [activation decisions](../decisions/activation-requests.md#hidden-window-activation-default):
   OS-permitted Switch and focus requests are not downgraded over games/fullscreen.
   Implementation remains pending; real-game evidence is not claimed.
 - Goal: Compatible keeps float/fullscreen usable through Ctrl+Win+G and
@@ -888,3 +888,66 @@
 [hook-order]: https://learn.microsoft.com/en-us/windows/win32/winmsg/about-hooks
 [register-hotkey]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey
 [game-shortcut-hook]: https://learn.microsoft.com/en-us/windows/win32/dxtecharts/disabling-shortcut-keys-in-games
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1104-1135
+
+````markdown
+- P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
+  approved choices implemented offline: Compatible float `Ctrl+Win+G`,
+  fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;
+  Authentic keeps Win+G/F11 with cached read-only per-user `GamingHomeApp`
+  configuration and supported current-user Game Bar package-query evidence.
+  User decision 2026-10-17 (supersedes the 2026-10-16 conservative-warning
+  decisions for BOTH Game Bar and GamingHomeApp): warnings only on provably
+  present conflict. Game Bar query positive installed only;
+  failure/unknown same as absence, no notes/conflict rows/badges.
+  GamingHomeApp per-user config positively present/configured only;
+  unknown/absent/unreadable no amber/tray/Settings warning. Honest
+  normal-level probe outcome logs retained. Part B implemented offline
+  2026-10-17: all warning surfaces (tray, badge, selected detail/actions,
+  static list/OS text, preview) obey the provably-present rule; unknown,
+  absent, and failed probes show ordinary no-known-conflict text. Locked
+  native gates: 2,500 passed, 0 failed, 1 ignored; fmt, strict clippy,
+  diff-check pass. Historical note: before Part B the shipped behavior still
+  warned conservatively on unknown; that interim is superseded.
+  Correction B delivered offline:
+  detected Game Bar installation warns; successful package
+  absence clears all Win+G warnings, notes and conflict rows, including static
+  binding-list and selected OS text (not just probe-derived details/badges).
+  Presence/absence/failure, disabled-row and effective-rebound-chord regressions
+  pass; locked native gates: 2,286 passed, 0 failed, 1 ignored.
+  Resolve buttons
+  open Settings only, explaining capture/managed-app-data loss and Store
+  reinstall limits; no tiler uninstall or registry/policy writes.
+  [Active record and physical plan](windows-gaming-coexistence.md),
+  [research limits](../research/windows-port/xbox-shortcut-conflicts.md).
+  Pending physical acceptance: [keyboard/shortcuts checklist](windows-physical-checklist.md#single-monitor-keyboardshortcuts)
+  and [games checklist](windows-physical-checklist.md#games), run in
+  the batched physical checks session.
+````
+
+### Original backlog lines 1561-1579
+
+````markdown
+- P0 | Windows gaming coexistence | Windows release gate after multi-output,
+  before any Windows release (user 2026-10-10); not now despite P0. (a) Authentic
+  ownership with disclosed limitation selected 2026-10-08 (Compatible/disable/
+  rebind provide Game Bar access); exact-chord containment (Win+G/Win+F11 leak)
+  stays parked for later test + user review; no host-setting/registry/policy/
+  hook-thread alternative selected or authorized. (b) user chose
+  documented-signal-only Xbox-mode detection (2026-10-03); blocked until one
+  exists. (c) researched; alternate Game Bar access deferred (see Future).
+  2026-10-16 incident: invisibility/exception origin unresolved in normal logs;
+  no runtime fix selected - user-chosen fullscreen/float rebinds recommended for
+  conflict avoidance; bounded visibility/reveal/exception diagnostics needed
+  before another recovery repro. M16 gaming-cost: 100 ms poll removed; idle
+  matrix + pager-wait evidence measured 2026-10-17/18; visible-pager 2 s
+  topmost-recovery timer kept for 0.1 (User option A 2026-10-19, amending
+  decision 5); remaining coverage deferred to the P2 pager event-coverage item.
+  Game cost unmeasured; physical game measurements are user-owned
+  ([principle](../principles.md#gaming-compatibility)). Full incident/measure
+  history archived 2026-10-24. [Record](windows-gaming-coexistence.md),
+  [decision](../decisions/gaming.md#fullscreen-state-based-protection).
+````

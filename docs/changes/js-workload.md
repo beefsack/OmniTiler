@@ -18,3 +18,12 @@ is proposed.
 ## Next Action
 
 Resume evidence collection only when such a native replacement is proposed.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2072-2075
+
+- PARKED | JavaScript workload evidence | User decision 2026-10-09;
+  relevant only if a native replacement of KWin-script window add/remove
+  handling is proposed, requiring sustained-workload evidence then.
+  [change](js-workload.md)

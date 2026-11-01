@@ -48,3 +48,36 @@
   the four tabs and preferred dialog size, then close with Cancel. Confirm or
   adjust the tentative grouping and pre-0.1 timing. Shared-schema route/timing
   remains a separate pending decision.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 896-921
+
+````markdown
+- P1 | Shared settings schema and tabbed Settings | Delivered: core-owned
+  settings catalog (tabs, fields, types, defaults, validation) that each
+  platform renders natively and persists, so KDE, Windows and macOS do not
+  maintain separate dialogs.
+  [Options and recommendation](research/shared-settings-schema.md) delivered
+  2026-10-15. [KDE-only tabs delivered](changes/archive/kde-settings-tabs.md):
+  Tiling & Workspaces, Appearance, Shortcuts, Desktop Integration; settings
+  build/CTest and staged native rendering/switching pass. Windows grouping
+  and pre-0.1 route/timing are user-approved 2026-10-16. The Windows
+  Settings dialog has grown too tall to use; priority raised. Approved route
+  D (Rust core catalog with checked-in generated native descriptors) pre-0.1:
+  first slice builds the core catalog with tabs/sections and platform-specific
+  fields, messages and native panel slots, and Windows renders a tabbed dialog
+  from it using the KDE tab groups; KDE migration to the catalog follows as a
+  KDE-stream item. [Windows first slice](changes/shared-settings-catalog-windows-tabs.md)
+  implemented: 17 portable fields, four Windows-only fields, four native tabs,
+  persistent feedback and scrollable long notes; physical size/keyboard/
+  accessibility and save/reload checks remain pending.
+  User-approved placement: Tiling & Workspaces (gaps, workspace defaults/scope,
+  move/admission/refill); Appearance (border/underlay); Shortcuts (takeover,
+  Win+L, presets, bindings, Xbox/Game Bar); Desktop Integration (mouse Snap,
+  taskbar pager). CI 38876735949 passed all eight jobs.
+  Agent-live 2026-10-17: four-tab draft/save/reload, Ctrl+Tab/reverse,
+  Revert and Escape no-save passed; original settings bytes restored.
+  Full scale/accessibility/traversal and physical feel remain unverified;
+  [dated evidence](changes/shared-settings-catalog-windows-tabs.md#agent-live-follow-up-2026-10-17).
+````

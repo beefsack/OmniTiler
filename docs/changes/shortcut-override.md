@@ -3,7 +3,7 @@
 ## Goal
 
 Explicit KCM shortcut override for the MVP under the current contract in
-[decisions](../decisions.md#shortcuts-conflicts-and-presets): Apply assigns the five
+[decisions](../decisions/reference-and-shortcuts.md#shared-shortcut-defaults-and-conflict-model): Apply assigns the five
 project-required chords; confirmed Force clears any holder of those chords;
 Revert restores KDE defaults for cleared non-project actions.
 

@@ -98,3 +98,18 @@ The legacy plan adapters and unrelated desktop/workspace policy are out of scope
   pair specifically proves in-flight queuing, not a separately forced debounce.
 - No unresolved implementation blocker or product-policy question beyond review
   of the explicitly tentative input choice. Exact next action: none.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 849-856
+
+````markdown
+- P0 | KDE rapid input drops and stalled geometry | Delivered 2026-10-19:
+  production tiled directional FIFO with drain-time subject binding, exact
+  convergence-based clamp budgets, and vacated-source R4 return reconciliation.
+  KWin 1903/1903; Rust workspace 3289 passed; native callback-driven 8 same-output
+  moves, 16 occupied-target crossings and rapid move/focus pairs pass. Input
+  ordering is **Tentative (user review pending)**. Physical-key/perceived-latency
+  acceptance remains; original short-height cause lacked frames, while current
+  full-height arrivals pass. [Outcome](changes/archive/kde-rapid-input-geometry.md).
+````

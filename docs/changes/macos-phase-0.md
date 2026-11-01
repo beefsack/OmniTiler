@@ -64,7 +64,7 @@ behavior proof. Preserve pre-existing working-tree changes.
 ## Adopted decisions
 
 Recorded in `docs/decisions.md` and the plan's adopted/open table: all Rust,
-[Unsafe Code](../principles.md#unsafe-code); AppKit main/input/per-app AX/
+[Rust and Memory Safety](../principles.md#rust-and-memory-safety); AppKit main/input/per-app AX/
 engine threads with channels; native Spaces first and yabai primary reference;
 configurable Meta defaulting to Ctrl; Apple Silicon only; persistent self-signed
 development identity; macOS 15 minimum. Homebrew's current Mac-only events put

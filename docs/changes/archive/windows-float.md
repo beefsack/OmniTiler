@@ -69,7 +69,7 @@
   Hosted CI status is recorded with the delivery commit below.
 - Scoped completion ships the reviewed implementation with explicitly open
   live acceptance. Durable choices are in
-  `docs/decisions.md#window-state-float-sticky-maximize-fullscreen`. No sticky/workspace-wide float delivered.
+  `docs/../../decisions/window-state.md#fullscreen-and-maximize-overlays`. No sticky/workspace-wide float delivered.
 
 | Local receipt under `target/windows-float/` | Actual evidence |
 | --- | --- |

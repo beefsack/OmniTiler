@@ -31,13 +31,13 @@ and native acceptance remain in the [backlog](../../backlog.md).
 
 ## Material Decisions
 
-- [Reference tiers](../../decisions.md#reference-tiers) replace the earlier default
+- [Reference tiers](../../decisions/reference-and-shortcuts.md#reference-tiers-and-defaults) replace the earlier default
   rule; prior decisions stand unless revisited.
-- [Admission](../../decisions.md#placement-minimums-and-startup-adoption) preserves
+- [Admission](../../decisions/layout-and-admission.md#placement-and-minimums) preserves
   native activation ownership, including explicit switching and host denial.
-- [Move defaults](../../decisions.md#move-layout-and-output-commands) retain only
+- [Move defaults](../../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection) retain only
   the two-option D09/D10 post-0.1 settings.
-- [D27 activation](../../decisions.md#activation-requests), approved option (a):
+- [D27 activation](../../decisions/activation-requests.md#hidden-window-activation-default), approved option (a):
   Mark urgent only by default, no workspace/focus change; Hyprland/i3/sway
   Tier-1 agreement reverses tentative Switch and focus. Gaming guard is
   urgency-only in both modes; explicit Alt+Tab/taskbar selection is separate,
@@ -51,7 +51,7 @@ and native acceptance remain in the [backlog](../../backlog.md).
   native workspace/focus switching makes an urgency-only override conflict
   with D01, requiring a return to the user before code. Otherwise request/urgency
   handling needs code per the gap row; native outcomes stay TBD.
-- [D16 floating transfer](../../decisions.md#workspaces), approved option (a):
+- [D16 floating transfer](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history), approved option (a):
   retain float and size on arrival, destination tiles untouched, for follow/stay
   and numbered/relative sends. Hyprland/i3/sway Tier 1 plus xmonad/qtile/awesome
   Tier 2 retain float against COSMIC fresh re-tile. No setting: the alternative
@@ -61,7 +61,7 @@ and native acceptance remain in the [backlog](../../backlog.md).
   core first (serves Windows), then KDE adapter; Windows adapter work goes to
   item 22. Reconcile earlier intentional-float ineligibility as a D16 gap,
   retaining the separate floating-workspace boundary journey and sticky refusal.
-- [D22 float-out reflow](../../decisions.md#window-state-float-sticky-maximize-fullscreen),
+- [D22 float-out reflow](../../decisions/window-state.md#fullscreen-and-maximize-overlays),
   approved option (a): surviving siblings keep relative proportions (50/25/25,
   float middle 25 -> approximately 67/33). No setting. COSMIC (observed, not
   source-proven), i3 and sway (Tier 1) agree; no evidenced alternative;
@@ -70,7 +70,7 @@ and native acceptance remain in the [backlog](../../backlog.md).
 - D22 is verification-only: shared removal retains survivor share ratios per
   the revision-bound gap assessment. Native R-FLT-03 reflow live check remains
   pending; selection establishes no native evidence.
-- [D23 minimize/restore](../../decisions.md#window-state-float-sticky-maximize-fullscreen),
+- [D23 minimize/restore](../../decisions/window-state.md#fullscreen-and-maximize-overlays),
   approved option (a): minimize releases allocation, siblings reflow, MRU focus,
   stored old slot; restore to stored slot with no OmniTiler focus write (host
   handles restore focus); sole minimize retains workspace, focus none, stored
@@ -82,13 +82,13 @@ and native acceptance remain in the [backlog](../../backlog.md).
   allocation is divergence to change, not an approved exception. Native
   outcomes remain TBD; earlier restore "no focus steal" wording is superseded
   by no OmniTiler focus write with host focus left native.
-- [D25 owner restart](../../decisions.md#restart-persistence), approved option
+- [D25 owner restart](../../decisions/persistence.md#orderly-restart-adoption), approved option
   (a): keep host workspace set; re-observe membership, no moves; restore focus
   only where provable; rebuild layout by re-adoption, no saved-layout restore;
   intentional floats stay floating via existing restart store. No setting.
   Tier basis: i3 Tier 1 plus xmonad Tier 2 membership/focus, set kept 5/8,
   COSMIC no counterpart, no evidenced alternative. Verification-only.
-- [D26 end-session restore](../../decisions.md#restart-persistence), approved
+- [D26 end-session restore](../../decisions/persistence.md#orderly-restart-adoption), approved
   option (b): restore persisted owned gaps/settings; re-observe host workspace
   set/membership/maximize; no invented layout restore. Listed 0.1 known
   limitation: intentional-float memory does not survive logout/login under
@@ -96,7 +96,7 @@ and native acceptance remain in the [backlog](../../backlog.md).
   memory revisited after 0.1 with shared restart store. No code; verification-only.
 - Native dogfood/live checks will assess D25/D26, per User 2026-10-12;
   selection is not native acceptance.
-- [D28 fullscreen send](../../decisions.md#window-state-float-sticky-maximize-fullscreen),
+- [D28 fullscreen send](../../decisions/window-state.md#fullscreen-and-maximize-overlays),
   selected option (b) for 0.1, rejecting the recommended hold: an explicit
   send of a fullscreen window, e.g. a game, is a user action and should be
   honoured. KDE carries fullscreen on numbered/relative follow/stay sends,

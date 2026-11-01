@@ -116,3 +116,41 @@ contracts independently reviewed.
   dependencies, not full solver acceptance. Arch has harmless empty split-dir
   and intentional dependency warnings. OBS provisioning/source handoff and
   licensing remain open; Ubuntu effect ECM floor and neon provisioning blocked.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2010-2042
+
+- P1 | 0.1 packaging: mainstream install path | Nix flake/Home Manager,
+  GitHub Release and OBS distro packages (user 2026-10-10; KDE Store excluded).
+  OBS/AUR names are `omnitiler` and `omnitiler-native-effect` (user
+  2026-10-11); core Settings ownership delivered
+  ([evidence](release-0.1-core-settings.md)), effect companion
+  is effect-only.
+  OBS builds release tags only into one stable repository: openSUSE Tumbleweed,
+  Fedora 43/44 with updates repos; Arch via AUR PKGBUILD, not OBS pacman.
+  Ubuntu 26.04/26.10 support delivered offline under the KWin 6.6 floor;
+  [evidence](kwin-6.6-support.md). KDE neon is out of 0.1.
+  User 2026-10-18: maintainer OBS and AUR accounts now exist; project creation
+  and remaining account-dependent steps are deferred until close to 0.1.
+  Spec, PKGBUILD and OBS service prep may proceed offline.
+  Acceptance: core script/planner/tray independent of optional ABI-bound effect;
+  KWin updates remain possible without the companion (Debian exactly pins the
+  compiled-against KWin build); mismatched/absent effect degrades borders/drag preview
+  until rebuild. Must-pass missing/failed/removed effect check keeps tiling working
+  and KWin stable. Install/uninstall docs, package descriptions and a post-removal
+  package note say "press Revert in Settings before removing".
+  [research](../../research/distribution-package-feasibility/feasibility.md)
+  [OBS](../../research/distribution-package-feasibility/obs.md)
+  Offline prep delivered 2026-10-11: tagged-SHA prebuilt JS + vendored Rust
+  source archive, checksums, release/credential-gated trigger workflows,
+  RPM and AUR split recipes, Ubuntu core Debian recipe, user activation units
+  and Revert guidance. Exact scratch-tag archive built without networking in
+  Tumbleweed/Fedora 44 RPM, Arch split and Ubuntu 26.04 Debian containers;
+  Fedora 43 passed an earlier source-contract probe. External Nix validation
+  remains separate. Settings ownership is delivered: both KCMs remain in core
+  when the effect is absent. Packaging item remains P1: implement the selected
+  [Route 3 handoff script](../../research/distribution-package-feasibility/obs-release-handoff.md#selected-route-3-consequences)
+  close to 0.1, provision targets, complete third-party notice delivery and prove
+  remaining solver/live-session behavior (Ubuntu apt solver passed).
+  [Preparation](release-0.1-offline-packaging.md)

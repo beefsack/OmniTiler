@@ -3,7 +3,7 @@
 - Historical proposal: the ownership inventory below describes the retired KDE
   domain route, not current production. World adoption superseded that route;
   `workspace-native.ts` now retains only shared free functions. See
-  [world architecture](../decisions.md#engine-architecture-and-convergence) and
+  [world architecture](../decisions/engine.md#core-owned-world-and-platform-boundary) and
   [removal evidence](kde-legacy-route-removal.md).
 
 ## Goal and scope

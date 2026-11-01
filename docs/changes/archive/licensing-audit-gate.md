@@ -40,4 +40,4 @@ tool-generated third-party notices with compiled dependency license texts
 must ship in GitHub Release binaries and Debian/RPM/Arch packages before 0.1.
 Candidate `cargo-about` needs a `devenv.nix` addition at implementation time.
 Notice implementation is queued in [backlog](../../backlog.md);
-[current decision](../../decisions.md#licensing). Audit delivery remains complete.
+[current decision](../../decisions/development.md#licensing). Audit delivery remains complete.

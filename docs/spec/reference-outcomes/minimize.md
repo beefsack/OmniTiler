@@ -181,7 +181,7 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   so paneru issues no refocus; which window the host focuses instead is
   TBD (host). `S(S-pan-minimize)` + `S(S-pan-ws)`; focus queued (H:
   opaque host minimize-focus journey).
-- Then Ours KDE: delivered offline: workspace retained, focus none, stored restore slot via shared core plus KDE sole-minimize null-focus wiring; shared-core-first target met ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). Exact native occupancy/focus TBD user-owned. `S(S-ours-minkde)`.
+- Then Ours KDE: delivered offline: workspace retained, focus none, stored restore slot via shared core plus KDE sole-minimize null-focus wiring; shared-core-first target met ([decision](../../decisions/window-state.md#fullscreen-and-maximize-overlays)). Exact native occupancy/focus TBD user-owned. `S(S-ours-minkde)`.
 - Then Ours Windows: adapter delivered offline 2026-10-13: sole-minimize observation empty, slot-aware Engine session retained and focus none; verified sole-close report forgets slot before session retirement. Native workspace/focus journey TBD ([record](../../changes/archive/windows-d23-restore-close.md)). `S(S-ours-minwin)`.
 - Variant hook: provisional/TBD (minimized-occupancy hook, to discuss).
 

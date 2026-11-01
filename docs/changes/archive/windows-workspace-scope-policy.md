@@ -59,7 +59,7 @@
   have regression tests. No unresolved review findings.
 - Initial fixture expectation errors were corrected against the existing
   observation/lifecycle contract; no alternate product behavior was adopted.
-- Four tentative decisions recorded in `docs/decisions.md#workspaces`;
+- Four tentative decisions recorded in `docs/../../decisions/workspaces.md#workspace-lifecycle-focus-and-history`;
   shared-mode hotplug discriminator added with unsupported outcomes TBD.
 
 ## Core contract for Windows adoption

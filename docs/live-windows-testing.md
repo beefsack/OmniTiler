@@ -9,7 +9,7 @@ authorization. The user selected writing it before the first Windows session
 
 For native tools, permissions and Sandbox limitations, use the
 [Windows development environment](windows-dev-environment.md). Product scope
-remains in [Windows decisions](decisions.md#scope-and-platform-goals).
+remains in [Windows decisions](./decisions/platforms.md#platform-scope).
 
 ## Safety Boundary
 

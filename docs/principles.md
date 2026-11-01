@@ -2,210 +2,277 @@
 
 Project principles, approved by the user.
 
-- [VISION.md](../VISION.md) is the end goal the project strives for.
-- [docs/principles.md](principles.md) contains high-level rules and reasoning - the what and why.
-- [docs/spec/functional-spec.md](spec/functional-spec.md) is the exact behavior contract (requirement rows).
-- [docs/decisions.md](decisions.md) records the how: selected behavior and implementation choices,
-  including why each was chosen.
-- Overlap is expected; state a thing once and link from elsewhere.
+Project records (user-approved 2026-10-30; existing records are migrating to
+this model):
 
-## Simplicity
+- [VISION.md](../VISION.md): why the project exists and its end goals.
+- [docs/principles.md](principles.md): a few durable trade-off rules. Each
+  has Intent, Rule (1-4 bullets), Yields to (the principles that win on
+  conflict, or `absolute`) and an optional Example, in about 3-8 lines;
+  [Priorities](#priorities) is the general conflict order. A principle states
+  the trade-off; mechanisms it implies go in the contract document, spec or
+  decisions, linked.
+- [Functional spec](spec/functional-spec.md) and
+  [reference outcomes](spec/reference-outcomes.md): all user-observable
+  behavior, as rows.
+- [Adapter guide](porting/world-adapter-guide.md), becoming the contract
+  document: the normative core/platform interface (ownership, messages,
+  apply and ordering rules, capabilities, version, conformance fixtures).
+- [docs/decisions.md](decisions.md): the current choice per topic between
+  viable alternatives with lasting cost (product, architecture, contract),
+  with why, alternatives rejected, key assumption and when to revisit.
+  Replaced text lives in Git and the archive.
+- `docs/changes/`: designs, evidence, measurements and status; archived when
+  done. [docs/backlog.md](backlog.md): pending work only, one line per item.
+- Code comments: implementation choices and their reasons at point of use.
+- Placement: observable behavior goes in the spec; a lasting choice between
+  alternatives in decisions; the core/platform interface in the contract
+  document; anything derivable from code or tests in a code comment or change
+  record. State a thing once and link from elsewhere.
+- Principles, spec behavior, contract shape and decisions change only with
+  user approval. Before 0.1, a decision whose revisit condition is met is
+  reopened by default.
 
-- We are complexity averse. Always choose the simplest and least surprising
-  solution that delivers the requirements within our constraints.
-- This matters most in complex areas with uncontrolled elements and multiple
-  failure modes, where added machinery multiplies the ways things can fail.
-- Add no timeout, expiry, retry cap or other limit unless it solves a
-  specific, identified problem or provides tangible value; state that reason
-  where the limit is defined. Otherwise it is just complexity.
+## General
 
-## Efficiency
+### Priorities
 
-- Prefer events over polling: react to host notifications, wakes and
-  signals instead of periodically checking for change, so work happens
-  only when something changed.
-- This serves low latency (react immediately, not at the next tick),
-  efficiency, and game safety (no pointless execution while idle).
-- Use a timer only for a genuine deadline or where the host offers no
-  event; state that reason where the timer is defined.
-
-## Host Integration
-
-- Good UX is critical. Where an undocumented host route is much faster or
-  gives clearly better UX than the documented one, prefer the undocumented
-  route.
-- Undocumented routes carry a higher breakage risk, so always keep a
-  documented route as the fallback, used automatically when the undocumented
-  route is unavailable.
-- Make the route user-configurable, so users can work around breakage
-  themselves.
-
-## Consistency
-
-- Consistent behavior across target platforms and with the Tier 1 input
-  tilers is a primary product goal and a main reason the project exists.
-- Share defaults and semantics wherever possible, and explicitly document
-  unavoidable host differences, subject to game safety
-  ([Gaming Compatibility](#gaming-compatibility)).
-
-## Priorities
-
-- The project exists to give i3/sway/Hyprland/COSMIC users an authentic
-  tiler on hosts that are not their home systems.
-- When goals conflict, prefer in this order (a judgement guide, not a strict
-  rule; weigh the size of each cost):
+- Intent: settle conflicts between goals the same way every time, toward an
+  authentic i3/sway/Hyprland/COSMIC tiler on hosts that are not their home
+  systems.
+- Rule: when goals conflict, prefer in this order, weighing the size of each
+  cost (a judgement guide, not a strict rule):
   1. Authenticity to the Tier 1 input tilers, consistency between platforms,
-     reliability. Full authenticity on each platform yields consistency.
+     reliability. Where Tier 1 tilers disagree, the
+     [reference tiers](decisions.md#reference-tiers) select the reference.
   2. Jank-free behavior, performance, gaming polish.
   3. Configurability, visual UX.
-- Game safety (Gaming Compatibility) stays absolute above this ordering.
+- Yields to: the `absolute` parts of
+  [Gaming Compatibility](#gaming-compatibility) (anti-cheat safety,
+  performance).
 - Example: simplify a feature like the pager before accepting a significant
   performance cost, but do not drop it for a negligible gain.
 
-## Focus and Return on Investment
+### Gaming Compatibility
 
-- Work advances explicit goals that serve [VISION.md](../VISION.md). Current
-  goals are listed at the top of [docs/backlog.md](backlog.md) and change as
-  milestones land.
-- Prioritise the backlog by return toward the current goals: the most
-  goal-advancing or risk-reducing progress per unit of effort comes first.
-- Tooling, test harnesses and evidence collection are means, not ends. Size
-  them to the decision they inform. When effort outgrows the value, stop and
-  choose a simpler route, accept weaker evidence, or drop the work.
+- Intent: playing with the tiler running feels the same as without it, and
+  the tiler never puts the user's game accounts at risk.
+- Rule:
+  - Key on window state, not on "is this a game". A window in exclusive or
+    borderless fullscreen keeps that state and is never tiled, resized,
+    refocused, overlaid or moved unasked. A windowed game is an ordinary window.
+  - When fullscreen detection is uncertain, prefer leaving the window alone:
+    the user can still act on it, while wrongly tiling a fullscreen game
+    breaks it.
+  - Explicit user actions apply to fullscreen windows as to any window.
+  - Anti-cheat safety: nothing the tiler does to another process may look
+    like cheating to anti-cheat systems
+     ([mechanism limits](decisions/gaming.md#anti-cheat-mechanism-limits)).
+  - No noticeable performance impact while a game runs, demonstrated by
+    measurement ([VISION.md](../VISION.md) Gaming And Full-Screen Applications).
+- Yields to: explicit user actions, for placement, focus and fullscreen
+  state. Anti-cheat safety and performance are `absolute`.
 
-## Layering
+### Simplicity
 
-- The core is the single model and decision maker: it owns screens, workspaces and their per-screen mapping, windows, focus and cursor position; the policy for every action; and the resulting desired world state, including the shapes and bounds of borders, underlays and drop overlays.
-- Platform code only captures user input, reports host facts and changes made
-  outside the core (displays, settings, windows changed by apps, users or the OS,
-  facts the core cannot know such as "cannot be controlled"), converges the host
-  to the latest desired state with host mechanisms as quickly as it can,
-  skipping superseded intermediate states, and draws what the core describes.
-  Platform code never decides policy.
-- Intentional changes made by users or apps are reported to the core promptly,
-  including while the desired state is being applied. Transient side effects
-  of applying the desired state are not world changes. Platforms avoid those
-  side effects where possible and distinguish them by causal evidence, never
-  timing. Actual host state and uncertainty are reported separately from policy
-  changes; safety checks always use the live host state.
-- Policy lives in the core. Platforms classify the facts only they can know
-  (for example, whether a foreground change came from the user, an app, a core
-  request, or an unknown cause) and report them, with uncertainty, as facts;
-  the core decides what they mean for placement, membership, workspaces and
-  focus. A thin platform carries no policy; it does not pass raw state for the
-  core to guess from.
-- Host limitations reach the core as platform-neutral options (for example, every screen always has the same workspace count), never as platform checks.
-- Logic several platforms share that is not part of the core's role goes into a separate shared library, decided case by case.
-- Push as much logic as is sensible down into the shared, system-agnostic
-  core within its role above, so every platform reuses it.
-- System-specific mechanisms sit in a middle layer of platform code. The layer
-  coupled directly to a host (scripts, effects, settings modules, OS hooks)
-  stays as thin as reasonably possible.
-- Pushing code down is ongoing work applied with judgement and within reason;
-  it never overrides Simplicity, Gaming Compatibility or host-native
-  behavior, and never transfers core policy to platforms.
-- The core is platform-agnostic and true to the Tier 1 input tilers. When a
-  platform needs special core behavior to work around a host limitation,
-  first check whether host mechanisms alone can honor existing core policy;
-  otherwise represent the limitation through platform-neutral core options,
-  aligned as closely as possible with these principles and the Tier 1 input
-  tilers. Platform workarounds must not become policy owners.
-- Where core support is still needed, it is as small and simple as possible,
-  optional with opt-in from the platform, and built generically: named for
-  the capability or limitation, never the platform, with a comment explaining
-  which host limitation it serves (for example, an output-shared workspace
-  option for KDE virtual desktops spanning all outputs, not a "kde" option).
-- Core changes requested for a specific platform are discussed with and
-  approved by the user before implementation.
+- Intent: fewer moving parts mean fewer failure modes, most of all in complex
+  areas with uncontrolled host elements, where added machinery multiplies the
+  ways things can fail.
+- Rule:
+  - Choose the simplest, least surprising solution that delivers the
+    requirements within our constraints.
+  - Prefer converging to desired state over tracking individual operations:
+    where re-applying is safe, re-apply rather than correlate each attempt.
+  - Add no timeout, expiry, retry cap or other limit unless it solves a
+    specific, identified problem or provides tangible value; state that
+    reason where the limit is defined.
+- Yields to: the requirements themselves. Never simplify away authenticity,
+  consistency, reliability or the `absolute` parts of
+  [Gaming Compatibility](#gaming-compatibility).
 
-## Resilience
+### Focus and Return on Investment
 
-- Never give up permanently. The only acceptable terminal state is a hard
-  failure that prevents all functionality, such as KWin missing or access to
-  it denied. Every other failure is logged and followed by recovery; ephemeral
-  issues must not disable tiling or any other functionality.
-- We do not control the host. KWin, Wayland, and clients may report values
-  that differ subtly from what was requested or expected. Tolerate these
-  differences and converge gracefully, in ways that do not surprise the user.
-- Windows change themselves. They resize, change modes, move, and close at any
-  time, including mid-operation. Handle these as normal events, not failures.
-- Fail closed only when recovery is impossible, or when continuing would cause
-  harm such as system instability: refuse the narrowest scope
-  (operation, window, or domain) while unaffected functionality and later
-  recovery remain available.
-- Otherwise degrade as narrowly as possible, log the cause, and keep
-  functioning, reconciling differences as they are observed.
+- Intent: effort goes where it most advances the goals that serve
+  [VISION.md](../VISION.md) (current goals: top of
+  [docs/backlog.md](backlog.md)).
+- Rule:
+  - Prioritise by return toward the current goals: the most goal-advancing or
+    risk-reducing progress per unit of effort comes first.
+  - Tooling, test harnesses and evidence collection are means, not ends. Size
+    them to the decision they inform. When effort outgrows the value, stop
+    and choose a simpler route, or drop the work, or accept weaker evidence
+    and record it as weaker.
+- Yields to: the `absolute` parts of
+  [Gaming Compatibility](#gaming-compatibility); never accept weaker evidence
+  for anti-cheat safety or performance.
 
-## Ordering and Races
+## Product
 
-- Hosts deliver events, replies and the results of our own requests
-  asynchronously, and each host orders them differently. Never assume an
-  ordering the host does not guarantee; in particular, never assume an event,
-  reply or observation reflects state after a request we sent.
-- Core commands carry user intent and are resolved against core-retained state
-  at execution, not against values the platform sampled earlier. Platform code
-  sends only what the user actually chose or what the input itself carries
-  (stable identities, live input coordinates).
-- Freshness and identity are proven causally (generations, tokens, identities
-  minted at the source), never inferred from timing, geometry similarity,
-  window identity or age.
-- Platform code cites the host ordering guarantees it relies on, and tests
-  cover the interleavings that matter, including those only some hosts
-  produce.
-- Never add a delay, sleep or settle wait to work around unknown host timing
-  or ordering. Find the host hook, event or readback that proves the needed
-  state (for example, an event showing a window can now take focus) and act
-  on it. If the host offers none, document the gap where it is used and
-  degrade truthfully; a timer remains only a genuine deadline or recovery
-  bound ([Efficiency](#efficiency)).
+### Consistency
 
-## Gaming Compatibility
+- Intent: the same action gives the same result on every target platform and
+  matches the Tier 1 input tilers; this is a main reason the project exists.
+- Rule:
+  - Share defaults and semantics wherever possible. A behavior difference
+    that is a product choice is a user setting with one shared default, never
+    a per-platform behavior.
+  - Unavoidable host differences are documented, naming the host limitation
+    behind each. Parity is proven by shared conformance fixtures
+    ([Testing](#testing)).
+- Yields to: unavoidable host limitations (documented as above) and the
+  `absolute` parts of [Gaming Compatibility](#gaming-compatibility).
 
-- Gaming compatibility must be flawless. Games, including borderless and
-  exclusive fullscreen titles, must run exactly as they would without the
-  tiler: no unwanted tiling, resizing, focus changes, overlays or input
-  interference.
-- Aim for zero performance cost. Where a platform makes zero impossible, the
-  residual cost must be demonstrated minimal and imperceivable ([VISION.md](../VISION.md)
-  Gaming And Full-Screen Applications).
-- When a behavior choice trades consistency or reference-WM parity against
-  game safety, game safety wins.
-- Games remain workspace members. Explicit user workspace actions (send,
-  switch away, return) apply to them; the tiler itself never tiles, resizes,
-  focuses, overlays or intercepts input for them unasked.
+## Architecture
 
-## Unsafe Code
+### Layering
 
-- Rust `unsafe` is avoided in our own code, in this order of preference:
-  1. Use a popular, maintained, high-quality and battle-hardened dependency
-     that contains the unsafe code and exposes safe Rust APIs. Unsafe code
-     inside such a dependency is acceptable.
-  2. Avoid unsafe code entirely.
-  3. Otherwise, contain it in an absolutely minimal module that other Rust
-     modules use through safe APIs.
-- Unsafe code is forbidden by default across the project; each minimal
-  module is an explicit, reviewed opt-in exception.
+- Intent: one model and one decision maker, so policy is written once and
+  every platform behaves the same.
+- Rule:
+  - Core owns the model (screens, workspaces, windows, focus, cursor), the
+    policy for every action and the resulting desired world state, including
+    presentation geometry.
+  - Platforms capture input, promptly report host facts and outside changes,
+    converge the host to the latest desired state and draw what core
+    describes. They never decide policy.
+  - Host differences reach core as platform-neutral capabilities, never as
+    platform checks.
+  - Push shared logic down into core or a shared library; keep host-coupled
+    code (scripts, effects, settings modules, OS hooks) thin.
+- Yields to: Simplicity and host-native behavior when pushing code down; the
+  `absolute` parts of [Gaming Compatibility](#gaming-compatibility).
+- Contract rules that follow: [decisions: Contract](decisions.md#contract).
 
-## File Size
+### Ordering and Races
 
-- Keep source files small enough to read and review in one pass. Soft cap:
-  about 1,500 lines per production source file and about 3,000 lines per
-  test file.
-- The cap is a trigger to split by responsibility, not a hard limit; exceed
-  it only when splitting would make the code harder to follow.
+- Intent: behavior is correct under any event order the host can produce,
+  without guessing from timing.
+- Rule:
+  - Never assume an ordering the host does not guarantee; in particular,
+    never assume an event, reply or observation reflects state after a
+    request we sent.
+  - User intent is resolved against core-retained state at execution, not
+    against values sampled earlier, and nothing re-decides it afterwards.
+  - Prove freshness and identity causally, never from timing, geometry
+    similarity or age. Mint correlation identities only for effects that are
+    unsafe to re-apply, such as focus grants and one-time writes.
+  - Never add a delay or settle wait for unknown host timing: act on the
+    host event or readback that proves the needed state, or document the gap
+    and degrade truthfully.
+- Yields to: a genuine deadline or recovery bound
+  ([Efficiency](#efficiency)).
 
-## Observability
+### Resilience
 
-- Observability is a core requirement across every component: normal logs must
-  let us reconstruct what happened end to end, including why something failed
-  and whether it recovered.
-- Logs report outcomes honestly and never imply more certainty than is known.
-- Observability must never change product behavior or expose secrets or user content.
+- Intent: in a host we do not control, the tiler keeps working and recovers
+  by itself.
+- Rule:
+  - Never give up permanently. The only terminal state is a hard failure that
+    prevents all functionality (for example, the host's window-management
+    interface is missing or access is denied). Every other failure is logged
+    and followed by recovery.
+  - Host values that differ from what was requested, and windows that change
+    themselves at any time (including mid-operation), are normal events:
+    tolerate them and converge without surprising the user.
+  - Refuse or degrade the narrowest scope (row, command, window, domain),
+    never a whole report for one bad row, while unaffected functionality and
+    later recovery stay available. Fail closed only when recovery is
+    impossible or continuing would cause harm.
+- Yields to: the `absolute` parts of
+  [Gaming Compatibility](#gaming-compatibility).
 
-## Testing
+### Efficiency
 
-- Test data should look like real data. Fixtures at host, process and wire
-  boundaries use values shaped exactly as real producers send them
-  (sentinel values, native container types, identifier formats, objects
-  that disappear on removal), preferably captured from real runs.
-  Idealized mocks hide the failures that matter most.
+- Intent: low latency and no pointless work, especially while games run.
+- Rule:
+  - Prefer events over polling: react to host notifications, wakes and
+    signals, so work happens only when something changed. Use a timer only
+    for a genuine deadline or where the host offers no event, and state that
+    reason where the timer is defined.
+  - Core cost per report stays within a stated latency budget, guarded by a
+    regression check; input that has not changed costs little.
+- Yields to: authenticity, consistency and reliability
+  ([Priorities](#priorities)), except the performance guarantee in
+  [Gaming Compatibility](#gaming-compatibility), which is `absolute`.
+
+### Host Integration
+
+- Intent: the best UX the host allows, without breaking when an
+  undocumented route changes.
+- Rule:
+  - Where an undocumented host route is much faster or gives clearly better
+    UX than the documented one, prefer it.
+  - Keep a documented route as the automatic fallback when the undocumented
+    route is unavailable; where no documented route exists, degrade
+    truthfully.
+  - Make the route user-configurable where its breakage risk is real, and
+    state that risk where the route is defined.
+- Yields to: [Simplicity](#simplicity) when the gain is small; the
+  `absolute` parts of [Gaming Compatibility](#gaming-compatibility).
+
+## Engineering
+
+### Observability
+
+- Intent: normal logs alone let us reconstruct what happened end to end,
+  including why something failed and whether it recovered.
+- Rule:
+  - Every component logs its decisions and outcomes honestly, never implying
+    more certainty than is known.
+  - Logging never changes product behavior and never exposes secrets or user
+    content.
+- Yields to: the performance guarantee in
+  [Gaming Compatibility](#gaming-compatibility), which is `absolute`.
+
+### Testing
+
+- Intent: tests catch the failures that happen on real hosts, not on
+  idealized ones.
+- Rule:
+  - Test data looks like real data. Fixtures at host, process and wire
+    boundaries are shaped exactly as real producers send them (sentinel
+    values, native container types, identifier formats, objects that
+    disappear on removal), preferably captured from real runs.
+  - Every adapter passes the same shared contract conformance fixtures.
+  - Platform code cites the host ordering guarantees it relies on, and tests
+    cover the interleavings that matter, including those only some hosts
+    produce.
+- Yields to: [Focus and Return on Investment](#focus-and-return-on-investment),
+  for how far to take each test.
+
+### Rust and Memory Safety
+
+- Intent: memory safety, maintainability, consistency and reuse in our own
+  code, by writing as much of it as possible in safe Rust.
+- Rule:
+  - Our own code is Rust wherever a host allows it, including host-coupled
+    code outside core. Other languages (C++, TypeScript) only for the thin
+    shim a host interface requires, such as the KWin effect, settings module
+    and script entry points. Weigh Rust's build, packaging and distribution
+    cost against the complexity it removes from other languages.
+  - Avoid Rust `unsafe`, in this order of preference:
+    1. A popular, maintained, battle-hardened dependency that contains the
+       unsafe code behind safe APIs.
+    2. A design that needs no unsafe code.
+    3. An absolutely minimal module that other modules use through safe
+       APIs, as an explicit, reviewed exception.
+  - Required C++ uses RAII (Qt parent ownership where Qt requires it), never
+    owning raw pointers, and its tests run under AddressSanitizer and
+    UndefinedBehaviorSanitizer in CI.
+- Yields to: nothing beyond Rust option 3 and the host-required shims.
+  Enforced by the workspace `unsafe_code = "forbid"` lint and an allowlist
+  test ([guardrail](decisions.md#rust-unsafe-guardrail)); C++ sanitizer CI is
+  not yet in place (backlog).
+
+### File Size
+
+- Intent: each source file can be read and reviewed in one pass.
+- Rule:
+  - Soft cap: about 1,500 lines per production source file and about 3,000
+    lines per test file.
+  - The cap is a trigger to split by responsibility, not a hard limit;
+    exceed it only when splitting would make the code harder to follow.
+  - Not enforced by tooling; current overruns are tracked in the backlog
+    ("Module size refactoring").
+- Yields to: [Focus and Return on Investment](#focus-and-return-on-investment),
+  for when a split pays for itself.

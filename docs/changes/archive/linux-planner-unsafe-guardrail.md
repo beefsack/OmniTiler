@@ -57,3 +57,18 @@ Evidence (2026-10-13, offline Linux):
 Outcome: complete; unsafe-policy backlog and decision status updated. Windows
 FFI consolidation remains queued; KWin effect FFI retains its existing boundary.
 No production behavior changes or unresolved blockers.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1443-1450
+
+````markdown
+- P1 | Rust `unsafe` policy | User rule 2026-10-13: only tiny ABI/FFI
+  boundaries in one dedicated FFI module per crate; every other module/crate
+  uses `#![forbid(unsafe_code)]`. Guardrail applied 2026-10-12/13: `tiler-core`,
+  `tiler-protocol` and unsafe-free Windows modules forbid unsafe; Linux planner
+  env call sites replaced by explicit trace inputs (all three planner roots
+  forbid unsafe); 29 test/example root gaps closed (1,644 workspace tests pass).
+  KWin effect FFI stays a minimal boundary module.
+  ([record](changes/archive/linux-planner-unsafe-guardrail.md)).
+````

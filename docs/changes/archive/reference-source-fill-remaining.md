@@ -16,7 +16,7 @@ implementation or matrix maintenance.
   Other residual host limits are unchanged; no source was pinned.
 - Product comparisons were reviewed and selected separately on 2026-10-10;
   older per-pass "user review" next-action text below is historical provenance.
-  [Durable decision](../../decisions.md#reference-matrix-and-spec-authority).
+  [Durable decision](../../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 - Exact next action for this completed source-fill plan: none. Deferred
   follow-ups and user-owned runtime checks are separate.
 
@@ -706,3 +706,55 @@ and persistence/special-window slices; U cells were evaluated with their area.
   35-candidate scope, full multiline preservation, all WM counts/partitions,
   zero N-area sums, fixture memberships, H/F/L ledgers, eleven comparison rows,
   citation ranges/local links, clean source pins and three stash object identities.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1679-1713
+
+````markdown
+- P1 | Cross-platform functional specification | After the Windows tiling
+  dogfood slice, define window/workspace behavior and keyboard shortcuts as
+  the selected behavior contract for Linux, Windows and macOS, except recorded
+  exceptions. COSMIC is the reference-default yardstick; macOS modifier
+  mapping is decided when macOS starts.
+  [Reference outcomes](spec/reference-outcomes.md) use per-area Given/When/Then
+  scenarios, twelve pinned reference profiles and separate Ours KDE/Windows
+  outcomes. Source evidence is not a product decision; AGENTS.md requires a
+  discriminating row per ambiguity. All twelve remaining source-fill passes
+  completed (`f04511c`..`bfa486b`): zero not-attempted/unsupported-pending
+  candidates remain; residual host, fixture and live limits are in the
+  [archived ledger](changes/archive/reference-source-fill-remaining.md).
+  [Functional spec](spec/functional-spec.md) remains single-file with a
+  [grouped open-decisions index](spec/functional-spec.md#open-index).
+  Current review 2026-10-12: all nine prior provisional requirements ratified;
+  B9 no-refusal sub-leg selected; R-LAY-04 parked OPEN; G-06 makes
+  REQ-MAX-08 NORMATIVE. Batch 1 approved 16 more rows; thirteen units / seventeen rows
+  approved 2026-10-12, all 28 triage units decided. Totals: 138 NORMATIVE,
+  28 OPEN, 0 PROVISIONAL requirement rows; 156 scenarios including R-WS-27 with TBD
+  reference outcomes. Platform implementation/native gaps stay
+  distinct from selected intent; Windows control cells now cite Windows evidence.
+  [Cross-WM consensus analysis](research/reference-wm-consensus.md) Table A
+  now lists 24 Ours-vs-strong-consensus differences with recommendations
+  (selected decisions in [decisions](decisions.md)), plus strong-consensus predicates where Ours is
+  TBD pending native observation. Splits decided 2026-10-07:
+  R-DRAG-07 host-native presentation (KDE frame follows pointer, Windows
+  Win-drag stationary preview) and R-DRAG-08 focus at press on both
+  platforms (Windows implementation pending, KDE timing needs a live check).
+  Historical live-test queue snapshot: 508 cells grouped by environment
+  (2026-10-07, not the current TBD total); candidate per-WM environments
+  are proposed in the
+  [live-test environment proposal](research/live-test-vms/proposal.md).
+  Table A selections and 2026-10-10 comparison decisions are recorded in
+  [decisions](./decisions/reference-and-shortcuts.md#reference-outcome-authority);
+  priority native TBD rows R-WS-02, R-WS-04, R-WS-05, R-START-03, R-MAX-01 remain.
+````
+
+### Original backlog lines 2076-2082
+
+- DEFERRED 2026-10-10 | Reference matrix follow-ups | Both host-source pinning
+  (GNOME Shell/Mutter/wlroots; former estimate 19 cells, now 40 host-source
+  candidates after reclassification: 38 PaperWM, 2 sway) and fixture/scenario
+  wording tightening (302 cells across 92 rows) are deferred. Revisit wording
+  only when a specific open decision depends on a row; neither is P1 work.
+  [Residual ledger](reference-source-fill-remaining.md),
+  [decision](../../decisions/reference-and-shortcuts.md#reference-outcome-authority).

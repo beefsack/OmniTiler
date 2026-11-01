@@ -277,10 +277,31 @@ The remaining sections preserve the pre-decision analysis, not current requireme
 [kde-entry]: https://github.com/beefsack/OmniTiler/blob/9fa32420/kwin/src/plan-adapter-entry.ts
 [kde-adapter]: https://github.com/beefsack/OmniTiler/blob/9fa32420/kwin/src/plan-adapter.ts
 [reference]: ../../spec/reference-outcomes/mouse.md#r-drag-07-dragged-frame-vs-retained-allocation
-[macos]: ../../decisions.md#scope-and-platform-goals
+[macos]: ../../decisions/platforms.md#platform-scope
 [delivery]: windows-mouse-drag.md
 [press]: windows-drag-press-focus.md
 [threads]: windows-owner-threading-acceptance.md
 [foundation]: ../windows-multi-output-foundation.md
 [gaming]: ../windows-gaming-coexistence.md
 [gate]: ../windows-0.1-gate-proposal.md
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1547-1560
+
+````markdown
+- P0 | Windows feature parity queue | User order (2026-10-02), each matching
+  KDE behavior/bindings. All slices delivered offline; physical/live acceptance
+  pending per slice: (1) active border; (2) group underlay A/B (C parked, see
+  PARKED); (3) maximise; (4) fullscreen; (5) float; (6) sticky float; (7) mouse
+  drag move + drop preview same-output (Win+drag removed 2026-10-18, native
+  title-bar drag + shared preview/drop retained;
+  [removal](changes/archive/windows-win-drag-review.md)); (8) multi-output
+  foundation (`2c05ee5` + `f2169d6`; explicit output send `fda618f`;
+  [remaining checks](changes/windows-multi-output-foundation.md#remaining-physical-check));
+  (9) taskbar workspace indicator pulled forward (see presentation research);
+  (10) settings core slice + tray + first-run + workspace tiling toggle;
+  (11) settings grouping route approved (see shared settings item). Agent runs
+  were disturbed by Xbox-mode paths (see gaming coexistence). Full slice
+  records archived 2026-10-24.
+````

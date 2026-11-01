@@ -85,7 +85,7 @@
   User accepted 2026-10-18 (T2): retain this refusal until a remap rule is
   separately approved. This is the accepted operation boundary, not a silent
   success or rejection of existing whole-workspace migration remaps.
-  [Decision](../../decisions.md#best-effort-admission).
+  [Decision](../../decisions/layout-and-admission.md#best-effort-admission-fallback).
 - Drag capacity floating remains an honest refusal/snap-back until preview can
   represent that fallback. Overlap preview/drop parity still needs native proof.
 - Pure route gap synchronization remains Engine-only. Any committed D7 victims

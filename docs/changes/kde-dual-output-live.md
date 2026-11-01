@@ -417,7 +417,7 @@ Accepted subcases and remaining gaps are qualified below.
   The fixture lacked per-desktop occupancy/visibility readback at that instant,
   so it cannot independently prove every removal guard.
 - This mechanism is selected product behavior, not an established product
-  defect: [workspace decisions](../decisions.md#workspaces)
+  defect: [workspace decisions](../decisions/workspaces.md#workspace-lifecycle-focus-and-history)
   explicitly permit adopted managed empty retirement. Existing tests at
   `kwin/tests/workspace-native.test.ts:309-324,353-369` cover it. Changing
   cleanup to retain all pre-existing empties would change product intent.
@@ -1303,7 +1303,7 @@ Accepted subcases and remaining gaps are qualified below.
   ([rules, S20 and S23](../cosmic-move-conformance.md#the-rules)); i3 flat
   append was considered and rejected. Predictable placement independent of
   target focus history preserves the existing target layout unchanged.
-  [Durable decision](../decisions.md#move-layout-and-output-commands), item 5.5.
+  [Durable decision](../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection), item 5.5.
 - Acceptance: every occupied exhausted directional crossing adds a new
   top-level D-axis split around the entire target, mover nearest source.
   Left gives `H[H[A,B],W]`, Right `H[W,H[A,B]]`, Up `V[V[A,B],W]`,
@@ -1414,3 +1414,28 @@ not the production entry, which exclusively uses `DescribeWorld`.
 - After the fix: GREEN both regressions, full KWin typecheck and suite, then
   repeat live T05 with an ordinary resizeable client on the migrating
   workspace.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 819-836
+
+````markdown
+- P0 | KDE dual-output live testing and fixes | Comprehensive native
+  two-output inventory on physical outputs, not the researched VM route
+  (User 2026-10-18). [Current evidence and parked questions](changes/kde-dual-output-live.md),
+  [checks](#multi-output-setup), [coverage](research/two-output-test-environment.md).
+  Aligned migration/send settlement, source-MRU stays, independent workspace
+  switching and panel-gap vertical sends pass sampled native checks. New:
+  both-output empty-end forward wrap, R4 authoritative nested-return shape and
+  direct-API preview screenshots; deferred trailing-send focus fixed offline.
+  Empty show creates no spare; each ordinary fill does. Policy is Tentative
+  (user review pending). Pending: preset application/keyboard delivery,
+  exact named-leaf R4 order, reviewed drag lifecycle, visible underlay, mapped
+  effect identity and remaining inventory matrix. Hotplug stays parked.
+  Rust 3353 / KWin 1920 pass; protected state/count/names/order restored,
+  development stopped, project effect unloaded. Byte-exact config and full
+  effects-baseline restoration remain unproven; no full inventory gate completed.
+  Additional non-sticky multi-desktop membership retention remains TBD; under
+  v2 it belongs to the deferred Activities/multi-desktop investigation in the
+  KDE v2 port item, not the superseded conversion oracle.
+````

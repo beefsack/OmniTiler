@@ -24,7 +24,7 @@
 ## Decisions and boundaries
 
 - Reuse the stage A contracts and tentative decisions in
-  [Workspaces](../../decisions.md#workspaces).
+  [Workspaces](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history).
 - Retain output-bound Engine domains and existing partial-failure semantics.
 - Two-output visibility, transfer and hotplug journeys require separate
   physical evidence; single-output checks cannot establish those outcomes.

@@ -499,7 +499,7 @@ complete checklist row is closed by these bounded legs.
 
 - User 2026-10-20 accepted: configurable output targeting supersedes the tentative foreground, pointer,
   last-switch cache, stable-order policy and "admission never pointer" claim:
-  [cross-platform cursor-first targeting](../decisions.md#cursor-first-output-targeting)
+  [cross-platform cursor-first targeting](../decisions/layout-and-admission.md#output-targeting)
   replaces R-OUT-05's focused-output default on the Tier 1 evidence. Workspace
   switches default to cursor output (COSMIC), with focused output (i3/sway) as
   an option. New-window placement selects COSMIC (default: cursor output,

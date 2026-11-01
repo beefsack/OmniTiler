@@ -10,7 +10,7 @@ those three choices throughout this record; native acceptance limits remain.
 
 ## Goal and scope
 
-- Implement the approved [core/platform boundary](../../decisions.md#core-platform-boundary):
+- Implement the approved [core/platform boundary](../../decisions/engine.md#core-owned-world-and-platform-boundary):
   one shared-core model and policy owner; Windows captures input, observes,
   actuates and renders. Windows is the first migrated platform.
 - Preserve existing specified behavior except the already-decided
@@ -416,7 +416,7 @@ remove the code it supersedes before its acceptance.
 - Logical-native-free world contract v2 is accepted for the core boundary,
   not as Windows runtime adoption. The previous unresolved-outcome section
   records the failing predecessor, not a remaining blocker. The
-  [logical-authority decision](../../decisions.md#logical-workspace-authority)
+  [logical-authority decision](../../decisions/engine.md#logical-workspace-authority-and-host-owned-observations)
   is user-approved, not tentative. Inherited machinery can be simplified;
   preserving its implementation is not an acceptance requirement.
 - Terminal migration refusal/supersession survives acknowledgement under
@@ -1132,7 +1132,7 @@ of cursor-first fresh placement or the entire rearchitecture.
 - Closing, complete-inventory departure and incarnation reset prune all three
   frame-policy maps together. A float excursion preserves the lifetime's bound
   but grants no automatic float geometry authority. The acquisition heuristic is
-  [User-approved 2026-10-26](../../decisions.md#core-platform-boundary): an
+  [User-approved 2026-10-26](../../decisions/engine.md#core-owned-world-and-platform-boundary): an
   external enlargement racing a setter cannot be causally distinguished from
   an application clamp. Smaller stable evidence prevents permanent fighting.
 - Shared `test-fixtures/frame-convergence.json` supplies acquisition and
@@ -3063,3 +3063,148 @@ of cursor-first fresh placement or the entire rearchitecture.
   remote classification-fact transport, Activities/multi-desktop behavior and
   async configure remain explicit port work or evidence gaps in the guides.
   Gaming Compatibility continues to take precedence.
+
+### Backlog detail moved 2026-11-01: core/platform boundaries and shared acceptance (original lines 504-516)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | Core/platform boundaries and shared acceptance baselines | User
+  2026-10-18 baseline goal; the boundary is set by
+  [Layering](../../principles.md#layering) and the user-approved 2026-10-20
+  [core/platform decisions](../../decisions/engine.md#core-owned-world-and-platform-boundary), extending the
+  [core-owned world-model direction](../../decisions/engine.md#core-owned-world-and-platform-boundary).
+  Shared-core/Windows rearchitecture is complete with final native close-out
+  ([outcome and limits](core-world-model-rearchitecture.md#closing-outcome-2026-10-24));
+  the core-only ordered baseline passes 6/6 checkpoints. Remaining: one shared
+  core/platform case set with truthful host-state capture and documented platform
+  gaps, native connectors and suitable fixture controls, with explicit deadlines
+  only where justified by [Simplicity](../../principles.md#simplicity). The native
+  connector/separation review and cleanup review are separate rows below;
+  KDE/macOS adoption belongs to their active v2 port items.
+
+### Backlog detail moved 2026-11-01: native acceptance connector review (original lines 517-524)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | Native shared acceptance connector and separation review (inherits boundaries P1) |
+  Deferred to the later separation review per the [closing outcome](core-world-model-rearchitecture.md#closing-outcome-2026-10-24):
+  the native side must reject missing readback, pending operations, omissions/
+  fences, coverage defects and skipped intermediate hide/reveal before any live
+  driver is accepted. The accepted core-only ordered baseline
+  (`test-fixtures/world-actions.json`, 6/6 checkpoints via `world_acceptance`)
+  stays; its logical receipts do not prove native hide/reveal. Three connector
+  drafts were tried and withdrawn; they are not evidence.
+
+### Backlog detail moved 2026-11-01: code cleanup review (original lines 525-530)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | Code cleanup/abstraction review (inherits boundaries P1) | Deferred
+  separate work per the [closing outcome](core-world-model-rearchitecture.md#closing-outcome-2026-10-24):
+  dead-API disposition delivered (`presentation_bytes`, batch hide machine,
+  verdict ingress removed); remaining cleanup/abstraction review stays open, no
+  known correctness defect waived. Coordinate with the P2 fixture follow-ups
+  row and the repository cleanup pass.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 360-377
+
+````markdown
+- P0 | Windows dual-output live testing and fixes | User 2026-10-19 first
+  two-monitor run. Delivered: (2)/(3) fixed (secondary pager bar-right anchoring
+  user-accepted 2026-10-20); (1) DPI rebasing and exact-owner directional
+  control accepted, Paint/Firefox transfers pass both ways with exact arrival
+  and follow focus; Win+digit/send-follow/explicit-send, Explorer-restart
+  survival with correct pager positions, and cross-output title-bar drag with
+  drop overlay pass (Task Manager untiled: expected unmanageable class).
+  (4) cursor-first fresh placement delivered in core and Windows; final native
+  close-out accepted both migration directions, underlay show/release and
+  directional maximize-clear continuation
+  ([closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)).
+  Remaining, manual user checks: user dogfood re-check of (4); cross-output
+  drag empty singleton and reverse-DPI start; W2M-10 partial; W2M-04/07/08,
+  remaining topology, display changes and sleep/wake; primary anchor churn
+  single observation (game cost unmeasured). The synthetic-input drag driver
+  stays disabled fail-closed ([live invariant](live-windows-testing.md)).
+  Full run history archived 2026-10-24. [Record](changes/windows-dual-output-live.md),
+  [two-monitor checklist](changes/windows-physical-checklist.md#two-monitor-pc).
+````
+
+### Original backlog lines 857-883
+
+````markdown
+- P0 (after floating dialog defect) | KDE aligned per-output workspaces |
+  Implemented 2026-10-19: full aligned grid, per-output trailing, global
+  hole/removal guards, minimum two including trailing, startup adoption,
+  KDE `global-unique` removal/fallback and trailing-landing logical migration.
+  Rust **3335**, KWin **1919**, strict gates pass. Native hidden-member
+  reachability, independent trailing, holes/removal, migration out/back with
+  settlement and native output-move adoption pass at callback/state level.
+  D5 logical source-refill interpretation and old-mode fallback are
+  **Tentative (user review pending)**. Disjoint-model T05 is superseded.
+  Historical note: the `global-unique` removal/fallback and old-mode fallback
+  above are v1 aligned-grid acceptance (2026-10-19). Under the closed v2
+  contract the KDE v2 port delivers both separate-view modes subject to the
+  KWin setting and required warning, not global-unique removal
+  ([closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)).
+  - NEXT hotplug: user 2026-10-19 selected the physical route: move affected
+    Plasma surfaces and windows off the output before disabling it, keep the
+    protected terminal on the surviving output, and restore the exact output
+    configuration and surface placement afterwards (no virtual outputs). Probe
+    native disconnect event order first, then implement retained origin
+    logicals before evacuation/pruning, trailing displacement and return on
+    reconnect. Aligned no-merge/return is not delivered yet.
+  - Remaining: physical drag/shortcut evidence. The earlier own-send anomaly
+    did not reproduce under complete wire/native capture
+    ([dual-output record](changes/kde-dual-output-live.md)).
+  - Follow-ups: Windows is complete under v2; macOS follows its v2 port item;
+    independent-set defaults remain unchanged.
+  [Record](changes/kde-aligned-output-workspaces.md).
+````
+
+### Original backlog lines 998-1007
+
+````markdown
+- P1 | Windows: adopt full world-state core replies | Superseded as an
+  implementation route by the [core world-model rearchitecture](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24):
+  stages 2a/2b accepted 2026-10-22 (logical workspace authority, sole Windows
+  world owner), closed 2026-10-24; W2a gated diagnostics were evidence only and are
+  superseded by the delivered mapping authority and T2 refusal below. Windows is dogfood-ready at
+  the bounded acceptance level. Remaining native gaps per the close-out:
+  MRU occupied-source-refill staging, global-unique/shared mode checks,
+  tile-override restart staging and user-owned physical shortcut/drag/game
+  acceptance. The legacy domain API stays compiling, not behaviorally migrated.
+  Constructor prerequisite delivered `086f9d8c`. [Slices and evidence](changes/archive/windows-full-world-state-replies.md).
+````
+
+### Original backlog lines 1061-1086
+
+````markdown
+- P1 | Shared core: own output topology | Delivered in core and Windows under
+  the closed v2 contract ([closing outcome](changes/archive/core-world-model-rearchitecture.md#closing-outcome-2026-10-24)):
+  FULL world topology retained in all modes, per-use targets core-derived.
+  KDE/macOS must report FULL bounds with truthful native receipts per the v2
+  port guides (both unported; their v1 directional-intent/FULL-bounds work is
+  historical evidence). Remaining native acceptance: split-edge and ordinary
+  two-output legs.
+  User 2026-10-18 order: topology first, then D23 rehome/13f maximize base.
+  User direction 2026-10-18: retain FULL monitor rectangles from world
+  reports and derive adjacency/targets in core, not adapters. Strict-parity
+  extraction remains tentative (user accepted the tentative choices 2026-10-18).
+  Split-edge alignment is already decided (User 2026-10-09,
+  [selection record](changes/archive/position-based-output-selection.md),
+  Tier 1 basis R-MOV-12/R-WS-27 in
+  [consensus](research/reference-wm-consensus.md)): exhausted moves and
+  explicit sends use window-centre projection, then window-span overlap, then
+  left/top; whole-workspace migration uses largest shared edge, then left/top;
+  focus keeps unique-reciprocal horizontal. World move/send/migration alignment
+  delivered offline 2026-10-18 with R-MOV-12/R-WS-27 expected results and real
+  Engine KDE world-entry fixtures; retained R4 arrival is identity-pinned.
+  [Alignment evidence](changes/archive/world-split-edge-selection.md).
+  NEXT: remaining native split-edge and ordinary two-output acceptance.
+  Migration settlement is core-owned under v2 (delivered, natively accepted
+  both directions); disjoint-model confirmation work is superseded.
+  [Delivery and live procedure](changes/archive/shared-core-owned-output-topology.md), alongside the
+  [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
+````

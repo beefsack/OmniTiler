@@ -8,7 +8,7 @@ are provisional, to discuss. Recorded decisions in
 configuration; a foreign outcome here does not automatically become
 supported, and variants are spec hooks only, not implemented settings.
 Defaults/settings selection uses the user's 2026-10-12
-[reference tiers](../decisions.md#reference-tiers); evidence tallies are retained.
+[reference tiers](../decisions/reference-and-shortcuts.md#reference-tiers-and-defaults); evidence tallies are retained.
 
 Row addition rule: add the shortest action sequence for an uncovered
 behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
@@ -45,7 +45,7 @@ uncooperative client's pixels or native frame fill it.
 
 Existing coverage and decision boundary:
 
-- [Fixed-Size Admission D2](../decisions.md#fixed-size-admission)
+- [Fixed-Size Admission D2](../decisions/layout-and-admission.md#fixed-size-admission-predicate)
   (`decisions.md:2366-2373`) already says "keep reacting to windows resizing
   themselves to avoid gaps/overlaps"; admission-only hint changes are not a
   direction to ignore native geometry drift. D2 does not choose event timing,
@@ -150,7 +150,7 @@ Current OmniTiler source (2026-10-29):
 <a id="cursor-first-output-targeting-discriminators"></a>
 ### Cursor-first output-targeting discriminators
 
-User 2026-10-20 [accepted configurable targeting](../decisions.md#cursor-first-output-targeting)
+User 2026-10-20 [accepted configurable targeting](../decisions/layout-and-admission.md#output-targeting)
 on the Tier 1 evidence, replacing R-OUT-05 / REQ-OUT-05's focused-output default
 with cursor output and a focused-output option. Windows switch/fresh-placement
 adoption is [accepted](../changes/archive/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22);
@@ -185,7 +185,7 @@ The user is unsure of the desired behavior; gather Tier 1 outcomes before decidi
 
 | Variant | Minimal action sequence | Discriminator | Unsupported outcome / evidence |
 | --- | --- | --- | --- |
-| Switch to empty, then send | Keep B visible on R; focus A on L with cursor on L; press Win+digit to select an empty workspace on L; record focused output/window; immediately issue a workspace send | Does focus stay on empty L with no focused window (send has no subject), or move to B on R (send moves B)? | User physical 2026-10-20: focus moved to another output's window and the following send moved it. Source-only Tier 1: COSMIC immediate outcome TBD: active output stays L, but keyboard focus clears on a later refresh; pre-refresh send is not established (`EW-C`). Hyprland keeps focus monitor L, clears focused window; send has no subject (`EW-H`). i3 focuses L's empty workspace node, not a client; send errors "Nothing to move: workspace empty" (`EW-I`). sway focuses L's empty workspace node, not a client; send fails "Can't move an empty workspace" (`EW-S`). These three verified send paths leave B on R untouched. Decided 2026-10-28: stay on empty L with no focused window; send has no subject ([decision](../decisions.md#windows-decisions-2026-10-28)). Not yet implemented |
+| Switch to empty, then send | Keep B visible on R; focus A on L with cursor on L; press Win+digit to select an empty workspace on L; record focused output/window; immediately issue a workspace send | Does focus stay on empty L with no focused window (send has no subject), or move to B on R (send moves B)? | User physical 2026-10-20: focus moved to another output's window and the following send moved it. Source-only Tier 1: COSMIC immediate outcome TBD: active output stays L, but keyboard focus clears on a later refresh; pre-refresh send is not established (`EW-C`). Hyprland keeps focus monitor L, clears focused window; send has no subject (`EW-H`). i3 focuses L's empty workspace node, not a client; send errors "Nothing to move: workspace empty" (`EW-I`). sway focuses L's empty workspace node, not a client; send fails "Can't move an empty workspace" (`EW-S`). These three verified send paths leave B on R untouched. Decided 2026-10-28: stay on empty L with no focused window; send has no subject ([decision](../decisions/windows.md#windows-decision-set)). Not yet implemented |
 
 Source-only audit (2026-10-28), not runtime proof. Use each WM's native numbered
 switch and workspace-send verbs, not the literal Windows bindings. The target
@@ -301,7 +301,7 @@ Local source citations (source branches, not runtime results):
 ### Workspace arrival and navigation without window focus
 
 Source-only Tier 1 audit (2026-10-25): COSMIC, Hyprland, i3 and sway,
-per the [reference tiers](../decisions.md#reference-tiers). User 2026-10-26
+per the [reference tiers](../decisions/reference-and-shortcuts.md#reference-tiers-and-defaults). User 2026-10-26
 extended [R-WS-09](reference-outcomes/workspaces.md#r-ws-09-select-ws2-select-ws1-return-focus-and-viewport):
 select/show restores eligible remembered focus, else per-workspace MRU, else
 first eligible member (layout child order tentative, pending user review),
@@ -386,7 +386,7 @@ no-focus path. Physical shortcuts remain unverified. [Record](../changes/archive
 ### Cross-output focus: edge-nearest versus destination MRU
 
 User decision D1 2026-10-28 (sides with Hyprland+sway;
-[policy](../decisions.md#cross-output-focus-edge-policy)): crossing an output
+[policy](../decisions/focus.md#cross-output-directional-focus)): crossing an output
 boundary selects the window nearest the crossed edge, not the destination
 output's MRU. Workspace-return MRU, local navigation and output selection are
 unchanged; no setting for now. Existing
@@ -502,7 +502,7 @@ not a retroactive diagnosis.
 
 - User selected D1-D10 2026-10-17: largest-splittable/float defaults, no automatic
   workspace spill; explicit sends remain supported.
-- [Selected semantics](../decisions.md#best-effort-admission) and
+- [Selected semantics](../decisions/layout-and-admission.md#best-effort-admission-fallback) and
   [delivery/evidence](../changes/archive/best-effort-admission.md).
   These are variants of R-MIN-04, R-INS-09, R-START-01..03 and the named
   send/move/drag rows, not new reference evidence. Core/KDE delivered offline;
@@ -830,14 +830,14 @@ Variants of [R-MNZ-01..03](reference-outcomes/minimize.md#d23-restore-and-close-
 
 | Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Missing hide proof | Show a drag preview for A; end the gesture; withhold the renderer's verified hidden acknowledgement past 500 ms; later try a fresh gesture | User 2026-10-14 approved as delivered ([decision](../decisions.md#windows-owner-threading)): refuse that finish without Engine drop, focus, geometry or snap-back writes; retain the hide safety obligation. A verified hide instead permits fresh owner revalidation before actuation; cancel/Esc/suspend/new gesture/stop invalidate pending work ([record](../changes/archive/windows-render-thread.md)) | Deterministic pending-owner fixtures prove ordering/refusal. Agent live verified hide-before-own-slot-drop, not a physical structural drop. Native missing-ack and exact reference-WM outcomes TBD; no crash/game experiment inferred |
+| Missing hide proof | Show a drag preview for A; end the gesture; withhold the renderer's verified hidden acknowledgement past 500 ms; later try a fresh gesture | User 2026-10-14 approved as delivered ([decision](../decisions/windows.md#windows-owner-thread-architecture)): refuse that finish without Engine drop, focus, geometry or snap-back writes; retain the hide safety obligation. A verified hide instead permits fresh owner revalidation before actuation; cancel/Esc/suspend/new gesture/stop invalidate pending work ([record](../changes/archive/windows-render-thread.md)) | Deterministic pending-owner fixtures prove ordering/refusal. Agent live verified hide-before-own-slot-drop, not a physical structural drop. Native missing-ack and exact reference-WM outcomes TBD; no crash/game experiment inferred |
 
 ### Windows cross-output transfer failure discriminator
 
 | Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Failed transfer tail | Exhaust a tiled move into another output, or release a native title-bar drag there; refuse final topology, geometry readback or arrival proof (also source reflow for an empty drag destination) | User 2026-10-14 approved as delivered ([decision](../decisions.md#windows-multi-output-foundation)): discard candidate Engine changes, retain original logical membership and skip follow-focus; any partial native geometry converges through subsequent observation without replay. Occupied/empty release and keyboard refusal fixtures pass ([record](../changes/windows-multi-output-foundation.md)) | Physical refusal timing, partial-write recovery and exact reference-WM outcomes TBD |
-| Focus fails after verified transfer | Complete the same transfer with verified arrival; refuse its subsequent foreground setter | User 2026-10-14 approved as delivered ([decision](../decisions.md#windows-multi-output-foundation)): verified membership/Engine transfer stands; report focus failure without claiming follow-focus | Physical setter refusal and exact reference-WM outcomes TBD |
+| Failed transfer tail | Exhaust a tiled move into another output, or release a native title-bar drag there; refuse final topology, geometry readback or arrival proof (also source reflow for an empty drag destination) | User 2026-10-14 approved as delivered ([decision](../decisions/windows.md#multi-output-foundation)): discard candidate Engine changes, retain original logical membership and skip follow-focus; any partial native geometry converges through subsequent observation without replay. Occupied/empty release and keyboard refusal fixtures pass ([record](../changes/windows-multi-output-foundation.md)) | Physical refusal timing, partial-write recovery and exact reference-WM outcomes TBD |
+| Focus fails after verified transfer | Complete the same transfer with verified arrival; refuse its subsequent foreground setter | User 2026-10-14 approved as delivered ([decision](../decisions/windows.md#multi-output-foundation)): verified membership/Engine transfer stands; report focus failure without claiming follow-focus | Physical setter refusal and exact reference-WM outcomes TBD |
 
 ### Windows tray menu pager discriminator (2026-10-15)
 
@@ -884,7 +884,7 @@ recovery, not real native settlement or marker readback.
 ### R-MAX-04 / R-FLT-02 KDE held-key discriminator
 
 Minimal action sequence for the pending B1/B2 physical-repeat leg. The
-[toggle activation decision](../decisions.md#window-state-float-sticky-maximize-fullscreen)
+[toggle activation decision](../decisions/window-state.md#fullscreen-and-maximize-overlays)
 selects at most one native attempt per explicit activation; it does not
 establish KGlobalAccel's held-key delivery or select a repeat-suppression policy.
 
@@ -902,7 +902,7 @@ establish KGlobalAccel's held-key delivery or select a repeat-suppression policy
 
 | Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Held orientation toggle | Focus B in `H[A,B*]`; hold Win+O past repeat delay; release; press once again | User 2026-10-14 approved as delivered ([decision](../decisions.md#move-layout-and-output-commands)): one toggle on discrete down, consumed repeats do not retoggle; release/repress returns H. Classifier/queue tests 2026-10-11, base `755aab8` + delivery commit ([record](../changes/archive/windows-parent-orientation-toggle.md)) | Windows physical delivery/OS suppression TBD, user-owned. KDE held callback behavior and exact reference-WM held sequence TBD; no unsupported outcome inferred |
+| Held orientation toggle | Focus B in `H[A,B*]`; hold Win+O past repeat delay; release; press once again | User 2026-10-14 approved as delivered ([decision](../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection)): one toggle on discrete down, consumed repeats do not retoggle; release/repress returns H. Classifier/queue tests 2026-10-11, base `755aab8` + delivery commit ([record](../changes/archive/windows-parent-orientation-toggle.md)) | Windows physical delivery/OS suppression TBD, user-owned. KDE held callback behavior and exact reference-WM held sequence TBD; no unsupported outcome inferred |
 
 ### R-CTL-05 M13 readings
 
@@ -921,7 +921,7 @@ Minimal variants of [R-CTL-05/06](reference-outcomes/restart-persistence.md#r-ct
 ### R-CTL-05 KDE modal-flow discriminators (2026-10-12)
 
 The preceding M13 readings describe the earlier confirmed-Apply presentation;
-Keep/Authentic semantics remain unchanged. The [current dialog flow](../decisions.md#shortcuts-conflicts-and-presets)
+Keep/Authentic semantics remain unchanged. The [current dialog flow](../decisions/reference-and-shortcuts.md#shared-shortcut-defaults-and-conflict-model)
 supersedes that presentation. No-stacked-confirmations is kept as shipped User 2026-10-17 (accepted-for-now; later UX review nonblocking). [Offline evidence](../changes/archive/kde-shortcut-result-dialogs.md).
 
 | Variant | Minimal action sequence | Ours KDE offline outcome | Unsupported / physical outcomes |
@@ -994,7 +994,7 @@ or primary-output preference. Unsupported reference outcomes remain TBD.
 
 | Variant | Minimal action sequence | Windows offline outcome / decision | Reference / native |
 | --- | --- | --- | --- |
-| Observed/retained equal-axis tie (R-FLT-09) | Float F and G; maximize another float M; arrange G's top-left x equal to M's visible top-left x; focus F to their right and press Left, then repeat from their left with Right; reverse G/M stacking and repeat | User 2026-10-14 approved, current order kept ([decision](../decisions.md#window-state-float-sticky-maximize-fullscreen)): observed G precedes retained M within its ordinary layer, Left keeps G and Right keeps M. One shared axis-distance race across classes/layers, so nearer M still beats farther G; encounter order affects ties only ([record](../changes/archive/windows-floating-directional-navigation.md)) | Exact combined-order/stacking outcomes and Windows physical tie order TBD. Source tally: COSMIC 3d55cba0 and Hyprland ae50c4d6 use unified live-list races, no comparable observed/retained split; 7 other available profiles lack the exact maximize/float-origin leg. No reference majority for observed-first; native maximum geometry need not equal restore geometry |
+| Observed/retained equal-axis tie (R-FLT-09) | Float F and G; maximize another float M; arrange G's top-left x equal to M's visible top-left x; focus F to their right and press Left, then repeat from their left with Right; reverse G/M stacking and repeat | User 2026-10-14 approved, current order kept ([decision](../decisions/window-state.md#fullscreen-and-maximize-overlays)): observed G precedes retained M within its ordinary layer, Left keeps G and Right keeps M. One shared axis-distance race across classes/layers, so nearer M still beats farther G; encounter order affects ties only ([record](../changes/archive/windows-floating-directional-navigation.md)) | Exact combined-order/stacking outcomes and Windows physical tie order TBD. Source tally: COSMIC 3d55cba0 and Hyprland ae50c4d6 use unified live-list races, no comparable observed/retained split; 7 other available profiles lack the exact maximize/float-origin leg. No reference majority for observed-first; native maximum geometry need not equal restore geometry |
 | Owned fullscreen transition (G-06, R-MAX-08) | Maximize B; enter project fullscreen; during a transitional non-covering frame press move Right while owned fullscreen metadata is present | Tentative 2026-10-12, pending user review: metadata vetoes maximize clear even if the fresh geometry is not a full cover; no clear or move. Pre-clear fullscreen precedence is pinned offline; actual transition routing is native TBD ([record](../changes/archive/windows-maximized-directional-navigation.md)) | Exact reference outcomes and Windows native transition timing TBD; no game experiment inferred |
 
 ### Windows fullscreen-exit discriminators (2026-10-12)
@@ -1051,12 +1051,12 @@ lifetime, linking existing fixtures:
 
 | Variant | Minimal action sequence | Selected / tentative target | Ours / ref outcomes |
 | --- | --- | --- | --- |
-| Maximize admission plus overlay close (D01) | Maximize focused B over survivor A; open C; close B | Selected: structural admission behind retained maximize state/slot, host-owned activation/focus/stacking; closing B removes its slot and refills/focuses survivors ([decision](../decisions.md#placement-minimums-and-startup-adoption)) | Ours offline delivered: native automatic activation retains slots/state with automatic-focus fences; removal/refill/focus with exact full-domain survivor geometry plus focus ([record](../changes/archive/kde-fullscreen-activation-and-send.md)); native outcomes and cleanup TBD, user-owned; reference sources in R-INS-06/R-CLOSE-05 |
-| Fullscreen admission plus overlay close (D01) | Fullscreen focused B over survivor A; open C; close B | Selected: native activation ownership, no B fullscreen geometry writes or tiler focus actuation while fullscreen is involved; closing B removes its slot and refills/focuses survivors ([decision](../decisions.md#placement-minimums-and-startup-adoption)) | Ours offline delivered: automaticFocusGuard reobserves after geometry and fences automatic focus on overlay/midapply/domain/nativefocus races; explicit shortcuts and sends stay effective ([record](../changes/archive/kde-fullscreen-activation-and-send.md)); native outcomes TBD, user-owned; reference sources in R-INS-06/R-CLOSE-05 |
-| Ordinary activation vs active/idle game (D27) | From hidden B, send valid-token then missing/stale-token activation; repeat while a real game has active input, then while idle/paused; compare tiler-off/on, plus pager/taskbar selection | User 2026-10-13: KDE native host exception, no tiler guard/intercept/revert/suppress. KWin token serial/X11 user-time gating expected mark-only in active play; idle/pager behavior exactly without tiler. Real-game active/idle check must pass; reopen only on actual active-play switch-away. Windows user-approved 2026-10-16: Switch and focus honors OS-permitted requests even over fullscreen/games, implementation pending; default Mark urgent only and denied requests unchanged. Setting KDE applicability reviewed at design ([decision](../decisions.md#activation-requests)) | KDE source trace complete: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; convergence exists, verification-only ([trace](../research/d27-kwin-activation-trace.md)). Exact native/game and unsupported reference outcomes TBD |
+| Maximize admission plus overlay close (D01) | Maximize focused B over survivor A; open C; close B | Selected: structural admission behind retained maximize state/slot, host-owned activation/focus/stacking; closing B removes its slot and refills/focuses survivors ([decision](../decisions/layout-and-admission.md#placement-and-minimums)) | Ours offline delivered: native automatic activation retains slots/state with automatic-focus fences; removal/refill/focus with exact full-domain survivor geometry plus focus ([record](../changes/archive/kde-fullscreen-activation-and-send.md)); native outcomes and cleanup TBD, user-owned; reference sources in R-INS-06/R-CLOSE-05 |
+| Fullscreen admission plus overlay close (D01) | Fullscreen focused B over survivor A; open C; close B | Selected: native activation ownership, no B fullscreen geometry writes or tiler focus actuation while fullscreen is involved; closing B removes its slot and refills/focuses survivors ([decision](../decisions/layout-and-admission.md#placement-and-minimums)) | Ours offline delivered: automaticFocusGuard reobserves after geometry and fences automatic focus on overlay/midapply/domain/nativefocus races; explicit shortcuts and sends stay effective ([record](../changes/archive/kde-fullscreen-activation-and-send.md)); native outcomes TBD, user-owned; reference sources in R-INS-06/R-CLOSE-05 |
+| Ordinary activation vs active/idle game (D27) | From hidden B, send valid-token then missing/stale-token activation; repeat while a real game has active input, then while idle/paused; compare tiler-off/on, plus pager/taskbar selection | User 2026-10-13: KDE native host exception, no tiler guard/intercept/revert/suppress. KWin token serial/X11 user-time gating expected mark-only in active play; idle/pager behavior exactly without tiler. Real-game active/idle check must pass; reopen only on actual active-play switch-away. Windows user-approved 2026-10-16: Switch and focus honors OS-permitted requests even over fullscreen/games, implementation pending; default Mark urgent only and denied requests unchanged. Setting KDE applicability reviewed at design ([decision](../decisions/activation-requests.md#hidden-window-activation-default)) | KDE source trace complete: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; convergence exists, verification-only ([trace](../research/d27-kwin-activation-trace.md)). Exact native/game and unsupported reference outcomes TBD |
 | Windows caller rights / hidden urgency (D27, 2026-10-14) | A foreground, B current then product-hidden on workspace 2: plain `SetForegroundWindow` from a fresh never-attached background process; separately `FlashWindowEx(FLASHW_TRAY)`; compare a previously attached controller and tiler off/on; observe foreground, visibility, selected workspace and owned shell flash | User-approved 2026-10-16: OS-permitted Switch and focus has no fullscreen/game urgency-only downgrade, not yet implemented. Default Mark urgent only/non-permitted unchanged; explicit selection separate. Visible urgency/clear design unselected | At `f4b9f41`, fresh current/hidden calls denied, no focus/workspace switch; previously attached caller granted hidden activation with workspace convergence. Shell flash heard for hidden targets, not visible-marker proof. Helper self-request/native-permitted clean route, visible mark/clear, fullscreen/game and physical selection TBD ([record](../changes/archive/windows-d27-activation-verification.md)); reference outcomes TBD |
 | Windows OS-permitted activation over fullscreen/game (D27 5b) | With a game/fullscreen window foreground on WS1 and B hidden on WS2, request B activation with established OS permission; repeat in Switch and focus and Mark urgent only, then with a denied request | User-approved 2026-10-16: Switch and focus plus OS permission switches to WS2 and focuses B, even though WS1/game becomes hidden; default Mark urgent only and denied requests unchanged. No extra tiler game-protection override. Approved target, implementation/tests pending | Clean permission discriminator and real-game active/idle outcomes TBD; no new live evidence or KDE behavior change |
-| New-login intentional-float memory (D26) | End session; start a new login and observe owned intent | Selected (b) listed 0.1 known limitation: intentional-float memory does not survive logout/login under unchanged session-scoped REQ-RST-01d; reopened apps have new identities. Revisit after 0.1 with shared restart store ([decision](../decisions.md#restart-persistence), User 2026-10-12) | Ours TBD; ref/native TBD beyond linked R-RST-02; native dogfood/live check pending, verification-only |
+| New-login intentional-float memory (D26) | End session; start a new login and observe owned intent | Selected (b) listed 0.1 known limitation: intentional-float memory does not survive logout/login under unchanged session-scoped REQ-RST-01d; reopened apps have new identities. Revisit after 0.1 with shared restart store ([decision](../decisions/persistence.md#orderly-restart-adoption), User 2026-10-12) | Ours TBD; ref/native TBD beyond linked R-RST-02; native dogfood/live check pending, verification-only |
 
 ### KDE script restart with a retained Planner
 
@@ -1074,7 +1074,7 @@ lifetime, linking existing fixtures:
 ### D01 native-activation discriminators (selected 2026-10-12)
 
 Source-only [D01 research](../research/d01-fullscreen-admission.md) informed the
-user's 2026-10-12 [native activation ownership decision](../decisions.md#placement-minimums-and-startup-adoption).
+user's 2026-10-12 [native activation ownership decision](../decisions/layout-and-admission.md#placement-and-minimums).
 These fresh sequences
 distinguish native activation ownership from blanket retention or forced
 newcomer activation. Selected Ours: honor host approval/denial and explicit
@@ -1090,7 +1090,7 @@ switching, with no focus actuation while fullscreen is involved; runtime TBD.
 
 | Variant | Minimal action sequence | Selected target | Ours / reference outcomes |
 | --- | --- | --- | --- |
-| Slotless fullscreen carry and destination exit | First observe B already fullscreen on WS1 with tiled A; keep B under the real initial hold; explicitly send B to occupied WS2; repeat fresh for numbered/relative follow/stay; exit fullscreen on WS2 | B remains fullscreen and slotless on WS2; no source admission or source/target reflow; native desktop movement only, with established follow/stay focus semantics; first exit admits B on WS2 under D5 ([decision](../decisions.md#window-state-float-sticky-maximize-fullscreen)) | Ours offline delivered: shared MoveDeferred slotless hold with no tree mutation or geometry writes, still-fullscreen slotless target until D5 first exit ([record](../changes/archive/kde-fullscreen-activation-and-send.md)); production-path cross-output integration not covered, wire plus mock-output covered; native and game outcome TBD, user-owned; unsupported reference outcomes TBD |
+| Slotless fullscreen carry and destination exit | First observe B already fullscreen on WS1 with tiled A; keep B under the real initial hold; explicitly send B to occupied WS2; repeat fresh for numbered/relative follow/stay; exit fullscreen on WS2 | B remains fullscreen and slotless on WS2; no source admission or source/target reflow; native desktop movement only, with established follow/stay focus semantics; first exit admits B on WS2 under D5 ([decision](../decisions/window-state.md#fullscreen-and-maximize-overlays)) | Ours offline delivered: shared MoveDeferred slotless hold with no tree mutation or geometry writes, still-fullscreen slotless target until D5 first exit ([record](../changes/archive/kde-fullscreen-activation-and-send.md)); production-path cross-output integration not covered, wire plus mock-output covered; native and game outcome TBD, user-owned; unsupported reference outcomes TBD |
 
 ### 0.1 package split discriminator (Settings decision pending)
 
@@ -1100,7 +1100,7 @@ switching, with no focus actuation while fullscreen is involved; runtime TBD.
 
 ### KWin 6.6 shared-workspace fallback
 
-User decision 2026-10-11; [support floor](../decisions.md#kde-support-floor).
+User decision 2026-10-11; [support floor](../decisions/kde.md#kde-support-floor).
 
 | Variant | Minimal action sequence | Ours KDE offline outcome | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
@@ -2416,16 +2416,16 @@ Legend:
 - `D-dec-win` [decisions.md](../decisions.md) (Windows platform sub-bullets:
   managed workspaces, minimums)
 - `D-dec-nest`
-   [decisions.md](../decisions.md#pointer-drag-and-drop) ("Pointer,
+   [decisions.md](../decisions/visuals.md#pointer-and-drag-behavior) ("Pointer,
    Drag And Drop")
 - `D-dec-drag`
-  [decisions.md](../decisions.md#pointer-drag-and-drop)
+  [decisions.md](../decisions/visuals.md#pointer-and-drag-behavior)
   ("Pointer, Drag And Drop")
 - `D-win-drag`
   [windows-mouse-drag.md](../changes/archive/windows-mouse-drag.md)
   (accepted same-output title/Win producers and preview; synthetic proof,
   physical checks and exact unexecuted fixtures remain explicit)
-- `D-dec-max` [decisions.md](../decisions.md#window-state-float-sticky-maximize-fullscreen)
+- `D-dec-max` [decisions.md](../decisions/window-state.md#fullscreen-and-maximize-overlays)
   ("Window State: Float, Sticky, Maximize, Fullscreen")
 - `D-place`
   [placement-correctness.md](../changes/archive/windows-placement-correctness.md#evidence-and-current-state)
@@ -6153,6 +6153,33 @@ Legend:
   @b1b6abbd3f1a4be138152b6f0389c9ff1b27a269
   (no workspace-targeted launch rule; remembered-strip path in
   `window_managed_trigger` is re-manage only)
+- `S-cos-fs-actions` cosmic-comp:src/shell/layout/tiling/mod.rs:1507-1517,
+  1835-1852,2083-2086
+  (directional move requires a keyboard target resolving to a tiling node),
+  :2089-2129 (orientation mutation only after that same node lookup), and
+  :2847-2895 (fullscreen/non-tree target lookup); src/input/actions.rs:186-198
+  (workspace activation) and :745-802 (focus miss propagates to workspace or
+  output action) @3d55cba06c9cf6f27609cdefb520f7857dba20af
+  (focused-fullscreen action entry paths; full activation/focus settlement
+  remains TBD)
+- `S-hyp-fs-actions` Hyprland:src/config/shared/actions/ConfigActions.cpp:1434-1445
+  (directional move returns for fullscreen), :440-477 (directional focus and
+  monitor fallback); src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:
+  676-702,774-805 (layout-message toggle and fullscreen refusal); src/output/
+  Monitor.cpp:1398-1417 (workspace activation focus chooses fullscreen cover);
+  src/desktop/state/WindowQuery.cpp:35-47,97-138,222-256 (fullscreen bounds,
+  candidate gates and visible-window directional search)
+  @19fb395d45314960e6f79f17994a84094f1cd4f6
+- `S-i3-fs-actions` i3:src/move.c:206-245,259-280 (output-fullscreen move
+  takes output-transfer path; global fullscreen refuses); src/commands.c:
+  1174-1207 (split toggle dispatch); src/tree.c:469-502,593-634
+  (directional output fallback) @903bcd518df32b0e055b17f5da3f988a0187fd3d
+- `S-sway-fs-actions` sway:sway/commands/move.c:281-315 (fullscreen directional
+  move considers outputs only), sway/commands/layout.c:117-195 (layout toggle
+  mutates parent/workspace layout without a fullscreen-clear branch),
+  sway/tree/workspace.c:731-743 (workspace switch), sway/commands/focus.c:81-153
+  (output entry selects a workspace fullscreen node when present)
+  @1652c54b73f67df17b7b4ab0b0f7048204aa8104
 
 ## Variant hooks (selected status where decided; otherwise provisional)
 
@@ -6169,7 +6196,7 @@ Legend:
 | V-FLOAT-SNAP | Float directional move: half/quarter/maximize/transfer vs pixel move vs refusal | User 2026-10-05 selects COSMIC; KDE first half-snap delivered, later stateful transitions and Windows pending `D-float-nav` |
 | V-FLOAT-REFLOW | Float-removal survivor reflow: equalize vs ratio-preserve | Provisional, to discuss |
 | V-STICKY-SCOPE | Sticky scope: all-workspaces floating-only vs monitor-desktop | `D-ref` recommends Hyprland/COSMIC; ours selects all-ws float-only; user 2026-10-07: Windows sticky survives restart with R-RST-01 (implementation pending; KDE already retains sticky) |
-| V-MAX-MODEL | Maximize: retained-slot overlay vs layout reflow vs no state | Selected: retained-slot overlay (`D-dec-ww` KDE + `D-dec-max`); [Q3](../decisions.md#window-state-float-sticky-maximize-fullscreen) includes R-MAX-03 (stays maximized over reserved slot), KDE [delivered offline](../changes/archive/kde-maximized-floating-retile-overlay.md) and Windows [delivered offline 2026-10-12](../changes/archive/windows-maximized-floating-retile-overlay.md). R-MAX-06 changed 2026-10-11 to default tile-on-launch with overlay alternative ([Windows setting](../changes/archive/windows-born-maximized-setting.md)); R-MAX-03 independent. Native journeys TBD |
+| V-MAX-MODEL | Maximize: retained-slot overlay vs layout reflow vs no state | Selected: retained-slot overlay (`D-dec-ww` KDE + `D-dec-max`); [Q3](../decisions/window-state.md#fullscreen-and-maximize-overlays) includes R-MAX-03 (stays maximized over reserved slot), KDE [delivered offline](../changes/archive/kde-maximized-floating-retile-overlay.md) and Windows [delivered offline 2026-10-12](../changes/archive/windows-maximized-floating-retile-overlay.md). R-MAX-06 changed 2026-10-11 to default tile-on-launch with overlay alternative ([Windows setting](../changes/archive/windows-born-maximized-setting.md)); R-MAX-03 independent. Native journeys TBD |
 | V-FS-SLOT | In-place fullscreen: retain slot vs remove/reflow | Retained slot selected (`D-dec-ww`); born-fullscreen is a separate future row |
 | V-START-SEED | Startup non-fitting topology: centre-cut inference vs long-edge seed | Selected: sequential long-edge seed, no centre inference (startup hybrid User 2026-10-08) |
 | V-START-MIN | Minimum-infeasible writes: origin+minimum vs skip vs float | B6 selected on both platforms, no setting (user 2026-10-07); KDE [delivered offline](../changes/archive/kde-minimum-origin-placement.md), native journey TBD (`D-place`; [shared minimum projection](../../crates/tiler-core/src/size_hints.rs)) |
@@ -6180,7 +6207,7 @@ Legend:
 
 ## Coverage accounting
 
-- 160 scenarios: 58 historical plus 67 expansion additions (125), 14
+- 162 scenarios: 58 historical plus 67 expansion additions (125), 14
   discriminators for USER selections 2026-10-07 (items 1-5, including 1.5;
   R-WS-15..20, R-MOV-09..13, R-LAY-05/06, R-OUT-07), 8 Q2 discriminators
   R-SPC-06..13, 2 Q3 restart research discriminators, 6 Q4 migration
@@ -6188,13 +6215,25 @@ Legend:
   (User decision 2026-10-09, reference outcomes TBD), plus 2
   admission-geometry evidence rows (R-MIN-04, R-INS-09; D1-D10 selected
   2026-10-17, core/KDE delivered offline, native outcomes TBD), plus 2
-  fullscreen-toggle discriminators R-MAX-10/11 (source-only Tier 1 legs,
-  Ours OPEN pending user decision):
-  58+67+14+8+2+6+1+2+2 = 160.
-  Their 196 Then bullets distinguish selected targets (with delivery evidence where available)
+  fullscreen-toggle discriminators R-MAX-10/11 (selected Ours behavior,
+  Tier 1 source outcomes recorded there), plus focused-fullscreen actions and
+  cross-output overlay-focus discriminators R-MAX-12/R-OUT-11 (R-OUT-11
+  selected 2026-11-01: cross from fullscreen/maximized origins to adjacent
+  outputs and preserve eligible fullscreen/maximized destination state;
+  native acceptance and unsupported reference details remain TBD):
+  58+67+14+8+2+6+1+2+2+2 = 162.
+  Their 224 Then bullets distinguish selected targets (with delivery evidence where available)
   from reference outcomes that were TBD at addition. Established source-fill
   legs now vote under the ordinary evidence rule; current counts are in the
   [source-fill consensus supplement](../research/reference-wm-consensus.md#pinned-source-fill-supplement-2026-10-09).
+  Mapping an ordinary newcomer over focused fullscreen reuses
+  [R-INS-06](reference-outcomes/insertion.md#r-ins-06-open-over-an-overlay-maximized-plus-fresh-fullscreen-variant):
+  its fresh fullscreen leg begins with focused B, maps ordinary C, and records
+  newcomer focus and B's retained fullscreen state separately.
+  Explicit directional focus reuses [R-MAX-02](reference-outcomes/maximize-fullscreen.md#r-max-02-fullscreen-focus-and-exit);
+  send R-MAX-09; float toggle R-MAX-10; close R-CLOSE-05; ordinary workspace
+  switch/return R-WS-09. R-MAX-12 only adds fullscreen-specific move, switch,
+  and layout action legs.
   Eight Q2 discriminators R-SPC-06..13 added 2026-10-08 contribute 112 Then
   bullets; D1-D8 are user-selected NORMATIVE
   (User 2026-10-08; D1/D5/D6 delivered offline, D7 implementation pending),
@@ -6215,11 +6254,11 @@ Legend:
 - 522 historical wide-table cells at baseline `e160894` (eight references
   plus combined Ours per row) are migrated to GWT without retrospectively
   assigning the new status classes. Present form: 58 historical scenarios
-  x 14 profiles = 812 Then bullets; 160 scenarios x 14 = 2240 Then bullets
+  x 14 profiles = 812 Then bullets; 162 scenarios x 14 = 2268 Then bullets
   (+28 explicit-swap-leg bullets). Expansion record's total coverage count
   remains 1720 as baseline provenance; baseline assessed cells were not a
   uniform 125x14 grid. Baseline semantic-status totals above exclude the 22
-  decision discriminators and the later Q3/Q4/R-WS-27/R-MAX-10/11 additions.
+  decision discriminators and the later Q3/Q4/R-WS-27/R-MAX-10/12/R-OUT-11 additions.
 - [Archived expansion record](../changes/archive/reference-matrix-expansion.md)
   holds final accounting, source/inventory/native-test queue and residual work.
 
@@ -6238,11 +6277,12 @@ only: 125 expansion-baseline scenarios, plus 14 decision discriminators
 discriminators and 6 Q4 workspace migration discriminators 2026-10-08:
 156 scenarios total (R-WS-27 two-candidate migration selection added User
 decision 2026-10-09 with reference outcomes TBD), plus R-MIN-04 and
-R-INS-09 (158 total; D1-D10 selected 2026-10-17, native outcomes TBD),
-plus R-MAX-10/11 fullscreen-toggle discriminators (160 total; source-only
-Tier 1 legs, Ours OPEN pending user decision).
+  R-INS-09 (158 total; D1-D10 selected 2026-10-17, native outcomes TBD),
+  plus R-MAX-10/11 fullscreen-toggle discriminators (160 total; selected Ours
+  behavior, Tier 1 source outcomes recorded), plus R-MAX-12 and R-OUT-11
+  (162 total; combined outcomes partly source-traced, remaining details TBD).
 This index retains purpose, row-addition rule, notation,
-profiles, evidence tags/legend, variant hooks, and deferred. All 160
+profiles, evidence tags/legend, variant hooks, and deferred. All 162
 scenarios use the GWT form below; no wide-table rows remain.
 Areas follow the approved priority order; column mechanics follows, and
 minimum-size stays a supplemental file (not nested in resize).
@@ -6256,11 +6296,11 @@ minimum-size stays a supplemental file (not nested in resize).
 | Layout commands | [layout-commands.md](reference-outcomes/layout-commands.md) | R-LAY-01..06 (6) | R-LAY-01/05/06 KDE implemented offline; Windows item 4 delivered 2026-10-11 (base `755aab8` + delivery commit), native Settings/owner adoption observed, physical toggle/OS suppression pending; reference source legs filled, unsupported legs TBD |
 | Workspaces | [workspaces.md](reference-outcomes/workspaces.md) | R-WS-01..27 (27) | KDE items 1/2 delivered, item 1 single-output user-confirmed, item 2 offline only; Q4 R-WS-12/21..26 implemented offline under user-selected NORMATIVE D1-D9; R-WS-27 selection delivered offline in shared/KDE and Windows. Windows local R-WS-12/21..27 including D8/G-37 delivered offline 2026-10-14 ([record](../changes/archive/windows-workspace-output-migration.md)); non-local item 12 including mode-aware hotplug offline-complete 2026-10-15, single-output native CLI regression passed in all modes ([record](../changes/archive/windows-workspace-scope-hotplug.md)); physical two-output journeys and unsupported outcomes TBD |
 | Minimize | [minimize.md](reference-outcomes/minimize.md) | R-MNZ-01..03 (3) | none (landed) |
-| Maximise / fullscreen | [maximize-fullscreen.md](reference-outcomes/maximize-fullscreen.md) | R-MAX-01..11 (11) | R-MAX-10/11 fullscreen-toggle discriminators added 2026-10-28 (source-only Tier 1 legs, Ours OPEN pending user decision); remainder landed with scrolling backfill |
+| Maximise / fullscreen | [maximize-fullscreen.md](reference-outcomes/maximize-fullscreen.md) | R-MAX-01..12 (12) | R-MAX-10/11 fullscreen-toggle discriminators added 2026-10-28 (source-only Tier 1 legs, Ours OPEN pending user decision); R-MAX-12 focused-fullscreen action outcomes TBD |
 | Groups / stacks | [groups-stacks.md](reference-outcomes/groups-stacks.md) | R-GRP-01..03 (3) | none (R-GRP-02..03 landed with scrolling backfill) |
 | Floating | [floating.md](reference-outcomes/floating.md) | R-FLT-01..14 (14) | none (R-FLT-12..14 landed with scrolling backfill) |
 | Close / reflow | [close.md](reference-outcomes/close.md) | R-CLOSE-01..05 (5) | none (R-CLOSE-03..05 landed with scrolling backfill) |
-| Multi-output | [multi-output.md](reference-outcomes/multi-output.md) | R-OUT-01..07 (7) | R-OUT-07 added 2026-10-07; reference source legs filled, unsupported legs TBD; KDE item 5 R-OUT-01/04/07 delivered offline; native journey/Windows wiring pending |
+| Multi-output | [multi-output.md](reference-outcomes/multi-output.md) | R-OUT-01..11 (11) | R-OUT-07 added 2026-10-07; R-OUT-11 selected 2026-11-01: cross from fullscreen/maximized origins to adjacent outputs, eligible overlay destinations preserve state; native journey and unsupported references remain TBD; KDE item 5 R-OUT-01/04/07 delivered offline; Windows wiring pending |
 | Mouse | [mouse.md](reference-outcomes/mouse.md) | R-DRAG-01..08 + R-MOU-01..03 (11) | none (R-MOU-01..03 landed with scrolling backfill) |
 | Special windows | [special-windows.md](reference-outcomes/special-windows.md) | R-SPC-01..13 (13) | R-SPC-04/06..13 KDE and Windows implemented offline under selected D1-D8/G-05; Windows prerequisite a41fcb5 plus runtime delivery 2026-10-11. R-SPC-11/12 lifecycle/enable and R-SPC-13 fixed-origin maximized restart discriminate readings; Windows hydrated-override overlay route is approved shared policy User 2026-10-17, option A (not implemented). Native and unsupported reference outcomes TBD |
 | Activation | [activation.md](reference-outcomes/activation.md) | R-ACT-01..02 (2) | none (landed; no backfill: no prior rows) |
@@ -6390,7 +6430,7 @@ commits; PaperWM.spoon stays corroboration only, never a separate profile.
 
 ## Windows output-send held-key discriminator
 
-- User 2026-10-14 approved as delivered ([decision](../decisions.md#move-layout-and-output-commands)); offline evidence `fda618f`, 2026-10-14.
+- User 2026-10-14 approved as delivered ([decision](../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection)); offline evidence `fda618f`, 2026-10-14.
   Fresh action-sequence sub-leg of R-OUT-04/07, not a reference vote.
 
 | Given | When | Windows offline outcome | Physical/reference outcome |
@@ -6417,7 +6457,7 @@ commits; PaperWM.spoon stays corroboration only, never a separate profile.
 ## 2026-10-24 port discriminator stubs
 
 Minimal rows for the user-approved 2026-10-24 port decisions in
-[decisions](../decisions.md#workspace-vocabulary-2026-10-24). Native
+[decisions](../decisions/workspaces.md#workspace-scope-vocabulary). Native
 results stay TBD until KDE-tested.
 
 | Variant | Minimal action sequence | Decided status | Unsupported outcome |

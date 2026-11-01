@@ -488,3 +488,48 @@ do not proceed to product integration. All native outcome rows remain TBD.
 
 Reference research: [Alt+Tab and taskbar presence](../research/windows-port/alt-tab-hidden-workspaces.md).
 Live contract: [Windows testing](../live-windows-testing.md).
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1298-1311
+
+````markdown
+- P2 | Post-0.1 research: hidden-workspace presentation configurability |
+  User 2026-10-17 (`SW_HIDE` kept for 0.1): investigate trivial
+  configurability (e.g. off-screen parking for shell inclusion);
+  switch-versus-pull remains open in post-0.1 research.
+  User 2026-10-19: wants hidden windows kept in taskbar/Alt+Tab, with
+  selection switching to the window's workspace and focusing it, and is
+  exploring configurable `SW_HIDE`/cloak. Next after the 2026-10-19 dogfood
+  item: bounded private ApplicationView cloak spike on one disposable owned
+  helper, user-run per the live guide (cloak/uncloak, taskbar and Alt+Tab
+  listing, selection, stop/crash restoration on the current build). Report
+  feasibility and a scoped design before any product change or 0.1 change.
+  Tooling and exact user-run steps: [active spike](changes/windows-cloak-spike.md).
+  [Research](research/windows-port/alt-tab-hidden-workspaces.md),
+  [decision](./decisions/workspaces.md#workspace-lifecycle-focus-and-history).
+````
+
+### Original backlog lines 1597-1615
+
+````markdown
+- P0 | Windows workspace presentation research | After multi-output, before
+  Windows release (user 2026-10-10): hidden-workspace Alt+Tab/taskbar semantics
+  + taskbar workspace indicator (parity 10) with options + recommendation.
+  Research delivered 2026-10-17 (keep `SW_HIDE`, User decision 2026-10-17 for
+  0.1; per-option comparison, owned-helper live visibility baseline,
+  reference-outcome discriminators). Taskbar indicator slice pulled forward as
+  dogfood blocker (user 2026-10-14): KDE pager-style per-output indicator
+  anchored bar-left of the tray, default-on with opt-out; MVP delivered
+  2026-10-16 on the primary bottom taskbar, user-confirmed 2026-10-17 (auto-hide
+  hides the pager, tray number/menu remain). Remaining: secondary tray anchors,
+  physical multi-output, mouse/game/anti-cheat, DPI reconfiguration, non-bottom
+  taskbars, accessibility/theme/cost; whole-strip overcapacity (no pager drawn,
+  reason logged) needs physical proof. D27 5a/5b pending via the P2
+  `Activation request` setting item. Mechanism + switch/pull selection moved to
+  post-0.1 research (see P2 hidden-workspace item). Bounded user-assisted cloak
+  spike active: [spike](changes/windows-cloak-spike.md).
+  [Indicator options](research/windows-port/taskbar-workspace-indicator.md),
+  [Alt+Tab note](research/windows-port/alt-tab-hidden-workspaces.md),
+  [evidence](changes/archive/windows-workspace-presentation-research.md).
+````

@@ -102,3 +102,27 @@ native two-display arrangement, adjacency or cross-display interaction.
 Implementation, offline gates and supplementary single-display smoke passed.
 Native two-display validation remains the bounded follow-up above; no further
 implementation change is identified.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1087-1103
+
+````markdown
+- P1 | macOS: report FULL display bounds for core-owned topology | Delivered
+  2026-10-18: world topology uses retained FULL `NativeDomain.bounds`; domain
+  bounds remain visible/menu-Dock work areas and adjacency stays empty. Display
+  identity/UUID homing, negative/above-primary origins and native Space refusals
+  are preserved. Producer-shaped FULL/work-area, shared-edge rounding, shuffled
+  Space order and missing-primary fixtures pass; macOS tests, strict clippy/fmt,
+  signed app build and verification pass. Scoped single-display TextEdit smoke
+  completed with clean shutdown and stable frames consistent with visible-area
+  tiling. Native
+  two-display arrangement validation remains pending: attach a second display,
+  capture FULL/visible/report geometry, tile disposable windows with differing
+  work-area insets, repeat left/above-primary arrangements and supported edge
+  actions, then restore the baseline. Rect-bearing diagnostic capture is still
+  needed for the live FULL/report comparison; do not infer arrangement from
+  Space order. [Evidence and exact steps](changes/archive/macos-full-display-topology.md).
+  Note: v1 delivery; the macOS v2 port below must supply FULL bounds with
+  truthful native receipts and transport per the v2 guide.
+````

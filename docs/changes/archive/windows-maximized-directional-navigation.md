@@ -27,7 +27,7 @@
 
 ## Decisions
 
-- [G-06 selected policy](../../decisions.md#window-state-float-sticky-maximize-fullscreen)
+- [G-06 selected policy](../../decisions/window-state.md#fullscreen-and-maximize-overlays)
   requires one attempt and observed-clear continuation, not API acceptance.
 - Tentative 2026-10-12, pending user review: pre-clear refusal diagnostics use
   `fullscreen-raced`, `domain-raced`, `focus-raced`, `suspended`, then

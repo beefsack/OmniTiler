@@ -147,3 +147,12 @@ or Nix update/rollback behavior is accepted by this resolution evidence.
   login/autostart behavior, and update/rollback activation across Nix
   generations are pending live evidence, not passed by static evaluation or
   shell tests.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2006-2009
+
+- P1 | External NixOS/Home Manager delivery validation | Clean external
+  install, update, rollback, and host-matching KWin ABI still unproven
+  on an independent host. Remains P1 in the 0.1 gate (user 2026-10-10).
+  [change](nix-current-host-delivery.md)

@@ -18,7 +18,7 @@ The current direction remains `cosmic_v1`: the core owns deterministic ordered
 N-ary split trees, shares, policy, and logical intent; adapters own native
 identity, work area, pixel projection, focus, shortcuts, native workspaces,
 actuation, and verification. See [the shared-core boundary](../changes/archive/shared-rust-core-architecture.md)
-and [current decisions](../decisions.md#move-layout-and-output-commands). A future
+and [current decisions](../decisions/layout-and-admission.md#directional-moveoutput-transfer-and-selection). A future
 profile is required to include both algorithm and matching shortcuts, but no
 Hyprland or native backend is selected.
 

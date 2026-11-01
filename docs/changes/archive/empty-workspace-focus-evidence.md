@@ -53,3 +53,25 @@ Unsupported source outcomes remain TBD for later user testing.
 - Documentation whitespace and diff checks complete; no code tests required.
 - Next: user chooses the desired policy from this evidence, with the COSMIC
   immediate pre-refresh case explicitly unresolved.
+
+### Backlog detail moved 2026-11-01: empty-workspace focus (original lines 399-415)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P1 | Empty-workspace focus across outputs | User physical 2026-10-20:
+  Win+digit to an empty workspace on one output focused a window on another,
+  so a following workspace send moved that window. Decided 2026-10-28: stay
+  on the empty output with no focused window; a following send has no subject
+  ([decision](../../decisions/windows.md#windows-decision-set)). Implementation
+  follows the unknown-foreground decision unless the staged switch shows the
+  departure hide causes the activation.
+  Tier 1 source evidence gathered 2026-10-28: Hyprland clears client focus
+  on empty L; i3/sway focus its workspace node. Their immediate send has no
+  client subject and leaves B on R untouched. COSMIC clears focus only on
+  refresh; its exact immediate pre-refresh send result remains TBD.
+  Pinned citations and runtime/timing limits are in the
+  [minimal action sequence](../../spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
+  with [evidence record](empty-workspace-focus-evidence.md).
+  Related to cursor-first
+  targeting above and the 2026-10-26 no-focus decisions
+  ([decisions](../../decisions/workspaces.md#workspace-lifecycle-focus-and-history)).

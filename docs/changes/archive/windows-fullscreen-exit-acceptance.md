@@ -145,3 +145,19 @@
 - Saved settings/SPI unchanged; independent restore/ledger cleanup passed and
   all proven owned disposable windows were closed. Other apps, games, automatic
   retirement edge cases and DPI/multi-output remain pending.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1509-1517
+
+````markdown
+- P1 | Windows fullscreen-exit acceptance | Startup/born exits, retained managed
+  slot return, borderless exit and owned-exit metadata retirement pinned
+  offline; owned Notepad return and fullscreen stop/relaunch/exit tiling
+  physically user-accepted 2026-10-12 (scoped single-output). User-selected
+  automatic stale retirement delivered offline for positively restored nonzero
+  chrome masks; originally captionless zero-bit metadata stays fail-closed
+  without a restoration witness (Win+F11 owned toggle is the release path).
+  Remaining: app-native/born-after-start/borderless, retirement physical,
+  fixed/game/DPI/multi-output. [Record](changes/archive/windows-fullscreen-exit-acceptance.md).
+````

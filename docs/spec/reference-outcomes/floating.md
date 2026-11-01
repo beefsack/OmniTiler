@@ -164,7 +164,7 @@ Column legs below use separately stated column Givens with the same identities a
 - Then paneru: B/C keep their independent widths 576/384 (floating A
   out drops its column with no survivor rescale). `S(S-pan-flt)` +
   `S(S-pan-stripwidth)`.
-- Then Ours KDE: TBD (Engine removal reflow not checked here); selected User 2026-10-12 D22 (a) target: floating out a tile leaves survivors in the same relative proportions (this fixture: float A, B/C become 60/40); no setting ([User 2026-10-12 D22](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). Verification-only per gap assessment at `fafcd31` (`cosmic_v1.rs:175-198`, `session.rs:2398-2399`, revision-bound); native reflow live check pending; exact native frames TBD
+- Then Ours KDE: TBD (Engine removal reflow not checked here); selected User 2026-10-12 D22 (a) target: floating out a tile leaves survivors in the same relative proportions (this fixture: float A, B/C become 60/40); no setting ([User 2026-10-12 D22](../../decisions/window-state.md#fullscreen-and-maximize-overlays)). Verification-only per gap assessment at `fafcd31` (`cosmic_v1.rs:175-198`, `session.rs:2398-2399`, revision-bound); native reflow live check pending; exact native frames TBD
 - Then Ours Windows: same selected D22 (a) target; shared survivor-share preservation receives verification-only disposition 2026-10-13 ([record](../../changes/archive/windows-item22-verification.md)); exact native reflow/frames TBD, no physical check performed
 - Variant hook: V-FLOAT-REFLOW.
 
@@ -434,7 +434,7 @@ Column legs below use separately stated column Givens with the same identities a
   1950, positive-delta nearest); tiles excluded. `S(S-pan-cmds)` +
   `S(S-pan-flt)`.
 - Then Ours KDE: G by top-left x delta; ordinary/sticky share candidates, nearer B excluded; offline `D(D-float-nav)`, live TBD
-- Then Ours Windows: G selected by top-left x delta; sticky-first single race, nearer tiles excluded; visible non-home sticky and retained maximized float targets participate. Offline 2026-10-12, base `e506350`, axis/tie/candidate fixtures. Float-origin Win+arrow focus physically user-accepted 2026-10-12 under R-FLT-07's conditions; exact tie/non-home sticky/game/DPI/multi-output TBD. Observed-before-retained tie order approved User 2026-10-14, current order kept ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)); no comparable reference majority; [record](../../changes/archive/windows-floating-directional-navigation.md).
+- Then Ours Windows: G selected by top-left x delta; sticky-first single race, nearer tiles excluded; visible non-home sticky and retained maximized float targets participate. Offline 2026-10-12, base `e506350`, axis/tie/candidate fixtures. Float-origin Win+arrow focus physically user-accepted 2026-10-12 under R-FLT-07's conditions; exact tie/non-home sticky/game/DPI/multi-output TBD. Observed-before-retained tie order approved User 2026-10-14, current order kept ([decision](../../decisions/window-state.md#fullscreen-and-maximize-overlays)); no comparable reference majority; [record](../../changes/archive/windows-floating-directional-navigation.md).
 - Variant hook: V-FLOAT-FOCUS.
 
 <a id="r-flt-10-backfill-semantic-float-move-scrolling"></a>

@@ -67,3 +67,43 @@
   `d05r-win-test.log`, `d05-kwin-test.log`.
 - No native source changed; no live testing. Existing stashes remain untouched.
   Offline scope is complete; pending native acceptance stays in the backlog.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1312-1344
+
+````markdown
+- P1 | 0.1 triage decisions - batch 1 verification (KDE/shared) | User
+  2026-10-10 approved the 15 units above, exactly recommendation (a) in
+  [triage](research/release-0.1-triage.md#user-decisions-2026-10-10).
+  - D05 / REQ-INS-05: verification-only (2026-10-11). The existing
+    shared Engine convergence route retains prior tiled focus B while an
+    ordinary float is focused; newcomer admission splits B's long edge rather
+    than root-wrapping. Shared geometry/focus and KDE PlanAdapter wire fixtures
+    prove this offline under unchanged admission policy; native observation/
+    activation acceptance remains user-owned in Pending live checks.
+    [Evidence](changes/archive/triage-batch1-kde-shared.md).
+  - Observe-first, contingent implementation: D06 / REQ-OUT-05 currently
+    admits on the newcomer's observed native output, with no focused-output
+    override; verify focused output + newcomer activation. D17 / REQ-WS-09
+    retains shared `last_active`, but KDE return focus is shell-driven; verify
+    remembered B on return. Implement only if these native outcomes mismatch.
+  - Verification-only: D02, D04, D07, D08, D11, D14 (both rows), D15, D18,
+    D19, D20, D21, D24. Existing mechanisms/defaults match; exact native
+    journeys remain pending in Pending live checks. D07's shared close/refocus/
+    fresh-reopen fixture now proves fresh admission offline with no old-slot
+    restoration; exact native ratio/order/focus evidence remains pending.
+    D18 has no setting; D20 needs raise-order proof, not a lower action.
+  - 2026-10-18 single-output attempt: blocked before any D-unit journey; no
+    acceptance advanced. Owned-desktop selection refused, later selection
+    summaries lacked canonical wire evidence, and an empty backing desktop
+    retired. Original desktop identity/name was not restored; runtime float-intent
+    preimage was missed by the helper. Preserve both pending disposition, repair
+    capture, then discriminate fixture mapping from adoption/view application
+    before any product fix. Options and producer-shaped outline:
+    [native triage record](changes/kde-triage-live.md#blockers-and-next-discriminator).
+  - Windows: D05 shares the proven Engine route; D14's keyboard trigger gap is already
+    handoff item 6 (include R-RSZ-02/03 acceptance there). D02's owned-dialog
+    exclusion is the approved divergence; D17 remembered focus and D19 hide/
+    reveal are already wired. No new Windows-specific handoff item warranted.
+````

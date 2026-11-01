@@ -159,3 +159,20 @@
   Escape are not substitutes. Physical DPI/display changes and Explorer
   restart acceptance also remain pending; unrelated desktop resources were
   not changed to manufacture those outcomes.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1459-1468
+
+````markdown
+- P1 | Windows unsafe FFI consolidation | Required under user rule 2026-10-13.
+  Delivered offline 2026-10-17: one minimal safe FFI module on `windows-sys`
+  (User option A 2026-10-17, responsibility-split `ffi/` with one unsafe
+  opt-in root); zero unsafe outside it; workspace lint inheritance and CI
+  allowlist gate delivered (32/32 policy tests). Gates 2,596 passed;
+  owned-window lifecycle, settings transactions, tray/pager picks and renderer
+  smoke pass. Remaining: physical keyboard and DPI/display/Explorer acceptance.
+  [Rule](./decisions/windows.md#rust-unsafe-guardrail),
+  [research](research/windows-port/safe-win32-wrappers.md),
+  [evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
+````

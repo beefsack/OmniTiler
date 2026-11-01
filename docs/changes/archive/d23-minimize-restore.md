@@ -119,6 +119,6 @@ review, no re-execution; gates evidence consistent):
   small close/minimize protocol distinction, folded into D23 rework. This
   supersedes the assessed/deferred close-all retention outcome above.
 - Rework and Windows item 22 are in [backlog](../../backlog.md);
-  [current decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen).
+  [current decision](../../decisions/window-state.md#fullscreen-and-maximize-overlays).
   This archive remains evidence of the original implementation, not rework
   delivery or native acceptance.

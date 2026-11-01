@@ -32,7 +32,7 @@ inference/plan, not source), UNKNOWN (not established).
 ## Selected policy (user-approved) vs proposals
 
 - SELECTED (user 2026-10-03, recorded in
-  [decisions](../../decisions.md#scope-and-platform-goals)): default to tier 2, public
+  [decisions](../../decisions/platforms.md#platform-scope)): default to tier 2, public
   plus private APIs with SIP left enabled (AeroSpace / yabai-without-SA
   class). No Dock injection, no reduced SIP. Re-evaluate deeper tiers only
   if tier 2 cannot solve a problem well.
@@ -52,7 +52,7 @@ inference/plan, not source), UNKNOWN (not established).
   observation/actuation, focus readback, visuals, menu/settings, and
   login/update lifecycle. No KWin D-Bus transplant, no universal IPC hop.
 - SELECTED (2026-10-14): all Rust; dependency selection and unsafe exceptions
-  follow [Unsafe Code](../../principles.md#unsafe-code). Main thread
+  follow [Rust and Memory Safety](../../principles.md#rust-and-memory-safety). Main thread
   AppKit/UI, dedicated input, per-app AX, engine-owned state via channels.
   `tiler-protocol` only if external IPC is needed remains a proposal.
 - The higher-level route and any injection/reduced-SIP route remain
@@ -933,7 +933,7 @@ mapping, TCC/native IDs, and the event loop. Own-repo source baseline:
 ## Adopted and open decisions
 
 Decisions adopted 2026-10-14 and 2026-10-15 are durable in
-[Current Decisions](../../decisions.md#scope-and-platform-goals). Proposals
+[Current Decisions](../../decisions/platforms.md#platform-scope). Proposals
 elsewhere in this research do not override these selections.
 
 | Decision | Options / status | Selection or remaining recommendation |
@@ -946,7 +946,7 @@ elsewhere in this research do not override these selections.
 | Workspace implementation | **Adopted: native Spaces; reaffirmed 2026-10-15** | Continue learning from yabai; virtual-workspace jank rules out parking as the initial substitute. Tier 2 unchanged |
 | Distribution | **Adopted 2026-10-15: both DMG and Homebrew** | Release signing/notarization remains separately open; notarization is not Store approval |
 | Updates | Manual DMG upgrade first vs Sparkle later | Manual first; Sparkle only after safe-restore/update proof for hidden/stranded windows; open |
-| UI language / unsafe | **Adopted: all Rust** | [Unsafe Code](../../principles.md#unsafe-code); [enforcement](../../decisions.md#rust-unsafe-guardrail) |
+| UI language / unsafe | **Adopted: all Rust** | [Rust and Memory Safety](../../principles.md#rust-and-memory-safety); [enforcement](../../decisions/windows.md#rust-unsafe-guardrail) |
 | Native settings takeover | **Adopted 2026-10-15: Authentic takes conflicting window-management shortcuts** | Includes Mission Control Ctrl+arrow/digit; native settings takeover where it causes no problems/breakage, with Revert and owned preimages as KDE/Windows. Implementation follows scoped tiling |
 | Native vs project fullscreen | **Adopted 2026-10-15: native fullscreen initially** | Revisit only for serious inconsistencies/problems; option A for minimize → restore directly fullscreen → exit retains current core behavior |
 | Delivery priority | **Adopted 2026-10-15** | Basic tiling MVP for dogfooding → native workspaces → effects |

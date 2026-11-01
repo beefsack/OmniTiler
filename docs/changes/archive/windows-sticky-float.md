@@ -102,7 +102,7 @@
   Their older full live acceptance remains open; do not infer it from this run.
 - Provisional decisions: Windows restart consumes sticky into normal float;
   existing crash-retained topmost choice carries forward. Durable rules are in
-  `docs/decisions.md#window-state-float-sticky-maximize-fullscreen`.
+  `docs/../../decisions/window-state.md#fullscreen-and-maximize-overlays`.
 - Proposed backlog: item6 sticky float shipped (Win+Shift+G), native gates/CI and
   scoped helper origins/select/current-off/Win+G/restart journey verified;
   broader crash/refusal/visual/physical checks user-owned, restart analogue

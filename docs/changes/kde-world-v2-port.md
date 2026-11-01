@@ -1210,7 +1210,7 @@
 ### Fixed-size admission consumer inventory and proposed core shape (2026-10-29)
 
 - **Focus half delivered; User 2026-10-29 approves batch invariance.** Ownership is
-  [User 2026-10-28](../decisions.md#fixed-size-admission): core withholds
+  [User 2026-10-28](../decisions/layout-and-admission.md#fixed-size-admission-predicate): core withholds
   automatic fixed-size admission activation and publishes a neutral opt-in
   keep-above-tiles desire; KDE's local consumers go away. The concrete shape
   below is approved by User 2026-10-29, implementation pending. Only the focus
@@ -1812,7 +1812,7 @@
 
 ## User decisions (2026-10-26)
 
-- [Approved decisions](../decisions.md#kde-port-and-race-decisions-2026-10-26)
+- [Approved decisions](../decisions/world-rendering.md#kde-renderer-freshness)
   supersede earlier parked recommendations only as specified here; approval is
   not implementation or native acceptance.
 - Stage 5: accepted offline gesture transport precedes renderer freshness.
@@ -2210,7 +2210,7 @@
   Y completes. Independent target removal/change, layout, focus and fullscreen
   still invalidate immediately; release uses the current target. Improve latency
   rather than hide a valid same-gesture preview. See the
-  [durable decision](../decisions.md#active-drag-preview-continuity-2026-10-27).
+  [durable decision](../decisions/world-rendering.md#active-drag-preview-continuity).
 
 ### Active-drag preview continuity: accepted offline (2026-10-27)
 
@@ -2689,7 +2689,7 @@
   and world-owned born-maximized/fullscreen/fixed-size admission and lifetime
   reconciliation through existing clear tokens/raw attempts. No broker birth
   owner, synchronous completion assumption or platform-specific logical state.
-  [Durable decisions](../decisions.md#world-command-intent-and-birth-ownership-2026-10-26).
+  [Durable decisions](../decisions/commands.md#workspace-tiling-intent).
 - Accepted offline: `WorldCommand::ToggleWorkspaceTiling { output, workspace }`
   resolves retained mode at execution and uses the existing explicit-set body.
   Wire `toggle-workspace-tiling` accepts `op/out/ws`; a `tiled` field refuses.
@@ -3073,7 +3073,7 @@
 - Inventory: catalog tokens/default and shared core modes exist, but KDE export
   still withholds `global-unique` and entry rewrites it to `per-output-local`.
   Those stale tentative restrictions conflict with the approved
-  [workspace vocabulary](../decisions.md#workspace-vocabulary-2026-10-24).
+  [workspace vocabulary](../decisions/workspaces.md#workspace-scope-vocabulary).
   Separate-mode warning and Virtual Desktops settings action are absent; native
   option labels do not match the approved vocabulary.
 - Restore all three unchanged tokens on KDE, retaining per-output-local default,
@@ -3541,13 +3541,13 @@ Two outputs, ordinary tiled windows.
   identical text, so the user cannot tell them apart. Workspaces are created
   on demand by Meta+number/Meta+0 at the next missing index, but empty ones
   are never removed. Per-mode independent/linked switching was not reported.
-- Label finding resolved: KDE uses the own-set/swap qualifiers (User 2026-10-29 confirms approval of the [2026-10-28 refinement](../decisions.md#workspace-vocabulary-2026-10-24)); exporter tests 14/14 and generated-artifact freshness check pass; no workspace behavior changes.
+- Label finding resolved: KDE uses the own-set/swap qualifiers (User 2026-10-29 confirms approval of the [2026-10-28 refinement](../decisions/workspaces.md#workspace-scope-vocabulary)); exporter tests 14/14 and generated-artifact freshness check pass; no workspace behavior changes.
 
 ### Empty native workspace lifecycle investigation (2026-10-29)
 
 - Current implementation classification **(b): recorded v2 retention**, not a
   missing KDE removal call. User 2026-10-29 below supersedes retention as policy;
-  the [adoption record](../decisions.md#native-adoption-2026-10-24) described the
+  the [adoption record](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19) described the
   existing implementation, not permanent product intent. The user did not
   identify the affected mode(s).
 - Source: `world_native.rs:77-81` defines native bindings as retained even when
@@ -3566,7 +3566,7 @@ Two outputs, ordinary tiled windows.
   when needed (`world_native.rs:350-390`), explaining on-demand creation without
   eager native spare creation. Numbered selection can target an existing logical
   spare without implying arbitrary missing-number creation.
-- Contract tension at investigation time: the older [workspace rules](../decisions.md#workspaces)
+- Contract tension at investigation time: the older [workspace rules](../decisions/workspaces.md#workspace-lifecycle-focus-and-history)
   select managed-empty cleanup with global emptiness, no trailing/view/protection
   claim and the two-workspace floor. [R-WS-10](../spec/reference-outcomes/workspaces.md#r-ws-10-send-b-away-empty-middle-retained-vs-removed)
   records removal in COSMIC, Hyprland, i3 and sway; REQ-WS-10 was OPEN.
@@ -3748,7 +3748,7 @@ Two outputs, ordinary tiled windows.
 
 - No creation defect established offline. An idle ordinary trailing spare stays
   logical-only; core deliberately emits no `nativeCreations` for it. The existing
-  [decision](../decisions.md#kde-port-and-race-decisions-2026-10-26) says native backing is gained only
+  [decision](../decisions/world-rendering.md#kde-renderer-freshness) says native backing is gained only
   when used. Eager native spare creation would change that behavior, not repair
   a missing KDE actuator; recommendation: preserve on-demand creation.
 - `e422f59f` adds an explicit `trailing` designation, not creation authority:
@@ -3775,3 +3775,207 @@ Two outputs, ordinary tiled windows.
   remain TBD in the [discriminator](../spec/reference-outcomes.md#kde-trailing-native-creation).
   Managed-native removal remains the separate pending implementation above;
   no shared creation defect was found.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 567-763
+
+````markdown
+- P1 | KDE v2 port (inherits boundaries P1) | KDE JS/Rust v2 cutover and removal
+  of the TypeScript born-maximized copy are delivered offline, with no dual
+  route, per the finalized
+  [guide](porting/world-adapter-guide.md) and
+  [KDE notes](porting/kde-port-notes.md). Approved port work: host-owned
+  bootstrap/bindings and outside native changes; remote raw classification facts
+  via broker transport to shared policy entry; both separate-view modes (linked
+  vs separate views, unchanged tokens) subject to the KWin setting and required
+  warning, not global-unique removal; equal workspace count as host limitation;
+  native startup/outside-change adoption; independent host highlight colors.
+  Deferred investigations: Activities/multi-desktop, async configure. Four
+  minimal port discriminator rows keep untested native outcomes TBD; Activities
+  defaults tentative pending KDE evidence. v1 KDE rows below keep their
+  historical evidence; replacement belongs to this port. Status (2026-10-28):
+  Stages 0-3 complete offline. Stage 4: raw capture, shortcuts and N6 (neutral
+  workspace-tiling toggle, core-owned birth clear, raw deleted/unmanaged
+  mapping) landed; native gesture transport (decision B Esc fence, native
+  `{instance, serial}` identity) accepted offline; titlebar-drag Esc physically
+  passes. Stage 5 static border/underlay freshness after member moves and focus
+  leave/return passes physically on two mixed-scale outputs. After `c0435a3c`,
+  preview continuity improves with an acceptable small appearance delay, and
+  cross-output drop placement is physically confirmed. Focused-fullscreen
+  suspension is implemented: physical output-local hide, unaffected other output,
+  send, switch hide/reveal and exit restoration pass; window shortcuts unconfirmed.
+  Stages 4/5 remain partial. Stage 6 is complete offline: producer-shaped
+  `windowAt` QList decoding, event-driven cursor capture without polling or
+  pure-motion work, unsupported-warp truth and independent border theme/override
+  coverage. Native styling/input checks remain unverified. Stage 7 workspace
+  modes is complete offline: all three tokens and exact labels, separate-mode
+  warning and navigation-only Virtual Desktops action, producer/broker/native
+  settings regressions. Native all-mode acceptance remains TBD. Stage 8 is
+  partial: bounded ownership audit, fixture-scoped two-window admission/tiling
+  and select-away/back membership/frame/foreground checkpoints; tiled-mode
+  compositor hide/reveal on one output now passes independent review.
+  Renderer coverage, other-mode acceptance, focus/send/both-output/close and
+  full ownership closure remain TBD. The unscoped-start incident's surviving
+  affected window was restored to its exact baseline after fresh identity
+  verification and independent review; a different user-closed window is
+  excluded. Protected records, full shortcut tuples, effects, config/store
+  bytes/modes and desktop/view state match; pointer drift was user activity.
+  A test-only observer (25 offline checks), now preserved in
+  `kwin/tests/visibility-probe/` and excluded from runtime packages/product
+  loading (source archive inclusion only), witnessed compositor
+  visibility true/false/true across select-away/back. The first attempt was
+  rejected for broad return capture and a missing native-away checkpoint;
+  a fresh corrected leg passes with exact-sender complete replies, full
+  Describe/native pre/away/back joins and restored inventories. Effect/link
+  and owned processes were removed. A subsequent four-window focus/send-follow
+  in both directions/close-reflow collection was rejected for helper calls not
+  bound to load receipts; no native acceptance advances. Independent restoration
+  checks match protected/workspace records, all 20 shortcut component bodies,
+  effects and configuration/store content/modes; known owned processes are gone.
+   The fresh redo adds no native acceptance: effect preflight and fixture/native
+   attribution were incomplete; no focus/send/close journey checkpoint ran.
+   Fresh post-teardown comparisons match full protected/workspace records,
+   all 20 shortcut bodies and captured config/store content/modes; full
+   restoration proof remains incomplete without effect preimages and a complete
+   project-config manifest. Stack down, probe unloaded, owned processes gone.
+   Baseline checker accepted: 28/28 offline checks, two complete matching
+   captures, exact helper absence and unchanged effects/scripting; rejected draft
+    removed. Unit 2 is now native-only: 544 lines, 11/11 hermetic checks and
+    independent source review pass. Fresh baseline, both exact sentinel/PID-to-
+    UUID/frame joins, fixture/process teardown and full restoration comparison
+    pass (48 matches, zero mismatches). Both fixture frames landed on one output;
+    no reposition/retry followed, so one-per-output dry-run coverage remains open.
+    User 2026-10-28 dropped the probe from attribution, removing compositor-XDG
+    access as a dependency; existing hide/reveal proof stands. User 2026-10-28
+    then dropped the automated focus/send/both-output/close legs (even split,
+    each needed about 100 live commands): these behaviors are covered by
+    offline tests plus the physical checks below; the staging gap is moot.
+    For hide/reveal, use a test-only scripted KWin effect (never shipped)
+    loaded only during the relevant live legs, reading `EffectWindow.visible`
+    for fixture windows, unloaded afterwards with effect-inventory restoration
+    proof; promote to a native-effect diagnostic only if the KDE stress runner
+    later needs it.
+  Activities/multi-desktop and async configure stay deferred investigations
+  until Stage 8 and the KDE physical checks complete (user 2026-10-28), then
+  run evidence-only: pinned KWin source plus fixture-only legs filling
+  discriminator rows, no core/adapter changes; proposals return to the user.
+  - **DONE offline | Moving-border comparison (2026-10-28):** reproducible
+    test-only real-core comparison: Core-live absolute replay trails motion
+    (max/mean position error 160/129.14 coordinate units); Core-anchored tracks
+    live position/size exactly with the same causal structural gate. Both reject
+    old paint across focus, close/reuse, fullscreen, layout and gesture A/B
+    boundaries; underlay remains exact/group-defined and preview unchanged.
+    Separate virtual pipeline measurements and native limits are in the
+    [findings](changes/kde-world-v2-port.md#moving-border-offline-comparison-2026-10-28).
+    Adopted for v4 by the user 2026-10-31
+    ([anchored border](./decisions/contract.md#anchored-border-r20)); shipping behavior
+    unchanged until implemented.
+  - Local fixed-size consumers: focus half delivered offline, approved by
+    **User 2026-10-29**. Core selects the last non-withheld newcomer, skipping/
+    spending automatic-fixed arrivals; all withheld means no focus. KDE's local
+    admission veto is deleted. Batch invariance keeps the ordinary focus intent
+    in either mixed arrival order. `world-observe.ts::isFixedSizeWindow` and
+    automatic keep-above (`world-native.ts`) remain unchanged. Inventory and
+    [approved core shape](changes/kde-world-v2-port.md#fixed-size-admission-consumer-inventory-and-proposed-core-shape-2026-10-29)
+    recorded; Windows-profile WorldEngine effect omission passes, but Windows
+    adapter-route/native verification remains open. **Implementation | User
+    2026-10-29:** approved neutral `keepAboveTiles: null | false | true`
+    (no authority / release project-owned above / request above-tiles without
+    activation or geometry); never clear user above, force below or own
+    pre-existing above. Core decides; adapters report above/below/ownership facts
+    and apply mechanically, then delete KDE's local predicate consumer. Preserve
+    below/external-clear no-reacquire and focused-fullscreen safety. Join v3 if
+    ready, otherwise a separate exact-version bump; Windows shares the codec but
+    automatic-fixed stacking stays opt-out (D8). Unload/restart ownership safety
+    remains a separate open blocker ([record](changes/kde-automatic-float-stacking.md)).
+  - N5 membership/eligibility split implemented offline; native role/hidden
+    checks and Activities remain unverified. Windows/macOS behavior unchanged.
+  - Execution-time float toggle: approved, not started; blocked on the open
+    macOS first-float placement question under the macOS port item.
+    Execution-time implicit output targeting is closed by `a68036b3`.
+  - **DONE (2026-10-29):** operation-pair outer-gap investigation: corrected
+    operation drag preview/drop gap fields; directional and send routes pinned.
+    Explicit-operation output-send dispatch also **DONE (2026-10-29)**:
+    output builder preserves target workspace/follow and existing fences;
+    approved by **User 2026-10-29**. Offline regressions and gates pass.
+    [Outcome](changes/kde-world-v2-port.md#operation-pair-outer-gap-bookkeeping-2026-10-29).
+  - User physical checks 2026-10-28 pass: directional focus (local then
+    cross-output), send/follow both directions, close/reflow on each output,
+    rapid A/B drags (no stale paint, correct drop), Stage 6 cursor/border/
+    colours/pager, Virtual Desktops quick fix. Open findings, to triage:
+    Meta+G and Meta+M are dropped on a fullscreen window; the two separate-mode
+    labels are identical; border still hides during drag (strict coverage,
+    known). Workspace non-removal is current v2 native-bound retention, not
+    a missing KDE actuator; mode(s) unspecified. Selected replacement below.
+    [Results](changes/kde-world-v2-port.md#user-physical-checks-2026-10-28).
+  - **Implementation | User 2026-10-29:** restore core-directed removal of
+    eligible managed KDE native desktops, including adopted desktops, matching
+    Tier 1 empty non-viewed cleanup. Preserve global native-occupancy/view/
+    trailing/protection checks, readable facts only, required equal-count padding
+    and the minimum-two floor; unmapped desktops stay outside management.
+    **User 2026-10-29:** adapters report neutral complete/readable native
+    occupancy (all windows, managed or not) through a coordinated exact-version
+    protocol cutover; core retains logical rows/bindings until native deletion
+    readback; KDE keeps its fresh safety vetoes. No adapter-owned occupant
+    eligibility or v2-only side channel. `keepAboveTiles` joins the same version.
+    **User 2026-10-29:** this bundle is its own exact bump to v3 now; the
+    Windows visibility cutover renumbers to v4. v3 neutral native occupancy
+    prerequisite delivered offline 2026-10-29
+    ([record](changes/kde-world-v2-port.md#native-occupancy-v3-cutover-2026-10-29));
+    core-directed retirement with readback retention delivered offline
+    2026-10-29 (no independent review; native/physical checks pending: fixture
+    deletion/readback across modes, unmanaged/sticky occupancy, visibility races,
+    floor, staggered readback, stable identities); `keepAboveTiles` separate
+    same-v3 follow-up. **User 2026-10-29:** retirement retains a bound
+    row needed as equal-count padding (no delete-and-replace); joint reductions
+    are allowed where parity survives; surviving logical/native identities are
+    preserved while ordinals compact.
+    [Investigation](changes/kde-world-v2-port.md#empty-native-workspace-lifecycle-investigation-2026-10-29).
+  - **Check | User 2026-10-29:** dogfooding suggested the empty trailing
+    workspace was not created on KDE. Investigate trailing workspace creation
+    first, using upstream `e422f59f`'s explicit trailing designation. Investigated
+    offline 2026-10-29: the idle trailing spare intentionally stays logical-only
+    and gains native backing only when used (viewed, targeted or occupied); KDE
+    consumes explicit on-demand creations. No on-demand creation failure is
+    established; eager native backing would change decided behavior.
+    [Outcome](changes/kde-world-v2-port.md).
+  - **Core delivered offline 2026-10-29 | R-MAX-02:** core directional focus
+    from fullscreen skips same-output siblings, continues to an adjacent output
+    in that direction, otherwise stays. Wire through all adapters; explicit click,
+    focus-by-window and workspace switch unchanged. Tier 1 majority: Hyprland,
+    i3, sway. Fifteen core regressions and all scoped gates pass; KDE uses core
+    unchanged. Adapter parity remains open: Windows native fullscreen-foreground
+    safety veto can block departure; macOS hotkeys remain local-only (existing
+    deferred integration). No native acceptance claim.
+    [Record](changes/archive/fullscreen-directional-focus.md),
+    [reference row](spec/reference-outcomes/maximize-fullscreen.md#r-max-02-fullscreen-focus-and-exit).
+  - Fullscreen float/maximize (user 2026-10-28, from
+    [R-MAX-10/11](spec/reference-outcomes/maximize-fullscreen.md#r-max-10-float-toggle-on-fullscreen)):
+    float toggle on a fullscreen window follows the Tier 1 majority: the
+    window becomes floating but stays fullscreen, and leaving fullscreen
+    shows it floating; toggling again while fullscreen re-tiles it, invisibly
+    until exit. Maximize toggle on a fullscreen window follows Hyprland:
+    fullscreen is replaced by maximized. Both supersede the recorded
+    refusals; explicit commands only, no automatic fullscreen writes (D5).
+    Float delivered offline in shared Session plus KDE: single/double toggle,
+    sibling reflow, no fullscreen-subject writes and both exit states covered.
+    Maximize also delivered offline in shared Session plus KDE: **User 2026-10-29**
+    approves the core command/result route over adapter policy, explicit D5 writes,
+    both-flags -> maximized, retained tiled/floating base and Windows legacy
+    float-refusal helper until integration. Clear-before-max native order and
+    no-command safety covered. Native/physical acceptance
+    pending, user-owned. Additive command/result needs coordinated protocol
+    bump review; no version bump in this delivery.
+    Windows/macOS adapters follow in their own items.
+    [Float record](changes/archive/fullscreen-float-toggle.md),
+    [maximize record](changes/archive/fullscreen-maximize-toggle.md).
+  - Ghostty cross-output height/width shortfall is external client/toolkit
+    sizing; no OmniTiler retry or artificial resize workaround. Draft upstream
+    report pending filing ([decision](./decisions/world-rendering.md#cross-output-gesture-release-placement)).
+  Tentative adoption decisions and the oversized decorated-hint bound stay
+  queued for cross-platform review.
+  [Record](changes/kde-world-v2-port.md).
+  [Batched physical run sheet](changes/kde-physical-checklist.md) consolidates
+  pending native/physical sub-legs; desktop lifecycle and blocked-policy checks excluded.
+````

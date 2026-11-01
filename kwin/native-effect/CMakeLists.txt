@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Split build: the two settings KCMs are KWin-independent (Qt/KF6 only,
 # D-Bus effect reconfigure tolerates an absent effect), while the
-# active-border effect is ABI-bound to KWin headers plus the Cargo
-# staticlib. Both default ON to keep the existing full developer build;
+# active-border effect is ABI-bound to KWin headers. Both default ON to
+# keep the existing full developer build;
 # distro/Nix settings-only consumers configure with
 # -DOMNITILER_BUILD_EFFECT=OFF (needs only ECM 6.24 + Qt6/KF6),
 # and effect-only companions with

@@ -4,8 +4,8 @@
   (one minimal safe FFI module on `windows-sys`; keep the module minimal).
   Route delivered offline 2026-10-17; see the
   [implementation evidence](../../changes/archive/windows-unsafe-ffi-consolidation.md).
-- Backlog: [13g](../../backlog.md). Principle: [Unsafe Code](../../principles.md#unsafe-code).
-  Guardrail: [Rust unsafe guardrail](../../decisions.md#rust-unsafe-guardrail).
+- Backlog: [13g](../../backlog.md). Principle: [Rust and Memory Safety](../../principles.md#rust-and-memory-safety).
+  Guardrail: [Rust unsafe guardrail](../../decisions/windows.md#rust-unsafe-guardrail).
 - Snapshot: local source at `aa76633` (2026-10-16); upstream data as served
   2026-10-16 (upstream timestamps recorded below).
 - Bottom line: `winsafe` has substantial adoption but concentrated maintenance

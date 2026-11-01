@@ -1,4 +1,4 @@
 # First-party license policy; see docs/research/licensing.md, sections 2-3.
-# Permissive dependency licenses; see docs/decisions.md, Licensing.
+# Permissive dependency licenses; see docs/decisions/development.md#licensing.
 [licenses]
 allow = ["Apache-2.0", "MIT", "Unicode-3.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"]

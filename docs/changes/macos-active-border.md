@@ -193,7 +193,7 @@ multiple displays, stacking variants and real games remain follow-up coverage.
 
 ## Host differences and review
 
-The [tentative visual decision](../decisions.md#visuals-border-underlay-and-grouping)
+The [tentative visual decision](../decisions/visuals.md#shared-visual-safety)
 records: native accent and point/backing conversion; startup-only configuration
 instead of Windows live Apply; work-area axis equality for floating zoom rather
 than native maximize flags; extra full-display safety suppression even for placed

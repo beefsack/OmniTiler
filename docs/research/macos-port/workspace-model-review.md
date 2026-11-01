@@ -139,8 +139,8 @@ minimized facts must not become a fake parking observation ([decisions][decision
 [native-routes]: native-spaces-routes.md
 [prior-art]: prior-art.md
 [vision]: ../../../VISION.md
-[fullscreen-decision]: ../../decisions.md#macos-dogfood-review-decisions-2026-10-27
-[roi-decision]: ../../decisions.md#roi-review-and-receipt-retirement
+[fullscreen-decision]: ../../decisions/macos.md#follow-up-review-and-investigation-priority
+[roi-decision]: ../../decisions/macos.md#follow-up-review-and-investigation-priority
 [core-desire]: ../../../crates/tiler-core/src/world_report.rs#L318-L337
 [core-view]: ../../../crates/tiler-core/src/world_report.rs#L339-L351
 [core-ws]: ../../../crates/tiler-core/src/workspace.rs#L20-L71

@@ -685,6 +685,22 @@
   five-package test command, including macOS tests; its environment does not
   reproduce the local Unix-helper availability blocker. This documentation
   follow-up records the delivered state without runtime changes.
-- Open product decisions: none for these corrections. Exact next action: run
+ - Open product decisions: none for these corrections. Exact next action: run
   corrected-build user acceptance above and correlate remaining presentation
   failures. Keep this record active until those physical outcomes are known.
+
+### Backlog detail moved 2026-11-01: Windows single-output dogfood (original lines 493-503)
+
+*Verbatim open-work detail retained from the 2026-11-01 backlog trim.*
+
+- P0 | Windows single-output dogfood 2026-10-19 | Delivered and pushed
+  (`a372078e`, `6911b8d2`, CI green). Delivered: (1) fullscreen admin-game
+  suspension behavior, (2) maximized return focus, (3) pager z-order/styling,
+  halo and shared WinRT accent accepted; (5) black accent/startup crash fixed
+  and accepted over 10 starts; (6) app-hidden-as-close adopted (release/reflow,
+  fresh admission on reshow). Remaining user-run acceptance: app hide/reshow,
+  desktop/Start pager, accent change while running
+  ([record](windows-single-output-dogfood.md)); (4) pager hidden by
+  desktop-click/Start menu (misclassification fixed, native diagnostics added;
+  user recheck pending). Hidden windows' Alt+Tab/taskbar presence is the
+  separate post-0.1 item below. Full dogfood history archived 2026-10-24.

@@ -290,7 +290,7 @@ is the observation-driven proposal, never the native verb.
   exact full-domain survivor geometry plus focus; native overlay cleanup TBD,
   user-owned ([record](../../changes/archive/kde-fullscreen-activation-and-send.md)).
   `S(S-ours-close)`; selected removal plus survivor refill/focus
-  (User 2026-10-12 D01 / CLOSE-05 (a), [decision](../../decisions.md#placement-minimums-and-startup-adoption)); queued.
+  (User 2026-10-12 D01 / CLOSE-05 (a), [decision](../../decisions/layout-and-admission.md#placement-and-minimums)); queued.
 - Then Ours Windows: same Engine removal and desired focus A; native
   cleanup TBD. `S(S-ours-close)`; same CLOSE-05 selection, queued.
 - Variant hook: provisional/TBD (overlay-close hook, to discuss).

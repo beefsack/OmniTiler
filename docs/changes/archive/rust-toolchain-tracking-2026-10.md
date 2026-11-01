@@ -148,3 +148,25 @@ derivation. Record their separate version baselines and host-check limits.
   parked on unstable availability. No gates ran (no new toolchain), no
   session restart needed. Next: recheck unstable for the staging-next
   merge-down, then follow the existing pin-bump procedure.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1972-1988
+
+- P1 | Rust toolchain tracking (recurring) | User (2026-09-30): track latest
+  stable Rust pre-1.0 and fix breakage. Windows uses rustup `stable`; Linux
+  and CI get Rust from the nixpkgs pins in `devenv.yaml` and `flake.lock`, which must be bumped
+  regularly to stay close to stable. Revisit the upgrade process at 1.0.
+  Checked 2026-10-04 (`4212456`, `929adf5`, `c486c59`; CI green): hosted
+  Windows/macOS CI now refreshes stable (1.99.0); Linux devenv stays at
+  1.98.1 and native CI flake at 1.97.1 until 1.99.0 reaches nixos-unstable
+  (read-only recheck 2026-10-09: devenv `e554fab7` 1.98.1; native flake
+  `54ba4bce` 1.97.1, lagging devenv; latest stable 1.99.0 dated 2026-10-01;
+   unstable HEAD `e7439b6b` dated 2026-10-08 still 1.98.1, no `1_99.nix`;
+2945:   read-only recheck 2026-10-12: latest stable still 1.99.0 dated 2026-10-01;
+2946:   unstable HEAD `6510408d` dated 2026-10-10 still defaults to 1.98.1, no
+2947:   `1_99.nix`, KWin/Qt/KF unchanged at 6.7.5 / 6.11.2 / 6.30.0; 1.99.0 has
+2948:   reached `staging-next` but per procedure that route needs a separate decision).
+  No bump. Next: recheck, then bump devenv and native flake
+  pins; user re-enters devenv after the bump.
+  [record](rust-toolchain-tracking-2026-10.md)

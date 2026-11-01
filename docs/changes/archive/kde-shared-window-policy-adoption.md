@@ -91,3 +91,20 @@ formatter, not a predicate.
 - `devenv shell --impure -- npm run typecheck --prefix kwin`: passed.
 - `git diff --check`: passed. Rust gates not run: no Rust changes.
 - No live testing or new native acceptance claim; no new product decision.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 350-359
+
+````markdown
+- Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
+  KDE acceptance of full-state replies (now owned by the KDE v2 port item
+  below); (3) KDE Settings core-catalog
+  migration (delivered offline); (4) best-effort admission core+KDE (delivered
+  offline; live re-check below); (5) KDE dual-output live
+  testing and fixes; (6) KDE shared window-policy adoption (closed by
+  [audit](changes/archive/kde-shared-window-policy-adoption.md)); (7) 0.1 triage live
+  checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
+  KDE module-size refactoring. Live passes recorded before the full-state
+  route (2026-10-17) need repeating where that route changed the path.
+````

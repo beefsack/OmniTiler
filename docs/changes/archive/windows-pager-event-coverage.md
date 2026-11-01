@@ -61,3 +61,17 @@
 - The conditional pre-0.1 investigation is complete; timer replacement did not meet its acceptance condition. Existing icon refresh, suppression and retry behavior remain unchanged. No further implementation action is selected.
 - User-approved 2026-10-19: pager probe closed on this negative outcome; 2 s
   timer retained, no replacement work selected.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2083-2091
+
+- P2 | Windows pager event coverage | Post-0.1 (user 2026-10-19 option A,
+  amending 2026-10-18 decision 5): retain the visible-pager 2 s
+  topmost-recovery timer for 0.1. Exercise own-window instrumentation,
+  arbitrary visibility loss, Explorer restart, display/DPI changes and
+  broader reorder coverage, including the observed desktop-parent
+  `EVENT_OBJECT_REORDER` (`OBJID_CLIENT`) outside current subscriptions.
+  Prove complete event coverage and self-feedback-safe recovery before
+  replacing the timer; no best-effort substitute.
+  [Probe and limits](windows-pager-event-coverage.md).

@@ -13,14 +13,14 @@
   `xcodebuild` is unavailable; plain `codesign` is present without full Xcode.
 - Related research: [prior art](research/macos-port/prior-art.md) and the
   [tier-2 plan](research/macos-port/plan.md). Selected default (user
-  2026-10-03, [decisions](decisions.md#scope-and-platform-goals)): tier 2,
+  2026-10-03, [decisions](./decisions/platforms.md#platform-scope)): tier 2,
   public plus private APIs with SIP left enabled; no Dock injection, no
   reduced SIP. Surveyed managers use different routes.
   This runbook grants no live-testing authority and makes no install.
 - Adopted 2026-10-14: **macOS 15 minimum, Apple Silicon only**. Current
   Homebrew Mac-only OS events give 15+ approximately 93.27% coverage; this
   developer/event-weighted sample is a proxy, not population proof.
-  [Decision, sources, and API-risk rationale](decisions.md#scope-and-platform-goals).
+  [Decision, sources, and API-risk rationale](./decisions/platforms.md#platform-scope).
   A newer development OS does not validate the floor; Intel is out of scope.
 
 ## Adopted and remaining setup decisions
@@ -31,7 +31,7 @@
 | OS floor and Intel | **Adopted 2026-10-14:** macOS 15+, Apple Silicon only. | Separate floor-runtime validation remains required. |
 | Dev signer and release membership | **Adopted 2026-10-14:** persistent self-signed development identity; no paid membership initially. | Release Developer ID/notarization remains open; see section 5. |
 | mise as install route | Tool-agnostic installs now vs adopting mise later as the cross-platform route. | **Adopted:** root `mise.toml` manages Rust (via rustup), just, gh, rg, jq with OS-filtered entries (Linux ignores it); `yq` stays Windows-only and is not in the macOS inventory. Manual prerequisites stay manual: Xcode/CLT, host shell bootstrap, Git route per user choice. User runs `mise trust` / `mise install` from the repo root; gates use `mise exec -- cargo ...`. |
-| UI language | **Adopted 2026-10-14:** all Rust, including UI. | [Unsafe Code](principles.md#unsafe-code); [enforcement](decisions.md#rust-unsafe-guardrail). |
+| UI language | **Adopted 2026-10-14:** all Rust, including UI. | [Rust and Memory Safety](principles.md#rust-and-memory-safety); [enforcement](./decisions/windows.md#rust-unsafe-guardrail). |
 
 ## Day-one setup, in order
 

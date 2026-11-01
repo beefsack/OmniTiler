@@ -52,7 +52,7 @@ KDE 0.1 supports KWin 6.6 and later, including tiling, Settings and the native
 effect. On 6.6 one current desktop applies to every output; a saved per-output
 workspace request degrades to shared with a diagnostic. Per-output workspaces
 require KWin 6.7+. Plasma 5, Debian 13's KWin 6.3.6, and KWin 6.4/6.5 remain
-unsupported. [Support decision](decisions.md#kde-support-floor).
+unsupported. [Support decision](./decisions/kde.md#kde-support-floor).
 
 ## Recipe layout (tentative)
 

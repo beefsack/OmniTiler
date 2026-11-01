@@ -51,4 +51,4 @@ typecheck, bundle build; CTest skipped (native untouched).
   evidence or establish rework/native delivery.
 - [Original record and revised scope](d23-minimize-restore.md#user-review-2026-10-13),
   [queue](../../backlog.md),
-  [decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen).
+  [decision](../../decisions/window-state.md#fullscreen-and-maximize-overlays).

@@ -78,3 +78,17 @@ behavior or live acceptance is included.
   captured as the new fixture baseline (tentative, pending user review).
   See the [acceptance continuation](../kde-live-acceptance.md) for evidence,
   offline gates, retained configuration differences and subsequent live checks.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 812-818
+
+````markdown
+- P0 | KDE Meta+G unfloat does not re-tile until focus changes | Fixed offline
+  2026-10-17, pending user re-check. The apply observation retained stale
+  floating/fit-excluded flags after accepted unfloat; settle float departures
+  and tile overrides before capture while preserving float placement timing.
+  Producer-shaped production-entry regressions fail before the correction and
+  pass after it; Rust workspace **2888 passed**, KWin **1772 passed**.
+  [Evidence and script-restart re-check](changes/archive/kde-unfloat-immediate-retile.md).
+````

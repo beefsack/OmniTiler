@@ -117,3 +117,23 @@ prove them. No live claim yet.
 - Acceptance evidence: foreground equality, drift and raw out-of-bounds dispatch and flag-differing work-area reprojection have new behavior tests. Hidden sticky multi-home quiet and one-shot gap `update-gaps` have new behavior tests. Existing KWin coverage verifies foreground/hidden arrivals, departures, flags, scope and explicit empties; unreadable quarantine and force retention; overlay and initial-fullscreen hold; interactive and pointer echoes; pending changed-scope reply rejection; post-command and terminal send/R4 source/target single-flight and once-only follow. `kwin/npm test`: 796 passed, 0 failed (790 baseline). `npm run typecheck` and `git diff --check` pass. No affected `scripts/*.test.sh`; no Rust changes.
 - Live checks for the user: single-output test system - compare equal/change/uncertain logs and write counts across newcomer/close, flag transition, client-held drift, work-area change, fullscreen/maximize entry/exit, interactive resize finish and a later event after a signal-less change. Multi-output test system - exercise hidden workspaces, sticky multi-home, output/work-area transitions, unreadable output quarantine, delayed/stale replies and immediate/delayed send/R4 arrival; confirm once-only follow and forced source/target refresh. Follow `docs/live-kwin-testing.md` for any later authorized live run. Phase-2 size evidence is deliberately not evaluated here.
 - Remaining risk: no native live confirmation of event delivery or client geometry behavior; signal-less idle changes remain undiscovered until the next event/command by decision. No product open question. Exact next action: none for this phase; user tests phase 1 before considering phase 2.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 2053-2067
+
+- P2 | Robust difference reconciliation | Scope decided (user, 2026-09-28):
+  (1) event/next-command detection only, no polling (revisit after testing);
+  (2) learn size limits only from settled repeatable evidence; (3) replan
+  neighbours around learned limits only, native maximum behavior unchanged;
+  (4) KWin script and Rust tiling only, native effect unchanged. Added
+  complexity must deliver more value than it costs. Phase 1 (shared
+  foreground/hidden classifier, refresh classification logs) passed the
+  user's live test at `062d707` (2026-09-28, "felt good and minimally
+  janky"; trace `omnitiler-dev.uE1S5n.log`). Quiet
+  refresh outcomes were ~60% of refresh log lines. Phase 2 (learned limits)
+  parked by the user (2026-09-28) after a candidate exceeded the complexity
+  rule; preserved on branch `wip/learned-size-limits`; resumes only if the
+  P1 Ghostty/output check leaves a genuine client-held limit.
+  [record](robust-difference-reconciliation.md)
+  [parked](../learned-size-limits.md)

@@ -364,7 +364,7 @@ closed/updated. Every sampled item is listed below; no prevalence or ranking cla
 
 ## Candidate lessons for this project
 
-- Current approach below is the approved record at project baseline `065ca54`, read on 2026-10-10, not a new implementation audit or live acceptance claim: [Engine](../decisions.md#engine-architecture-and-convergence), [live boundary](../decisions.md#live-kwinplasma-boundary), [shortcuts](../decisions.md#shortcuts-conflicts-and-presets), [visuals](../decisions.md#visuals-border-underlay-and-grouping), [workspaces](../decisions.md#workspaces), [gaming](../decisions.md#gaming-safety), [macOS plan](macos-port/plan.md). Older research delivery statuses do not supersede these records.
+- Current approach below is the approved record at project baseline `065ca54`, read on 2026-10-10, not a new implementation audit or live acceptance claim: [Engine](../decisions/engine.md#core-owned-world-and-platform-boundary), [live boundary](../decisions/kde.md#live-test-evidence-boundary), [shortcuts](../decisions/reference-and-shortcuts.md#shared-shortcut-defaults-and-conflict-model), [visuals](../decisions/visuals.md#shared-visual-safety), [workspaces](../decisions/workspaces.md#workspace-lifecycle-focus-and-history), [gaming](../decisions/gaming.md#fullscreen-state-based-protection), [macOS plan](macos-port/plan.md). Older research delivery statuses do not supersede these records.
 
 | Host / candidate lesson | Evidence | What we already do | Gap/risk | Suggested option for user selection |
 | --- | --- | --- | --- | --- |

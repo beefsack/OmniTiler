@@ -149,3 +149,54 @@
   cross-output integration and native multi-output/game acceptance remain pending.
   The adapter checks fullscreen shape; authoritative slotless topology remains
   shared-core-owned, without a new host provenance schema.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1345-1388
+
+````markdown
+- P1 | 0.1 triage decisions - implementation and verification (KDE/shared) |
+  D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27, D28 approved by
+  User 2026-10-12. Historical gap assessment at `fafcd31`, D01 refined by
+  [research](research/d01-fullscreen-admission.md) at `01be284`. D01 and D28
+  are delivered offline ([record](changes/archive/kde-fullscreen-activation-and-send.md));
+  native acceptance remains pending. [Selections and caveats](research/release-0.1-triage.md#user-decisions-2026-10-12).
+  Verification-only means a matching mechanism exists, not native acceptance.
+  Approved units include contingent fixes if live outcomes differ, subject to
+  their recorded return-to-user conditions.
+  Paths below are repository-relative; line locators are revision-bound.
+
+  | Unit | Gap assessment | One-line reason / source |
+  | --- | --- | --- |
+  | D01 | delivered offline; native verification pending | KDE automatic convergence re-observes before focus and fences overlay/native-focus races; admission retains slots/state and explicit switching/shortcuts remain effective. Shared fixtures verify host-approved/denied admission and exact CLOSE-05 removal/refill/focus. Joint native admission/overlay-close cleanup pending ([record](changes/archive/kde-fullscreen-activation-and-send.md)). |
+  | D03 | verification-only | After-focused `[old,new]` and per-admission focus anchor exist (`crates/tiler-core/src/session.rs:2218-2231`, `crates/tiler-core/src/session/ops/lifecycle.rs:374-384`); chained legs 2-3 need live pointer/focus proof. |
+  | D09 | verification-only | R-MOV-06 two-child neighbor uses middle index `len/2` (`crates/tiler-core/src/directional.rs:907-918`, `crates/tiler-core/src/session/ops/move.rs:897-905`); exact native fixture pending. |
+  | D10 | verification-only | Orthogonal escape continues through R1 wrap (`crates/tiler-core/src/directional.rs:1003-1007`, `crates/tiler-core/src/session/ops/move.rs:1089-1140`). |
+  | D12 | verification-only | Same-axis escape inserts into the ancestor axis (`crates/tiler-core/src/directional.rs:993-1002`, `crates/tiler-core/src/session/ops/move.rs:1080-1087`). |
+  | D13 | verification-only | Local move wins before output crossing (`crates/tiler-core/src/directional.rs:1046-1088`); OUT-02 local-wrap multi-output fixture remains live-pending. |
+  | D16 | delivered offline on KDE and Windows; native verification pending | Ordinary and floating+fullscreen/maximized sends use slotless MoveDeferred; float frame/intent retained, no geometry/overlay writes or source/destination tile reflow. Windows adapter delivered 2026-10-13 with drifted-survivor application suppression and real entry/Engine regressions; native combo carry/exit remains pending. Sticky/automatic-fixed refusals unchanged; no setting. [Shared/KDE record](changes/archive/d16-floating-transfer.md), [Windows record](changes/archive/windows-d16-floating-transfer.md), [decision](./decisions/workspaces.md#workspace-lifecycle-focus-and-history). |
+  | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](./decisions/window-state.md#fullscreen-and-maximize-overlays). |
+  | D23 | delivered offline on KDE and Windows; native verification pending | COSMIC `3d55cba0` source gate passed. Shared best-effort neighbor rejoin and additive `closed_windows` serve both adapters. Windows delivered 2026-10-13: retained-allocation divergence replaced with release/reflow/MRU, no-focus restore, sole null focus and hidden-domain close cleanup; session-only. Native gates 1,845 passed, 0 failed, 1 ignored; native journeys pending. [Shared/KDE evidence](changes/archive/d23-rework.md), [Windows evidence](changes/archive/windows-d23-restore-close.md), [decision](./decisions/window-state.md#fullscreen-and-maximize-overlays). |
+  | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](./decisions/persistence.md#orderly-restart-adoption). |
+  | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](./decisions/persistence.md#orderly-restart-adoption). |
+  | D27 | KDE verification-only; no longer BLOCKED. Windows partial verification; approved 5b implementation pending via P2 Activation request setting | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows 2026-10-14 `f4b9f41`: fresh background current/hidden calls denied with no switch/focus change; shell flash observed, visible urgency unproven. Previously attached caller converges; no product classifier/marker. User-approved 2026-10-16 Windows 5b: OS-permitted Switch and focus over fullscreen/games, no urgency-only downgrade; default Mark urgent only/non-permitted unchanged. Not yet implemented; User 2026-10-17 folds the standalone 5b implementation into the planned post-0.1 `Activation request` setting item (P2 0.1 triage settings follow-up). Clean permitted route, mark/clear and game evidence TBD ([Windows evidence/options](changes/archive/windows-d27-activation-verification.md)). Setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](./decisions/activation-requests.md#hidden-window-activation-default)). |
+  | D28 | delivered offline, including born-fullscreen option (a); native/game verification pending | Explicit numbered/relative follow/stay carries retained fullscreen tiles and never-tiled slotless members. Shared MoveDeferred rehomes the initial hold without tree mutation, source admission or geometry setters; D5 first exit admits on the destination. Fullscreen flag and existing send fences retained. Native KDE journey including a real game is must-pass; stop if KWin drops/corrupts fullscreen. No setting; native outcome TBD ([record](changes/archive/kde-fullscreen-activation-and-send.md); [decision](./decisions/window-state.md#fullscreen-and-maximize-overlays)). |
+
+  - Native verification queue (all units): no live acceptance claimed. Pending
+    native journeys: R-WS-05 roundtrip, numbered/relative follow/stay,
+    sole-window/empty-target, float/overlay flags and same-output frame (D16);
+    float-out reflow shares (D22); best-effort rejoin journeys, internal slot
+    retirement and sole-iconic retention (D23; two agent-live sweeps passed
+    minimize/reflow/restore and close variants); permitted/mark/clear and game
+    outcomes (D27; 5b implementation pending via the P2 `Activation request`
+    setting item); orderly owner restart and end-session restore (D25/D26);
+    joint native admission/overlay-close cleanup and fullscreen-send game journey
+    incl. born-fullscreen sole-held-source/empty-target legs (D01/D28).
+    Second agent-live D16 sweep: numbered ordinary-float roundtrip and
+    fullscreen stay-carry passed; a small-frame destination-exit defect was
+    fixed ([record](changes/archive/windows-floating-fullscreen-frame-restore.md)).
+    Shared-core fixes serve Windows via the handoff below; Linux work owns
+    KDE/core. D23 source slot: User decision 2026-10-17 option B (forget on
+    confirmed rehome; shared-core implementation approved, not implemented;
+    [proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md)).
+````

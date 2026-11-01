@@ -5,7 +5,7 @@ not a macOS guarantee or our acceptance evidence. Unknown means not established
 from the fetched sources. Recommendations live in the [tentative plan](plan.md).
 
 Selected direction (user 2026-10-03,
-[decisions](../../decisions.md#scope-and-platform-goals)): tier 2, public
+[decisions](../../decisions/platforms.md#platform-scope)): tier 2, public
 plus private APIs with SIP left enabled; no Dock injection, no reduced SIP.
 Managed per-display workspaces mandatory for feature-complete; underlay
 experiment with outline fallback; same KDE actions/behavior; modifier mapping

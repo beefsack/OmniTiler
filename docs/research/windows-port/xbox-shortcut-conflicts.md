@@ -23,7 +23,7 @@
   warns. "Just in case" checks would logically require warning for every chord.
   Query failure remains distinct from absence; preserving the current explicit
   unknown/query-failed warning is reported for review, not newly approved.
-  [Decisions](../../decisions.md#shortcuts-conflicts-and-presets) and
+  [Decisions](../../decisions/reference-and-shortcuts.md#shared-shortcut-defaults-and-conflict-model) and
   [implementation/physical acceptance](../../changes/windows-gaming-coexistence.md)
   are current; descriptions of disabled Compatible chords and open choices
   below document the pre-implementation research, not current product policy.

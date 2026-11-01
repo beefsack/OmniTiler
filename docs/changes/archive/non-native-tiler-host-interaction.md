@@ -14,3 +14,27 @@
 - Verification: intended docs-only diff inspected; report 394 lines; local-link and decision-anchor spot-checks passed; ASCII/placeholder scan clean; `git diff --cached --check` passed across all three intended files. Published as single-line commit `docs: research non-native tiler host interaction` to origin/main.
 - Process: no semantic failed implementation approach or unresolved blocker. Three existing stashes untouched.
 - Next action: user selects candidate lessons from the report; no implementation work is queued by this delivery.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1580-1596
+
+````markdown
+- P0 | Windows release gate | Now part of 0.1 (user 2026-10-17; was its own
+  later release, user 2026-10-10); exact Windows 0.1 gate pending definition
+  under the 0.1 release item. Current contents: managed
+  per-monitor workspaces (multi-output), gaming coexistence (Win+G/F11
+  containment review, Xbox mode detection, M16 event-driven owner measurement),
+  combined workspace-presentation research (hidden-workspace Alt+Tab/taskbar
+  semantics plus taskbar indicator parity 10), restart persistence (item 8,
+  on-window markers selected 2026-10-10) and package/update channel decision (short research refresh
+  during Windows release planning; most obvious and unsurprising for users).
+  Gaming and Windows presentation research run after multi-output,
+  before release; presentation research has produced options plus a
+  recommendation for the user. The parked selection decision remains open
+  and is distinct from release completion. Non-native lessons and evidence stay linked:
+  [event/pump boundary](research/non-native-tiler-host-interaction.md#layer-layout-authority-events-and-reconciliation-dim-1),
+  [workspaces/Alt+Tab](research/non-native-tiler-host-interaction.md#workspaces-monitors-overview-and-alttab-dim-4),
+  [candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
+  [evidence](changes/archive/non-native-tiler-host-interaction.md).
+````

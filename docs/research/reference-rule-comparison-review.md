@@ -263,7 +263,7 @@ persist-policy leg is sourced). No recorded coverage.
 ### G-37. Migration source refill and destination order (REQ-WS-12d/e)
 
 Rule: [REQ-WS-12d/e](../spec/functional-spec.md) (:160-161),
-[workspace migration D4/D5](../decisions.md#workspaces). Current:
+[workspace migration D4/D5](../decisions/workspaces.md#workspace-lifecycle-focus-and-history). Current:
 insert after target current; show the migrated workspace; source shows
 the last remaining scoped entry, with normal spare maintenance.
 
@@ -307,7 +307,7 @@ the last remaining scoped entry, with normal spare maintenance.
 | G-17 | FLT-09 far float | A C,H,I,X,S,N,R; D B,A,Q,K; T P | 5/8 + COSMIC agree across 4 families |
 | G-18 | FLT-10/11 snap | A C,H; D B,I,X,S,A,N,P,K,R; U Q | COSMIC agrees (KDE half-snap delivered); 9 non-snap alternatives incoherent |
 | G-19 | MAX-01 slot overlay | A C,H; D Q,A; U B,I,X,S,P,R; T N,K | COSMIC agrees; 4 no-counterpart non-votes; Q3 selected |
-| G-20 | MAX-02 keep-tree | A H,B,I,S,Q,N,P,K; D C,X,A,R | Documented platform policy: KWin owns cover-and-restore; retain allocation with no fullscreen geometry writes ([decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) :1418-1427). No new evidence undercuts that host policy; paneru's separate fullscreen strip removes the reserved column |
+| G-20 | MAX-02 keep-tree | A H,B,I,S,Q,N,P,K; D C,X,A,R | Documented platform policy: KWin owns cover-and-restore; retain allocation with no fullscreen geometry writes ([decisions](../decisions/window-state.md#fullscreen-and-maximize-overlays) :1418-1427). No new evidence undercuts that host policy; paneru's separate fullscreen strip removes the reserved column |
 | G-21 | MAX-06 Q3 reserved slot | A C,H; D Q,A,K; T N; U B,I,X,S,P,R | COSMIC agrees; N born-max column/restore is traced but tree-slot comparison is model-qualified; Q3 selected |
 | G-22 | MAX-09 arrival-overlay carry (separate max/full legs) | Max: A H,Q,A,K; D C,N; U B,I,X,S,P-width; T R-host. Full: A C,H,B,I,X,S,Q,A,K; D N; T P,R | Windows fullscreen carry accepted Table A 2026-10-07; maximize preservation is recorded Windows policy (G-D2 wording drift). COSMIC agrees on full, clears max; niri-only full difference is scrolling. H clears/re-applies state during transfer, so arrival agreement does not prove a no-touch journey; KDE observe-first remains TBD |
 | G-23 | One-axis-fixed admission vs both-axis default | A C,B,I,X,Q,A,P,K; D S; T H,N; U R | Both/either setting already delivered. H Wayland floats / X11 tiles; N width-fixed tiles / height-fixed floats. Those splits do not match both default variants; guards split to G-01/G-05 |

@@ -128,7 +128,7 @@ evidence.
   neither leg has a faithful start). `S(S-ours-grp)`.
 - Then Ours Windows: same fixture-inapplicable leg as Ours KDE via the
   shared Engine (no tab carrier, no join/leave verb). `S(S-ours-grp)`.
-- Variant hook: V-GROUP-STACK ([user decision 2026-10-07](../../decisions.md#visuals-border-underlay-and-grouping): tabs first after 0.1; until then centre-stack refuse closed).
+- Variant hook: V-GROUP-STACK ([user decision 2026-10-07](../../decisions/visuals.md#shared-visual-safety): tabs first after 0.1; until then centre-stack refuse closed).
 
 ### R-GRP-03: close the active tab
 
@@ -187,4 +187,4 @@ evidence.
   R-CLOSE). `S(S-ours-grp)`.
 - Then Ours Windows: same fixture-inapplicable leg as Ours KDE via the
   shared Engine. `S(S-ours-grp)`.
-- Variant hook: V-GROUP-STACK ([user decision 2026-10-07](../../decisions.md#visuals-border-underlay-and-grouping): tabs first after 0.1; close keeps group and activates next tab; until then centre-stack refuse closed).
+- Variant hook: V-GROUP-STACK ([user decision 2026-10-07](../../decisions/visuals.md#shared-visual-safety): tabs first after 0.1; close keeps group and activates next tab; until then centre-stack refuse closed).

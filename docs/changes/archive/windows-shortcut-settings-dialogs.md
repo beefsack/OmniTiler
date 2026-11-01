@@ -87,10 +87,22 @@ adoption. Existing Windows Revert reloads saved settings, not shortcut defaults.
 Physical shortcut delivery remains TBD; synthetic input and owner revision logs
 do not establish it. User acceptance of the presentation is decided User
 2026-10-17: kept as shipped (accepted-for-now; later UX review nonblocking;
-[decision](../../decisions.md#settings-tray-and-first-run)).
+[decision](../../decisions/settings.md#shared-settings-catalog-and-platform-ownership)).
 Implementation commit `0ab5d104` passed the same local gates again after rebase.
 [CI run 38945371716](https://github.com/beefsack/OmniTiler/actions/runs/38945371716)
 passed Windows, macOS, Rust, native, KWin, licenses, and notices. The sole failed
 job was shell: the existing `kwin-66-api-guard` clean-tree/clean-marker assertions
 reject unaudited `fullscreen`, `maximized`, and `sticky` API symbols. No related
 KDE changes were made; that separate guard failure remains outside this change.
+
+## Backlog detail moved 2026-11-01
+
+### Original backlog lines 1504-1508
+
+````markdown
+- P2 | Windows shortcut-dialog presentation review | Delivered and scripted-live
+  verified 2026-10-17 (conflict preview, Apply/Revert dialogs, discard
+  protection, preview-time stale refusal; 2,458/0/1 gates). User 2026-10-17 keeps
+  the shipped dialogs as shipped (no extra Apply confirmation). Physical chord
+  delivery is not claimed. [Delivery](changes/archive/windows-shortcut-settings-dialogs.md).
+````
