@@ -11,7 +11,8 @@
 - Current milestone: milestone 4 complete, ordered independently initialized scenarios.
   Milestone 3 message fixtures and coverage are accepted; canonical number
   spelling is now explicit. Milestone 2 source-checked corrections and the v3
-  carry-forward checklist approach remain accepted.
+  carry-forward checklist approach remain accepted. Phase-0b KDE source-fit
+  review is recorded below; Windows/macOS reviews and phase-0c approval remain.
 - Acceptance: every current wire record/enum/message has a disposition; every
   delta has an authority reference or a named gap; defaults cite core source;
   preserved shapes keep their current names and representation.
@@ -250,6 +251,10 @@
 | Platform facts and recovery | OPEN: primary-output APIs, raw classification/relationship/fullscreen facts, macOS lifetime-id reuse, per-window suppression/preimage storage and restart ownership. | Phase 0b read-only platform fit; use unknown/hold where evidence is missing, not fabricated facts. | Review R5/R11/R12/R14 and the corresponding contract sections. |
 | Scale and anchored border | OPEN: scale-only notification and native event/witness join coverage on each host. | Phase 0b; no polling/settling marker or border-event capability invented. macOS smoothness evidence does not gate shape. | Review R10/R20. |
 | Float-no-remap | OPEN: draft capability `tiledFloatTransfer` expresses the existing tiled-source-to-float cross-output limitation, not general float-transfer support. | Phase 0b must establish exact mechanism and capability scope/polarity before 0c. | Review:4771-4774. |
+
+- KDE evidence and host-specific dispositions are in the
+  [phase-0b KDE review](#phase-0b-kdekwin-platform-fit-review). They do not close
+  another host's evidence gate or turn the eight scenario gates into passes.
 
 - Product behavior already settled, not questions to reopen: core-owned intent,
   capability/settings split, scale units, physical output identity, typed
@@ -599,3 +604,145 @@
   No Rust implementation or dependency changes; no phase-1 harness, codec,
   native scenario, recovery or paint execution is claimed. G1 still awaits 0c;
   all eight OPEN/TBD gates remain pending, not passed.
+
+## Phase-0b KDE/KWin platform-fit review
+
+- Verdict: the native-workspace route fits; the draft still has classification,
+  selector-coupling, stacking and warp gaps. Recovery and anchored-border APIs
+  exist, but the current implementation is not v4 recovery/paint acceptance.
+- Evidence below is source-only. `K:` means KWin `v6.8.1`
+  (`1b798c05c19b1124edb1e16623191fcd2c128fd0`); `F:` means the `v6.6.0`
+  floor (`e53bb3be7ecf1735c7739b797f94d66de422ab4d`). Paths after these
+  prefixes belong to KWin. Other paths belong to this repository. Current code
+  is the implemented pre-v4 baseline, not evidence of v4 execution.
+- Citation shorthand: bare TypeScript filenames are under `kwin/src/`;
+  `kde_raw.rs`, `world_broker.rs`, `float_intent_store.rs` and
+  `planner_service.rs` are under `crates/omnitiler/src/`;
+  `presentation_consumer.h` is under `kwin/native-effect/`. A range-only
+  continuation uses the preceding file, with the same pin for KWin citations.
+
+### 1. Report production
+
+| Fields/records | Finding and evidence | Verdict |
+| --- | --- | --- |
+| Handshake/settings; report lifetime, `obs,reqSeq,req,cmdSeq,command,monotonicMs`; completeness/close/attempt envelopes | Broker sequencing and raw capture already separate native facts from ordered transport. v4 must move settings/capabilities once, not preserve per-report policy. Current `hostOwned` flips with readability (`kwin/src/world-observe.ts:1332-1337`); v4 fixes it for the lifetime and uses incomplete facts to hold. | Fits; port work. |
+| `ScreenReport.out,full,work,complete,scale` | Output name/geometry and `clientArea(MaximizeArea,output,desktop)` exist; geometry is device-independent, work area uses `geometryF()` (`K:src/core/output.h:247-271`, `K:src/workspace.cpp:2515-2535`). Existing normalization rounds native frames once (`kwin/src/world-observe.ts:302-326`); native renderer does no second DPI transform (`kwin/native-effect/presentation_consumer.h:9-19`). Thus R10 scale is **1**, including fractional display DPR; DPR is not adapter units/logical pixel. | Fits; wording fixed. |
+| Scale-only, resolution and output-order invalidation | `screensChanged` wraps output-list changes, not every scale change (`K:src/scripting/workspace_wrapper.cpp:57-60`). Subscribe to each output's `geometryChanged/scaleChanged`, and `screenOrderChanged`; attach/detach with topology. All exist at the floor (`F:src/core/output.h:150-155,250-258`, `F:src/scripting/workspace_wrapper.cpp:56-59`). Current workspace-only hooks are insufficient (`kwin/src/world-entry.ts:4579-4606`). | Fits API; missing port hooks, no polling needed. |
+| `OutputIdentity.manufacturer,model,serial,connector`; report `primary` | Script Q_PROPERTYs expose manufacturer/model/serialNumber/name (`K:src/core/output.h:273-323`; `F:src/core/output.h:147-155`). DRM name comes from connectorName, metadata from EDID (`K:src/backends/drm/drm_output.cpp:54-60`; same floor lines). Report name as connector only where its backend meaning is verified, otherwise null; empty/unreadable EDID is unknown. `screenOrder` is ascending backend priority (`K:src/scripting/workspace_wrapper.cpp:446-449`, `K:src/workspace.cpp:2615-2629`; `F:src/workspace.cpp:2579-2593`). No separately proven primary designation: omit `primary`, preserve priority-sorted screen order for core fallback. `set_primary_output` is ignored (`K:src/wayland/outputmanagement_v2.cpp:287-299`). Current active-screen primary (`world-observe.ts:1307-1331`) must go. | Fits nullable identity/optional primary; no active-screen substitution. |
+| `WindowFact.win,out,rect,hints,fullscreen,maximized,sticky,minimized,nativeWs` | UUID/output/frame/client/min/max/state/desktops are exposed (`K:src/window.h:172-176,383-387,412-442,566-573,612,673`). Frame-normalized hints use actual client/frame deltas (`crates/omnitiler/src/kde_raw.rs:443-450`). Any maximize axis is currently `maximizeMode != 0` (`:483-485`). Single native desktop is truthful; all-desktop or multiple memberships remain null, never current-desktop guesses (`:498-502`). | Fits, including unknowns; multi-membership is not a fabricated single home. |
+| `role,type,appId,class,title` | Native sources: windowRole, NETWM windowType enum, desktopFileName, resourceClass, caption/captionNormal (`K:src/window.h:184-196,334-340,547-559,702-713`). Wayland resourceClass/desktopFileName derive from XDG app id; X11 class and desktop-file derivation differ (`K:src/xdgshellwindow.cpp:847-862`, `K:src/x11window.cpp:414-427,2965-2968`). Type needs a documented native enum-to-text encoding, not an adapter admission label; do not claim desktopFileName is a universal canonical app id. Current raw rows omit these fields. | Fits sources; raw vocabulary/applicability gap K1. |
+| `dialog,transient,modal,resizable,owner,parent`; `hostHidden,privileged,shell,tool,ownedDialog,noActivate,cannotControl` | Native dialog/type flags, transient/transientFor, modal, resizeable and hidden exist (`K:src/window.h:237-245,576-604,694-700,755-760`). Bind transientFor only as that known relationship; no invented X11-parent/Windows-owner equivalence. Unavailable relationship/safety facts stay null. `hidden` is narrower than effective visibility; do not combine minimize/desktop/activity into it. `wantsInput` means can accept focus, not noActivate (`:576-582`); managed means KWin controls placement (`:342-348`), not a universal cannotControl verdict. Current normalization manufactures other safety negatives and folds dialog into transient (`kde_raw.rs:425-437`); do not carry that policy into v4. | Gap K1; nullable fields alone do not specify core applicability. |
+| `fullscreenOwner,fullscreenExitable` | No native tiler/app provenance property. Return ownership only with verified current-lifetime write evidence, otherwise null. Neutral fullScreen setter/fullScreenable exist, but legacy hack/rules/base implementations can refuse (`K:src/window.h:406-420`, `K:src/window.cpp:4122-4159`, `K:src/xdgshellwindow.cpp:1699-1711`, `K:src/x11window.cpp:3702-3712`). Exitability is availability of a known neutral path, never proof that the requested exit completed; unknown stays null. | Fits; do not infer ownership from fullscreen=true. |
+| `visibility,lastWrite,suppressionAvailable`; presentation `minimized,maximized,fullscreen,hostHidden,hiddenWorkspace,shell,frame,foregroundOut` | Effect visible combines shown, current desktop and current activity (`K:src/effect/effectwindow.h:60-65,221-241`, `K:src/effect/effectwindow.cpp:193-199`); Window::isShown excludes hidden/show-desktop/minimize (`K:src/window.cpp:4439-4442`). Use native reads, not desired membership. KDE has no selected recoverable independent hide path: suppressionAvailable=false, suppressionOwned=false when no project hide exists, LastWrite=null; unknown visibility is nullable. Hidden is read-only to script (`K:src/window.h:760`). | Fits native-owned route; suppression not required. |
+| `focused`; presentation `foreground` including unmanaged fullscreen | Read activeWindow independently of candidate admission, then its output/frame/state. Ordinary KWin-managed but core-unmanaged fullscreen can be captured; do not require it in the managed roster. Current foreground is filtered through candidate `liveById` (`world-observe.ts:803-816,819-874,1530-1531,1604-1621`). Override-redirect KWin-unmanaged focus is NOT established by these sources: activation rejects non-clients (`K:src/activation.cpp:294-302`); a getter without that check does not prove OS input foreground coverage. Return unknown rather than synthesize a fullscreen subject. | Fits independent core-unmanaged capture; override-redirect coverage remains unproven. |
+| NativeObservation/Occupancy; `nativeWs`; `actionForeground,actionCached,actionOutputs,cursor,cursorHit` | Global desktop list/UUID ids and per-output cursors exist (`K:src/scripting/workspace_wrapper.cpp:69-107`, `K:src/virtualdesktops.h:50-63`). Current occupancy deliberately enumerates all native occupants, sticky on every desktop, unreadable=>null (`world-observe.ts:1343-1411`). Action context remains observed context, not output selection. Cursor read/windowAt native hit test exist (`K:src/scripting/workspace_wrapper.h:149-153,483`; `.cpp:369-395`). | Fits; selector coupling K2 is separate from count equality. |
+| `closed`, no WindowId reuse; `intentRecords` | Window constructor creates a UUID; script constant and effect internalId share it (`K:src/window.cpp:57-63`, `K:src/window.h:383-387`, `K:src/effect/effectwindow.cpp:296`). Normalization strips braces consistently (`kwin/src/native-id.ts:68-85`). Snapshot duplicate rejection is not a historical no-reuse guard (`kde_raw.rs:308-312`); retain retired-id detection/reminting or refuse a collision before rebind, including native renderer mapping. Storage binds verified UUID within KWin owner namespace, not titles/processes. | Fits mechanism; no mathematical collision/no-reuse proof claimed. |
+| `gesture,gestureIngress`; presentation `chordHeld,moveWindow,pagerOrder,pagerFrames,witness`; rendererInput | Native stacking/frame capture exists (`world-observe.ts:1547-1585,1599-1664`); chord/gesture facts are separate event sources. Retain inherited gesture cancellation uncertainty, not a guessed release (`docs/porting/kde-port-notes.md:234-245`). Witness and renderer input are audited below. | Fits carried raw lanes; native gesture acceptance remains separate. |
+
+### 2. Reply application and G4
+
+| Reply lane | Source-backed finding | Verdict |
+| --- | --- | --- |
+| `scopes,workspaces,outputs,windows,transfers`; frame/member/view/clear/create and attempts | Exact accepted targets resolve through native bindings, not local ordinals (`kwin/src/world-apply.ts:470-489,794-1030`). Frame setter/prewrite/readback and explicit float placement are separate (`:675-723,1120-1203`); maximize-clear uses setMaximize(false,false) (`kwin/src/world-native.ts:1777-1790`). Native member/view reads belong in consolidated native WorkspaceRef arms; frame DPI stays null in logical space. Asynchronous Wayland configure cannot be completed by setter success or later uncorrelated reads. Existing raw lanes suffice; retain pre/post stamps and core settlement. | Fits; remove existing adapter classification/automatic-focus policy rather than migrate it. |
+| `state`; existing Maximize result | setMaximize, fullScreen, onAllDesktops are native mechanics (`world-native.ts:749-930`; `K:src/window.h:412,442,673`). Sticky-off goes to the current desktop (`K:src/window.cpp:771-781`); core retains prior tile/float intent and decides result. Apply core-resolved values and report bool pre/post, never call the existing local toggle/continuation policy as the v4 decision owner. | Fits API; stacking recovery is a prerequisite, K3. |
+| Visibility targets, LastWrite, ArrivalBracket, FocusFeedback, SwitchEvent | KDE selects native desktops; it need not hide each member. With windowSuppression=false, visibility targets are null/no writes. Native visibility/home/frame/lifetime still support arrival reads and focus feedback; require a recovery tag only where project suppression actually exists. Do not implement hides by minimizing, app-hiding or effect-only paint suppression. Switch completion remains core-derived. | Needs draft clarification, applied without wire changes. |
+| `effects` focus/raise/stack; `warpCursor` | Active-window setter delegates to KWin activation; raiseWindow is script-invokable (`K:src/scripting/workspace_wrapper.cpp:260-263,343-347`; `F:src/scripting/workspace_wrapper.h:290`). Existing adapter spends raise/stack without actuation (`world-apply.ts:2261-2288`), not an API limitation for raise. constrain/unconstrain take two windows, not the one-target Stack record (`K:src/scripting/workspace_wrapper.cpp:350-357`). Effect setElevatedWindow changes painting only (`K:src/effect/effecthandler.h:443-445`). No public script/effect warp setter in inspected wrapper/effecthandler at either pin; internal Cursor::setPos is not that API (`K:src/cursor.cpp:189`). | Focus/raise fit; K3 stacking vocabulary and K4 warp support gaps. |
+| Presentation border/underlay/pager, result, gestureSettled, operationSettled, switchSettled, diagnostics, intentWrites | Results/terminals/diagnostics convey core outcomes, not new native permission. Named underlay/preview already consume core geometry; border currently uses absolute rects, must become native anchored descriptor. Effect has no pager paint/click implementation (`kwin/native-effect/activewindowborder.cpp:417-445,1550-1600,1756-1829`); tray publishes state, not the future renderer-input route (`kwin/src/tray-publisher.ts:110-157,214-263`). Future renderer must retain the drawn row plus common rev and send RenderTarget with its command; no local stale-click policy. Intent writes require opaque storage conversion below. | Fits renderer/input architecture; not implemented conformance. |
+
+### 3. Recoverable preimages and host storage
+
+- Available slot: session runtime file under `$XDG_RUNTIME_DIR/omnitiler/`,
+  private anchored no-follow handles, atomic replace, namespace derived from
+  session bus id plus current unique KWin owner (`float_intent_store.rs:11-34`,
+  `planner_service.rs:222-231,295-309`, both under `crates/omnitiler/src/`).
+  Live UUID intersection verifies subjects, not title/process restart matching
+  (`float_intent_store.rs:37-45,222-269`). A new store instance reads the same
+  content; namespace mismatch is empty (`:903-917,931-953`, tests inspected,
+  not rerun here). This supports script/service restart while KWin lives;
+  KWin restart intentionally invalidates ownership and window identities.
+- Missing implementation: current file contains float/tile sets, not opaque
+  v4 records/stickyPrior or recoverable native preimages (`:4-9,384-410`).
+  Automatic keepAbove ownership and sticky prior above/below are in-memory
+  sets/maps (`kwin/src/world-native.ts:227-232,769-774,1095-1174`), lost on script
+  restart. Setting keepAbove can also clear keepBelow (`K:src/window.cpp:592-607`),
+  so save both affected values before dispatch. R12 requires a separate
+  adapter-owned, lifetime-verified preimage slot; do not put native recovery
+  details into core's opaque intent string or claim the existing file saves them.
+  No hide path is selected. Failed persistence disables that property only.
+- Verdict: **fits storage mechanism; recovery gap remains**. Next-start recovery
+  is required before writes resume; source inspection cannot establish crash
+  durability, successful recovery or survival through KWin restart. The latter
+  is not licensed by the current namespace and must never use stale UUIDs.
+
+### 4. KDE capabilities
+
+| Capability | KDE value at source-fit level | Evidence/qualification |
+| --- | --- | --- |
+| hostOwned / equalCount | true / true | Native global desktop list, repeated across outputs; observation failure is not a capability flip (`world-observe.ts:1301-1306,1334-1345`). |
+| birthClear | true | Existing automatic-clear lane and explicit report value (`kwin/src/world-report.ts:1834`, `world-apply.ts:1222-1415`); unrelated to desktop creation. |
+| windowSuppression | false | No selected recoverable per-window hide route; native desktop ownership does not imply suppression. |
+| maximize / fullscreen / sticky | true / true / true | Native setters above; per-window rules/legacy refusal and R12 preimage availability still gate individual writes. Sticky remains owning-output membership, not moving to every output. |
+| tiledFloatTransfer | true | sendClientToScreen plus desktop assignment and explicit frame_op can execute a core-decided tiled-to-float cross-output move (`world-native.ts:1486-1502`, `world-apply.ts:1120-1203`). No Windows-style unsupported remap veto identified; do not conflate native asynchronous arrival with missing hard support. Other hosts still determine final capability scope/polarity. |
+
+### 5. Native retirement and creation correlation
+
+- G2 KDE mechanism resolved: script removeDesktop calls the native manager;
+  removal mutates the global list and refuses its last desktop
+  (`K:src/scripting/workspace_wrapper.cpp:300-307`,
+  `K:src/virtualdesktops.cpp:492-523`; floor declarations
+  `F:src/scripting/workspace_wrapper.h:263-268`). Existing consumer checks
+  fresh global occupants/visibility/pins/inventory/minimum before removal,
+  deduplicating repeated native bindings (`world-apply.ts:1548-1643`). Removal
+  affects every output: retirement must preserve any still-required backing
+  across that shared domain, not treat one output row as physical ownership.
+  No new removal-support flag is justified for KDE. Other hosts keep G2 OPEN.
+- native-creation-correlation KDE source mechanism resolved: void wrapper calls
+  manager inline; it inserts UUID into the list before desktopAdded/countChanged
+  (`K:src/scripting/workspace_wrapper.cpp:295-298`,
+  `K:src/virtualdesktops.cpp:448-481`). Spend before call, sample full ids before
+  and immediately after in the same turn; unique delta can correlate, cap/no-op
+  or ambiguous delta cannot. Existing consumer does exactly that; a failed
+  immediate read is later returned uncorrelated (`world-apply.ts:1461-1539`).
+  Notification alone is not causal creation proof; asynchronous window configure
+  is not evidence that desktop insertion is asynchronous. Other-host and native
+  execution gates remain OPEN.
+
+### 6. Remaining gaps and decisions not taken
+
+| Gap/question | Options; recommendation; consequence |
+| --- | --- |
+| K1: can core distinguish unavailable/irrelevant native safety inputs and classify KDE without adapter policy? | Existing raw capture has managed/wantsInput/normalWindow/transientFor, while v4 offers policy-shaped cannotControl/noActivate and an untagged type string. Null does not mean false or irrelevant. Options: specify sufficient neutral raw facts plus core applicability rules; use host-tagged native facts; hold all ambiguous cases. Recommend the smallest explicit raw fact/applicability vocabulary, including native type encoding, before freezing shape. Any added facts require fixture/catalog updates. Do not map !wantsInput to noActivate or raw KDE dialog directly to Windows owned-dialog policy. |
+| K2: how does core know native selectors are linked, independently of equalCount? | At 6.6 only shared currentDesktop exists; current adapter substitutes shared mode (`kwin/src/workspace-native.ts:422-436,539-546`). At 6.8 per-output API exists, but native option=false makes selection apply across outputs (`K:src/options.h:140`, `K:src/virtualdesktops.cpp:577-611`). v4 handshake has no selector-coupling fact. Options: report native selector coupling/configuration for core planning; require newer KWin plus enabled setting; keep narrowly held unsupported operations. Recommend exposing the mechanism/configuration, preserving existing floor and user setting. Shape/support changes need approval; local mode substitution would violate G4. |
+| K3: what exactly authorizes persistent float/sticky stacking and release? | Current adapter chooses keepAbove acquisition, fullscreen suspension, external-clear non-reacquisition and release (`world-native.ts:1177-1329`); v4 StateTarget has no stacking property, OneShotEffect::Stack only one subject and no on/off/preimage target. Options: explicit core-owned stacking facts/targets and release semantics; define Stack as a nonpersistent action and separately settle retained stacking; remove the behavior. Recommend explicit core authority while keeping preimage recovery mechanical under R12. Cannot infer persistent keepAbove from floating/sticky=true or substitute raise/effect elevation; draft/fixtures need an approved completion, not adapter policy. |
+| K4: how is unsupported cursor warp conveyed to core? | No warp API at pin/floor, yet settings allow cursorWarp and reply carries warpCursor with no hard capability/result lane. Options: capability consumed by core; explicit unsupported/no-call evidence; documented silent unsupported no-op. Recommend capability so core cannot authorize unavailable work. Shape change remains unapproved; never pretend a warp ran. |
+| K5: can the native witness join be established without changing wire shape? | Existing `{instance,counter}` -> JS capture -> broker coveredInstance/coveredInvalid -> native paint is real (`world_broker.rs:2018-2070,2257-2262`, `kwin/src/world-presentation.ts:482-534`, `presentation_consumer.h:21-42`, paths under their source directories). It is NOT report obs, and current frame events hide until new covering paint (`kwin/native-effect/presentation_stage5.cpp:59-109`). Options: retain an exact adapter-local capture-to-native-source join and split anchor-only motion from eligibility invalidations; extend FrameWitness if that cannot be proven. Recommend proving the local join first, not inventing wire fields from a source search. Activity/eligibility invalidation coverage and accepted-anchor motion remain unverified. KWin effect frame events/internalId exist at pin/floor (`K:src/effect/effectwindow.h:652,746`; `F:src/effect/effectwindow.h:663,757`); no missing native event API established. |
+
+### OPEN-point disposition and draft reconciliation
+
+- KDE source mechanisms resolved: logical scale=1; output geometry/scale/order
+  notifications; metadata and DRM connector provenance; truthful absent primary
+  with priority-order fallback; native removal; same-turn creation correlation;
+  session-scoped intent-storage survival/ownership; tiledFloatTransfer=true.
+  Unhomed native facts are also readable: output/desktops/frame reads do not
+  require a retained core home (`kwin/src/world-observe.ts:851-874,949-966`);
+  independent capture must not exclude such a lifetime by core classification.
+  These are not live/codec acceptance and do not close global scenario gates.
+- Still OPEN on KDE: K1-K5; exact native causal witness join and eligibility
+  coverage; restart-safe preimage/opaque-record implementation; historical id
+  collision handling; unrestricted override-redirect foreground proof. Windows
+  and macOS portions of every shared evidence item remain for their reviews.
+- Mechanical draft fixes: explicit KWin scale=1 vs DPR; priority order does not
+  fabricate primary; native-owned selection needs no suppression; arrival tag
+  checks apply only where a suppression/recovery tag exists; report obs and
+  native renderer counters are distinct causal chains. No wire shape, fixture
+  bytes, product decision or implementation changed.
+- Mechanical verification: `git diff --check` clean; added tracked lines and all
+  untracked files have zero non-ASCII bytes, no untracked whitespace/NUL issues.
+  Repository link/anchor scan against the pre-review baseline reports exactly
+  the same five known failures (four lifecycle anchors, one missing old KWin
+  test), zero new unresolved. All 392 fixture JSON files parse with jq; only
+  the two labelled duplicate-key negatives contain duplicates; all 375
+  canonical message byte comparisons pass. Manifest covers all 378 message
+  files and 14 scenarios; 160 step ids, 179 rule-step references and 60 contract
+  references pass. Fixtures are unchanged. These checks do not execute a v4
+  codec, native recovery, native settlement or native painting.

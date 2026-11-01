@@ -227,7 +227,8 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 ### Scale and rounding
 
 - `scale` is a finite positive JSON number: adapter units per logical pixel on
-  every screen report. Core retains no scale;
+  every screen report. In KWin's logical coordinate space it is `1`, not the
+  output's physical/logical device-pixel ratio. Core retains no scale;
   scale/resolution changes invalidate the report and replan. Multiply each
   logical setting/constant once by the current target output scale, then round
   to nearest integer, exact halves toward positive infinity (`floor(x+0.5)`),
@@ -319,6 +320,8 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   from manufacturer/model/serial, using connector if unreadable or duplicated;
   no persistent platform-id map. Host primary is the report's one optional
   `primary`; core falls back to first stable screen order, never active screen.
+  A readable host priority order can supply screen order without proving a
+  separate primary designation; omit `primary` when that designation is unknown.
   OPEN: phase 0b confirms API readability/notifications and truthful connector
   fallback on each host. [R11/primary evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
@@ -623,7 +626,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | --- | --- | --- | --- | --- |
 | `VisibilityFact` | `visible,suppressionOwned` | bool | yes | Native shown state and project-owned suppression. |
 | `VisibilitySample` | `obs` | Counter | no | Invalidation watermark at the read; subject comes from enclosing window/bracket. |
-| | `lifetimeMatched` | bool | yes | Full native lifetime AND stored recovery tag match, not handle equality. |
+| | `lifetimeMatched` | bool | yes | Full native lifetime and any applicable stored suppression/recovery tag match, not handle equality. |
 | | `visibility` | VisibilityFact | no | Native state at this read. |
 | | `minimized,hostHidden` | bool | yes | Separate native ineligibility facts. |
 | `LastWrite` | `property` | `visibility` | no | Property tag reserved for later separate lane migrations. |
@@ -652,7 +655,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - `VisibilityReason` is `""` or
   `identity-stale,scope-held,unreadable,unsupported,preimage-unavailable,foreground-changed,fullscreen,game,show-blocked,focus-unproven,superseded,native-refused`.
   Samples are facts, never a copied target. Arrival requires the same live
-  subject, matched lifetime/tag and watermark, visible/non-minimized/non-hidden
+  subject, matched lifetime/applicable tag and watermark, visible/non-minimized/non-hidden
   before/after, and coherent observed home/frame inside that bracket. Home must
   match the frozen core target; frame must equal its target when non-null. A
   null desired frame waives equality, never the requirement for a readable live
@@ -660,6 +663,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   both handshake support and
   per-window recoverable preimage support; never use native minimize/app-hide
   as a suppression substitute. [Evidence design](../changes/windows-workspace-return-focus.md#state-centric-visibility-direction-2026-10-30).
+- Native-owned selection/membership uses native desktop targets and attempts;
+  it does not require independent per-window hides. A host without suppression
+  reports `windowSuppression:false`, per-window `suppressionAvailable:false`,
+  null visibility targets and no visibility writes. Readable native visibility,
+  lifetime, home and frame can still prove arrival for focus; no suppression
+  recovery tag is required for a window that has never been project-suppressed.
 
 ### Normative apply rule
 
@@ -808,7 +817,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   move that same accepted anchor only while foreground/lifetime/eligibility
   facts remain causally valid. A constant event-name string, elapsed delay or
   guessed frame is not a witness. Unknown/stale witness suppresses paint
-  narrowly, never polls or adds a settling marker. OPEN: phase 0b must verify
+  narrowly, never polls or adds a settling marker. `obs` identifies the capture;
+  it is not interchangeable with a native renderer's source-instance/counter.
+  The adapter must preserve the exact join between those chains. OPEN: phase 0b must verify
   native witness joins/events on each port; macOS smoothness evidence is not a
   shape gate. Underlay remains group-defined absolute; its baseRev is projection
   provenance, not another input freshness rule.
