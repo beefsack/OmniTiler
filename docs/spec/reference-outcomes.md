@@ -6512,6 +6512,13 @@ results stay TBD until KDE-tested.
 | On Windows select an inactive logical workspace containing visible-frame-capable A; bracket native lifetime/visibility/frame/output reads, then focus and depart; repeat with a sticky float | W2 technical resolution pending 0c approval: core retains logical home and compares the observed-output bracket to the frozen target. W3 technical resolution pending 0c approval: retained sticky intent composes visibility with suppression, while native sticky fact stays null and no sticky target/attempt is fabricated | Native arrival/focus, opaque storage and sticky visibility outcome TBD; static fixtures do not prove the live sequence |
 | Present a shell popup and an ordinary window sharing a generic XAML class; separately compare own Settings and a foreign process reusing its class | W4 technical resolution pending 0c approval: core uses neutral normalized executable plus handshake self identity, not appId substitution or adapter shell/own-settings verdicts. Synthetic fixtures preserve the existing presentation/membership distinctions, not a new Settings-class slotlessness rule | Native producer, exact lifetime identity and presentation/membership outcome TBD; local-wire-only privacy and unavailable declarations remain required |
 
+## v4 macOS platform-fit discriminators
+
+| Minimal action sequence | Source-fit distinction | Unsupported outcome |
+| --- | --- | --- |
+| Compare two windows of the same bundle running different executables with a foreign bundle reusing an executable; repeat with missing bundle metadata | Current macOS self exclusion is bundle-based; W4 executable equality is not equivalent. [M1](../changes/v4-migration.md#7-native-retirementcreation-and-gaps-requiring-resolution) proposes neutral bundle evidence, not an adapter own-app verdict | Core metadata shape, missing-bundle treatment and native admission outcomes TBD; no predicate replacement selected |
+| Send tiled A across two outputs into a destination that forces capacity floating; reset and repeat with already-floating A | Current selected managed send is single-display; a frame position write does not prove destination Space membership. M8 distinguishes this broader limitation from Windows tiled-to-float no-remap | Cross-output native arrival/frame/focus and capability scope TBD; no general float-transfer ban inferred |
+
 ## Deferred areas
 
 - All approved behavioral areas are assessed, including ratio balance

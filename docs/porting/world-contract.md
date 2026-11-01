@@ -250,7 +250,8 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   every screen report. In KWin's logical coordinate space it is `1`, not the
   output's physical/logical device-pixel ratio. In Windows PMv2 physical-pixel
   space it is the target output's effective DPI divided by 96, not raw EDID DPI
-  or the DPI of an arbitrary foreign window. Core retains no scale;
+  or the DPI of an arbitrary foreign window. In macOS CG/AX logical-point space
+  it is `1`, not NSScreen.backingScaleFactor. Core retains no scale;
   scale/resolution changes invalidate the report and replan. Multiply each
   logical setting/constant once by the current target output scale, then round
   to nearest integer, exact halves toward positive infinity (`floor(x+0.5)`),

@@ -1019,3 +1019,118 @@
   No v4 codec, engine, model scenario, recovery, paint or native execution is
   implied by these checks. W1, 0c, macOS and the implementation/native gates
   remain outstanding.
+
+## Phase-0b macOS platform-fit review
+
+- Source-review verdict: **native-Space/report mechanics fit; identity, storage
+  and transfer-capability scope still need resolution before freeze**. M1-M9
+  separate these questions from port/evidence gates. No v4 execution, native
+  acceptance or recovery/paint proof is claimed; KDE/Windows are not macOS
+  evidence. Recommendations are pending, not semantic draft changes applied.
+- `M/` means `crates/tiler-macos/src/` at `bf9815f138599e65c76d36710ec6f32f64ac6cc1`.
+  Review includes [port notes](../porting/macos-port-notes.md) and
+  [live-test evidence/limits](../live-macos-testing.md); no live tests were run.
+  Negative findings mean no producer in the selected route, not OS impossibility.
+  Reference sources were searched locally at these pins; their behavior is
+  corroboration, never authorization to copy a mechanism or product policy.
+
+| Key / reference | Pin | Bounded source evidence used |
+| --- | --- | --- |
+| Y / yabai | `dd845723416f5fe92af49fad5ebab00369e07edd` | `src/window_manager.c:820-865,2181-2250`: floating/layer/sticky operations use the scripting addition; `doc/yabai.asciidoc:426-428,611` requires partial SIP disable for sticky/sub-layer, outside the selected route. |
+| A / AeroSpace | `74a1bf17e82d70e0a21945ba04bb4f590bf19f83` | `Sources/AppBundle/tree/MacWindow.swift:123-186`: corner-hide plus in-memory prior position; `Sources/AppBundle/tree/Window.swift:52-67`: floating container, not persistent level acquisition. Not our recoverable suppression. |
+| H / Amethyst | `6508ee2cacf8f9b357e1a3249a8f28ba5c94db2a` | `Amethyst/Managers/WindowManager.swift:319-340,492-501`: inspected float adoption/toggle updates tracking/reflow, not app-window level. |
+| R / rift | `ddc957a9515635e818e913c6ccf617548b71d5c8` | `src/sys/axuielement.rs:393-410`, `src/actor/app.rs:1284-1355,1870-1940`: CFEqual remote-element identity, stale-destroy fencing and retained AX bindings; AXWindows absence alone does not retire off-Space windows. |
+| P / paneru | `b1b6abbd3f1a4be138152b6f0389c9ff1b27a269` | `src/overlay.rs:215-234,525-540`: floating levels belong to created overlay/flash windows; `src/manager.rs:415-421`: cursor warp. |
+| G / glide | `2837add2ce3911743e869ed43da59014714b7e59` | `src/actor/group_bars.rs:181-225`: normal/floating levels on created indicators; `src/sys/event.rs:69`: cursor warp. |
+| C / komorebi-for-mac | `bdf10452f10ebf15ec1978cb05d0aac79ef5611f` | `komorebi/src/border_manager/ns_window.rs:50-86`, `komorebi/src/splash.rs:198`: own border/all-Spaces carrier and floating splash, not foreign app above/sticky support. |
+
+### 1. Report production
+
+| Fields/records | Finding and evidence | Verdict |
+| --- | --- | --- |
+| Envelope, settings, capabilities, inventory/closed, gestures, attempts, action context | Sequencer/report machinery exists; inventory requires complete topology plus per-app roster evidence (`M/world_builder.rs:647-705`). Move settings/capabilities to handshake/settings; remove local membership/default policy. Cursor/hit/action fields are currently null/empty, not completed v4 producers. Observation counter saturates today (`M/world_sequencer.rs:63-80,130-179`); implement exhaustion and full invalidation fencing, not silent reuse. | Fits mechanics; cutover required. |
+| `rect,hints,fullscreen,minimized,hostHidden`; K1 `modal,resizable,role,class,type,activationPolicy,layer` | AXRole/Subrole/FullScreen/Minimized/Modal/AXSize settability and exact `(wid,pid)` CG layer/onscreen join exist (`M/native_facts.rs:40-125,462-474`); app hidden/policy are read separately (`:129-163,301-321`). Minima round up, maxima remain unknown; nonsettable size does not invent fixed hints. Use raw nullable reads, not current modal/settable false fallbacks. AXSubrole can carry native class; preserve mechanical kind mapping and recognized dialog/sheet/floating/modal exceptions before the nonordinary-layer gate (`M/classifier.rs:332-419`). | Fits raw APIs, not existing classifier verdicts. |
+| K1 unavailableFacts, metadata and W4 | Ordered unsupported baseline: `privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,above,below,owner,parent`; append `title` in catalog order for the selected title-free capture. No ownership/transience from sheet/modal/AXParent, acceptsInput from focus, or above/below from layer. Bundle appId and executable readers exist (`M/ffi.rs:5103-5127,5156-5184,5278-5296`), but need neutral v4 wiring and bounds/NUL checks. Preserve executable case; Windows lowercase rules do not apply. [Bundle identifier](https://developer.apple.com/documentation/appkit/nsrunningapplication/bundleidentifier) and [executable URL](https://developer.apple.com/documentation/appkit/nsrunningapplication/executableurl) are distinct. | API-supported failed reads stay null, not unavailable. Self-bundle gate: M1. |
+| Screens `out,full,work,complete,scale`, primary and selector scope | CG/AX logical points, AppKit top-left conversion and nearest/halves-away-from-zero topology normalization exist (`M/topology.rs:13-48,80-100,146-195`). R10 scale=1, not backingScaleFactor; normalize ordinary/gesture/drag captures alike. [NSScreen.screens](https://developer.apple.com/documentation/appkit/nsscreen/screens) index 0 designates menu-bar primary, unlike active-window NSScreen.main; capture independently of admitted windows. Native display UUID joins separate Space rows; unified Spaces share one row, ambiguous mode holds (`:299-379`). `screensHaveSeparateSpaces` selects per-output/all-outputs; unknown holds handshake, changes require reconnect (`M/ffi.rs:9530-9595`). Never mark the capped screen list complete. | Fits units/scope/API. Screen/Space notifications and fingerprint exist (`:9825-9843,9891-9899`, `M/topology.rs:197-262`); empty-output scale-only coverage still needs acceptance. |
+| `identity.manufacturer,model,serial,connector` | NsDisplay currently has CG id/UUID/frame/work/backing scale, not physical metadata (`M/ffi.rs:9530-9581,9604-9619`). Apple [vendor](https://developer.apple.com/documentation/coregraphics/cgdisplayvendornumber(_:)), [model](https://developer.apple.com/documentation/coregraphics/cgdisplaymodelnumber(_:)) and [serial](https://developer.apple.com/documentation/coregraphics/cgdisplayserialnumber(_:)) APIs offer nullable metadata after unknown/disconnected sentinel handling. [Unit number](https://developer.apple.com/documentation/coregraphics/cgdisplayunitnumber(_:)) identifies a framebuffer node under fixed hardware, not an invariant physical connector; CG display id/UUID/ordinal is not automatically that identity. | API route, no existing producer or proven normalization; M9. |
+| Unmanaged foreground, focused/foregroundOut, maximized, fullscreenOwner/Exitable | Current presentation derives frames from member/unknown rosters and zoom from engine-placement-dependent geometry (`M/world_builder.rs:138-267`); shell/cloak/max/sticky constants are not raw facts. Capture foreground/output independently, even outside membership. AX fullscreen is readable; diagnostic setter/readback exists (`M/ax.rs:1274-1414`), but fullscreen=true does not imply tiler ownership, exitability or a saved baseline. Cmd+H retains the accepted minimized mapping while separately reporting app hidden. | Foreground cutover; M4 and R14 remain. |
+| Window lifetime, close and storage/visibility facts | Wire identity is `pid_wid` (`M/runtime_types.rs:926-939`); app generations and executable/bundle/launch-date fences guard processes, not replaced AX subjects (`M/runtime_apps.rs:28-210`, `M/native_tile_backend.rs:451-492,1537-1573,1637-1655`). [kCGWindowNumber](https://developer.apple.com/documentation/coregraphics/kcgwindownumber) is unique within the current user session: no claim of documented same-session ID reuse, nor durable AX/restart identity. AX omission/offscreen alone is not close; recorded CG entries can outlive close and AX destroy may be absent ([limits](../live-macos-testing.md)). | Exact-lifetime retirement/remint/reacquisition unproved: M2. No desired-state or classification substitutes for intent/LastWrite facts. |
+
+### 2. Reply application, G4 and recovery
+
+| Lane | Finding and evidence | Verdict |
+| --- | --- | --- |
+| Frames/member/clear; output/workspace/transfer scopes | Fresh process/window joins, size-position-size calls and per-leg readback exist (`M/native_tile_backend.rs:300-414`). Effective controlled frame and explicit float-op spending are separate (`M/world_dispatch.rs:1222-1283,1356-1461`). Keep scope/current-Space/identity safety gates; delete adapter classification/homing/continuation verdicts. FrameAttempt currently has null preimage and zero timestamp (`M/world_runtime.rs:917-965`): produce actual immediate pre/post and monotonic evidence, not refusal from unknown. | Fits mechanisms; asynchronous acceptance is not settlement. M8 limits crossing. |
+| Visibility, state, focus, attempts and recovery | Native-Space membership supplies W2's native ArrivalBracket, never a logical-home receipt. No selected independent recoverable per-window suppression; AXMinimized and app hide are not substitutes. W3 therefore cannot compose logical sticky here: both suppression and nativeSticky are false. No maximize/foreign-above/all-Spaces writer found; diagnostic fullscreen is explicitly fixture-only, not a shipped foreign executor (`M/native_input.rs:29-36`, `M/ax.rs:1411-1414`). Native state setters need lifetime-bound R12 preimages before writes and R14 baseline/exitability evidence. Current command-ticket-only focus logic (`M/world_dispatch.rs:1948-2086`) must not suppress core-authorized automatic effects. | Fits native-space arrival model, not missing executors or recovery. Sticky commands unsupported on this route; no policy waiver. |
+| One-shot effects, warp, results and intentWrites | Apply only core-selected focus/raise/stack targets, dispatch once, return raw facts; result/diagnostic rows grant no writes. [CGWarpMouseCursorPosition](https://developer.apple.com/documentation/coregraphics/cgwarpmousecursorposition(_:)) and wrapper (`M/ffi.rs:1982-1995`) support warp with CGError, but no product reply consumer exists. Warp moves the global pointer without posting a mouse event: refresh actual cursor/ffc observation explicitly, never add synthetic movement or local focus policy. | warp=true mechanism, not guaranteed success or completed wiring. Storage: M3. |
+| K5 anchored border and renderer/input | AX callback discards element/notification and bumps a counter; window watches cap at 64 and retain by wid (`M/ffi.rs:3101-3118,3276-3371`). Border geometry/provenance suppression (`M/border_runtime.rs:32-43,215-251`) is not a capture-obs/event/render join. Bind FrameWitness win/obs/frame/foreground to verified AX/CG lifetime and a before/after invalidation watermark; native anchor motion may bypass core latency, never stale eligibility. Pager clicks must carry actually drawn rev/RenderTarget, not current local ring judgement. | M7: prove local causal join/coverage first; no new wire witness merely from timestamps or smoothness. |
+
+### 3. K3 float-above baseline
+
+| Float origin / release case | Current macOS evidence |
+| --- | --- |
+| Explicit tiled-to-float, later retile | ToggleFloat carries no rect; dispatch applies authorized geometry/effects, no persistent app-window level acquisition (`M/world_command_map.rs:279-284`, `M/world_dispatch.rs:1356-1461`). No owned band exists to release. |
+| Automatic sheet/dialog/modal/floating panel, fixed hint | Classifier recognizes these before ordinary-layer rejection (`M/classifier.rs:332-419`); classification is not a level write. A native panel's preowned nonzero layer is not project acquisition. |
+| Capacity/workspace floating, sticky transition | No foreign level acquisition/release producer in reviewed classifier/runtime/dispatch/native backend/FFI route. A floating reply or own all-Spaces helper is not app-window above/sticky authority. |
+| Fullscreen suspension, external clear, stop/crash | No project-owned persistent above map/preimage/release route found. Own NSPanel border/overlay levels are not application stacking. Y's injected layer/sticky route is outside scope; A/H/P/G/C do not supply a selected foreign writer. |
+
+- macOS contributes **no existing project-acquired persistent-above behavior**
+  to W1. Keep above=false and above/below unknown/unavailable on this route.
+  This neither selects nor refutes W1's uniform-origin policy; W1 remains OPEN,
+  K3 assertions/fixtures unchanged. A future writer still needs W1 and R12 proof.
+
+### 4. macOS HostCapabilities
+
+| Field | Source-fit value | Qualification |
+| --- | --- | --- |
+| hostOwned / equalCount / birthClear | true / false / false | Existing report values (`M/world_builder.rs:671-678`); adopt native order/membership, never move at launch or invent count coupling. |
+| nativeSelectorScope | per-output if separate Spaces, otherwise all-outputs | Read native mode before handshake; unknown holds, mode change reconnects. Unified mode forces shared semantics in core, not adapter settings substitution. |
+| windowSuppression / nativeSticky / above | false / false / false | No selected recoverable independent hide, app all-Spaces or persistent above route. Native Space switching is not suppression. W3 requires at least one sticky mechanism, so no logical-sticky claim here. |
+| maximize / fullscreen / warp | false / true / true at mechanism level | No maximize executor proved. AX fullscreen diagnostic and CG warp establish APIs, not product dispatch, preimage durability, ownership, permission or R14 acceptance. Do not advertise a ready executor until those gates are implemented. |
+| tiledFloatTransfer | Unfrozen: no selected crossing route | Current managed send requires exactly one display (`M/workspace_send_managed.rs:704-723`); move/focus crossing is disabled (`M/world_command_map.rs:240-255`). This is broader than tiled-to-float no-remap, not Windows's mechanism. M8 must resolve truthful capability scope before freeze. |
+| unavailableFacts | Ordered list in section 1, plus title for present route | appId/executable readers exist but require wiring. Keep missing per-window values nullable; no permanent unavailable declaration for transient read failure. |
+
+### 5. Intent storage and 6. R14 baseline
+
+| Requirement | Evidence / remaining gate |
+| --- | --- |
+| Opaque <=1024-byte intent, exact live-window ownership, restart survival | WorldSession/maps and retained reply memory are in-process only (`M/world_runtime.rs:77-159`, `M/runtime_core.rs:276-345`). No selected opaque native slot or crash-recoverable preimage ledger found. R `src/sys/cgs_window.rs:343-358` sets a property on its own CGS window/connection, not proof of surviving opaque foreign-window storage. Do not restore by title/PID/CG id guess or parse intent in the adapter. M2/M3 block macOS host-storage-survival. |
+| Independent native property preimages / recovery | No app above/maximize/sticky recovery route was established. Persist inert property-specific preimages atomically before authorized state writes; storage failure disables that property, not unrelated work. Minimize/app-hidden are neither tiler suppression nor crash restoration. Next-start recovery and any watcher require separate native proof. |
+| Fullscreen baseline and ownership | AX setter/readback can enter asynchronous native fullscreen Space transitions (`M/ax.rs:1274-1408`); it does not establish adoption-time restore frame or safe app-owned exit. Keep owner/exitable null absent evidence, preserve first-seen-fullscreen refusal and no forced app exit/Alt+Enter synthesis. Existing logical fullscreen membership/send direction remains subject to native ability, not inferred from nullable nativeWs. |
+
+### 7. Native retirement/creation and gaps requiring resolution
+
+| Native lifecycle lane | Source finding / consequence |
+| --- | --- |
+| Creation attempt and causal `created` | Operation is spent before creation; deferred receipt correctly has created=null (`M/workspace_select.rs:301-329,390-412`). Synchronous create plus same-display appended-delta check can name SID (`:1143-1275`), but MC AX press returns no SID (`M/mc_lifecycle.rs:447-502`): the call's extent does not exclude outside creation. Exact delta is necessary, not sufficient causal proof. M5: preserve original evidence and null/hold, no later-delta attribution or replay. |
+| G2 retirement / `WorkspaceDesire.existence` | MC has fresh SID/display/AX-child joins, empty checks, remove action and no-replay readback (`M/mc_lifecycle.rs:583-647,884-941`). Current trailing cleanup tracks runtime-created SIDs and runs at shutdown (`M/workspace_select.rs:472-510`, `M/tile.rs:3718-3806`); no general core exist:false consumer found. Mechanism exists; local creation ownership is not core removal authorization. M6: wire eligibility plus fresh occupancy/pin/minimum/completeness vetoes; unknown occupancy is not zero. No removal-support gate proposed. |
+
+| Gap / type | Options; recommendation; consequence |
+| --- | --- |
+| M1: self-bundle identity / **technical** | Preserve bundle-based self exclusion using raw appId plus neutral trusted self-bundle metadata; or intentionally replace it with executable equality (product change); or defer cutover. Recommend preserving the bundle predicate, separately from W4 executable/applicationIdentity. Existing missing-bundle -> own fallback (`M/native_facts.rs:301-321`) is policy to reconcile, not raw metadata. No self-app wire shape or false appId applied. |
+| M2: CG/AX lifetime and reacquisition / **technical** | Retain/compare remote AX identity with process/session fencing and positive close evidence; or conservatively retire/remint/hold whenever continuity is unprovable; never trust pid_wid alone. Recommend combined AX binding plus conservative holds, including unmanaged foreground, stale callbacks and restart. R's CFEqual/stale-destroy paths illustrate mechanics, not a no-reuse theorem. Storage cannot bind until exact surviving subject is proved. |
+| M3: durable opaque/native preimage storage / **technical** | Prove a native foreign-window slot; or propose an atomic external slot bound to a restart-verifiable native lifetime; or withhold persistence-dependent writes. Recommend evaluating the external-slot route only with M2 and explicit contract reconciliation: the draft currently requires lifetime-bound native storage. Neither filesystem keys nor SLS property availability alone satisfy it. macOS storage-survival remains OPEN. |
+| M4: zoom/maximize truth / **technical; emulation would be product** | Find a neutral native zoom observation/executor; or keep maximized unknown/maximize=false; or explicitly design emulated maximize semantics. Recommend unknown/false until a native producer is proved. Do not port maximized=false constants or the 1-point engine-placement geometry heuristic as raw state. Existing [floating zoom discriminator](../spec/reference-outcomes.md#macos-active-border-discriminators) remains TBD; emulation is not selected. |
+| M5: native creation correlation / **technical** | Prove serialized creation/result identity excluding outside creators; or return created=null and hold ambiguous binding; or propose a new evidence shape only if necessary. Recommend null/hold on the present MC route until causal proof exists. Do not promote same-call list difference to a KWin-style atomic receipt or retry an uncertain create. |
+| M6: G2 removal authority / **technical** | Wire existing remove mechanics to core exist:false with fresh native vetoes; or defer retirement while retaining backing. Recommend the core consumer, replacing autonomous trailing/shutdown removal authority. A capability waiver is not justified by a missing consumer; no execution or new protocol field added. |
+| M7: K5 FrameWitness / **technical** | Prove local capture/event/renderer identity-and-watermark join plus coverage; otherwise design the smallest additional evidence shape. Recommend local join first with fail-closed stale/unknown watches, including beyond the 64-watch cap and eligibility/focus/state changes. Reread backstops and counter timestamps are not causal event coverage. native-witness-join-evidence remains OPEN. |
+| M8: tiledFloatTransfer scope / **technical** | Prove a cross-output frame+Space membership route covering tiled-to-float; or explicitly represent/defer the broader current multi-display transfer limit; do not blindly set false as if it rejected only remapped floats. Recommend leaving the capability unfrozen pending that proof/scope reconciliation. AXSetPosition alone establishes neither destination Space nor already-floating transfer support. |
+| M9: physical output identity / **technical** | Add vendor/model/serial plus validated connection normalization; or leave unreadable metadata/connector null and hold ambiguous reconnects. Recommend nullable metadata with explicit sentinel handling and a separately proven unit-number/connection fallback. Never rename display UUID/id/ordinal to connector or claim cross-login hardware stability. |
+
+- W2 native arm fits native Spaces; W3 does not create a missing sticky route;
+  W4 executable does not replace bundle identity. No M proposal, W1 origin
+  choice or new semantic behavior was applied. New minimal identity/cross-output
+  discriminators are [recorded with outcomes TBD](../spec/reference-outcomes.md#v4-macos-platform-fit-discriminators);
+  existing zoom, creation and native-workspace rows remain applicable.
+- All eight shared OPEN/TBD scenario gates remain unchanged. macOS storage,
+  physical identity, R14 and native-witness acceptance remain unproved;
+  source-fit APIs are not settlement, crash recovery or paint acceptance.
+- Mechanical draft fix only: explicit macOS point-space scale=1, not backing
+  scale. No implementation, dependencies, wire shape, fixture bytes or K3/W1
+  assertions changed.
+- Static verification: `git diff --check` clean; zero added non-ASCII bytes;
+  authority paragraph/anchors exact; fixture diff empty, including all eight
+  gates and K3 assertions. Existing static JSON check retains the two intended
+  duplicate-key negatives and one malformed message; canonical messages have
+  no final LF. Local Markdown links retain five baseline failures, zero new.
+  No v4 codec, engine, native, recovery or renderer execution was performed.
