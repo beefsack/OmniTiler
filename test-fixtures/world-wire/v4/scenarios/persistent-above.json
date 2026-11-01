@@ -22,7 +22,10 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "above-supported",
-          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe"
+          },
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,
@@ -3240,7 +3243,10 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "above-unsupported",
-          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe"
+          },
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,

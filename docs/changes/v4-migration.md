@@ -1134,3 +1134,53 @@
   duplicate-key negatives and one malformed message; canonical messages have
   no final LF. Local Markdown links retain five baseline failures, zero new.
   No v4 codec, engine, native, recovery or renderer execution was performed.
+
+### M1-M9 technical resolution pending 0c approval
+
+- Status: technical resolution pending 0c approval for each of M1-M9. The
+  source-review recommendations/counts above describe the earlier checkpoint;
+  this subsection reconciles the submitted draft, not implemented authority or
+  native acceptance. W1 remains OPEN; K3 assertions and all eight shared
+  OPEN/TBD scenario gates remain unchanged.
+
+| Item | Technical resolution pending 0c approval | Evidence and remaining gate |
+| --- | --- | --- |
+| M1 | applicationIdentity is a fixed per-connection object with nullable appId/executable. Core's macOS self exclusion is non-null raw appId equality OR non-null executable equality. Remove missing-bundle -> own fallback; executable covers unbundled own processes. | Synthetic identity fixtures cover same bundle/different executable, foreign bundle/own executable, missing bundle with own/foreign executable and preserved case. Windows Settings/class exceptions remain unchanged; neutral native wiring is still required. |
+| M2 | Mint win only while retained remote AX identity (CFEqual) plus process fencing proves continuity. Positive close/replacement retires via existing closed, then remint; uncertain continuity holds with incomplete inventory. Never rebind from PID/CG id/title or a stale callback. | Existing closed/fresh-win/reconnect expressions suffice; no new wire/fixture lane. Restart reacquisition is fresh unless exact continuity is verified. AX omission/off-Space absence is not positive close evidence; native lifetime proof remains a port gate. |
+| M3 | Permit native per-window or adapter-owned atomic external slots under identical <=1024-byte opaque intent, atomic persist-before-dependent-write and restart-verifiable exact-lifetime obligations. Discard unverifiable bindings; native preimage failure disables only its property. No new capability. | If macOS cannot verify lifetime across restart, intent does not survive: windows return fresh/defaults. macOS host-storage-survival stays OPEN; a file/property key alone is not ownership proof. Existing intent/preimage fixtures need no new storage-route shape. |
+| M4 | maximize=false; WindowFact/PresentationIngress maximized=null. No false constant, border-geometry zoom heuristic or emulated maximize. | Existing FactName covers classification inputs, not maximized: nullable state is the consistent existing expression, not a new unavailable-fact arm. Synthetic macOS handshake/report witness it. Emulation would be a future product request; native zoom evidence stays TBD. |
+| M5 | Without causal creation proof, created stays null and binding holds. Preserve the spent original attempt; no same-call/later-delta attribution or retry. | Existing nullable creation and ambiguity fixtures already express this. A same-call list delta alone is not an atomic receipt; causal creation identity remains a native port gate. |
+| M6 | Core exist:false is sole removal authority, subject to fresh occupancy/pin/minimum/completeness vetoes; unknown occupancy is not zero. No autonomous trailing/shutdown cleanup authority and no removal capability. | Text-only adapter obligation; existing G2 scenarios do not contradict it. The native core consumer must replace local cleanup authority; native-retirement-support stays OPEN. |
+| M7 | Prove the adapter-local capture/event/renderer causal join during phase 2, as for K5. Suppress paint for unwatched windows beyond the watch cap and stale/unknown eligibility. | Text only; no new FrameWitness fields. Native event coverage and accepted-anchor motion remain unproved; native-witness-join-evidence stays OPEN. Timestamps/rereads do not close it. |
+| M8 | Freeze tiledFloatTransfer as the boolean float-no-remap limitation only; macOS=false provisionally. Broader cross-output moves are a macOS port gate, not another capability: target-display frame write plus native Space membership, settled by W2 native arrival. Until proved, attempts fail with native observation, no remap/guess. | KDE true and Windows false mechanisms were established in their reviews, so the contract's scope OPEN note closes, not the macOS crossing proof. Synthetic macOS capability is fail-closed; no broader float-transfer ban or non-macOS behavior changes. |
+| M9 | Unknown/disconnected vendor/model/serial sentinel results become null; connector is null without proven physical-connection normalization. Never substitute display id/UUID/ordinal; unit number alone is not proof. Ambiguous reconnect holds. | Text-only normalization obligation; the new macOS report uses null metadata/connector, not invented platform identity. Physical reconnect/normalization acceptance remains unproved. |
+
+- Fixture reconciliation: all preexisting handshakes gain appId:null alongside
+  their unchanged executable, including the duplicate-v negative. Required-field
+  negatives stay negative; identity invalid/distinction pointers now name the
+  executable member where appropriate. All 507 original message dispositions
+  and all 21 original scenario assertions/rules/gates are preserved by value.
+- Fixture delta: 11 messages added (3 positive, 8 deliberate negatives), for
+  518 messages. Positives cover synthetic macOS capabilities/raw facts and the
+  self-appId byte boundary; negatives cover null/legacy-scalar identity objects,
+  missing appId/executable and appId type/empty/NUL/size. One ordered identity
+  scenario adds 8 steps, for 22 scenarios, 255 steps, 211 complete wire inputs
+  and 398 jq assertions. ApplicationIdentity adds one record: 71 records/254
+  witnesses; 66 catalogs/345 arms, 7 families and 24 commands remain covered.
+  Distinctions are 68 (+3). No implementation or dependency changes.
+- Static verification: 540 JSON artifacts parse with jq; strict parsing retains
+  only the two intentional duplicate-key messages and one raw malformed message.
+  All 515 canonical messages match independent byte re-encoding with no final
+  LF; 13068 numeric tokens and four numeric witnesses have zero lexical/value
+  errors. Manifest rosters/pointers, actual-value catalog witnesses, closed
+  inventories and recursive positive/scenario key order pass with zero unmapped
+  objects. All 398 scenario jq assertions compile; bounded value checks accept
+  278 positives, identify all 15 new/migrated identity negatives and validate
+  all 211 scenario wire inputs, including the deliberate held-row case.
+  Baseline migration/evidence checks preserve W1/K3 and all eight OPEN/TBD gates;
+  six synthetic macOS self-match comparisons agree with the specified predicate.
+- Hygiene: git diff --check clean; no added non-ASCII or untracked whitespace/NUL;
+  authority paragraph/anchors exact; five known local Markdown link failures,
+  zero new. These are static contract/fixture checks, not executed v4 codec,
+  engine, model scenario, native settlement, crash recovery or renderer acceptance.
+  0c approval, W1 and the named macOS implementation/native gates remain pending.

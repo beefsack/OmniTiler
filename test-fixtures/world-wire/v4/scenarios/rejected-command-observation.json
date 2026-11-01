@@ -22,7 +22,10 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "handshake-a",
-          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe"
+          },
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,

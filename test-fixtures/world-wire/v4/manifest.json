@@ -6474,7 +6474,7 @@
       "canonical": true,
       "note": "W2-W4: application-identity-empty.",
       "invalid": {
-        "pointer": "/applicationIdentity",
+        "pointer": "/applicationIdentity/executable",
         "rule": "application-identity-empty",
         "source": "handshake-native"
       }
@@ -6489,7 +6489,7 @@
       "canonical": true,
       "note": "W2-W4: application-identity-type.",
       "invalid": {
-        "pointer": "/applicationIdentity",
+        "pointer": "/applicationIdentity/executable",
         "rule": "application-identity-type",
         "source": "handshake-native"
       }
@@ -6504,7 +6504,7 @@
       "canonical": true,
       "note": "W2-W4: application-identity-overbound.",
       "invalid": {
-        "pointer": "/applicationIdentity",
+        "pointer": "/applicationIdentity/executable",
         "rule": "application-identity-overbound",
         "source": "handshake-native"
       }
@@ -6519,7 +6519,7 @@
       "canonical": true,
       "note": "W2-W4: application-identity-nul.",
       "invalid": {
-        "pointer": "/applicationIdentity",
+        "pointer": "/applicationIdentity/executable",
         "rule": "application-identity-nul",
         "source": "handshake-native"
       }
@@ -6534,7 +6534,7 @@
       "canonical": true,
       "note": "W2-W4: application-identity-supported-null.",
       "invalid": {
-        "pointer": "/applicationIdentity",
+        "pointer": "/applicationIdentity/executable",
         "rule": "application-identity-supported-null",
         "source": "handshake-native"
       }
@@ -6549,7 +6549,7 @@
       "canonical": true,
       "note": "W2-W4: application-identity-unavailable-value.",
       "invalid": {
-        "pointer": "/applicationIdentity",
+        "pointer": "/applicationIdentity/executable",
         "rule": "application-identity-unavailable-value",
         "source": "handshake-unavailable-facts"
       }
@@ -6627,6 +6627,160 @@
         "pointer": "/windows/0/state/0",
         "rule": "sticky-capability-false",
         "source": "reply-state-authority"
+      }
+    },
+    {
+      "id": "handshake-macos",
+      "file": "messages/handshake-macos.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Synthetic macOS route; M1-M9 technical resolution pending 0c approval. fullscreen/warp mechanisms remain subject to port gates."
+    },
+    {
+      "id": "handshake-application-appid-bound",
+      "file": "messages/handshake-application-appid-bound.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Synthetic self application id at the 4096-byte boundary."
+    },
+    {
+      "id": "invalid-application-identity-object-null",
+      "file": "messages/invalid-application-identity-object-null.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: object-null.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-object-null",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "invalid-application-identity-legacy-scalar",
+      "file": "messages/invalid-application-identity-legacy-scalar.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: legacy-scalar.",
+      "invalid": {
+        "pointer": "/applicationIdentity",
+        "rule": "application-identity-legacy-scalar",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "invalid-application-identity-appid-missing",
+      "file": "messages/invalid-application-identity-appid-missing.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: appid-missing.",
+      "invalid": {
+        "pointer": "/applicationIdentity/appId",
+        "rule": "application-identity-appid-missing",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "invalid-application-identity-appid-type",
+      "file": "messages/invalid-application-identity-appid-type.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: appid-type.",
+      "invalid": {
+        "pointer": "/applicationIdentity/appId",
+        "rule": "application-identity-appid-type",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "invalid-application-identity-appid-empty",
+      "file": "messages/invalid-application-identity-appid-empty.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: appid-empty.",
+      "invalid": {
+        "pointer": "/applicationIdentity/appId",
+        "rule": "application-identity-appid-empty",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "invalid-application-identity-appid-nul",
+      "file": "messages/invalid-application-identity-appid-nul.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: appid-nul.",
+      "invalid": {
+        "pointer": "/applicationIdentity/appId",
+        "rule": "application-identity-appid-nul",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "invalid-application-identity-appid-overbound",
+      "file": "messages/invalid-application-identity-appid-overbound.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: appid-overbound.",
+      "invalid": {
+        "pointer": "/applicationIdentity/appId",
+        "rule": "application-identity-appid-overbound",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "invalid-application-identity-executable-missing",
+      "file": "messages/invalid-application-identity-executable-missing.json",
+      "family": "HandshakeRequest",
+      "direction": "adapter-to-core",
+      "expectation": "reject-wire",
+      "json": true,
+      "canonical": true,
+      "note": "M1 identity object: executable-missing.",
+      "invalid": {
+        "pointer": "/applicationIdentity/executable",
+        "rule": "application-identity-executable-missing",
+        "source": "handshake-macos"
+      }
+    },
+    {
+      "id": "report-macos",
+      "file": "messages/report-macos.json",
+      "family": "WorldReport",
+      "direction": "adapter-to-core",
+      "expectation": "valid-wire",
+      "json": true,
+      "canonical": true,
+      "note": "Synthetic macOS raw route: no maximize producer, no native sticky, truthful absent physical metadata/connector.",
+      "context": {
+        "handshake": "handshake-macos",
+        "hostOwned": true
       }
     }
   ],
@@ -8530,6 +8684,20 @@
         {
           "fixture": "error-creation-exhausted",
           "pointer": ""
+        }
+      ],
+      "ApplicationIdentity": [
+        {
+          "fixture": "handshake-native",
+          "pointer": "/applicationIdentity"
+        },
+        {
+          "fixture": "handshake-unavailable-facts",
+          "pointer": "/applicationIdentity"
+        },
+        {
+          "fixture": "handshake-macos",
+          "pointer": "/applicationIdentity"
         }
       ]
     },
@@ -11872,13 +12040,28 @@
     },
     {
       "fixture": "handshake-unavailable-facts",
-      "pointer": "/applicationIdentity",
+      "pointer": "/applicationIdentity/executable",
       "value": null
     },
     {
       "fixture": "handshake-native",
-      "pointer": "/applicationIdentity",
+      "pointer": "/applicationIdentity/executable",
       "value": "c:\\synthetic\\omnitiler.exe"
+    },
+    {
+      "fixture": "handshake-native",
+      "pointer": "/applicationIdentity/appId",
+      "value": null
+    },
+    {
+      "fixture": "handshake-macos",
+      "pointer": "/applicationIdentity/appId",
+      "value": "org.synthetic.OmniTiler"
+    },
+    {
+      "fixture": "report-macos",
+      "pointer": "/windows/0/maximized",
+      "value": null
     }
   ],
   "numericWitnesses": [
@@ -12907,6 +13090,48 @@
             "foreign-settings-class",
             "own-other-class",
             "unowned-generic-dialog"
+          ]
+        }
+      ],
+      "open": []
+    },
+    {
+      "id": "macos-self-identity",
+      "file": "scenarios/macos-self-identity.json",
+      "steps": 8,
+      "rules": [
+        {
+          "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
+          "steps": [
+            "handshake"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#revisioned-settings",
+          "steps": [
+            "settings"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#executable-identity",
+          "steps": [
+            "same-bundle-other-executable",
+            "foreign-bundle-own-executable",
+            "missing-bundle-own-executable",
+            "missing-bundle-foreign-executable",
+            "foreign-bundle-foreign-executable",
+            "case-distinct-executable"
+          ]
+        },
+        {
+          "contract": "../../../docs/porting/world-contract.md#neutral-classification-vocabulary-and-applicability",
+          "steps": [
+            "same-bundle-other-executable",
+            "foreign-bundle-own-executable",
+            "missing-bundle-own-executable",
+            "missing-bundle-foreign-executable",
+            "foreign-bundle-foreign-executable",
+            "case-distinct-executable"
           ]
         }
       ],

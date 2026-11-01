@@ -22,7 +22,10 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "linked-no-warp",
-          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe"
+          },
           "capabilities": {
             "hostOwned": true,
             "equalCount": true,
@@ -811,7 +814,10 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "independent-with-warp",
-          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe"
+          },
           "capabilities": {
             "hostOwned": true,
             "equalCount": true,

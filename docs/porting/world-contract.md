@@ -91,6 +91,14 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   lifetime. `gen` is 1..64 lowercase ASCII letters/digits/hyphens.
   [Baseline bounds](../../crates/tiler-core/src/bounds.rs), [identity](../../crates/tiler-core/src/ids.rs),
   [R6](../changes/core-interface-review.md#original-backlog-lines-159-186).
+- Adapters mint `win` only while exact native-subject continuity is proved.
+  macOS retains remote AX element identity, compares with CFEqual and fences the
+  process; PID/CG window id/title alone never rebind an old token. Stale callbacks,
+  replaced AX subjects and restart reacquisition cannot inherit the old binding.
+  Hold uncertain subjects with incomplete inventory; positive close or proved
+  subject replacement retires the old token through `closed`, then a fresh subject
+  receives a fresh token. AXWindows omission/off-Space absence is not positive
+  close evidence. Reconnect already discards the old connection's identities.
 - `Rect` is `[x,y,w,h]` with integer coordinates, x/y in -16384..16384 and
   positive w/h <=16384, checked edges; `Point` is `[x,y]` under the existing
   point bound (-16384..16384 on each axis). Screens, work areas, frames, cursor
@@ -147,8 +155,10 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `v` | integer 4 | no | Exact contract version. |
 | | `adapter` | Id | no | Sole adapter lifetime. |
 | | `req` | Id | no | Handshake correlation. |
-| | `applicationIdentity` | executable identity | yes | Adapter application's own identity, fixed for this connection; null only when executable is unavailable. |
+| | `applicationIdentity` | ApplicationIdentity | no | Neutral adapter application identity, fixed for this connection. |
 | | `capabilities` | HostCapabilities | no | Fixed hard host limits. |
+| `ApplicationIdentity` | `appId` | bounded application id | yes | Own native bundle/application id; null when absent or unreadable, never a fallback verdict. |
+| | `executable` | executable identity | yes | Own normalized executable; null only when executable is unavailable. |
 | `HandshakeReply` | `type` | `handshake-reply` | no | New routing tag. |
 | | `v` | integer 4 | no | Selected version, not negotiation of dual shapes. |
 | | `adapter,req` | Id | no | Request correlation. |
@@ -175,9 +185,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   forbids non-null `warpCursor`, even when cursorWarp is requested. Read-only
   stacking observations are independent of actuation support. K1-K4 are
   [technical resolutions pending 0c approval](../changes/v4-migration.md#k1-k5-technical-resolution-pending-0c-approval).
-- OPEN: `tiledFloatTransfer` is the draft spelling/scope of the existing
-  `float-no-remap` limitation, not a ban on ordinary floating transfers. Phase
-  0b must establish the exact host mechanism before this capability is frozen.
+- `tiledFloatTransfer` is exactly the existing `float-no-remap` limitation: a
+  report-time tiled source becoming floating during a cross-output transfer,
+  not a ban on same-output or already-floating transfers. KDE's mechanism is
+  established as true; Windows's no-remap route is false. macOS provisionally
+  declares false until cross-output frame plus native Space membership is proved.
+  Its broader cross-output move limit is a macOS port gate, not another capability:
+  implement frame writes onto the target display, settled by W2 native arrival
+  observation. Until proved, such attempts settle as failed with native observation;
+  no remap, guessed destination membership or adapter-local replan is allowed.
   No native-removal capability is added: see [G2](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
 ## Revisioned settings
@@ -345,6 +361,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   `primary`; core falls back to first stable screen order, never active screen.
   A readable host priority order can supply screen order without proving a
   separate primary designation; omit `primary` when that designation is unknown.
+  macOS vendor/model/serial unknown or disconnected sentinels normalize to null;
+  a readable value is neutral metadata, not a stability guarantee. Connector stays
+  null unless its physical-connection normalization is proved: never substitute
+  CG display id, UUID or ordinal; a unit number alone does not prove connector
+  identity. Ambiguous reconnect holds rather than picking a candidate or inventing
+  a connector.
   OPEN: phase 0b confirms API readability/notifications and truthful connector
   fallback on each host. [R11/primary evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
@@ -392,6 +414,13 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   OPEN: phase 0b verifies raw native fact coverage and lifetime reuse, including
   unmanaged fullscreen foreground capture, rather than inventing negative facts.
   [Evidence gaps](../changes/v4-migration.md#b-reconciliations-and-open-points).
+
+- macOS declares maximize=false and reports maximized=null in WindowFact and
+  PresentationIngress while no native producer exists. FactName/unavailableFacts
+  covers classification inputs, not maximized, so no fixed-unavailable enum arm
+  is added. Do not substitute a false constant or engine-placement/border-geometry
+  zoom heuristic. Emulated maximize is not selected; it would be a future product
+  request, not a port mechanism.
 
 ### Neutral classification vocabulary and applicability
 
@@ -458,15 +487,19 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 
 ### Executable identity
 
-- `executable` and handshake `applicationIdentity` are required nullable fields.
-  A non-null identity is nonempty text <=4096 UTF-8 bytes, with no NUL. It is a
+- `executable` is required nullable; handshake `applicationIdentity` is a required
+  object with required nullable `appId,executable`, in that order. Its non-null
+  appId is nonempty text <=4096 UTF-8 bytes without NUL, in the same native encoding
+  as WindowFact.appId; absence is null, not an invented own-bundle value.
+  A non-null executable is nonempty text <=4096 UTF-8 bytes, with no NUL. It is a
   native executable identity in the host's normalized encoding, never a title,
   display name, shell/own-settings boolean or substituted application id. Hosts
-  without this input list executable in unavailableFacts, use null for both
-  fields and skip only the predicates requiring it. Supported-but-unreadable
-  window identity stays null and holds only the dependent predicate. Supplying
-  self identity while declaring executable unavailable, or omitting readable
-  self identity when declaring support, refuses the handshake.
+  without this input list executable in unavailableFacts, use null for window
+  executable and applicationIdentity.executable and skip only predicates requiring
+  it. Supported-but-unreadable window identity stays null and holds only the
+  dependent predicate. Supplying self executable while declaring executable
+  unavailable, or omitting readable self executable when declaring support,
+  refuses the handshake.
 - Windows uses the full executable path: replace `/` with `\`, then ASCII
   lowercase, exactly the existing executable comparison. Do not canonicalize
   dot segments, resolve relative paths, consult the filesystem or Unicode-fold.
@@ -486,6 +519,14 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   declare it unavailable. Identity stays on the local wire only: do not add it
   to logs, telemetry or persisted intent. Fixtures use synthetic identities.
   W4 is a technical resolution pending 0c approval, not native acceptance.
+- For the existing macOS self-exclusion gate, core excludes when non-null raw
+  window appId equals non-null applicationIdentity.appId OR non-null window
+  executable equals non-null applicationIdentity.executable. Preserve macOS
+  executable case; Windows normalization does not apply. A missing bundle does
+  not imply own application; the own executable covers unbundled own processes.
+  This does not alter the Windows Settings/class exceptions above. M1 and the
+  macOS obligations here are
+  [technical resolutions pending 0c approval](../changes/v4-migration.md#m1-m9-technical-resolution-pending-0c-approval).
 
 ### Native observation
 
@@ -504,8 +545,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   contradictory order holds, not adapter merging. Stable logical ids survive
   migration; only positive arrival/close/newer off-output proof releases source
   binding. Existing native creation/ambiguity/released-source rules remain.
-  `exist:false` is eligibility only, with fresh occupancy/pin/minimum vetoes;
-  OPEN G2: no new removal-support gate until phase-0b establishes the mechanism.
+  Core `exist:false` is the sole native removal authority, not an instruction
+  to remove despite fresh occupancy/pin/minimum/completeness vetoes. Unknown
+  occupancy is not zero; incomplete evidence holds. macOS consumes that authority
+  through native removal mechanics, never autonomous trailing/shutdown cleanup
+  based on local creation ownership. No native-removal capability is added.
   [R19](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19),
   [G2](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
@@ -718,14 +762,24 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 ### Opaque intent storage
 
 - Core defines/validates and decides save/restore. Adapters store/return `data`
-  unchanged in lifetime-bound native storage; they never interpret it as policy.
+  unchanged in a lifetime-bound native per-window slot or adapter-owned atomic
+  external slot; they never interpret it as policy. Both storage routes have
+  identical obligations: <=1024 opaque UTF-8 bytes, atomic publication before
+  dependent writes, and a restart-verifiable exact native-window lifetime binding.
+  Independent native property preimages must also be persisted atomically before
+  dependent property writes; a failed preimage disables only that property.
+  No new storage capability is introduced.
   The core record is a compact JSON string <=1024 UTF-8 bytes with internal
   fields tabulated below.
   No geometry, layout tree, workspace ring or MRU/history is persisted. Invalid
-  version/shape or unverified native storage ownership returns no intent and no
+  version/shape or unverified storage lifetime ownership returns no intent and no
   write authority. The outer win binds the verified live storage subject, not
   an old adapter id embedded in the record. A returned
   record is not proof of native state. Cross-login persistence is not promised.
+  Discard unverifiable bindings, never recover by title/PID/CG id guesses. If
+  macOS cannot verify continuity across restart, intent does not survive restart
+  there: windows return fresh with defaults. macOS host-storage-survival remains
+  OPEN; an external file or property name alone is not evidence of ownership.
   OPEN: phase 0b verifies storage survival and exact lifetime ownership, not
   restart matching by title/process heuristic.
   [Intent](../decisions/contract.md#intent-ownership-and-persistence),
@@ -736,7 +790,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `IntentRecord` | `win` | WindowId | no | Storage's verified live subject. |
 | | `data` | opaque bounded string | no | Exact core record, no adapter edits. |
 | `IntentWrite` | `win` | WindowId | no | Exact subject. |
-| | `data` | opaque bounded string | yes | Save value; null explicitly clears native slot. |
+| | `data` | opaque bounded string | yes | Save value; null explicitly clears the lifetime-bound slot. |
 | Core intent data (inside string) | `v` | integer 1 | no | Storage format version, independent of wire v. |
 | | `float` | bool | yes | Explicit float/tile override; null means no override. |
 | | `stickyPrior` | bool | yes | Non-null means retained sticky intent and prior float/tile intent for sticky-off; null means not sticky, independent of native fact availability. |
@@ -776,7 +830,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   before/after/correlated-created id. Do not replace them with LastWrite.
   Creation needs explicit `nativeCreations` authorization, spent before call;
   an unbound spare is not permission. Unknown/ambiguous created identity holds
-  without recreation. [Creation rules](world-contract-v3.md#host-owned-adoption-amendment-tentative-2026-10-25).
+  without recreation. A causal receipt is not available on every route: without
+  causal proof, macOS `created` stays null and binding holds even if same-call or
+  later native-list deltas contain one new id. Preserve the original spent
+  attempt; no later-delta attribution or retry.
+  [Creation rules](world-contract-v3.md#host-owned-adoption-amendment-tentative-2026-10-25).
 
 ## Visibility and focus ordering
 
@@ -889,10 +947,12 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   refused. Issuing-only result/terminal delivery is not a snapshot cache.
   [Desired-state baseline](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes).
 - Before hide, stripped fullscreen chrome, project keep-above or sticky stacking
-  writes, persist original native state in a host slot outliving the tiler.
-  Restore leftovers at next startup; Windows watcher also restores stripped
-  chrome. Unreadable/failed preimage disables only that window/property. Never
-  mutate untouched state, nor infer restoration authority from a stale lifetime.
+  writes, persist original native state atomically in a lifetime-bound native or
+  adapter-owned external slot outliving the tiler, under the storage obligations
+  above. Restore only verified leftovers at next startup; Windows watcher also
+  restores stripped chrome. Unreadable/failed preimage disables only that
+  window/property. Never mutate untouched state, nor infer restoration authority
+  from a stale lifetime.
   OPEN: phase 0b verifies each host slot/recovery mechanism.
   [R12](../decisions/contract.md#native-writes-difficult-to-undo-r12),
   [evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).
@@ -996,7 +1056,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   it is not interchangeable with a native renderer's source-instance/counter.
   The adapter must preserve the exact join between those chains. OPEN: phase 0b must verify
   native witness joins/events on each port; macOS smoothness evidence is not a
-  shape gate. Underlay remains group-defined absolute; its baseRev is projection
+  shape gate. As for K5, the local causal join is the phase-2 port proof gate;
+  native-witness-join-evidence remains OPEN. macOS suppresses paint for unwatched
+  subjects beyond its watch cap and for stale/unknown eligibility, until causal
+  coverage is established; a reread or timestamp is not a substitute.
+  Underlay remains group-defined absolute; its baseRev is projection
   provenance, not another input freshness rule.
   [R20](../decisions/contract.md#anchored-border-r20),
   [evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).

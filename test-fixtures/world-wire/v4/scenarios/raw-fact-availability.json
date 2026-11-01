@@ -22,7 +22,10 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "supported-handshake",
-          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe"
+          },
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,
@@ -554,7 +557,10 @@
           "v": 4,
           "adapter": "adapter-a",
           "req": "unavailable-handshake",
-          "applicationIdentity": "c:\\synthetic\\omnitiler.exe",
+          "applicationIdentity": {
+            "appId": null,
+            "executable": "c:\\synthetic\\omnitiler.exe"
+          },
           "capabilities": {
             "hostOwned": false,
             "equalCount": false,

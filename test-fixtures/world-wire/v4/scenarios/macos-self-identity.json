@@ -1,0 +1,1211 @@
+{
+  "format": "world-wire-v4-ordered-scenario",
+  "id": "macos-self-identity",
+  "driver": "core",
+  "initial": {
+    "freshEngine": true,
+    "generationSequence": [
+      "generation-a"
+    ],
+    "adapter": "adapter-a",
+    "native": {}
+  },
+  "steps": [
+    {
+      "id": "handshake",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "handshake",
+          "v": 4,
+          "adapter": "adapter-a",
+          "req": "handshake-a",
+          "applicationIdentity": {
+            "appId": "org.synthetic.OmniTiler",
+            "executable": "/Synthetic/OmniTiler"
+          },
+          "capabilities": {
+            "hostOwned": true,
+            "equalCount": false,
+            "birthClear": false,
+            "nativeSelectorScope": "per-output",
+            "windowSuppression": false,
+            "maximize": false,
+            "fullscreen": true,
+            "nativeSticky": false,
+            "above": false,
+            "warp": true,
+            "tiledFloatTransfer": false,
+            "unavailableFacts": [
+              "privileged",
+              "managed",
+              "acceptsInput",
+              "activationInhibited",
+              "toolWindow",
+              "owned",
+              "transient",
+              "above",
+              "below",
+              "owner",
+              "parent",
+              "title"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message == {type:\"handshake-reply\",v:4,adapter:\"adapter-a\",req:\"handshake-a\",gen:\"generation-a\",ready:false,kind:\"\"}"
+        ]
+      },
+      "rules": [
+        "handshake-and-lifetime"
+      ]
+    },
+    {
+      "id": "settings",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "settings",
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "req": "settings-1",
+          "rev": "1",
+          "values": {
+            "gap": 8,
+            "outer": 8,
+            "defaultTiled": true,
+            "mode": "per-output-local",
+            "sameAxis": "group-with-neighbor",
+            "bornMaximized": "tile-on-launch",
+            "predicate": "both-axes-fixed",
+            "anchorFallback": "largest-splittable-window",
+            "noSpaceResult": "float",
+            "refill": "last-remaining-workspace",
+            "switchTarget": "cursor-output",
+            "freshPlacement": "cursor-output-last-focused",
+            "focusFollowsCursor": false,
+            "cursorWarp": false,
+            "borderEnabled": true,
+            "underlayEnabled": true,
+            "borderWidth": 3,
+            "borderGap": 0,
+            "borderRadius": 6,
+            "underlayExtension": -1
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.status == \"accepted\" and .output.message.diagnostics == []",
+          ".output.actions == []"
+        ]
+      },
+      "rules": [
+        "revisioned-settings"
+      ]
+    },
+    {
+      "id": "same-bundle-other-executable",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "1",
+          "reqSeq": "1",
+          "req": "identity-1",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": null,
+                "model": null,
+                "serial": null,
+                "connector": null
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "macos-identity-1",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": null,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "nativeWs": "native-a",
+              "hostHidden": false,
+              "privileged": null,
+              "managed": null,
+              "acceptsInput": null,
+              "activationInhibited": null,
+              "toolWindow": null,
+              "owned": null,
+              "transient": null,
+              "modal": false,
+              "resizable": true,
+              "above": null,
+              "below": null,
+              "owner": null,
+              "parent": null,
+              "role": "AXWindow",
+              "appId": "org.synthetic.OmniTiler",
+              "executable": "/Synthetic/Example",
+              "class": "AXStandardWindow",
+              "title": null,
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": false,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [
+            {
+              "out": "out-a",
+              "order": [
+                "native-a"
+              ],
+              "current": "native-a",
+              "occupancy": [
+                {
+                  "native": "native-a",
+                  "count": 1
+                }
+              ]
+            }
+          ],
+          "focused": "macos-identity-1",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "macos-identity-1",
+            "minimized": false,
+            "maximized": null,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "macos-identity-1"
+            ],
+            "pagerFrames": [
+              {
+                "win": "macos-identity-1",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "macos-identity-1",
+              "obs": "1",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "macos-identity-1"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.ready == true",
+          ".output.actions == []",
+          ".output.message.windows | all(.win != \"macos-identity-1\" or .member_auth != \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "foreign-bundle-own-executable",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "2",
+          "reqSeq": "2",
+          "req": "identity-2",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": null,
+                "model": null,
+                "serial": null,
+                "connector": null
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "macos-identity-2",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": null,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "nativeWs": "native-a",
+              "hostHidden": false,
+              "privileged": null,
+              "managed": null,
+              "acceptsInput": null,
+              "activationInhibited": null,
+              "toolWindow": null,
+              "owned": null,
+              "transient": null,
+              "modal": false,
+              "resizable": true,
+              "above": null,
+              "below": null,
+              "owner": null,
+              "parent": null,
+              "role": "AXWindow",
+              "appId": "org.synthetic.Foreign",
+              "executable": "/Synthetic/OmniTiler",
+              "class": "AXStandardWindow",
+              "title": null,
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": false,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "macos-identity-1"
+          ],
+          "native": [
+            {
+              "out": "out-a",
+              "order": [
+                "native-a"
+              ],
+              "current": "native-a",
+              "occupancy": [
+                {
+                  "native": "native-a",
+                  "count": 1
+                }
+              ]
+            }
+          ],
+          "focused": "macos-identity-2",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "macos-identity-2",
+            "minimized": false,
+            "maximized": null,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "macos-identity-2"
+            ],
+            "pagerFrames": [
+              {
+                "win": "macos-identity-2",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "macos-identity-2",
+              "obs": "2",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "macos-identity-2"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.ready == true",
+          ".output.actions == []",
+          ".output.message.windows | all(.win != \"macos-identity-2\" or .member_auth != \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "missing-bundle-own-executable",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "3",
+          "reqSeq": "3",
+          "req": "identity-3",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": null,
+                "model": null,
+                "serial": null,
+                "connector": null
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "macos-identity-3",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": null,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "nativeWs": "native-a",
+              "hostHidden": false,
+              "privileged": null,
+              "managed": null,
+              "acceptsInput": null,
+              "activationInhibited": null,
+              "toolWindow": null,
+              "owned": null,
+              "transient": null,
+              "modal": false,
+              "resizable": true,
+              "above": null,
+              "below": null,
+              "owner": null,
+              "parent": null,
+              "role": "AXWindow",
+              "appId": null,
+              "executable": "/Synthetic/OmniTiler",
+              "class": "AXStandardWindow",
+              "title": null,
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": false,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "macos-identity-2"
+          ],
+          "native": [
+            {
+              "out": "out-a",
+              "order": [
+                "native-a"
+              ],
+              "current": "native-a",
+              "occupancy": [
+                {
+                  "native": "native-a",
+                  "count": 1
+                }
+              ]
+            }
+          ],
+          "focused": "macos-identity-3",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "macos-identity-3",
+            "minimized": false,
+            "maximized": null,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "macos-identity-3"
+            ],
+            "pagerFrames": [
+              {
+                "win": "macos-identity-3",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "macos-identity-3",
+              "obs": "3",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "macos-identity-3"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.ready == true",
+          ".output.actions == []",
+          ".output.message.windows | all(.win != \"macos-identity-3\" or .member_auth != \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "missing-bundle-foreign-executable",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "4",
+          "reqSeq": "4",
+          "req": "identity-4",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": null,
+                "model": null,
+                "serial": null,
+                "connector": null
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "macos-identity-4",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": null,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "nativeWs": "native-a",
+              "hostHidden": false,
+              "privileged": null,
+              "managed": null,
+              "acceptsInput": null,
+              "activationInhibited": null,
+              "toolWindow": null,
+              "owned": null,
+              "transient": null,
+              "modal": false,
+              "resizable": true,
+              "above": null,
+              "below": null,
+              "owner": null,
+              "parent": null,
+              "role": "AXWindow",
+              "appId": null,
+              "executable": "/Synthetic/Example",
+              "class": "AXStandardWindow",
+              "title": null,
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": false,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "macos-identity-3"
+          ],
+          "native": [
+            {
+              "out": "out-a",
+              "order": [
+                "native-a"
+              ],
+              "current": "native-a",
+              "occupancy": [
+                {
+                  "native": "native-a",
+                  "count": 1
+                }
+              ]
+            }
+          ],
+          "focused": "macos-identity-4",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "macos-identity-4",
+            "minimized": false,
+            "maximized": null,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "macos-identity-4"
+            ],
+            "pagerFrames": [
+              {
+                "win": "macos-identity-4",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "macos-identity-4",
+              "obs": "4",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "macos-identity-4"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.ready == true",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"macos-identity-4\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "foreign-bundle-foreign-executable",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "5",
+          "reqSeq": "5",
+          "req": "identity-5",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": null,
+                "model": null,
+                "serial": null,
+                "connector": null
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "macos-identity-5",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": null,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "nativeWs": "native-a",
+              "hostHidden": false,
+              "privileged": null,
+              "managed": null,
+              "acceptsInput": null,
+              "activationInhibited": null,
+              "toolWindow": null,
+              "owned": null,
+              "transient": null,
+              "modal": false,
+              "resizable": true,
+              "above": null,
+              "below": null,
+              "owner": null,
+              "parent": null,
+              "role": "AXWindow",
+              "appId": "org.synthetic.Foreign",
+              "executable": "/Synthetic/Example",
+              "class": "AXStandardWindow",
+              "title": null,
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": false,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "macos-identity-4"
+          ],
+          "native": [
+            {
+              "out": "out-a",
+              "order": [
+                "native-a"
+              ],
+              "current": "native-a",
+              "occupancy": [
+                {
+                  "native": "native-a",
+                  "count": 1
+                }
+              ]
+            }
+          ],
+          "focused": "macos-identity-5",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "macos-identity-5",
+            "minimized": false,
+            "maximized": null,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "macos-identity-5"
+            ],
+            "pagerFrames": [
+              {
+                "win": "macos-identity-5",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "macos-identity-5",
+              "obs": "5",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "macos-identity-5"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.ready == true",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"macos-identity-5\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    },
+    {
+      "id": "case-distinct-executable",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "6",
+          "reqSeq": "6",
+          "req": "identity-6",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": null,
+                "model": null,
+                "serial": null,
+                "connector": null
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "macos-identity-6",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": null,
+              "sticky": null,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "nativeWs": "native-a",
+              "hostHidden": false,
+              "privileged": null,
+              "managed": null,
+              "acceptsInput": null,
+              "activationInhibited": null,
+              "toolWindow": null,
+              "owned": null,
+              "transient": null,
+              "modal": false,
+              "resizable": true,
+              "above": null,
+              "below": null,
+              "owner": null,
+              "parent": null,
+              "role": "AXWindow",
+              "appId": null,
+              "executable": "/Synthetic/OMNITILER",
+              "class": "AXStandardWindow",
+              "title": null,
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": false,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "macos-identity-5"
+          ],
+          "native": [
+            {
+              "out": "out-a",
+              "order": [
+                "native-a"
+              ],
+              "current": "native-a",
+              "occupancy": [
+                {
+                  "native": "native-a",
+                  "count": 1
+                }
+              ]
+            }
+          ],
+          "focused": "macos-identity-6",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "macos-identity-6",
+            "minimized": false,
+            "maximized": null,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "macos-identity-6"
+            ],
+            "pagerFrames": [
+              {
+                "win": "macos-identity-6",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "macos-identity-6",
+              "obs": "6",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "macos-identity-6"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.ready == true",
+          ".output.actions == []",
+          ".output.message.windows | any(.win == \"macos-identity-6\" and .member_auth == \"controlled\")"
+        ]
+      },
+      "rules": [
+        "executable-identity",
+        "neutral-classification-vocabulary-and-applicability"
+      ]
+    }
+  ]
+}
