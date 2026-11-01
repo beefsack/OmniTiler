@@ -6504,6 +6504,14 @@ results stay TBD until KDE-tested.
 | Focus clear races old native paint | Show A's border; activate B; deliver an in-transit old A paint; return to A before a fresh capture | Approved display hide retains order/native proof; draft component and entry cases pass. Complete native event/facts/repaint recovery remains unaccepted | Native/reference outcome TBD; reserve stream reset for actual replacement |
 | Native invalidation after display hide or before first paint | Capture P; hide display or hold its first paint; move an underlay member; deliver P; accept a later capture without replacing the stream | Required: hide every stale surface and resume only on coverage of the source-owned counter. Draft router counts hidden geometry, but production publishes the counter only at startup and does not refresh every surface after a bump | Native/reference outcome TBD; no display-membership, timing or geometry-similarity freshness inference |
 
+## v4 Windows platform-fit discriminators
+
+| Minimal action sequence | Source-fit distinction | Unsupported outcome |
+| --- | --- | --- |
+| On a tiled workspace explicitly float A; separately admit automatic fixed float B and capacity float C; focus a fullscreen sibling, return, externally clear A's above state, then tile A | Windows raises explicit A but not the automatic/capacity adoption paths; K3 currently specifies KDE automatic acquisition/latching. [W1](../changes/v4-migration.md#7-gaps-requiring-resolution-not-decisions-taken) proposes one qualified-origin policy, not every floating row | Uniform acquisition/suspension/release/reset outcome TBD pending 0c and native checks |
+| On Windows select an inactive logical workspace containing visible-frame-capable A; bracket native lifetime/visibility/frame/output reads, then focus and depart; repeat with a sticky float | No native logical-workspace getter exists on the selected native-free route; existing applied_homing and sticky markers are retained project state, not independent native home/sticky facts | W2/W3 native-free arrival and sticky fact/target semantics TBD; no fabricated home, state attempt or focus-success proof |
+| Present a shell popup and an ordinary window sharing a generic XAML class; separately compare own Settings and a foreign process reusing its class | Existing exceptions use executable identity as well as class; WindowType alone cannot preserve them | W4 raw application/self-identity encoding and exact core outcome TBD; no adapter shell/own-settings verdict selected |
+
 ## Deferred areas
 
 - All approved behavioral areas are assessed, including ratio balance

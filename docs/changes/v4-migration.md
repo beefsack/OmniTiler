@@ -13,8 +13,9 @@
   spelling is now explicit. Milestone 2 source-checked corrections and the v3
   carry-forward checklist approach remain accepted. Phase-0b KDE source-fit
   review is recorded below. K1-K4 technical resolutions are drafted pending 0c
-   approval; their contract/fixture reconciliation is complete. Windows/macOS reviews
-  and phase-0c approval remain.
+   approval; their contract/fixture reconciliation is complete. Windows source-fit
+  review is recorded below with W1-W4 unresolved; macOS review and phase-0c
+  approval remain.
 - Acceptance: every current wire record/enum/message has a disposition; every
   delta has an authority reference or a named gap; defaults cite core source;
   preserved shapes keep their current names and representation.
@@ -817,3 +818,150 @@
   accepted KDE-review baseline retain exactly five known failures, zero new.
   Windows/macOS source-fit reviews, their float-above baseline reports, 0c
   approval and native/implementation gates remain outstanding.
+
+## Phase-0b Windows platform-fit review
+
+- Verdict: **needs draft fixes and W1-W4 resolution before freeze**. Win32
+  geometry, suppression, maximize/fullscreen, topmost and cursor mechanisms fit;
+  native-free arrival/sticky semantics and sufficient application identity do
+  not yet fit the literal draft. This is source evidence, not v4 execution or
+  native acceptance. KDE conclusions are not Windows evidence.
+- Citation shorthand below: `T/` = `crates/tiler-windows/src/tiling_sys/`,
+  `W/` = `crates/tiler-windows/src/`. Searches covered those sources and their
+  referenced native wrappers, recovery and renderer paths. Negative findings
+  mean no producer in that route, not OS-wide impossibility.
+
+### 1. Report production
+
+| Fields/records | Finding and evidence | Verdict |
+| --- | --- | --- |
+| Envelope/settings/capabilities, inventory/closed, gesture/attempt lanes and action context | Existing sequencer envelopes captures; Windows sends hostOwned/equalCount/birthClear=false, native=[] (`T/world_sequencer.rs:370-386`, `T/world_capture.rs:1681-1729`). Preserve fresh facts/counters and move settings/capabilities, not policy projections. Cursor, hit test, close and gesture sources remain separate from command selection. | Fits; cutover work. |
+| Window `win,out,rect,hints,fullscreen,maximized,minimized,hostHidden` | Process identity, DWM extended frame, iconic/zoom/cloak, styles and captionless full-monitor coverage are read (`T/observe.rs:1104-1136,1270-1341`). Fullscreen is this documented Windows observation, not game identity. Hint queries use bounded WM_GETMINMAXINFO, not resizability inference (`T/minmax.rs:73-114`, `W/ffi/window.rs:335-365`); capture currently uses the hint cache (`T/world_capture.rs:1227-1232`). Failed/uncaptured hints must stay unknown, not fabricated unconstrained facts. | Fits sources; raw capture conversion required. |
+| K1 `privileged,activationInhibited,toolWindow,owned,resizable,above,owner,parent` | Token integrity and WS_EX_NOACTIVATE/TOOLWINDOW, GW_OWNER, WS_THICKFRAME and WS_EX_TOPMOST supply neutral inputs; bind relationship IDs only to verified lifetimes (`T/observe.rs:1104-1136,1307-1340`, `W/ffi/window.rs:74-97,159-171,205-219`). Current identity path filters elevated processes before setting elevated=false: that false is not a measurement of every candidate. Checked style/exstyle reads must distinguish failure. GetParent can return an owner for WS_POPUP, not a distinct parent ([API](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getparent)). | Fits API; do not copy current projected/unchecked negatives. |
+| K1 unavailableFacts, `role,appId,class,title,type,activationPolicy,layer` | Correct the prospective six-input list: selected Win32 route also lacks persistent below and role. HWND_BOTTOM is not a below flag. Ordered unavailable inputs are `managed,acceptsInput,transient,modal,below,role,activationPolicy,layer`; with the presently absent appId/title readers, insert appId/title in catalog order too. This is route support; UIA/other metadata routes are not proved impossible. GW_OWNER does not prove transient/modal; IsWindowEnabled would not prove keyboard preference. Class is read; #32770 mechanically maps to dialog, ordinary top-level to normal, with styles/owner flags independent (`T/observe.rs:1307-1330`, `W/tiling/classification.rs:143-218`). Application identity remains W4, not an eligibility-valued appId. | Needs draft fix, applied; W4 gap. |
+| Screens `out,full,work,complete,scale`, primary and notifications | PMv2 uses physical pixels; monitor rects and primary bit are available, primary-first ordering is explicit (`T/monitors.rs:4-18,21-77`, `T/world_capture.rs:1011-1033`). Scale is effective output DPI/96. Existing GetDpiForWindow wrapper (`W/ffi/window.rs:281-283`) only proves the queried window's DPI; use a PMv2 window on each output, including empty outputs, not a foreign DPI-unaware window ([API](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow)). WM_DPICHANGED is per affected window, not an all-monitor broadcast ([API](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged)). Existing dirty hooks cover that message, WM_DISPLAYCHANGE and WM_SETTINGCHANGE (`T/monitors.rs:30-49`), but do not prove empty-output scale-only coverage; the current windowless fallback is not a v4 event-coverage proof. | Fits units/API; per-output producer/notification coverage still required. |
+| `identity.manufacturer,model,serial,connector` | Current MonitorArea has only device/full/work, no physical metadata (`T/monitors.rs:21-28`). QueryDisplayConfig/DisplayConfigGetDeviceInfo target data exposes validated EDID manufacturer/product IDs, monitor device path, technology and connectorInstance ([API](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-displayconfig_target_device_name)). It does NOT return EDID serial. Join the monitor device through SetupAPI and read EDID from its device key ([API](https://learn.microsoft.com/en-us/windows/win32/api/setupapi/nf-setupapi-setupdiopendevregkey)); unreadable/missing serial stays null. Connector instance is adapter-local and may be zero: never use it alone or DISPLAY ordinal as a durable connection ID. Preserve native adapter/target connection provenance; exact normalization/hotplug proof remains. | Fits nullable API route; no existing producer or universal EDID/connector guarantee. |
+| Unmanaged foreground, `focused`, foregroundOut, fullscreen ownership/exitability | Presentation samples foreground independently of admission (`T/world_capture.rs:476-529`); action foreground includes unmanaged frames (`:1639-1655`), while focused currently requires an enumerated token (`:1686-1690`). v4 must include independently captured neutral foreground facts/output, not infer false on filtered/elevated/unreadable subjects. Verified fullscreen metadata can prove project ownership; missing/corrupt metadata does not prove a safely exitable app state (`T/fullscreen.rs:75-125,286-347`). | Fits known/nullable facts; R14 gate remains. |
+| Window lifetime, intentRecords, visibility/lastWrite/suppressionAvailable | TokenMap key is HWND+process creation; member identity adds PID and a window property tag (`W/tiling/classification.rs:4-47`, `W/native_guards.rs:17-69`). Admission detects missing/mismatched tag, drops old state and reissues a token (`T/assignments.rs:59-137`). Same-process HWND reuse is NOT fenced by PID/creation alone. Untagged/unmanaged foreground identity still needs conservative retirement/reminting; event-delivery pid/tag reads explicitly do not prove the original lifetime (`T/observe.rs:477-501`). Storage/recovery facts are addressed below; never populate them from desired state. | Fits tagged members; untagged historical no-reuse proof remains a port gate. |
+
+### 2. Reply application, G4 and recovery
+
+| Lane | Finding and evidence | Verdict |
+| --- | --- | --- |
+| Frame/member/clear; scopes/output/workspace/transfer rows | Held identity, visible-to-outer conversion and post-call reads already exist (`T/world_native_frame.rs:15-81`, `T/world_native.rs:1882-1992`). Keep frame attempts, maximize-clear and membership mechanics separate. Current membership also chooses show/hide from local logical views: replace that with the explicit visibility authority, not a second visibility owner. Native-free view/create/removal attempts do not fabricate native desktop effects. | Fits mechanics; remove local policy. |
+| Maximize/fullscreen/above state | Restore placement, project fullscreen enter/exit and SetWindowPos TOPMOST/NOTOPMOST are usable mechanics (`T/world_native.rs:1891-1903`, `T/fullscreen.rs:286-467`, `W/ffi/window.rs:142-171`). Apply core-decided booleans and raw immediate pre/post, not existing toggle/continuation verdicts. Project fullscreen restore currently verifies style and setter acceptance, not settled outer geometry. Sticky is not a native state on this route: W3. | Fits except W3; R12/R14 prerequisites. |
+| Visibility, LastWrite, FocusFeedback, SwitchEvent | Durable hide commit precedes ShowWindowAsync; reveal uses stored show state and nonactivating commands (`W/product_hide/sys/mod.rs:1761-1793,1875-1884,1929-1944`). v4 needs a new executor retaining spent lifetime/visibility.rev/target across observations, batches shows, dispatches focus once, and imposes the same/earlier-revision cross-output hide barrier. Fallback permission comes only from core; native refusals/unknowns are facts, terminal verdicts remain core. Existing local view/membership receipts cannot satisfy the draft's native-home arrival bracket: W2 (`T/world_native.rs:1137-1185,1737-1755`, `T/world_native_receipts.rs:54-81,99-135`). | Fits native show/hide; W2 blocks literal arrival proof. |
+| R12 host slot and watcher | Hide ledger stores identity plus minimized/maximized show preimage, not styles/topmost (`W/model.rs:64-115`). Watcher binds the exact owner process and restores the ledger after exit; later startup can reclaim it (`W/product_hide/sys/watcher.rs:123-263`). Fullscreen properties already store inert style/max/frame values before effects (`T/fullscreen.rs:8-45,286-347`), but watcher does NOT consume them. Float topmost preimage is runtime-only and lost on crash (`T/run_loop.rs:1481-1523`). Extend lifetime-bound recovery storage/consumers for chrome and topmost before authorizing those writes; next-start recovery and watcher chrome restoration are target requirements, not current features. Failed persistence disables that property only. | Fits storage mechanism; recovery implementation/proof gap. |
+| warpCursor, results and intentWrites | SetCursorPos is wired with pending-hook/bounds gates (`T/world_native.rs:337-343,2483-2500`): warp=true, not guaranteed success or permission. Result/terminal/diagnostic rows convey core outcomes, never native write authority. Opaque storage conversion is below. | Fits. |
+| Anchored border and renderer input | WinEvents include foreground/create/destroy/show/hide/location (`T/observe.rs:416-434`). Current border posts absolute core geometry with tag/PID/creation and renderer probes (`T/focus.rs:263-359`, `T/render_bridge.rs:139-205`, `W/render_pump/native/mod.rs:249-318`); underlay anchor resolution is not border anchor motion. FrameWitness capture-obs/native-event/render join is not implemented. Callback only bumps a visibility generation, not world obs (`T/observe.rs:546-570`, `T/world_owner.rs:231-232`); preserve a synchronous invalidation join and cover state/style/eligibility changes before accepting event-driven anchor motion. Pager content has reply req/obs/rev, but clicks locally validate current ring instead of conveying drawn rev+RenderTarget (`T/pager_host.rs:864-880,1148-1218`). Retain the actually drawn row/rev and let core judge staleness. | Fits event/input mechanisms; witness coverage remains OPEN, not paint acceptance. |
+
+### 3. K3 float-above baseline
+
+- Windows DOES keep some floats above. Explicit tiled-to-float (also sticky-on
+  from tiled) reads current topmost; preowned topmost gets NOZORDER, otherwise
+  placement acquires TOPMOST nonactivating. It retains the first prior band in
+  `float_topmost_prev` after setter/PID success, then verifies frame/band and
+  commits intent (`T/float_toggle.rs:138-245,269-302`). This is not every float.
+- Automatic/capacity float adoption does not acquire topmost
+  (`T/capacity_floats.rs:67-120`). Sticky-on from an existing float only installs
+  its marker and preserves frame/classification (`T/dispatch.rs:970-1002`).
+  A capacity re-float after attempted unfloat keeps an already acquired band;
+  successful tile return restores it (`T/float_toggle.rs:624-690`).
+- Release runs on successful unfloat/sticky-to-tile or graceful stop, under
+  fresh identity gates; it lowers only `!prior && current`, never preowned
+  topmost or an already externally cleared band. Failed restore retains the
+  map during execution (`T/float_toggle.rs:319-408`, `W/tiling/float.rs:172-179`,
+  `T/dispatch.rs:689-699,714-767`). Stop clears the runtime map regardless of
+  failures. Crash/restart loses it. No corresponding Windows fullscreen
+  suspension or KDE external-clear/reset latch was found in these band paths.
+- K3's KDE automatic-only eligibility therefore does NOT preserve Windows
+  explicit-float behavior. Proposed uniform policy and consequences are W1;
+  neither floating=true nor a one-shot Stack authorizes persistent topmost.
+
+### 4. Windows HostCapabilities
+
+| Field | Source-fit value | Qualification |
+| --- | --- | --- |
+| hostOwned / equalCount / birthClear | false / false / false | Existing explicit report values above; birthClear=false preserves the Windows admission preamble, not absence of maximize actuation. G2 retirement and native-creation correlation are inapplicable to this route, not missing native API claims. |
+| nativeSelectorScope | per-output, ignored | Required filler when hostOwned=false; no native selector scope is being claimed. |
+| windowSuppression | true | Existing durable independent hide/reveal/watcher mechanism; per-window gates/readability can still refuse. |
+| maximize / fullscreen / above / warp | true / true / true / true | Native mechanisms above; capability is not per-window authorization, safe app-owned fullscreen exit, or completed R12 recovery. |
+| sticky | Unresolved under draft wording (W3) | Logical sticky commands are supported; native sticky actuation is not. A single unconditional true/false under the present native-state definition misstates one of those facts. |
+| tiledFloatTransfer | false | Correct polarity for the selected no-remap route, NOT a Windows API impossibility or a ban on ordinary floats. |
+| unavailableFacts | Ordered route list in section 1 | Include appId/title until actual metadata readers exist; W4 must settle sufficient identity. Do not declare supported-but-failed reads permanently unavailable. |
+
+- Exact float-no-remap mechanism: candidate clone runs the report once. For
+  Send/SendDirectional/MoveDirectional and legacy equivalent output-send/move,
+  the guard requires a report-time tiled mover, cross-output Window transfer
+  matching the command, and a floating staged row; it rejects without adopting
+  the candidate (`T/world_sequencer.rs:868-946`). Same-output and already-float
+  movers are exempt; it never branches on float_origin. Floats carry no desired
+  frame and preserve physical geometry, so a new capacity float cannot establish
+  destination affinity using this transfer path (`T/world_native.rs:1162-1185,
+  1960-1991`). `tiledFloatTransfer` fits this scope; core must preserve source
+  state and incorporate observations in an accepted rejected-command reply,
+  not migrate the adapter's whole-report rejection or command-prefix parsing.
+
+### 5. Intent storage and 6. R14 baseline
+
+- Windows properties are HANDLE-sized values, not owned byte buffers
+  ([API](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-properties),
+  `W/ffi/window.rs:245-279`). Existing float/tile/sticky values are inert scalars;
+  sticky encodes prior float intent. They belong to the live native window and
+  survive tiler restart while that window survives, not destruction/HWND reuse.
+  Restart re-adopts classification only under admission/identity/tag fences
+  (`W/native_guards.rs:146-265`, `T/restart.rs:307-315,450-502`); no logical
+  workspace/output map is restored.
+- v4 must store the exact opaque <=1024-byte record in lifetime-bound storage,
+  not a pointer into the exited process or reconstructed adapter classifications.
+  A recoverable external slot keyed by the verified live window tag, or bounded
+  inert property chunks with atomic publication, can provide the mechanism;
+  neither is implemented for v4. Preserve original ownership evidence before
+  admission rotates member tags; never match a record by title/PID alone.
+  Windows host-storage-survival is resolved for existing scalar properties and
+  exact-window ownership only; opaque record atomicity/recovery and native
+  acceptance remain OPEN, as does the macOS portion of the shared gate.
+- R14 needs an adoption-time native baseline separate from the project-owned
+  marker, with R12 preimages and truthful exitability, and settled restore-frame
+  proof stronger than today's style-only completion. Keep refusal for browser
+  F11, player, borderless game and exclusive game until each baseline case is
+  accepted; first-seen fullscreen has no baseline and remains refused. Absence
+  of a marker does not create exit authority. No Alt+Enter synthesis or binding
+  change (`docs/changes/windows-fullscreen-exit-baseline.md:5-15,19-56`).
+
+### 7. Gaps requiring resolution, not decisions taken
+
+| Gap/question | Options; recommendation; consequence |
+| --- | --- |
+| W1: which float origins acquire persistent above uniformly? | Options: KDE automatic-only; Windows explicit-only; union of qualified automatic and explicit float/sticky intent. Recommend the union, with one core-owned acquisition/release/fullscreen-suspension/external-clear latch and native-preowned preservation policy. Do not acquire merely from floating=true (workspace-floating/capacity fallback alone is not intent). This retains Windows explicit floats and adds automatic stacking there; it adds explicit stacking to the KDE baseline. Apply only when above is supported and durable preimages exist; sticky transitions retain/release the same ownership, not a second owner. macOS evidence still needed. Eligibility/scenario changes require 0c approval; current K3 fixtures prove only its automatic baseline. |
+| W2: what proves native-free arrival home after G1 removes logical echoes? | Options: native-home requirement only for hostOwned, with core-retained home plus bracketed native output/frame/visibility/lifetime for Windows; a core-authorized host property binding with explicit non-native provenance; leave arrival-ready focus unsupported. Recommend the first, specifying an observed-output bracket arm and core comparison to the frozen target. The present home-required bracket cannot be truthfully filled from applied_homing. Shape/settlement changes need fixture updates; no invented receipt or restored ScreenView. |
+| W3: how is sticky supported without a native sticky state? | Options: define sticky capability as semantic support with a core-only native-free route and no fabricated state target/attempt; split nativeSticky from command support; report unsupported Windows sticky. Recommend core-only native-free behavior, composing visibility from retained sticky intent and persisting it opaquely. Current capture uses state.sticky (`T/world_capture.rs:1072-1080,1159-1160`), not an OS fact. Literal native state/attempt semantics would copy projected intent back to core; false would regress existing commands. Clarify null applicability, capability and state-target rules before changing fixtures. |
+| W4: can core retain executable-dependent safety/presentation without adapter verdicts? | Class alone is insufficient: shell-popup exclusion also checks executable basename, and own Settings identity checks executable equality (`T/shell.rs:12-46`, `W/tiling/classification.rs:154-185`, `T/world_capture.rs:480-488`). Options: specify sufficient neutral executable/application identity plus the adapter application's identity; give appId a precise native identity encoding that supplies both; weaken the existing exceptions. Recommend sufficient raw identity, not a boolean shell/own-settings verdict or an undocumented AppUserModelID/executable conflation. Missing self identity and foreign class reuse must not force classification back into the adapter. Fields/encoding/privacy and fixture consequences require review. |
+
+- Minimal unresolved behavioral discriminators are recorded in
+  [reference outcomes](../spec/reference-outcomes.md#v4-windows-platform-fit-discriminators);
+  outcomes remain TBD, not approved by this source review.
+- Windows source mechanisms resolved: physical scale units; explicit primary;
+  EDID/connection API route with truthful nulls; independent unmanaged foreground
+  capture; tagged-member reuse fencing; existing property survival; suppression
+  recovery; warp=true; tiledFloatTransfer=false and its precise limitation.
+  Native removal/creation gates do not apply with hostOwned=false.
+- Remaining OPEN: W1-W4; opaque-record and chrome/topmost crash recovery; empty-
+  output scale-only notifications; untagged lifetime fencing; exact border
+  witness/invalidation join and event coverage; physical identity normalization;
+  app-fullscreen baseline acceptance; all macOS evidence. None of the eight
+  shared scenario gates is promoted to a pass.
+- Mechanical draft fixes: Windows effective DPI/96; literal #32770 normalization;
+  independent topmost/below and parent/owner semantics; corrected route-level
+  unavailable facts; explicit W1-W3 blockers. No wire shape/fixture bytes,
+  implementation, dependencies or product decision changed.
+- Verification: `git diff --check` clean; added tracked lines and all untracked
+  files contain zero non-ASCII bytes, with no untracked whitespace/NUL issues.
+  Authority paragraph/anchors remain exact. Local Markdown links retain only
+  the five known failures, zero new. Static fixture checks parse 483 JSON
+  artifacts, preserve the two deliberate duplicate-key negatives and one raw
+  malformed message, and validate 466 message/17 scenario inventories, 207
+  steps, 235 rule-step references and 71 contract pointers. Canonical messages
+  retain no final LF; fixture bytes are unchanged. These checks do not execute
+  v4 codecs, native scenarios, recovery or paint. W1-W4 and the implementation/
+  native gates above remain unresolved; this review does not approve cutover.

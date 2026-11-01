@@ -247,7 +247,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 
 - `scale` is a finite positive JSON number: adapter units per logical pixel on
   every screen report. In KWin's logical coordinate space it is `1`, not the
-  output's physical/logical device-pixel ratio. Core retains no scale;
+  output's physical/logical device-pixel ratio. In Windows PMv2 physical-pixel
+  space it is the target output's effective DPI divided by 96, not raw EDID DPI
+  or the DPI of an arbitrary foreign window. Core retains no scale;
   scale/resolution changes invalidate the report and replan. Multiply each
   logical setting/constant once by the current target output scale, then round
   to nearest integer, exact halves toward positive infinity (`floor(x+0.5)`),
@@ -395,8 +397,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   splash map to those arms; remaining known kinds map to other. AXSheet maps to
   sheet; AXWindow with AXStandardWindow/AXDialog or AXSystemDialog/AXFloatingWindow
   maps to normal/dialog/utility; other known AX kinds map to other. Win32
-  generic dialog class maps to dialog, other ordinary top-level windows to
-  normal. Native text stays in role/class; shell class checks, exceptions and
+  generic dialog class `#32770` maps to dialog, other ordinary top-level windows
+  to normal; WS_POPUP/WS_EX_TOOLWINDOW/ownership alone do not manufacture a
+  dialog/utility verdict. Native text stays in role/class; shell class checks, exceptions and
   type-based admission remain core policy. Unreadable kind is null, not other.
 - `managed` is the native host's management flag (KWin isClient), not whether
   OmniTiler controls the window. `acceptsInput` is a native keyboard-input
@@ -409,6 +412,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   transientFor alone does not produce it. `owner` may bind transientFor,
   and `transient`/`modal` remain independent native facts. `above,below` are
   native stacking flags/bands, never inferred from float/sticky intent.
+  Windows WS_EX_TOPMOST supplies above, not below=false: HWND_BOTTOM is a
+  placement, not a persistent below flag. GetParent can return a popup's owner;
+  do not publish that as a parent relationship without distinguishing the arms.
 - `FactName` is closed, in order:
   `privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below,owner,parent,role,appId,class,title,activationPolicy,layer`.
   A listed unavailable fact must be null in every window row; a non-null
@@ -432,11 +438,16 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   use activationPolicy/layer where provided, with recognized float exceptions
   preceding the nonordinary-layer gate. No native policy verdict is needed.
 - Initial source-fit declarations: KDE lacks independent privileged,
-  activationInhibited/toolWindow/owned flags and activationPolicy/layer; Windows
-  lacks managed/acceptsInput/transient/modal/activationPolicy/layer producers;
+  activationInhibited/toolWindow/owned flags and activationPolicy/layer; the
+  reviewed Windows Win32 route lacks managed/acceptsInput/transient/modal/below/
+  role/activationPolicy/layer inputs. Its appId/title readers are also absent;
+  API-readable metadata needs producers or an unavailable declaration, not
+  fabricated negatives. This is route support, not proof of OS impossibility;
   macOS lacks privileged/managed/acceptsInput/activationInhibited/toolWindow/owned/
   transient/above/below/owner/parent producers. These are source-fit inputs for
-  the remaining platform reviews, not fabricated negatives or live acceptance.
+  platform review, not fabricated negatives or live acceptance. The
+  [Windows review](../changes/v4-migration.md#phase-0b-windows-platform-fit-review)
+  records the remaining application-identity and native-free sticky gaps.
   Metadata availability follows actual capture support; all other unreadable
   observations stay nullable. Core rules requiring unavailable optional metadata
   do not apply; required identity/geometry/type are never waived by this list.
@@ -651,9 +662,10 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   native property (KWin keepAbove can clear keepBelow); release restores only
   the owned preimage, with raw resulting facts returned. Failed preimage storage
   disables that window/property; no adapter reacquisition/release policy runs.
-  Native overlay refusal holds the affected target, not a local replan. Windows
-  and macOS reviews must report existing float-above behavior before uniform
-  core policy is frozen; support is a capability, not a host policy opt-in.
+  Native overlay refusal holds the affected target, not a local replan. The
+  Windows review's W1 records explicit-float stacking not covered by this KDE
+  baseline; uniform eligibility remains OPEN, as does the macOS baseline review.
+  Support is a capability, not a host policy opt-in.
 
 ### Opaque intent storage
 
@@ -769,6 +781,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   null visibility targets and no visibility writes. Readable native visibility,
   lifetime, home and frame can still prove arrival for focus; no suppression
   recovery tag is required for a window that has never been project-suppressed.
+- OPEN: Windows has no native logical-workspace home to read inside an arrival
+  bracket. W2 in the Windows review must reconcile this requirement with G1;
+  an applied-homing map or copied core target is not an independent native read.
+  W3 separately covers sticky intent versus a native sticky state/target on a
+  native-free host. Neither gap authorizes an adapter policy substitute.
 
 ### Normative apply rule
 
