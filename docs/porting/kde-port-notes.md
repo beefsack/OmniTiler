@@ -22,6 +22,18 @@ at the KWin 6.6 floor. Read the local sibling clone, never web-fetch KWin source
 Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
 <pin>` inside that clone.
 
+## V4 native coordinate normalization
+
+- Target, not delivered by this note: native topology, ordinary window,
+  gesture and drag-start captures use the existing ordinary-fact `Math.round`
+  rule, nearest with exact halves toward positive infinity. Examples:
+  -0.5 -> 0 and -1.5 -> -1. Native integers are not scaled again.
+  Current ordinary capture: [world-observe.ts](../../kwin/src/world-observe.ts#L302-L326).
+  Gesture normalization must match it under the
+  [approved quantization change](../changes/core-interface-review.md#original-backlog-lines-187-193).
+  Core logical-size scaling is separately defined in the
+  [v4 contract](world-contract.md#scale-and-rounding).
+
 ## Recommended topology
 
 - The external Rust service (`crates/omnitiler/src/`, planner) extends

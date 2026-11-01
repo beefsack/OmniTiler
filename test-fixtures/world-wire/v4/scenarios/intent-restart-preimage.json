@@ -1,0 +1,1042 @@
+{
+  "format": "world-wire-v4-ordered-scenario",
+  "id": "intent-restart-preimage",
+  "driver": "core-and-storage",
+  "initial": {
+    "freshEngine": true,
+    "generationSequence": [
+      "generation-a",
+      "generation-b"
+    ],
+    "adapter": "adapter-a",
+    "native": {}
+  },
+  "steps": [
+    {
+      "id": "handshake",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "handshake",
+          "v": 4,
+          "adapter": "adapter-a",
+          "req": "handshake-a",
+          "capabilities": {
+            "hostOwned": false,
+            "equalCount": false,
+            "birthClear": true,
+            "windowSuppression": true,
+            "maximize": true,
+            "fullscreen": true,
+            "sticky": true,
+            "tiledFloatTransfer": true
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message == {type:\"handshake-reply\",v:4,adapter:\"adapter-a\",req:\"handshake-a\",gen:\"generation-a\",ready:false,kind:\"\"}"
+        ]
+      },
+      "rules": [
+        "handshake-and-lifetime"
+      ]
+    },
+    {
+      "id": "settings",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "settings",
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "req": "settings-1",
+          "rev": "1",
+          "values": {
+            "gap": 8,
+            "outer": 8,
+            "defaultTiled": true,
+            "mode": "per-output-local",
+            "sameAxis": "group-with-neighbor",
+            "bornMaximized": "tile-on-launch",
+            "predicate": "both-axes-fixed",
+            "anchorFallback": "largest-splittable-window",
+            "noSpaceResult": "float",
+            "refill": "last-remaining-workspace",
+            "switchTarget": "cursor-output",
+            "freshPlacement": "cursor-output-last-focused",
+            "focusFollowsCursor": false,
+            "cursorWarp": false,
+            "borderEnabled": true,
+            "underlayEnabled": true,
+            "borderWidth": 3,
+            "borderGap": 0,
+            "borderRadius": 6,
+            "underlayExtension": -1
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.status == \"accepted\" and .output.message.diagnostics == []",
+          ".output.actions == []"
+        ]
+      },
+      "rules": [
+        "revisioned-settings"
+      ]
+    },
+    {
+      "id": "tile-admission",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "1",
+          "reqSeq": "1",
+          "req": "request-1",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-a",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": false,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "shell": false,
+              "tool": false,
+              "ownedDialog": false,
+              "dialog": false,
+              "noActivate": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "cannotControl": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "type": "normal",
+              "appId": "example.app",
+              "class": "Example",
+              "title": "Window",
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [],
+          "focused": "win-a",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-a",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "shell": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-a"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-a",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-a",
+              "obs": "1",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-a"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "100",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.windows | any(.win == \"win-a\" and .floating == false)"
+        ]
+      },
+      "rules": [
+        "opaque-intent-storage"
+      ]
+    },
+    {
+      "id": "explicit-float",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "2",
+          "reqSeq": "2",
+          "req": "request-2",
+          "cmdSeq": "1",
+          "command": {
+            "op": "toggle-float",
+            "win": "win-a",
+            "rect": null
+          },
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-a",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": false,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "shell": false,
+              "tool": false,
+              "ownedDialog": false,
+              "dialog": false,
+              "noActivate": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "cannotControl": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "type": "normal",
+              "appId": "example.app",
+              "class": "Example",
+              "title": "Window",
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [],
+          "focused": "win-a",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-a",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "shell": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-a"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-a",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-a",
+              "obs": "2",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-a"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "200",
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.windows | any(.win == \"win-a\" and .floating == true)",
+          ".output.message.intentWrites | any(.win == \"win-a\" and ((.data | fromjson).float == true))"
+        ]
+      },
+      "rules": [
+        "opaque-intent-storage"
+      ]
+    },
+    {
+      "id": "core-restart-window-survives",
+      "input": {
+        "kind": "fixture-event",
+        "to": "connection",
+        "event": {
+          "kind": "disconnect"
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.actions == []"
+        ]
+      },
+      "rules": [
+        "handshake-and-lifetime"
+      ]
+    },
+    {
+      "id": "restart-handshake",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "handshake",
+          "v": 4,
+          "adapter": "adapter-a",
+          "req": "restart-handshake",
+          "capabilities": {
+            "hostOwned": false,
+            "equalCount": false,
+            "birthClear": false,
+            "windowSuppression": false,
+            "maximize": false,
+            "fullscreen": false,
+            "sticky": false,
+            "tiledFloatTransfer": false
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.gen == \"generation-b\" and .output.message.ready == false"
+        ]
+      },
+      "rules": [
+        "handshake-and-lifetime"
+      ]
+    },
+    {
+      "id": "restart-settings",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "type": "settings",
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-b",
+          "req": "settings-1",
+          "rev": "1",
+          "values": {
+            "gap": 8,
+            "outer": 8,
+            "defaultTiled": true,
+            "mode": "per-output-local",
+            "sameAxis": "group-with-neighbor",
+            "bornMaximized": "tile-on-launch",
+            "predicate": "both-axes-fixed",
+            "anchorFallback": "largest-splittable-window",
+            "noSpaceResult": "float",
+            "refill": "last-remaining-workspace",
+            "switchTarget": "cursor-output",
+            "freshPlacement": "cursor-output-last-focused",
+            "focusFollowsCursor": false,
+            "cursorWarp": false,
+            "borderEnabled": true,
+            "underlayEnabled": true,
+            "borderWidth": 3,
+            "borderGap": 0,
+            "borderRadius": 6,
+            "underlayExtension": -1
+          }
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.status == \"accepted\""
+        ]
+      },
+      "rules": [
+        "revisioned-settings"
+      ]
+    },
+    {
+      "id": "verified-opaque-return",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-b",
+          "obs": "1",
+          "reqSeq": "1",
+          "req": "request-1",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-a",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": false,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "shell": false,
+              "tool": false,
+              "ownedDialog": false,
+              "dialog": false,
+              "noActivate": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "cannotControl": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "type": "normal",
+              "appId": "example.app",
+              "class": "Example",
+              "title": "Window",
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [],
+          "focused": "win-a",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-a",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "shell": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-a"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-a",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-a",
+              "obs": "1",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-a"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "100",
+          "intentRecords": [
+            {
+              "win": "win-a",
+              "data": "{\"v\":1,\"float\":true,\"stickyPrior\":null}"
+            }
+          ],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.windows | any(.win == \"win-a\" and .floating == true and .frame_auth == \"untouched\")"
+        ]
+      },
+      "rules": [
+        "opaque-intent-storage"
+      ]
+    },
+    {
+      "id": "invalid-inner-version",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-b",
+          "obs": "2",
+          "reqSeq": "2",
+          "req": "request-2",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-a",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": false,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "shell": false,
+              "tool": false,
+              "ownedDialog": false,
+              "dialog": false,
+              "noActivate": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "cannotControl": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "type": "normal",
+              "appId": "example.app",
+              "class": "Example",
+              "title": "Window",
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            },
+            {
+              "win": "win-b",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": false,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "shell": false,
+              "tool": false,
+              "ownedDialog": false,
+              "dialog": false,
+              "noActivate": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "cannotControl": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "type": "normal",
+              "appId": "example.app",
+              "class": "Example",
+              "title": "Window",
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [],
+          "native": [],
+          "focused": "win-a",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-a",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "shell": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-a"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-a",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-a",
+              "obs": "2",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-a"
+            },
+            "foregroundOut": "out-a"
+          },
+          "monotonicMs": "200",
+          "intentRecords": [
+            {
+              "win": "win-b",
+              "data": "{\"v\":2,\"float\":true,\"stickyPrior\":null}"
+            }
+          ],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.windows | any(.win == \"win-b\" and .floating == false)"
+        ]
+      },
+      "rules": [
+        "opaque-intent-storage"
+      ]
+    },
+    {
+      "id": "preimage-before-hide",
+      "input": {
+        "kind": "fixture-event",
+        "to": "storage",
+        "event": {
+          "kind": "recoverable-hide",
+          "win": "win-store",
+          "tag": "tag-store",
+          "native": {
+            "visible": true,
+            "style": 7,
+            "keepAbove": false
+          },
+          "slotWritable": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          "[.output.actions[].kind] == [\"persist-preimage\",\"hide\"]"
+        ]
+      },
+      "rules": [
+        "freshness-and-recovery"
+      ]
+    },
+    {
+      "id": "separate-live-slot",
+      "input": {
+        "kind": "fixture-event",
+        "to": "storage",
+        "event": {
+          "kind": "recoverable-hide",
+          "win": "win-reused",
+          "tag": "tag-original",
+          "native": {
+            "visible": true,
+            "style": 9,
+            "keepAbove": false
+          },
+          "slotWritable": true
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          "[.output.actions[].kind] == [\"persist-preimage\",\"hide\"]"
+        ]
+      },
+      "rules": [
+        "freshness-and-recovery"
+      ]
+    },
+    {
+      "id": "reused-handle-does-not-own-slot",
+      "input": {
+        "kind": "fixture-event",
+        "to": "storage",
+        "event": {
+          "kind": "restart-and-restore",
+          "win": "win-reused",
+          "tag": "tag-replacement"
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.actions == []"
+        ]
+      },
+      "rules": [
+        "freshness-and-recovery"
+      ]
+    },
+    {
+      "id": "restore-leftover-after-restart",
+      "input": {
+        "kind": "fixture-event",
+        "to": "storage",
+        "event": {
+          "kind": "restart-and-restore",
+          "win": "win-store",
+          "tag": "tag-store"
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.actions | any(.kind == \"restore\" and .win == \"win-store\")",
+          ".output.native.visible == true and .output.native.style == 7 and .output.native.keepAbove == false"
+        ]
+      },
+      "rules": [
+        "freshness-and-recovery"
+      ]
+    },
+    {
+      "id": "failed-preimage-disables-only-subject",
+      "input": {
+        "kind": "fixture-event",
+        "to": "storage",
+        "event": {
+          "kind": "recoverable-hide",
+          "win": "win-no-slot",
+          "tag": "tag-no-slot",
+          "native": {
+            "visible": true,
+            "style": 11,
+            "keepAbove": false
+          },
+          "slotWritable": false
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.actions == []",
+          ".output.native.visible == true"
+        ]
+      },
+      "rules": [
+        "freshness-and-recovery"
+      ]
+    },
+    {
+      "id": "host-storage-survival",
+      "input": {
+        "kind": "fixture-event",
+        "to": "platform-evidence",
+        "event": {
+          "kind": "evidence-gate",
+          "topic": "native-slot-restart-ownership-and-recovery"
+        }
+      },
+      "expect": {
+        "status": "OPEN",
+        "assertions": [],
+        "issue": "Phase 0b must prove native slot survival and exact live-lifetime ownership, including any real logical-membership restoration found by the audit. Fake storage is not that evidence."
+      },
+      "rules": [
+        "opaque-intent-storage",
+        "freshness-and-recovery"
+      ]
+    }
+  ]
+}

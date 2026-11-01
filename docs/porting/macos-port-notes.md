@@ -12,6 +12,17 @@ Live work stays under [live-macos-testing](../live-macos-testing.md)
 with the fixture-first rules and the signed bundle in
 `crates/tiler-live-fixture/README.md`.
 
+## V4 native coordinate normalization
+
+- Target, not delivered by this note: AX ordinary, gesture and drag-start
+  captures use the existing topology `f64::round` rule, nearest with exact
+  halves away from zero. Examples: -0.5 -> -1 and -1.5 -> -2. Normalize
+  components before integer/bounds checks, never truncate or scale twice.
+  Current topology: [topology.rs](../../crates/tiler-macos/src/topology.rs#L80-L100).
+  [Approved quantization change](../changes/core-interface-review.md#original-backlog-lines-187-193).
+  Core logical-size scaling is separately defined in the
+  [v4 contract](world-contract.md#scale-and-rounding).
+
 ## Current macOS inventory (port or delete)
 
 - `crates/tiler-macos/src/world_builder.rs` (Unit A, additive,

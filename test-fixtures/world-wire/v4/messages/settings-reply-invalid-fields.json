@@ -1,0 +1,1 @@
+{"type":"settings-reply","v":4,"adapter":"adapter-a","gen":"generation-a","req":"settings-a","rev":"2","status":"accepted","diagnostics":[{"key":"predicate","kind":"missing"},{"key":"unknownSetting","kind":"unknown-field"},{"key":"gap","kind":"wrong-type"},{"key":"outer","kind":"out-of-range"},{"key":"mode","kind":"unknown-value"},{"key":"borderWidth","kind":"wrong-type"}]}
