@@ -1,0 +1,1 @@
+{"type":"handshake","v":4,"adapter":"adapter-a","req":"handshake-a","capabilities":{"hostOwned":true,"equalCount":true,"birthClear":true,"nativeSelectorScope":"per-output","windowSuppression":true,"maximize":true,"fullscreen":true,"sticky":true,"above":true,"warp":true,"tiledFloatTransfer":true,"unavailableFacts":{}}}

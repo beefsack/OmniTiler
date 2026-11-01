@@ -73,11 +73,15 @@
             "hostOwned": false,
             "equalCount": false,
             "birthClear": true,
+            "nativeSelectorScope": "per-output",
             "windowSuppression": true,
             "maximize": true,
             "fullscreen": true,
             "sticky": true,
-            "tiledFloatTransfer": true
+            "above": true,
+            "warp": true,
+            "tiledFloatTransfer": true,
+            "unavailableFacts": []
           }
         }
       },
@@ -172,7 +176,6 @@
               "fullscreen": null,
               "hostHidden": null,
               "hiddenWorkspace": null,
-              "shell": null,
               "frame": null,
               "chordHeld": false,
               "moveWindow": "",
@@ -562,7 +565,7 @@
       "expect": {
         "status": "OPEN",
         "assertions": [],
-        "issue": "Phase 0b must verify causal frame-event/lifetime/foreground joins on every host; the deterministic model is not native evidence."
+        "issue": "K5 OPEN: prove the KDE adapter-local capture-to-native-source and eligibility join during the phase-2 port, including accepted-anchor motion without a round trip; extend FrameWitness only if that join cannot be proven. Other-host native joins still require their reviews."
       },
       "rules": [
         "worldpresentation-and-anchored-border"

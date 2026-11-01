@@ -1,0 +1,1 @@
+{"type":"settings-reply","v":4,"adapter":"adapter-a","gen":"generation-a","req":"settings-a","rev":"1","status":"accepted","diagnostics":[{"key":"cursorWarp","kind":"unsupported-capability"}]}

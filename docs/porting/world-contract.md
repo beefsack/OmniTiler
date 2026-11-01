@@ -106,7 +106,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   frame/member/view/clear attempts 1024 each; creation attempts 256; native rows
   4096 with <=256 ids per output; occupancy <=10000 per desktop; pager order and
   frame sources 1024 each. New intent return/write arrays <=10000 each;
-  state attempts/focus feedback <=1024 each; at most three state targets per
+  state attempts/focus feedback <=1024 each; at most four state targets per
   window; arrival brackets <=10000 total per report; one renderer input at most.
   Failed-window lists are subsets of the frozen <=10000-window roster;
   diagnostics have at most one entry per held row, never unbounded queues.
@@ -155,14 +155,25 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `ready` | bool | no | False: no world writes/effects authorized. |
 | | `kind` | `""` or ProtocolKind | empty | Empty on acceptance; refusal kind otherwise. |
 | `HostCapabilities` | `hostOwned,equalCount,birthClear` | bool | no | Existing native-domain/equal-count/automatic-birth-clear mechanisms. |
+| | `nativeSelectorScope` | `per-output/all-outputs` | no | Native view selector coupling; ignored when hostOwned=false. |
 | | `windowSuppression` | bool | no | Independent recoverable per-window hide mechanism. |
-| | `maximize,fullscreen,sticky` | bool | no | Native state actuation support, not permission. |
+| | `maximize,fullscreen,sticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not permission. |
 | | `tiledFloatTransfer` | bool | no | Tiled source can become a float while crossing outputs without unsupported remap. |
+| | `unavailableFacts` | FactName[] | no | Fixed unsupported classification inputs, unique and in FactName catalog order, <=19 entries. |
 
 - `ready:false` is normal after an accepted handshake; readiness requires a
   complete usable report and initial settings. Hard support cannot flip per
   report. Unsupported versions use the bounded error shape below.
   [Capabilities](../decisions/contract.md#host-capabilities-and-settings).
+- `nativeSelectorScope:all-outputs` makes core's effective workspace mode
+  `shared`, preserving the existing global-selector behavior. Retain the raw
+  requested mode and diagnose an incompatible separate-output mode; adapters
+  never substitute settings or select policy. A native coupling option change
+  requires reconnect/new handshake before further world writes.
+- `above:false` forbids persistent project stacking targets; `warp:false`
+  forbids non-null `warpCursor`, even when cursorWarp is requested. Read-only
+  stacking observations are independent of actuation support. K1-K4 are
+  [technical resolutions pending 0c approval](../changes/v4-migration.md#k1-k5-technical-resolution-pending-0c-approval).
 - OPEN: `tiledFloatTransfer` is the draft spelling/scope of the existing
   `float-no-remap` limitation, not a ban on ordinary floating transfers. Phase
   0b must establish the exact host mechanism before this capability is frozen.
@@ -193,7 +204,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `status` | `accepted/stale/revision-reused` | no | Revision disposition. |
 | | `diagnostics` | SettingsDiagnostic[] | no | At most one per supplied/missing catalog key. |
 | `SettingsDiagnostic` | `key` | catalog name or bounded text | no | Affected field, not raw supplied value. |
-| | `kind` | `missing/unknown-field/wrong-type/out-of-range/unknown-value/restart-required` | no | Closed typed diagnostic. |
+| | `kind` | `missing/unknown-field/wrong-type/out-of-range/unknown-value/restart-required/unsupported-mode/unsupported-capability` | no | Closed typed diagnostic. |
+
+- A valid requested separate-output `mode` with native all-output selectors
+  receives `unsupported-mode`; core uses effective shared behavior without
+  replacing the raw setting. `cursorWarp:true` with `warp:false` receives
+  `unsupported-capability`; retain the setting but authorize no warp. These
+  diagnostics do not refuse startup or valid siblings. Existing validation and
+  restart-required diagnostics take precedence for the same field, so there
+  is still at most one diagnostic per key. Reevaluate support at new handshake.
 
 ### Settings values
 
@@ -292,7 +311,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `gestureIngress` | GestureIngress | omit/null | Existing native gesture lifecycle. |
 | `primary` | OutputId | omit | Host-designated primary, unknown if absent. |
 | `intentRecords` | IntentRecord[] | no | Opaque host storage return. |
-| `stateAttempts` | StateAttempt[] | no | Raw fullscreen/maximize/sticky writes. |
+| `stateAttempts` | StateAttempt[] | no | Raw fullscreen/maximize/sticky/above writes. |
 | `focusFeedback` | FocusFeedback[] | no | Correlated one-shot native focus evidence. |
 | `rendererInput` | RendererInput | yes | One exact core-drawn target per command. |
 
@@ -335,16 +354,19 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `fullscreen,maximized,sticky,minimized` | bool | yes | Native state, unknown preserved. |
 | `hints` | WindowSizeHints | yes | Existing sanitized min/max frame constraints. |
 | `nativeWs` | NativeWorkspaceId | omit/null/empty | Actual native membership under hostOwned only. |
-| `hostHidden,privileged,shell,tool,ownedDialog,dialog,noActivate,transient,modal,resizable,cannotControl` | bool | yes | Neutral native safety/classification inputs; not membership verdicts. |
+| `hostHidden,privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below` | bool | yes | Raw native facts; applicability is specified below, never adapter membership verdicts. |
 | `owner,parent` | WindowId | yes | Known live relationship, null if unavailable/unmanaged binding unknown. |
-| `role,type,appId,class,title` | bounded text | yes | Native role/type/app-rule inputs; no policy-normalized role verdict. |
+| `role,appId,class,title` | bounded text | yes | Native role/application/class/title values without policy verdicts. |
+| `type` | WindowType | yes | Mechanically normalized native kind, not admission or eligibility. |
+| `activationPolicy` | `regular/accessory/prohibited` | yes | Native application activation policy, not inferred from acceptsInput. |
+| `layer` | signed 32-bit integer | yes | Native window layer, not a tiling or above verdict. |
 | `fullscreenOwner` | `tiler/app` | yes | Unknown does not mean app-owned or exitable. |
 | `fullscreenExitable` | bool | yes | Whether neutral core-authorized exit can be performed. |
 | `suppressionAvailable` | bool | yes | Per-window recoverable hide support/readability. |
 | `visibility` | VisibilityFact | no | Current native visibility and recovery ownership. |
 | `lastWrite` | LastWrite | yes | Latest visibility write evidence, no work id. |
 
-- Remove `floating,fitExcluded,fixedAuto,fixedSuppress,observedWs`; core derives these and
+- Remove `floating,fitExcluded,fixedAuto,fixedSuppress,observedWs,shell,tool,ownedDialog,dialog,noActivate,cannotControl`; core derives these and
   owns explicit overrides, born latches and last-known frames. Native role/type,
   safety booleans, ownership and hints must be grounded before normalization;
   do not infer Windows owned-dialog/no-activate merely from a parent or missing
@@ -364,6 +386,60 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   OPEN: phase 0b verifies raw native fact coverage and lifetime reuse, including
   unmanaged fullscreen foreground capture, rather than inventing negative facts.
   [Evidence gaps](../changes/v4-migration.md#b-reconciliations-and-open-points).
+
+### Neutral classification vocabulary and applicability
+
+- `WindowType` is closed: `normal,dialog,sheet,utility,desktop,dock,menu,tooltip,notification,splash,other`.
+  Native-kind conversion is adapter-owned mechanics: NETWM normal/dialog/utility
+  (including toolbar)/desktop/dock/menu variants/tooltip/notification variants/
+  splash map to those arms; remaining known kinds map to other. AXSheet maps to
+  sheet; AXWindow with AXStandardWindow/AXDialog or AXSystemDialog/AXFloatingWindow
+  maps to normal/dialog/utility; other known AX kinds map to other. Win32
+  generic dialog class maps to dialog, other ordinary top-level windows to
+  normal. Native text stays in role/class; shell class checks, exceptions and
+  type-based admission remain core policy. Unreadable kind is null, not other.
+- `managed` is the native host's management flag (KWin isClient), not whether
+  OmniTiler controls the window. `acceptsInput` is a native keyboard-input
+  preference/capability (KWin wantsInput); it does not imply activation safety.
+  `activationInhibited` is an independently observed native nonactivation flag
+  (Windows WS_EX_NOACTIVATE); never derive it from !acceptsInput.
+  `toolWindow` is an independent native tool-window flag (WS_EX_TOOLWINDOW),
+  not the utility type. `owned` is an independent native owner-window flag
+  (GW_OWNER non-null), even when the owner cannot be bound to a WindowId;
+  transientFor alone does not produce it. `owner` may bind transientFor,
+  and `transient`/`modal` remain independent native facts. `above,below` are
+  native stacking flags/bands, never inferred from float/sticky intent.
+- `FactName` is closed, in order:
+  `privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below,owner,parent,role,appId,class,title,activationPolicy,layer`.
+  A listed unavailable fact must be null in every window row; a non-null
+  contradiction holds that row as conflicting-fact. Unknown names, duplicates,
+  wrong ordering/types or missing unavailableFacts refuse the handshake.
+  Unavailable means the connection cannot supply that native input, not an
+  eligible default. Never add a fact to the list because one read failed.
+  An unlisted required input that is null is unknown now and holds only the
+  classification/action that needs it, not unrelated windows or properties.
+- Core applicability: evaluate only predicates whose native inputs are supplied
+  by the connection; skip unsupported predicates, never turn null into false.
+  Available managed=false excludes host-unmanaged candidates. Available native
+  privileged/toolWindow/owned/activationInhibited facts feed their existing
+  safety gates; owned is not inferred from a KDE transient relationship.
+  Core derives shell/generic-Win32-dialog safety from native class/type, with
+  existing product exceptions; KDE dialogs and AX dialogs/sheets remain float
+  origins, not Windows owned-dialog exclusions. Existing transient/modal and
+  fixed-size predicates remain core-owned; resizable is carried without a new
+  admission rule. acceptsInput is carried separately, not a replacement for the
+  no-activate safety gate. Existing application activation-policy/layer gates
+  use activationPolicy/layer where provided, with recognized float exceptions
+  preceding the nonordinary-layer gate. No native policy verdict is needed.
+- Initial source-fit declarations: KDE lacks independent privileged,
+  activationInhibited/toolWindow/owned flags and activationPolicy/layer; Windows
+  lacks managed/acceptsInput/transient/modal/activationPolicy/layer producers;
+  macOS lacks privileged/managed/acceptsInput/activationInhibited/toolWindow/owned/
+  transient/above/below/owner/parent producers. These are source-fit inputs for
+  the remaining platform reviews, not fabricated negatives or live acceptance.
+  Metadata availability follows actual capture support; all other unreadable
+  observations stay nullable. Core rules requiring unavailable optional metadata
+  do not apply; required identity/geometry/type are never waived by this list.
 
 ### Native observation
 
@@ -544,7 +620,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `VisibilityTarget` | `shown` | bool | no | Desired shown state; never native unminimize. |
 | | `rev` | Counter | no | Existing world revision at target authorization; retained across observation-only replies. |
 | | `fallback` | bool | no | Core permission for hide-only fallback after failed/unproven focus, false for shows. |
-| `StateTarget` | `property` | `fullscreen/maximized/sticky` | no | Native property. |
+| `StateTarget` | `property` | `fullscreen/maximized/sticky/above` | no | Independent native property; above is persistent project stacking. |
 | | `value` | bool | no | Core-resolved target. |
 | | `auth,reason` | authority/reason pair | reason empty if none | This property only. |
 | | `cmdSeq` | Counter | yes | Command correlation, not parsed operation text. |
@@ -554,6 +630,30 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | | `cause` | `explicit-command/automatic-admission/focus-follows-cursor` | no | Replaces fx-/af-/ffc- interpretation. |
 | | `cmdSeq` | Counter | yes | Non-null for explicit-command; null otherwise. |
 | | `awaitShown` | bool | no | Only explicit selection may grant arrival-ready focus. |
+
+### Persistent stacking
+
+- `above` targets use independent StateTarget authority and StateAttempt
+  pre/post evidence, gated by the above capability. OneShotEffect::Stack remains
+  a distinct one-shot action; floating/sticky=true is not write authority.
+- Core owns current KDE automatic-float stacking: acquire above only for a
+  classified automatic float without suppression, native overlays/minimize/
+  sticky, preexisting above/below or an external-clear latch. Leave preowned
+  above/below untouched. Suspend project-owned above for focused fullscreen on
+  its scope; release when automatic classification is lost, and discard ownership
+  when the native lifetime ends.
+  External below or external above-clear relinquishes ownership and prevents
+  automatic reacquisition until lifetime end or the existing reset when native
+  preowned-above is observed. Sticky stacking and
+  sticky-off restoration are also core-decided, never adapter toggles.
+- Core emits above=true for acquisition and above=false for release/suspension
+  of its owned change. Adapter persist-before-write preimages cover every coupled
+  native property (KWin keepAbove can clear keepBelow); release restores only
+  the owned preimage, with raw resulting facts returned. Failed preimage storage
+  disables that window/property; no adapter reacquisition/release policy runs.
+  Native overlay refusal holds the affected target, not a local replan. Windows
+  and macOS reviews must report existing float-above behavior before uniform
+  core policy is frozen; support is a capability, not a host policy opt-in.
 
 ### Opaque intent storage
 
@@ -756,7 +856,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- |
 | `foreground` | WindowId | empty | Observed foreground token, including unmanaged subject. |
-| `minimized,maximized,fullscreen,hostHidden,hiddenWorkspace,shell` | bool | yes | Actual foreground facts, not renderer eligibility. |
+| `minimized,maximized,fullscreen,hostHidden,hiddenWorkspace` | bool | yes | Actual foreground facts, not renderer eligibility. |
 | `frame` | Rect | yes | Live foreground frame. |
 | `chordHeld` | bool | no | Actual chord level, not underlay verdict. |
 | `moveWindow` | WindowId | empty | Native move subject, not adapter classification. |
@@ -770,8 +870,10 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `win` | WindowId | no | Live source subject. |
 | `live` | Rect | yes | Keep live source; remove retained float/tile. |
 
-- Remove `borderEnabled,underlayEnabled,borderGap,borderWidth,underlayExtension,paused`;
+- Remove `borderEnabled,underlayEnabled,borderGap,borderWidth,underlayExtension,paused,shell`;
   settings are unscaled and independent. Rename cloaked to hostHidden.
+  Foreground shell/eligibility comes from its neutral WindowFact/type/class,
+  even if it is not a managed member; missing classification facts stay unknown.
   Core retains last-known pager frame; unknown live source never fabricates
   geometry or membership. Focused-fullscreen presentation suspension is
   unconditional, including truthful unmanaged fullscreen foregrounds; no

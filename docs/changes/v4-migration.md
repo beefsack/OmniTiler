@@ -12,7 +12,9 @@
   Milestone 3 message fixtures and coverage are accepted; canonical number
   spelling is now explicit. Milestone 2 source-checked corrections and the v3
   carry-forward checklist approach remain accepted. Phase-0b KDE source-fit
-  review is recorded below; Windows/macOS reviews and phase-0c approval remain.
+  review is recorded below. K1-K4 technical resolutions are drafted pending 0c
+   approval; their contract/fixture reconciliation is complete. Windows/macOS reviews
+  and phase-0c approval remain.
 - Acceptance: every current wire record/enum/message has a disposition; every
   delta has an authority reference or a named gap; defaults cite core source;
   preserved shapes keep their current names and representation.
@@ -86,11 +88,11 @@
 | v3 record/enum and source | Disposition in v4 | Authority |
 | --- | --- | --- |
 | `ScreenReport {output,full_rect,work_area,gap,outer_gap,complete,primary}`, WR:673-681; keys `out,full,work,gap,outer,complete,primary`, WJ:624-643 | C: keep name and `out/full/work/complete`; move `gap/outer` to settings; replace `primary` with one report-level optional output id; add scale and identity facts. | Split, Primary, R10, R11 |
-| `WindowFact`, WR:706-721; keys `win,out,rect,floating,fitExcluded,fullscreen,maximized,sticky,fixedAuto,fixedSuppress,minimized,hints,observedWs,nativeWs`, WJ:570-622 | C: replace adapter classification/intent projections (`floating,fitExcluded,fixedAuto,fixedSuppress,observedWs`) with normalized native classification facts and core-owned intent; unknown observations are optional. Retain `win` as lifetime id, not a new second `lifetime` namespace. Extend fullscreen, visibility and recoverable suppression facts. Tiler-owned completion uses retained core intent plus visibility facts; nativeWs remains native observation. | Facts, Intent, R13, R14, Visibility; [classification](../decisions/engine.md#classification-and-convergence-ownership); correction evidence below |
+| `WindowFact`, WR:706-721; keys `win,out,rect,floating,fitExcluded,fullscreen,maximized,sticky,fixedAuto,fixedSuppress,minimized,hints,observedWs,nativeWs`, WJ:570-622 | C: replace adapter classification/intent projections (`floating,fitExcluded,fixedAuto,fixedSuppress,observedWs`) with neutral raw facts and core-owned intent; unreadable observations remain nullable. K1 specifies closed type normalization, independent native flags and unavailable-vs-unknown applicability, pending 0c approval. Retain `win` as lifetime id, not a new second `lifetime` namespace. Extend fullscreen, visibility and recoverable suppression facts. Tiler-owned completion uses retained core intent plus visibility facts; nativeWs remains native observation. | Facts, Intent, R13, R14, Visibility; [classification](../decisions/engine.md#classification-and-convergence-ownership); correction evidence below |
 | `ScreenView {output,view}`, WR:729-732; keys `out,view`, WJ:645-658 | R: no logical view ingress; native selectors keep separate native evidence. See G1 technical reconciliation below. | Visibility:2793-2796; R19 reconciled under G1 |
 | `NativeObservation {output,native_order,current_native,occupancy}`, WR:775-780; keys `out,order,current,occupancy`, WJ:660-731 | C only native id typing; otherwise U. Preserve `current:null` non-ordered-surface meaning and incompleteness holds. Do NOT resurrect `orderKnown/currentKnown`: canonical Windows decision explicitly supersedes native known-state flags. | R11; [accepted protocol fences](../decisions/windows.md#accepted-protocol-and-phase-one-fences), lines 39-43 |
 | `NativeOccupancy {native,count}`, WR:738-741 | C native id type, U `{native,count}` and null-is-unknown/count coverage. | R11; baseline |
-| `PresentationIngress`, WR:633-652; wire keys WJ:1127-1221 | C: settings leave ingress; remove `paused`; `cloaked` becomes host-hidden vocabulary; unknown foreground facts remain representable, including unmanaged foreground. Keep actual chord/move/order/live-frame facts; no adapter eligibility verdict. | Split, Facts, R5, R6, R10 |
+| `PresentationIngress`, WR:633-652; wire keys WJ:1127-1221 | C: settings leave ingress; remove `paused` and projected `shell`; `cloaked` becomes host-hidden vocabulary; unknown foreground facts remain representable, including unmanaged foreground. Keep actual chord/move/order/live-frame facts; core derives foreground eligibility from neutral facts under K1, pending 0c approval. | Split, Facts, R5, R6, R10 |
 | `PresentationPagerFrame {window,live,float_frame,tile_frame}`, WR:593-598; keys `win,live,float,tile` | C: remove retained `float/tile` readback; preserve live source (`win,live`). Core retains last-known frame; removing live source is not authorized. | Intent; Review:139-150,609-615 |
 | `WindowSizeHints {min_w,min_h,max_w,max_h}`, `size_hints.rs:80-86`; keys `minW,minH,maxW,maxH`, WJ:458-479 | U; keep existing hint sanitization/client-to-frame normalization, not renamed `SizeHints`. | Baseline |
 | `WorkspaceMode`, `workspace_scope.rs:42-66` | U tokens `per-output-local/global-unique/shared`; moved setting. Restart timing discrepancy is tracked below, not permission to change behavior. | Split |
@@ -201,7 +203,8 @@
 | One optional primary output id | A host-designated primary, unknown absent; stable-order fallback in core. No extra independently invented `output_order` is needed when `screens` already has order. | Primary |
 | Fullscreen ownership and exitability facts | A observed fullscreen plus tiler/app ownership and whether core-authorized exit is possible; unknown stays unknown. Windows app-owned exit remains refused pending each approved baseline case. | R14 |
 | Fullscreen and sticky on/off/toggle commands | A neutral state commands; preserve `ToggleMaximize`; core resolves refusal and sticky-off float/tile/current-workspace result. New op spellings are mechanical; no binding change or Alt+Enter command shortcut. | R14/R18 |
-| Native state targets/authority and raw state actuation facts | A only what's needed to apply core fullscreen/sticky decisions safely and report actual result; keep existing maximize result. Exact added fields are to be drafted, not generic `Applied` replacement. | R14, state-centric contract |
+| Native state targets/authority and raw state actuation facts | A independent fullscreen/maximize/sticky/above StateTarget and StateAttempt lanes; keep existing maximize result. K3 adds persistent stacking support and core ownership, with mechanical R12 preimages, pending 0c approval. No generic `Applied` replacement. | R14, state-centric contract; K3 below |
+| Neutral classification vocabulary and hard support | A closed WindowType/ActivationPolicy/FactName, raw native flags/layer and fixed unavailableFacts. Add nativeSelectorScope, above and warp hard capabilities; core derives effective shared mode and unsupported settings diagnostics. Technical resolutions K1-K4 remain pending 0c approval. | Facts, Split, R12; K1-K4 below |
 | Anchored border descriptor | A lifetime subject, outsets, width/radius, eligibility and existing causal freshness witness. Literal `"native-frame-event"` is not a causal witness. No polling or new settling marker. | R20 |
 | Presentation revision and renderer input | A exact core target plus rendered revision; core rejects changed target row, not unrelated revision. Named typed decorations retained. | Decor |
 | Typed cause, command sequence, authority scope, native workspace id/reference | A explicit typed fields replace semantic id parsing; consolidate member/view pre/post reference sets. Serialization choices are mechanical except G1. | R6/R11/R19 |
@@ -422,7 +425,7 @@
 
 | File(s) | Coverage |
 | --- | --- |
-| `manifest.json` | One metadata file; all paths, directions, expectations, 7 message families, 24 verbs, 70 records, 59 closed catalogs/300 arms and 51 sentinel/presence assertions. |
+| `manifest.json` | One metadata file; all paths, directions, expectations, 7 message families, 24 verbs, 70 records, 65 closed catalogs/342 arms and 57 sentinel/presence assertions after K1-K4 reconciliation. |
 | `messages/handshake*.json`, associated `invalid-*` | 13 files: 4 positive, 9 rejected/raw cases. Stable capabilities, core generation, bootstrap and refusal. |
 | `messages/settings*.json`, associated `invalid-*` | 16 files: 11 positive/field-diagnostic, 5 rejected cases. Defaults, every setting token, partial validation, restart timing and acknowledgements. |
 | `messages/report*.json`, associated `invalid-*` | 198 files: 86 positive, 41 held-row and 71 rejected cases. Every command, facts/native inventory, all raw attempt lanes, gestures, visibility/focus, opaque intent and renderer targets. |
@@ -607,6 +610,10 @@
 
 ## Phase-0b KDE/KWin platform-fit review
 
+- The findings/options in this review describe its initial source-fit result.
+  K1-K4 are superseded by the
+  [technical resolutions below](#k1-k5-technical-resolution-pending-0c-approval);
+  K5 retains an explicit phase-2 proof gate.
 - Verdict: the native-workspace route fits; the draft still has classification,
   selector-coupling, stacking and warp gaps. Recovery and anchored-border APIs
   exist, but the current implementation is not v4 recovery/paint acceptance.
@@ -746,3 +753,67 @@
   files and 14 scenarios; 160 step ids, 179 rule-step references and 60 contract
   references pass. Fixtures are unchanged. These checks do not execute a v4
   codec, native recovery, native settlement or native painting.
+
+### K1-K5 technical resolution pending 0c approval
+
+- These are technical contract details within the approved decisions, included
+  in the shape submitted for 0c approval, not implemented authority. No new
+  product behavior or adapter-local policy exception is authorized.
+
+| Item | Technical resolution pending 0c approval | Evidence and remaining gate |
+| --- | --- | --- |
+| K1 | Closed neutral WindowType; native-type normalization is adapter mechanics. Replace shell/tool/ownedDialog/dialog/noActivate/cannotControl projections with raw managed, acceptsInput, activationInhibited, toolWindow and owned plus neutral type/class. Retain independent privileged/transient/modal/resizable/relationships. Include native activationPolicy/layer needed by existing classification. Remove PresentationIngress.shell; core derives foreground eligibility from neutral facts. A fixed, ordered, unique unavailableFacts declaration distinguishes unsupported inputs from a supported input unreadable now; contradictory non-null rows hold narrowly. Core applies native predicates only where the declared input exists, never treats null as false. | Windows source reads WS_EX_TOOLWINDOW/WS_EX_NOACTIVATE/GW_OWNER/class (`crates/tiler-windows/src/tiling_sys/observe.rs:1307-1330`); its dialog/shell gates are policy, not raw facts (`src/tiling/classification.rs:143-185,203-218`, `src/tiling_sys/shell.rs:5-9`, relative to that crate). KDE managed/wantsInput are separate, and its dialog/owner/modal map to transient membership (`crates/omnitiler/src/kde_raw.rs:313-335,425-437`). macOS AX role/subrole, activation policy and CG layer are needed before its core handoff (`crates/tiler-macos/src/native_facts.rs:40-66,129-149`, `src/classifier.rs:51-70,332-380`, relative to that crate). Windows/macOS reviews must confirm final source-fit declarations. |
+| K2 | nativeSelectorScope is a fixed per-connection per-output/all-outputs capability; ignored without hostOwned. All-output selectors make core's effective mode shared, preserving existing behavior while retaining raw requested settings. Separate mode gets unsupported-mode diagnostic. Native coupling option changes require reconnect/new handshake; remove adapter-local mode substitution at cutover. | Existing fallback is `kwin/src/workspace-native.ts:539-546`; native option source and coupling are `K:src/options.h:140`, `K:src/virtualdesktops.cpp:577-611`. Restart-required/validation diagnostics take precedence when applicable; no two diagnostics per setting. |
+| K3 | Add above capability, raw above/below observations and persistent StateTarget/StateAttempt above property. Core owns existing KDE automatic acquisition, fullscreen suspension, external-clear/below latch and release/reset policy, plus sticky stacking decisions. R12 preimage capture/restore remains mechanical and covers coupled native properties. OneShotEffect::Stack remains one-shot, not persistent write authority. Raise the state-target bound from three to four. | Existing policy and reset/lifetime behavior: `kwin/src/world-native.ts:1095-1329`. Windows/macOS reviews MUST report whether and which float windows they currently keep above, so one core policy is uniform. Preliminary source extraction found Windows intentional floats using HWND_TOPMOST (`crates/tiler-windows/src/tiling_sys/float_toggle.rs:138-155`); macOS app-float level writes were not found in the bounded source search. Neither is a substitute for the full reviews. |
+| K4 | Add warp hard capability. With false, core never emits non-null warpCursor. A valid enabled cursorWarp setting gets unsupported-capability diagnostic without discarding the raw value or blocking startup/valid siblings. | No public KDE script/effect warp API established at pin/floor; internal Cursor::setPos is not such an API. Settings support diagnostics are recomputed for each new handshake. |
+| K5 | OPEN: no wire change. Prove the adapter-local capture-to-native-source witness join and eligibility coverage during the phase-2 KDE port, including accepted-anchor frame motion without a round trip. Extending FrameWitness is a contingency only if the local join cannot be proven. | Keep native-witness-join-evidence OPEN. Existing effect instance/counter and report obs remain distinct; elapsed time, geometry coincidence or a constant event name cannot close the proof gate. |
+
+- K1 vocabulary choices are minimal current-producer distinctions: an independent
+  owner flag can be known when its WindowId is unbound; transientFor alone is
+  not that flag. Native acceptsInput and activationInhibited are not complements.
+  Utility type and a native tool-window flag are independent. Existing AX
+  activation-policy/layer inputs cannot be replaced with an adapter eligibility
+  verdict. Optional resizability/input preference data adds no new admission
+  policy. Native type conversion never selects tile/float/leave-unmanaged.
+- Contract/fixture reconciliation complete: all existing message/scenario
+  capabilities, raw window facts and foreground ingress use the new fields and
+  table order. Existing intentional negative shapes remain negative; the root
+  duplicate handshake also carries the new capability shape without removing
+  its duplicate v key. No implementation or dependency files changed.
+- Fixture delta: 88 new messages (35 positive shape witnesses, 53 negative
+  cases), for 466 files (465 JSON, one malformed raw text). New cases cover
+  every neutral type, activation-policy arm, signed-layer boundary, raw native
+  flag, null/missing/removed field, unavailable-fact declaration validation and
+  contradiction, both selector scopes, above target/attempt on/off, four-target
+  bound, unsupported above/warp authority and both support diagnostics. All
+  65 catalogs/342 arms have typed actual-value witnesses; 70 records, 7 message
+  families, 24 commands and 57 distinctions remain covered.
+- Ordered fixture delta: three new scenarios, raw-fact-availability,
+  linked-selectors-warp and persistent-above. Total 17 scenarios, 207 steps,
+  164 complete wire inputs and 277 jq assertions. The added oracles cover
+  narrow supported-null hold/recovery versus fixed unavailable facts, conflicting
+  non-null facts, effective shared selection and reconnect, disabled warp,
+  automatic above acquisition/fullscreen suspension/classification release,
+  external-clear/below latch and preowned reset/lifetime discard, unsupported
+  stacking, and persist-before-write/coupled above-below recovery with wrong-tag
+  and storage-failure refusal. Storage steps test already-authorized mechanical
+  writes, not automatic-float eligibility. All eight original OPEN/TBD gates
+  remain pending; K5's gate now records the phase-2 KDE proof and contingency.
+- Verification: jq parses all 483 JSON artifacts; strict parsing finds exactly
+  the two labelled duplicate-key negatives (v/gap) and one labelled malformed
+  raw message. All 463 canonical messages pass exact compact bytes and no-final-LF
+  checks; 11931 numeric tokens and four numeric witnesses pass lexical checks.
+  Manifest rosters/pointers, 250 record witnesses, 433 enum witnesses, closed
+  inventory, recursive positive/scenario key order and all 277 assertion
+  compilations pass, with zero unmapped objects. Independent new-slice value
+  checks accept all 263 positive messages and identify the intended violations
+  in all 53 new negatives; 40 new-scenario wire inputs match their specified
+  valid/held-row disposition. Scenario maps cover 235 rule-step references and
+  71 contract anchors. These are static contract/fixture checks, not executed
+  v4 engine/codec/scenario/native acceptance.
+- Final hygiene: git diff --check clean; added tracked lines and all untracked
+  files have zero non-ASCII bytes, and untracked whitespace/NUL checks are clean.
+  Authority paragraph/anchors remain exact. Repository links compared with the
+  accepted KDE-review baseline retain exactly five known failures, zero new.
+  Windows/macOS source-fit reviews, their float-above baseline reports, 0c
+  approval and native/implementation gates remain outstanding.
