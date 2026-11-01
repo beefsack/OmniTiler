@@ -1,8 +1,8 @@
 # World contract (v4 target)
 
-Status: normative target draft for phase 0c review, not implemented authority.
+Status: normative target approved at phase 0c, 2026-11-02; not implemented authority.
 v4 is the implemented v3 wire plus the approved deltas below, nothing else.
-Inline OPEN points await [phase-0b evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).
+Inline OPEN points carry [port evidence gates](../changes/v4-migration.md#b-reconciliations-and-open-points), not outstanding shape approval.
 
 ## Contract authority rule
 
@@ -184,7 +184,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - `above:false` forbids persistent project stacking targets; `warp:false`
   forbids non-null `warpCursor`, even when cursorWarp is requested. Read-only
   stacking observations are independent of actuation support. K1-K4 are
-  [technical resolutions pending 0c approval](../changes/v4-migration.md#k1-k5-technical-resolution-pending-0c-approval).
+  [technical resolutions approved 2026-11-02](../changes/v4-migration.md#k1-k5-technical-resolution-pending-0c-approval).
 - `tiledFloatTransfer` is exactly the existing `float-no-remap` limitation: a
   report-time tiled source becoming floating during a cross-output transfer,
   not a ban on same-output or already-floating transfers. KDE's mechanism is
@@ -415,12 +415,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   unmanaged fullscreen foreground capture, rather than inventing negative facts.
   [Evidence gaps](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
-- macOS declares maximize=false and reports maximized=null in WindowFact and
-  PresentationIngress while no native producer exists. FactName/unavailableFacts
+- macOS provisionally declares maximize=false and reports maximized=null in
+  WindowFact and PresentationIngress until a native route is proved; maximize
+  remains in 0.1 scope. First try native zoom read+write. Native zoom versus
+  emulated maximize semantics remain an OPEN user product decision for later
+  macOS work. FactName/unavailableFacts
   covers classification inputs, not maximized, so no fixed-unavailable enum arm
   is added. Do not substitute a false constant or engine-placement/border-geometry
-  zoom heuristic. Emulated maximize is not selected; it would be a future product
-  request, not a port mechanism.
+  zoom heuristic. Neither native zoom nor emulation is yet selected as the
+  product meaning. [M4 amendment](../decisions/contract.md#window-state-commands-r14).
 
 ### Neutral classification vocabulary and applicability
 
@@ -480,7 +483,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   transient/above/below/owner/parent producers. These are source-fit inputs for
   platform review, not fabricated negatives or live acceptance. The
   [Windows review](../changes/v4-migration.md#phase-0b-windows-platform-fit-review)
-  records the W2-W4 technical resolutions pending 0c approval.
+  records the W2-W4 technical resolutions approved 2026-11-02.
   Metadata availability follows actual capture support; all other unreadable
   observations stay nullable. Core rules requiring unavailable optional metadata
   do not apply; required identity/geometry/type are never waived by this list.
@@ -518,7 +521,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - KDE/macOS may supply native executable identity when available; otherwise
   declare it unavailable. Identity stays on the local wire only: do not add it
   to logs, telemetry or persisted intent. Fixtures use synthetic identities.
-  W4 is a technical resolution pending 0c approval, not native acceptance.
+  W4 is a technical resolution approved 2026-11-02, not native acceptance.
 - For the existing macOS self-exclusion gate, core excludes when non-null raw
   window appId equals non-null applicationIdentity.appId OR non-null window
   executable equals non-null applicationIdentity.executable. Preserve macOS
@@ -526,7 +529,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   not imply own application; the own executable covers unbundled own processes.
   This does not alter the Windows Settings/class exceptions above. M1 and the
   macOS obligations here are
-  [technical resolutions pending 0c approval](../changes/v4-migration.md#m1-m9-technical-resolution-pending-0c-approval).
+  [technical resolutions approved 2026-11-02](../changes/v4-migration.md#m1-m9-technical-resolution-pending-0c-approval).
 
 ### Native observation
 
@@ -629,7 +632,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   state-unsupported only when both routes are absent; per-window suppression
   unreadability/recovery gates still hold the affected visibility lane. This
   retains Windows sticky behavior without native actuation. W3 is a technical
-  resolution pending 0c approval, not an all-Spaces or implementation claim.
+  resolution approved 2026-11-02, not an all-Spaces or implementation claim.
 
 ### CommandResult and diagnostics
 
@@ -739,25 +742,30 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 - `above` targets use independent StateTarget authority and StateAttempt
   pre/post evidence, gated by the above capability. OneShotEffect::Stack remains
   a distinct one-shot action; floating/sticky=true is not write authority.
-- Core owns current KDE automatic-float stacking: acquire above only for a
-  classified automatic float without suppression, native overlays/minimize/
-  sticky, preexisting above/below or an external-clear latch. Leave preowned
-  above/below untouched. Suspend project-owned above for focused fullscreen on
-  its scope; release when automatic classification is lost, and discard ownership
-  when the native lifetime ends.
+- Core acquires persistent above for every float: qualified automatic floats,
+  explicit float/sticky intent and capacity-fallback floats use one policy.
+  Workspace-floating-mode floats use the same rule even with no tiles present;
+  there is no origin-specific branch. Require supported above and durable
+  preimages, readable live facts, no suppression/minimize/native overlay safety
+  veto, no preexisting above/below and no external-clear latch. Pre-existing
+  below gets zero stacking writes; pre-existing above stays untouched.
+  Suspend project-owned above for focused fullscreen on its scope;
+  fullscreen-game safety wins. Release when the window is no longer floating,
+  and discard ownership when the native lifetime ends.
   External below or external above-clear relinquishes ownership and prevents
-  automatic reacquisition until lifetime end or the existing reset when native
-  preowned-above is observed. Sticky stacking and
-  sticky-off restoration are also core-decided, never adapter toggles.
+  reacquisition for every float origin until lifetime end or the existing reset
+  when native preowned-above is observed. Sticky transitions retain this same
+  ownership/latch; sticky-off releases only if core returns the window to tiled.
+  No second sticky stacking owner or adapter toggle is introduced.
 - Core emits above=true for acquisition and above=false for release/suspension
   of its owned change. Adapter persist-before-write preimages cover every coupled
   native property (KWin keepAbove can clear keepBelow); release restores only
   the owned preimage, with raw resulting facts returned. Failed preimage storage
   disables that window/property; no adapter reacquisition/release policy runs.
-  Native overlay refusal holds the affected target, not a local replan. The
-  Windows review's W1 records explicit-float stacking not covered by this KDE
-  baseline; uniform eligibility remains OPEN, as does the macOS baseline review.
-  Support is a capability, not a host policy opt-in.
+  Native overlay refusal holds the affected target, not a local replan.
+  [W1 union and capacity follow-up](../decisions/contract.md#persistent-above-float-policy)
+  were approved 2026-11-02. Support is a capability, not a host policy opt-in;
+  macOS above=false authorizes no persistent stacking writes.
 
 ### Opaque intent storage
 
@@ -776,10 +784,14 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   write authority. The outer win binds the verified live storage subject, not
   an old adapter id embedded in the record. A returned
   record is not proof of native state. Cross-login persistence is not promised.
-  Discard unverifiable bindings, never recover by title/PID/CG id guesses. If
-  macOS cannot verify continuity across restart, intent does not survive restart
-  there: windows return fresh with defaults. macOS host-storage-survival remains
-  OPEN; an external file or property name alone is not evidence of ownership.
+  Discard only genuinely unverifiable bindings, never recover by title/PID/CG id
+  guesses. macOS must retain intentional-float intent across orderly tiler restart
+  within a session. Prove within-session re-identification, exploring Apple's
+  session-unique CGWindowID plus process/launch-date fencing and a KDE-style
+  atomic private store; this is not proof by id alone or reuse of old wire tokens.
+  macOS re-identification and host-storage-survival remain OPEN port work, not
+  permission to drop restart intent. An external file/property key alone is not
+  ownership proof. [M3 amendment](../decisions/persistence.md#orderly-restart-adoption).
   OPEN: phase 0b verifies storage survival and exact lifetime ownership, not
   restart matching by title/process heuristic.
   [Intent](../decisions/contract.md#intent-ownership-and-persistence),
@@ -823,7 +835,7 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   translates native bindings. Remove parallel `nativePre/nativePost/nativeBase`.
   ViewAttempt permits no logical arm; native-free visibility/focus completes
   selection. This is the [G1 technical reconciliation](../changes/v4-migration.md#b-reconciliations-and-open-points),
-  pending 0c approval, not a new product decision.
+  approved 2026-11-02, not a new product decision.
 - FrameAttempt, ClearAttempt, NativeCreationAttempt and NativeCreationDesire
   retain exact baseline keys/nullability and separate lanes, including frame
   target/readback/DPI/prewrite, clear pre/post-maximized and creation
@@ -898,8 +910,8 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   logical home in the native arm refuse the wire message. Readable-shape null
   home/output/frame is valid evidence but cannot prove readiness. Core retains
   the frozen target set and compares facts; no applied-homing receipt, logical
-  workspace echo or ScreenView is restored. W2 is a technical resolution pending
-  0c approval; static fixtures do not establish native arrival or focus success.
+  workspace echo or ScreenView is restored. W2 is a technical resolution approved
+  2026-11-02; static fixtures do not establish native arrival or focus success.
 
 ### Normative apply rule
 

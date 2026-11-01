@@ -12,11 +12,10 @@
   Milestone 3 message fixtures and coverage are accepted; canonical number
   spelling is now explicit. Milestone 2 source-checked corrections and the v3
   carry-forward checklist approach remain accepted. Phase-0b KDE source-fit
-  review is recorded below. K1-K4 technical resolutions are drafted pending 0c
-  approval; their contract/fixture reconciliation is complete. Windows source-fit
-  review and W2-W4 technical resolutions pending 0c approval are recorded below.
-  W1 remains OPEN for user decision at the K3 automatic baseline; macOS review
-  and phase-0c approval remain.
+  review and the Windows/macOS source-fit reviews are recorded below. Phase 0c
+  shape approval was given 2026-11-02 for G1-G3, K1-K5, W2-W4 and M1-M9,
+  with W1 union/capacity and M3/M4 amendments. Phase 1 core/protocol
+  implementation from fixtures is next; native and implementation gates remain.
 - Acceptance: every current wire record/enum/message has a disposition; every
   delta has an authority reference or a named gap; defaults cite core source;
   preserved shapes keep their current names and representation.
@@ -90,11 +89,11 @@
 | v3 record/enum and source | Disposition in v4 | Authority |
 | --- | --- | --- |
 | `ScreenReport {output,full_rect,work_area,gap,outer_gap,complete,primary}`, WR:673-681; keys `out,full,work,gap,outer,complete,primary`, WJ:624-643 | C: keep name and `out/full/work/complete`; move `gap/outer` to settings; replace `primary` with one report-level optional output id; add scale and identity facts. | Split, Primary, R10, R11 |
-| `WindowFact`, WR:706-721; keys `win,out,rect,floating,fitExcluded,fullscreen,maximized,sticky,fixedAuto,fixedSuppress,minimized,hints,observedWs,nativeWs`, WJ:570-622 | C: replace adapter classification/intent projections (`floating,fitExcluded,fixedAuto,fixedSuppress,observedWs`) with neutral raw facts and core-owned intent; unreadable observations remain nullable. K1 specifies closed type normalization, independent native flags and unavailable-vs-unknown applicability, pending 0c approval. Retain `win` as lifetime id, not a new second `lifetime` namespace. Extend fullscreen, visibility and recoverable suppression facts. Tiler-owned completion uses retained core intent plus visibility facts; nativeWs remains native observation. | Facts, Intent, R13, R14, Visibility; [classification](../decisions/engine.md#classification-and-convergence-ownership); correction evidence below |
+| `WindowFact`, WR:706-721; keys `win,out,rect,floating,fitExcluded,fullscreen,maximized,sticky,fixedAuto,fixedSuppress,minimized,hints,observedWs,nativeWs`, WJ:570-622 | C: replace adapter classification/intent projections (`floating,fitExcluded,fixedAuto,fixedSuppress,observedWs`) with neutral raw facts and core-owned intent; unreadable observations remain nullable. K1 specifies closed type normalization, independent native flags and unavailable-vs-unknown applicability, approved 2026-11-02. Retain `win` as lifetime id, not a new second `lifetime` namespace. Extend fullscreen, visibility and recoverable suppression facts. Tiler-owned completion uses retained core intent plus visibility facts; nativeWs remains native observation. | Facts, Intent, R13, R14, Visibility; [classification](../decisions/engine.md#classification-and-convergence-ownership); correction evidence below |
 | `ScreenView {output,view}`, WR:729-732; keys `out,view`, WJ:645-658 | R: no logical view ingress; native selectors keep separate native evidence. See G1 technical reconciliation below. | Visibility:2793-2796; R19 reconciled under G1 |
 | `NativeObservation {output,native_order,current_native,occupancy}`, WR:775-780; keys `out,order,current,occupancy`, WJ:660-731 | C only native id typing; otherwise U. Preserve `current:null` non-ordered-surface meaning and incompleteness holds. Do NOT resurrect `orderKnown/currentKnown`: canonical Windows decision explicitly supersedes native known-state flags. | R11; [accepted protocol fences](../decisions/windows.md#accepted-protocol-and-phase-one-fences), lines 39-43 |
 | `NativeOccupancy {native,count}`, WR:738-741 | C native id type, U `{native,count}` and null-is-unknown/count coverage. | R11; baseline |
-| `PresentationIngress`, WR:633-652; wire keys WJ:1127-1221 | C: settings leave ingress; remove `paused` and projected `shell`; `cloaked` becomes host-hidden vocabulary; unknown foreground facts remain representable, including unmanaged foreground. Keep actual chord/move/order/live-frame facts; core derives foreground eligibility from neutral facts under K1, pending 0c approval. | Split, Facts, R5, R6, R10 |
+| `PresentationIngress`, WR:633-652; wire keys WJ:1127-1221 | C: settings leave ingress; remove `paused` and projected `shell`; `cloaked` becomes host-hidden vocabulary; unknown foreground facts remain representable, including unmanaged foreground. Keep actual chord/move/order/live-frame facts; core derives foreground eligibility from neutral facts under K1, approved 2026-11-02. | Split, Facts, R5, R6, R10 |
 | `PresentationPagerFrame {window,live,float_frame,tile_frame}`, WR:593-598; keys `win,live,float,tile` | C: remove retained `float/tile` readback; preserve live source (`win,live`). Core retains last-known frame; removing live source is not authorized. | Intent; Review:139-150,609-615 |
 | `WindowSizeHints {min_w,min_h,max_w,max_h}`, `size_hints.rs:80-86`; keys `minW,minH,maxW,maxH`, WJ:458-479 | U; keep existing hint sanitization/client-to-frame normalization, not renamed `SizeHints`. | Baseline |
 | `WorkspaceMode`, `workspace_scope.rs:42-66` | U tokens `per-output-local/global-unique/shared`; moved setting. Restart timing discrepancy is tracked below, not permission to change behavior. | Split |
@@ -205,8 +204,8 @@
 | One optional primary output id | A host-designated primary, unknown absent; stable-order fallback in core. No extra independently invented `output_order` is needed when `screens` already has order. | Primary |
 | Fullscreen ownership and exitability facts | A observed fullscreen plus tiler/app ownership and whether core-authorized exit is possible; unknown stays unknown. Windows app-owned exit remains refused pending each approved baseline case. | R14 |
 | Fullscreen and sticky on/off/toggle commands | A neutral state commands; preserve `ToggleMaximize`; core resolves refusal and sticky-off float/tile/current-workspace result. New op spellings are mechanical; no binding change or Alt+Enter command shortcut. | R14/R18 |
-| Native state targets/authority and raw state actuation facts | A independent fullscreen/maximize/sticky/above StateTarget and StateAttempt lanes; keep existing maximize result. K3 adds persistent stacking support and core ownership, with mechanical R12 preimages, pending 0c approval. No generic `Applied` replacement. | R14, state-centric contract; K3 below |
-| Neutral classification vocabulary and hard support | A closed WindowType/ActivationPolicy/FactName, raw native flags/layer and fixed unavailableFacts. Add nativeSelectorScope, above and warp hard capabilities; core derives effective shared mode and unsupported settings diagnostics. Technical resolutions K1-K4 remain pending 0c approval. | Facts, Split, R12; K1-K4 below |
+| Native state targets/authority and raw state actuation facts | A independent fullscreen/maximize/sticky/above StateTarget and StateAttempt lanes; keep existing maximize result. K3 adds persistent stacking support and core ownership, with mechanical R12 preimages, approved 2026-11-02 with W1 union/capacity policy. No generic `Applied` replacement. | R14, state-centric contract; K3 below |
+| Neutral classification vocabulary and hard support | A closed WindowType/ActivationPolicy/FactName, raw native flags/layer and fixed unavailableFacts. Add nativeSelectorScope, above and warp hard capabilities; core derives effective shared mode and unsupported settings diagnostics. Technical resolutions K1-K4 approved 2026-11-02. | Facts, Split, R12; K1-K4 below |
 | Anchored border descriptor | A lifetime subject, outsets, width/radius, eligibility and existing causal freshness witness. Literal `"native-frame-event"` is not a causal witness. No polling or new settling marker. | R20 |
 | Presentation revision and renderer input | A exact core target plus rendered revision; core rejects changed target row, not unrelated revision. Named typed decorations retained. | Decor |
 | Typed cause, command sequence, authority scope, native workspace id/reference | A explicit typed fields replace semantic id parsing; consolidate member/view pre/post reference sets. Serialization choices are mechanical except G1. | R6/R11/R19 |
@@ -220,7 +219,7 @@
 | Arrival-ready focus and feedback | A explicit-selection-only grant; arrival bracket and foreground proof; one dispatch, failure/unproven outcome; cross-output departure barrier. Exact feedback record is mechanical, not another policy owner. | Visibility:2793-2797,2811-2835 |
 | Switch terminal accounting | A complete or completed-with-failures on existing parent; failed windows, proven/refused/unproven focus and fallback use; failed hide retains membership. Distinct from clear/float events. | Visibility:2815,2839-2845 |
 | Per-field and per-row diagnostics | A typed settings/held-row diagnostic at narrowest scope; unknown/invalid rows never imply close. No unsolicited generic `diagnostic` message family required by this approval. | R13; [Resilience](../principles.md#resilience) |
-| Unsupported native-retirement advertisement | G2, not yet a settled addition. Existing retirement only checks host-owned/completeness, not removal support. | R19 pre-build check; `world_native.rs:350-357` |
+| Unsupported native-retirement advertisement | G2 approved 2026-11-02: no removal capability. Core exist:false is sole removal authority with fresh native safety vetoes (M6); native execution proof remains open. | R19; `world_native.rs:350-357`; M6 below |
 
 ## Defaults: source-confirmed, not draft inventions
 
@@ -250,12 +249,12 @@
 
 | Item | Disposition | Remaining gate | Evidence |
 | --- | --- | --- | --- |
-| G1: view ingress | Technical reconciliation, not a user decision: the user's Windows visibility removal of `views`/`ScreenView` and logical view-attempt pre/post governs. R19 typing applies where both arms remain meaningful: MemberAttempt uses one logical-or-native reference set; ViewAttempt exists only for native selectors and uses native references only. Native-free completion uses visibility/focus facts. | Pending user approval at phase 0c; no decision change. | Visibility:2793-2796; Review:1162,4826-4829. |
-| G2: native removal support | OPEN: defer to phase-0b platform evidence. Draft retains current behavior, no removal capability; `exist:false` remains eligibility only under existing ownership/completeness and fresh native safety checks. | Establish supported host removal mechanisms/consumers before any new gate is proposed. | Review:1162,4829-4830; `world_native.rs:350-357`; search-scoped absence of a non-test macOS existence consumer, not proof of impossibility. |
-| G3: transient vs explicit tile | Classification policy, not contract shape; excluded from the wire contract. Existing minimal action sequence remains TBD, no precedence promoted. | Later native/reference testing, outside phase-0 wire wording. | [Native transient versus dialog membership](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs); exact row currently at line 6485. `docs/decisions/world-rendering.md:46-50,75-79`. |
+| G1: view ingress | Approved 2026-11-02: Windows visibility removal of `views`/`ScreenView` and logical view-attempt pre/post governs. MemberAttempt uses one logical-or-native reference set; ViewAttempt uses native references only. Native-free completion uses visibility/focus facts. | Implementation/native proof, not shape approval. | Visibility:2793-2796; Review:1162,4826-4829. |
+| G2: native removal support | Approved 2026-11-02: no removal capability; core `exist:false` is sole removal authority, subject to ownership/completeness and fresh occupancy/pin/minimum vetoes. M6 replaces macOS local cleanup authority. | Native consumers and execution proof remain port gates. | Review:1162,4829-4830; `world_native.rs:350-357`; macOS M6 below. |
+| G3: transient vs explicit tile | Approved 2026-11-02: classification policy is outside the wire contract. Existing minimal action sequence remains TBD, no precedence promoted. | Later native/reference testing, outside phase-0 wire wording. | [Native transient versus dialog membership](../spec/reference-outcomes.md#2026-10-24-port-discriminator-stubs); `docs/decisions/world-rendering.md:46-50,75-79`. |
 | Platform facts and recovery | OPEN: primary-output APIs, raw classification/relationship/fullscreen facts, macOS lifetime-id reuse, per-window suppression/preimage storage and restart ownership. | Phase 0b read-only platform fit; use unknown/hold where evidence is missing, not fabricated facts. | Review R5/R11/R12/R14 and the corresponding contract sections. |
 | Scale and anchored border | OPEN: scale-only notification and native event/witness join coverage on each host. | Phase 0b; no polling/settling marker or border-event capability invented. macOS smoothness evidence does not gate shape. | Review R10/R20. |
-| Float-no-remap | OPEN: draft capability `tiledFloatTransfer` expresses the existing tiled-source-to-float cross-output limitation, not general float-transfer support. | Phase 0b must establish exact mechanism and capability scope/polarity before 0c. | Review:4771-4774. |
+| Float-no-remap | Approved 2026-11-02: `tiledFloatTransfer` expresses only tiled-source-to-float cross-output no-remap. KDE=true, Windows=false, macOS=false provisionally; broader macOS moves remain M8 port work. | Prove macOS target-display frame plus native Space membership without widening the capability. | Review:4771-4774; M8 below. |
 
 - KDE evidence and host-specific dispositions are in the
   [phase-0b KDE review](#phase-0b-kdekwin-platform-fit-review). They do not close
@@ -511,7 +510,7 @@
 - Milestone-2 outcome: the unreviewed contract draft was replaced with a
   source-backed normative target, field tables, complete unchanged-type roster,
   exact authority paragraph and explicit carry-forward checklist. G1 is a
-  technical reconciliation pending 0c; G2/platform evidence remains OPEN;
+  technical reconciliation now approved 2026-11-02; G2 native/platform evidence remains OPEN;
   G3 is outside the wire and remains TBD in reference outcomes.
 - Milestone-2 verification: `git diff --check` clean; the untracked change note's explicit
   no-index whitespace check emitted no diagnostics; added tracked lines and
@@ -557,7 +556,7 @@
   anchors match the baseline exactly. Repository link/anchor scan checked 7184
   local links and reproduced only the five known baseline failures, zero new.
   No Rust implementation or dependency changes;
-  G1 still awaits 0c approval and G2/platform evidence remains OPEN. Ordered
+  G1 now approved 2026-11-02; G2 native/platform evidence remains OPEN. Ordered
   causal/scenario, codec, native recovery and paint acceptance are not claimed.
 
 ### Milestone-4 canonical-number choice
@@ -607,7 +606,7 @@
   Authority paragraph and both anchors remain exact. The link scan checks
   7185 local links and reports only the same five baseline failures, zero new.
   No Rust implementation or dependency changes; no phase-1 harness, codec,
-  native scenario, recovery or paint execution is claimed. G1 still awaits 0c;
+  native scenario, recovery or paint execution is claimed. G1 now approved 2026-11-02;
   all eight OPEN/TBD gates remain pending, not passed.
 
 ## Phase-0b KDE/KWin platform-fit review
@@ -736,7 +735,7 @@
   require a retained core home (`kwin/src/world-observe.ts:851-874,949-966`);
   independent capture must not exclude such a lifetime by core classification.
   These are not live/codec acceptance and do not close global scenario gates.
-- Still OPEN on KDE: K1-K5; exact native causal witness join and eligibility
+- K1-K5 shape approved 2026-11-02; still OPEN on KDE: exact native causal witness join and eligibility
   coverage; restart-safe preimage/opaque-record implementation; historical id
   collision handling; unrestricted override-redirect foreground proof. Windows
   and macOS portions of every shared evidence item remain for their reviews.
@@ -756,17 +755,17 @@
   references pass. Fixtures are unchanged. These checks do not execute a v4
   codec, native recovery, native settlement or native painting.
 
-### K1-K5 technical resolution pending 0c approval
+<a id="k1-k5-technical-resolution-pending-0c-approval"></a>
+### K1-K5 technical resolution
 
-- These are technical contract details within the approved decisions, included
-  in the shape submitted for 0c approval, not implemented authority. No new
-  product behavior or adapter-local policy exception is authorized.
+- Status: approved at phase 0c, 2026-11-02, with W1 union/capacity policy below;
+  not implemented authority. K5's native proof gate stays OPEN.
 
-| Item | Technical resolution pending 0c approval | Evidence and remaining gate |
+| Item | Technical resolution approved 2026-11-02 | Evidence and remaining gate |
 | --- | --- | --- |
 | K1 | Closed neutral WindowType; native-type normalization is adapter mechanics. Replace shell/tool/ownedDialog/dialog/noActivate/cannotControl projections with raw managed, acceptsInput, activationInhibited, toolWindow and owned plus neutral type/class. Retain independent privileged/transient/modal/resizable/relationships. Include native activationPolicy/layer needed by existing classification. Remove PresentationIngress.shell; core derives foreground eligibility from neutral facts. A fixed, ordered, unique unavailableFacts declaration distinguishes unsupported inputs from a supported input unreadable now; contradictory non-null rows hold narrowly. Core applies native predicates only where the declared input exists, never treats null as false. | Windows source reads WS_EX_TOOLWINDOW/WS_EX_NOACTIVATE/GW_OWNER/class (`crates/tiler-windows/src/tiling_sys/observe.rs:1307-1330`); its dialog/shell gates are policy, not raw facts (`src/tiling/classification.rs:143-185,203-218`, `src/tiling_sys/shell.rs:5-9`, relative to that crate). KDE managed/wantsInput are separate, and its dialog/owner/modal map to transient membership (`crates/omnitiler/src/kde_raw.rs:313-335,425-437`). macOS AX role/subrole, activation policy and CG layer are needed before its core handoff (`crates/tiler-macos/src/native_facts.rs:40-66,129-149`, `src/classifier.rs:51-70,332-380`, relative to that crate). Windows/macOS reviews must confirm final source-fit declarations. |
 | K2 | nativeSelectorScope is a fixed per-connection per-output/all-outputs capability; ignored without hostOwned. All-output selectors make core's effective mode shared, preserving existing behavior while retaining raw requested settings. Separate mode gets unsupported-mode diagnostic. Native coupling option changes require reconnect/new handshake; remove adapter-local mode substitution at cutover. | Existing fallback is `kwin/src/workspace-native.ts:539-546`; native option source and coupling are `K:src/options.h:140`, `K:src/virtualdesktops.cpp:577-611`. Restart-required/validation diagnostics take precedence when applicable; no two diagnostics per setting. |
-| K3 | Add above capability, raw above/below observations and persistent StateTarget/StateAttempt above property. Core owns existing KDE automatic acquisition, fullscreen suspension, external-clear/below latch and release/reset policy, plus sticky stacking decisions. R12 preimage capture/restore remains mechanical and covers coupled native properties. OneShotEffect::Stack remains one-shot, not persistent write authority. Raise the state-target bound from three to four. | Existing policy and reset/lifetime behavior: `kwin/src/world-native.ts:1095-1329`. Windows/macOS reviews MUST report whether and which float windows they currently keep above, so one core policy is uniform. Preliminary source extraction found Windows intentional floats using HWND_TOPMOST (`crates/tiler-windows/src/tiling_sys/float_toggle.rs:138-155`); macOS app-float level writes were not found in the bounded source search. Neither is a substitute for the full reviews. |
+| K3 | Add above capability, raw above/below observations and persistent StateTarget/StateAttempt above property. Core owns one W1 acquisition/release/fullscreen-suspension/external-clear latch for automatic, explicit/sticky, capacity and workspace-mode floats. R12 preimages remain mechanical and cover coupled native properties; native-preowned above/below is preserved. OneShotEffect::Stack stays one-shot. Raise the state-target bound from three to four. | The earlier automatic-only description was record drift: [KDE project floats plus automatic fixed floats](../spec/reference-outcomes/floating.md#r-flt-12-raise-and-lower-overlapping-floats) already share the layer. `kwin/src/world-native.ts:1095-1329` is the automatic lane, not the full baseline. Windows explicit TOPMOST and macOS no selected foreign writer are recorded in their reviews. W1 uniform eligibility is approved; native recovery remains a port gate. |
 | K4 | Add warp hard capability. With false, core never emits non-null warpCursor. A valid enabled cursorWarp setting gets unsupported-capability diagnostic without discarding the raw value or blocking startup/valid siblings. | No public KDE script/effect warp API established at pin/floor; internal Cursor::setPos is not such an API. Settings support diagnostics are recomputed for each new handshake. |
 | K5 | OPEN: no wire change. Prove the adapter-local capture-to-native-source witness join and eligibility coverage during the phase-2 KDE port, including accepted-anchor frame motion without a round trip. Extending FrameWitness is a contingency only if the local join cannot be proven. | Keep native-witness-join-evidence OPEN. Existing effect instance/counter and report obs remain distinct; elapsed time, geometry coincidence or a constant event name cannot close the proof gate. |
 
@@ -817,8 +816,8 @@
   files have zero non-ASCII bytes, and untracked whitespace/NUL checks are clean.
   Authority paragraph/anchors remain exact. Repository links compared with the
   accepted KDE-review baseline retain exactly five known failures, zero new.
-  Windows/macOS source-fit reviews, their float-above baseline reports, 0c
-  approval and native/implementation gates remain outstanding.
+  Windows/macOS reviews and phase-0c approval are now complete (2026-11-02);
+  native/implementation gates remain outstanding.
 
 ## Phase-0b Windows platform-fit review
 
@@ -826,7 +825,7 @@
   geometry, suppression, maximize/fullscreen, topmost and cursor mechanisms fit;
   native-free arrival/sticky semantics and sufficient application identity did
   not fit the reviewed literal draft. W2-W4 reconciliation follows below;
-  W1 remains OPEN for user decision. This is source evidence, not v4 execution or
+  W1 is now approved 2026-11-02 below. This is source evidence, not v4 execution or
   native acceptance. KDE conclusions are not Windows evidence.
 - Citation shorthand below: `T/` = `crates/tiler-windows/src/tiling_sys/`,
   `W/` = `crates/tiler-windows/src/`. Searches covered those sources and their
@@ -876,8 +875,8 @@
   `T/dispatch.rs:689-699,714-767`). Stop clears the runtime map regardless of
   failures. Crash/restart loses it. No corresponding Windows fullscreen
   suspension or KDE external-clear/reset latch was found in these band paths.
-- K3's KDE automatic-only eligibility therefore does NOT preserve Windows
-  explicit-float behavior. Proposed uniform policy and consequences are W1;
+- The earlier K3 automatic-only description omitted KDE project-float behavior
+  and Windows explicit floats. W1 now records the approved uniform policy;
   neither floating=true nor a one-shot Stack authorizes persistent topmost.
 
 ### 4. Windows HostCapabilities
@@ -888,7 +887,7 @@
 | nativeSelectorScope | per-output, ignored | Required filler when hostOwned=false; no native selector scope is being claimed. |
 | windowSuppression | true | Existing durable independent hide/reveal/watcher mechanism; per-window gates/readability can still refuse. |
 | maximize / fullscreen / above / warp | true / true / true / true | Native mechanisms above; capability is not per-window authorization, safe app-owned fullscreen exit, or completed R12 recovery. |
-| nativeSticky | false (W3 technical resolution pending 0c approval) | Logical sticky commands remain supported through windowSuppression=true; no native sticky target/attempt/fact is manufactured. |
+| nativeSticky | false (W3 approved 2026-11-02) | Logical sticky commands remain supported through windowSuppression=true; no native sticky target/attempt/fact is manufactured. |
 | tiledFloatTransfer | false | Correct polarity for the selected no-remap route, NOT a Windows API impossibility or a ban on ordinary floats. |
 | unavailableFacts | Ordered route list in section 1 | Include appId/title until actual metadata readers exist; W4 supplies executable separately. Do not declare supported-but-failed reads permanently unavailable. |
 
@@ -935,21 +934,21 @@
 
 | Gap/question | Options; recommendation; consequence |
 | --- | --- |
-| W1: which float origins acquire persistent above uniformly? | **OPEN for user decision at 0c.** Options: KDE automatic-only; Windows explicit-only; union of qualified automatic and explicit float/sticky intent. Recommend the union, with one core-owned acquisition/release/fullscreen-suspension/external-clear latch and native-preowned preservation policy. Do not acquire merely from floating=true (workspace-floating/capacity fallback alone is not intent). This retains Windows explicit floats and adds automatic stacking there; it adds explicit stacking to the KDE baseline. Apply only when above is supported and durable preimages exist; sticky transitions retain/release the same ownership, not a second owner. macOS evidence still needed. The draft and behavior assertions stay at K3's automatic baseline; no union fixture is introduced. |
-| W2: what proves native-free arrival home after G1 removes logical echoes? | **Technical resolution pending 0c approval.** ArrivalBracket has exclusive native/output arms. Only hostOwned uses bracketed native home; otherwise core compares retained logical home plus bracketed observed output/frame/visibility/lifetime/tag evidence to the frozen target. Null evidence is well-shaped but cannot prove readiness. No logical receipt, applied_homing proof or ScreenView revival. |
-| W3: how is sticky supported without a native sticky state? | **Technical resolution pending 0c approval.** nativeSticky governs native sticky StateTarget/StateAttempt; windowSuppression supplies the other semantic command route. Core composes visibility from retained sticky intent and persists stickyPrior opaquely. With nativeSticky=false the native sticky fact is null, never capture's projected state.sticky (`T/world_capture.rs:1072-1080,1159-1160`). Commands reject state-unsupported only if both routes are absent. Existing Windows behavior is retained. |
-| W4: can core retain executable-dependent safety/presentation without adapter verdicts? | **Technical resolution pending 0c approval.** Required nullable WindowFact.executable and handshake applicationIdentity carry <=4096-byte neutral normalized identity; executable joins unavailableFacts for hosts without a producer. Windows slash replacement plus ASCII lowercase preserves existing full-path equality and basename checks (`W/lifecycle.rs:42-45`, `T/shell.rs:12-46`, `W/tiling/classification.rs:154-185`, `T/world_capture.rs:480-488`). No appId conflation or shell/own-settings booleans. Identity is local-wire-only; fixtures are synthetic. |
+| W1: which float origins acquire persistent above uniformly? | **Approved, User 2026-11-02: option c (union), plus capacity follow-up.** Every float uses one core-owned acquisition/release/fullscreen-suspension/external-clear latch: qualified automatic, explicit float/sticky, capacity fallback and workspace-floating-mode floats. The last case uses the same rule even with no tiles present. Require above support and durable preimages; preserve native-preowned flags, with fullscreen-game safety first. Sticky transitions keep the same owner. This matches Tier 1 float-above-tiles and corrects K3's automatic-only record drift; capacity inclusion avoids arbitrary complexity. The persistent-above scenario now witnesses the union. macOS above=false still forbids writes. |
+| W2: what proves native-free arrival home after G1 removes logical echoes? | **Approved 2026-11-02.** ArrivalBracket has exclusive native/output arms. Only hostOwned uses bracketed native home; otherwise core compares retained logical home plus bracketed observed output/frame/visibility/lifetime/tag evidence to the frozen target. Null evidence is well-shaped but cannot prove readiness. No logical receipt, applied_homing proof or ScreenView revival. |
+| W3: how is sticky supported without a native sticky state? | **Approved 2026-11-02.** nativeSticky governs native sticky StateTarget/StateAttempt; windowSuppression supplies the other semantic command route. Core composes visibility from retained sticky intent and persists stickyPrior opaquely. With nativeSticky=false the native sticky fact is null, never capture's projected state.sticky (`T/world_capture.rs:1072-1080,1159-1160`). Commands reject state-unsupported only if both routes are absent. Existing Windows behavior is retained. |
+| W4: can core retain executable-dependent safety/presentation without adapter verdicts? | **Approved 2026-11-02.** Required nullable WindowFact.executable and handshake applicationIdentity carry <=4096-byte neutral normalized identity; executable joins unavailableFacts for hosts without a producer. Windows slash replacement plus ASCII lowercase preserves existing full-path equality and basename checks (`W/lifecycle.rs:42-45`, `T/shell.rs:12-46`, `W/tiling/classification.rs:154-185`, `T/world_capture.rs:480-488`). No appId conflation or shell/own-settings booleans. Identity is local-wire-only; fixtures are synthetic. |
 
 - Minimal unresolved behavioral discriminators are recorded in
   [reference outcomes](../spec/reference-outcomes.md#v4-windows-platform-fit-discriminators);
-  native/reference outcomes remain TBD; technical reconciliation is not native
-  acceptance or 0c approval.
+  selected W1 behavior is approved 2026-11-02; native/reference acceptance stays
+  TBD and is not implied by shape approval.
 - Windows source mechanisms resolved: physical scale units; explicit primary;
   EDID/connection API route with truthful nulls; independent unmanaged foreground
   capture; tagged-member reuse fencing; existing property survival; suppression
   recovery; warp=true; tiledFloatTransfer=false and its precise limitation.
   Native removal/creation gates do not apply with hostOwned=false.
-- Remaining OPEN: W1 user decision; W2-W4 0c approval; opaque-record and chrome/topmost crash recovery; empty-
+- Remaining OPEN: opaque-record and chrome/topmost crash recovery; empty-
   output scale-only notifications; untagged lifetime fencing; exact border
   witness/invalidation join and event coverage; physical identity normalization;
   app-fullscreen baseline acceptance; all macOS evidence. None of the eight
@@ -971,9 +970,9 @@
 
 ### W2-W4 contract and fixture reconciliation
 
-- Status: technical resolution pending 0c approval for each of W2, W3 and W4.
-  W1 is OPEN for user decision, with the union recommendation above; persistent-
-  above behavior assertions remain unchanged at the K3 automatic baseline.
+- Status: W2-W4 approved at phase 0c, 2026-11-02. W1 union plus capacity
+  follow-up is approved; the phase-0c outcome below supersedes the historical
+  automatic-only assertions/counts in this checkpoint.
 - W2: explicit ArrivalBracket.kind native/output arms, conditional home/out and
   core frozen-target comparison. Visibility scenarios no longer supply a fake
   native logical ws; independent ordered core cases reject proof from wrong
@@ -1017,8 +1016,8 @@
   whitespace/NUL issues; authority paragraph/anchors exact; no implementation
   diff. Local Markdown links retain the five known baseline failures, zero new.
   No v4 codec, engine, model scenario, recovery, paint or native execution is
-  implied by these checks. W1, 0c, macOS and the implementation/native gates
-  remain outstanding.
+  implied by these checks. Phase 0c/W1 are now approved 2026-11-02; the named
+  macOS implementation/native gates remain outstanding.
 
 ## Phase-0b macOS platform-fit review
 
@@ -1076,8 +1075,8 @@
 
 - macOS contributes **no existing project-acquired persistent-above behavior**
   to W1. Keep above=false and above/below unknown/unavailable on this route.
-  This neither selects nor refutes W1's uniform-origin policy; W1 remains OPEN,
-  K3 assertions/fixtures unchanged. A future writer still needs W1 and R12 proof.
+  W1's uniform-origin policy is now approved 2026-11-02; above=false still
+  authorizes no writes. A future writer needs native mechanism and R12 proof.
 
 ### 4. macOS HostCapabilities
 
@@ -1135,20 +1134,21 @@
   no final LF. Local Markdown links retain five baseline failures, zero new.
   No v4 codec, engine, native, recovery or renderer execution was performed.
 
-### M1-M9 technical resolution pending 0c approval
+<a id="m1-m9-technical-resolution-pending-0c-approval"></a>
+### M1-M9 technical resolution
 
-- Status: technical resolution pending 0c approval for each of M1-M9. The
+- Status: M1-M9 approved at phase 0c, 2026-11-02, with M3/M4 amendments. The
   source-review recommendations/counts above describe the earlier checkpoint;
   this subsection reconciles the submitted draft, not implemented authority or
-  native acceptance. W1 remains OPEN; K3 assertions and all eight shared
-  OPEN/TBD scenario gates remain unchanged.
+  native acceptance. W1 union/capacity is approved; all eight shared OPEN/TBD
+  scenario gates remain pending, not passed.
 
-| Item | Technical resolution pending 0c approval | Evidence and remaining gate |
+| Item | Technical resolution approved 2026-11-02 | Evidence and remaining gate |
 | --- | --- | --- |
 | M1 | applicationIdentity is a fixed per-connection object with nullable appId/executable. Core's macOS self exclusion is non-null raw appId equality OR non-null executable equality. Remove missing-bundle -> own fallback; executable covers unbundled own processes. | Synthetic identity fixtures cover same bundle/different executable, foreign bundle/own executable, missing bundle with own/foreign executable and preserved case. Windows Settings/class exceptions remain unchanged; neutral native wiring is still required. |
 | M2 | Mint win only while retained remote AX identity (CFEqual) plus process fencing proves continuity. Positive close/replacement retires via existing closed, then remint; uncertain continuity holds with incomplete inventory. Never rebind from PID/CG id/title or a stale callback. | Existing closed/fresh-win/reconnect expressions suffice; no new wire/fixture lane. Restart reacquisition is fresh unless exact continuity is verified. AX omission/off-Space absence is not positive close evidence; native lifetime proof remains a port gate. |
-| M3 | Permit native per-window or adapter-owned atomic external slots under identical <=1024-byte opaque intent, atomic persist-before-dependent-write and restart-verifiable exact-lifetime obligations. Discard unverifiable bindings; native preimage failure disables only its property. No new capability. | If macOS cannot verify lifetime across restart, intent does not survive: windows return fresh/defaults. macOS host-storage-survival stays OPEN; a file/property key alone is not ownership proof. Existing intent/preimage fixtures need no new storage-route shape. |
-| M4 | maximize=false; WindowFact/PresentationIngress maximized=null. No false constant, border-geometry zoom heuristic or emulated maximize. | Existing FactName covers classification inputs, not maximized: nullable state is the consistent existing expression, not a new unavailable-fact arm. Synthetic macOS handshake/report witness it. Emulation would be a future product request; native zoom evidence stays TBD. |
+| M3 | Native per-window or adapter-owned atomic external slots share <=1024-byte opaque intent, atomic persist-before-dependent-write and restart-verifiable lifetime obligations. macOS must retain intentional-float intent across orderly tiler restart within a session; discard only genuinely unverifiable bindings. Native preimage failure disables only its property; no new capability. | Further macOS exploration must prove within-session re-identification, likely session-unique CGWindowID per Apple plus process/launch-date fencing, with a KDE-style atomic private store as candidate. A file/property key alone is not ownership proof. Storage-survival stays OPEN, not permission to cut restart intent. Existing fixtures need no storage-route shape. [Persistence decision](../decisions/persistence.md#orderly-restart-adoption). |
+| M4 | macOS maximize remains in 0.1 scope. maximize=false and WindowFact/PresentationIngress maximized=null are provisional fail-closed until the port proves a route; first try native zoom read+write. No false fact constant or border-geometry zoom heuristic. | Native zoom versus emulated maximize semantics are an OPEN user product decision for later macOS work; neither is selected here. FactName needs no new maximized arm. Synthetic handshake/report remain provisional witnesses, not a scope reduction. [R14 amendment](../decisions/contract.md#window-state-commands-r14). |
 | M5 | Without causal creation proof, created stays null and binding holds. Preserve the spent original attempt; no same-call/later-delta attribution or retry. | Existing nullable creation and ambiguity fixtures already express this. A same-call list delta alone is not an atomic receipt; causal creation identity remains a native port gate. |
 | M6 | Core exist:false is sole removal authority, subject to fresh occupancy/pin/minimum/completeness vetoes; unknown occupancy is not zero. No autonomous trailing/shutdown cleanup authority and no removal capability. | Text-only adapter obligation; existing G2 scenarios do not contradict it. The native core consumer must replace local cleanup authority; native-retirement-support stays OPEN. |
 | M7 | Prove the adapter-local capture/event/renderer causal join during phase 2, as for K5. Suppress paint for unwatched windows beyond the watch cap and stale/unknown eligibility. | Text only; no new FrameWitness fields. Native event coverage and accepted-anchor motion remain unproved; native-witness-join-evidence stays OPEN. Timestamps/rereads do not close it. |
@@ -1183,4 +1183,65 @@
   authority paragraph/anchors exact; five known local Markdown link failures,
   zero new. These are static contract/fixture checks, not executed v4 codec,
   engine, model scenario, native settlement, crash recovery or renderer acceptance.
-  0c approval, W1 and the named macOS implementation/native gates remain pending.
+  Phase 0c and W1 are now approved 2026-11-02; the named macOS
+  implementation/native gates remain pending.
+
+## Phase-0c approval outcome 2026-11-02
+
+- User 2026-11-02 approved the normative v4 shape: G1-G3, K1-K5, W2-W4
+  and M1-M9, with W1 and the M3/M4 amendments below. Shape approval closes
+  phase 0c, not implementation/native acceptance. G2 adds no removal capability;
+  core `exist:false` is sole removal authority, with M6's fresh native vetoes.
+  G3's transient/explicit-tile precedence remains TBD outside the wire. The
+  authority paragraph and legacy heading anchors are preserved.
+- W1 option c (union), including the capacity follow-up: every float acquires
+  supported persistent above under one core-owned acquisition/release/fullscreen-
+  suspension/external-clear latch, requiring durable preimages. Automatic,
+  explicit float/sticky and capacity floats share the rule. Workspace-floating-
+  mode floats also use it even with no tiles present, avoiding an origin-specific
+  exception. Sticky retains the same ownership; native-preowned above/below
+  stays untouched and fullscreen-game safety wins. The earlier K3 automatic-only
+  description was record drift: the [KDE record](../spec/reference-outcomes/floating.md#r-flt-12-raise-and-lower-overlapping-floats)
+  includes project floats and automatic fixed-size floats. The [COSMIC layer](../spec/reference-outcomes/floating.md#r-flt-01-toggle-float-then-unfloat)
+  corroborates float-above-tiles; capacity inclusion avoids arbitrary complexity.
+- M4: macOS maximize remains in 0.1 scope. The false capability/null facts
+  are provisional fail-closed witnesses, not a scope cut. First prove native zoom
+  read+write; native zoom versus emulated maximize remains an OPEN user product
+  decision for later macOS work. No implementation or fixture shape changed.
+- M3: macOS must retain intentional-float intent across orderly tiler restart
+  within a session. Further exploration must prove within-session re-identification,
+  with session-unique CGWindowID plus process/launch-date fencing and a KDE-style
+  atomic private store as candidates. Discard only genuinely unverifiable
+  bindings; no id/title guessing or old wire-token reuse. Storage survival and
+  exact native ownership remain unproved, not permission to drop restart intent.
+- Fixture delta from the M1-M9 checkpoint: no message byte changes; 518 messages
+  remain (275 valid-wire, 3 field-diagnostic, 81 held-row, 159 reject-wire).
+  `persistent-above` replaces two automatic-only inputs with explicit float
+  acquisition/shared-latch inputs and adds capacity/workspace-mode acquisition.
+  `window-state` adds four explicit/sticky above assertions without changing
+  inputs. Manifest count/rule maps follow the two added steps. Total: 22 scenarios,
+  257 steps (+2), 213 complete wire inputs (+2), 406 jq assertions (+8).
+  Existing automatic release/fullscreen, external-clear/below/reset, lifetime and
+  storage oracles remain. All eight OPEN/TBD gates remain unchanged, not passed.
+- Static verification: 540 JSON artifacts parse; strict parsing finds only the
+  two intentional duplicate-key negatives and the separate malformed raw input.
+  All 515 canonical messages match independent byte re-encoding with no final LF;
+  13068 numeric tokens/four witnesses have zero lexical/value errors. Manifest
+  rosters, pointers, 68 distinctions, 66 catalogs/345 arms/436 enum witnesses,
+  7 families, 24 commands and 71 records/254 witnesses pass. Recursive positive
+  and scenario key/order checks have zero errors or unmapped objects. All 406
+  assertions compile; bounded value checks pass for 278 positives, 15 identity
+  negatives and 213 scenario wire inputs. Baseline delta comparison confirms
+  every message byte and every unrelated scenario unchanged, with exactly the
+  stated W1 deltas and all eight gates retained.
+- Hygiene: `git diff --check` clean; zero added non-ASCII; authority paragraph
+  and anchors exact; only the five baseline local Markdown link failures, zero
+  new. No Rust or dependency changes. These are static contract/fixture checks,
+  not executed v4 codec, engine/model scenarios, native recovery or paint acceptance.
+- Next: phase 1 core/protocol implementation from approved fixtures, followed
+  by the sequential ports. Carry all eight scenario gates, K5/M7 native witness
+  joins, storage survival, Windows R14 app-fullscreen adoption baseline and macOS
+  M8 cross-output frame/Space proof. macOS multi-display integration stays
+  [parked](../decisions/macos.md#drag-and-drop). M3 exploration, the M4 product
+  decision/route proof and D6 staged documentation cleanup remain in the
+  [pending backlog](../backlog.md).

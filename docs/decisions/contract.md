@@ -16,6 +16,20 @@
 - Status: active, 2026-11-01
 - Evidence: [v3/v4 authority rule](../porting/world-contract.md#contract-authority-rule), [Windows visibility decision](windows.md#state-centric-v4-visibility), [R14 baseline](../changes/windows-fullscreen-exit-baseline.md), [R21](engine.md#kde-effect-rust-migration-sequence-r21).
 
+### v4 world contract phase-0c approval
+- Decision: approve the v4 world-contract shape, including G1-G3, K1-K5, W2-W4 and M1-M9 with the W1, M3 and M4 amendments recorded below. G2 adds no removal capability: core `exist:false` is sole removal authority with fresh native vetoes. G3 leaves transient/explicit-tile precedence TBD outside the wire. Implementation is phase 1; v3 remains authoritative until coordinated cutover.
+- Why: the sequential platform-fit reviews and exact fixtures establish the target shape without claiming native acceptance.
+- Assumes / revisit if: port evidence requires a contract change; the eight OPEN scenario gates and native proof obligations remain open.
+- Status: approved, 2026-11-02
+- Evidence: User 2026-11-02; [target contract](../porting/world-contract.md), [approval outcome](../changes/v4-migration.md#phase-0c-approval-outcome-2026-11-02).
+
+### Persistent-above float policy
+- Decision: W1 option c (union): every float is eligible for persistent above, including qualified automatic, explicit float/sticky and capacity-fallback floats. Workspace-floating-mode floats use the same rule, even with no tiles present. One core-owned acquisition/release/fullscreen-suspension/external-clear latch covers every origin; sticky transitions keep the same ownership. Require above capability and durable preimages. Pre-existing below gets no stacking writes, pre-existing above stays untouched, and fullscreen-game safety wins.
+- Why: matches the Tier 1 float-above-tiles layer and existing KDE project-float plus automatic-fixed-float behavior; capacity floats should behave consistently without arbitrary complexity.
+- Assumes / revisit if: native support or recovery cannot be proved; relative float order remains host-owned, not a new raise/lower policy.
+- Status: approved, 2026-11-02
+- Evidence: User 2026-11-02, including capacity follow-up; [stacking rules](../porting/world-contract.md#persistent-stacking), [COSMIC float layer](../spec/reference-outcomes/floating.md#r-flt-01-toggle-float-then-unfloat), [KDE stacking evidence](../spec/reference-outcomes/floating.md#r-flt-12-raise-and-lower-overlapping-floats).
+
 ### Facts versus classification
 - Decision: native attributes and observed causes, with uncertainty, are facts; classification (tiled/floating/excluded) and all other meaning are core policy.
 - Why: settings can reclassify, one implementation and cross-platform consistency.
@@ -114,9 +128,9 @@
 - Decision: maximize/fullscreen/sticky are core world commands on every platform; fullscreen/sticky on/off/toggle, Windows maximize via `ToggleMaximize`. Core owns refusal and sticky-off result; adapters perform native change/report facts. Fullscreen fact carries ownership and exit capability so neutral exit only targets tiler-exitable fullscreen. Bindings unchanged.
 - Why: behavior/refusal was split among KDE and Windows; boolean fullscreen fact could not route neutral exit.
 - Rejected: adapter toggles with facts only; defer beyond 0.1.
-- Assumes / revisit if: each host can perform/report; otherwise capability. macOS 0.1 supports maximize/fullscreen; sticky unsupported until all-Spaces route proven. Sticky-off preserves prior float/tile status; float-on sticky always tiles; both land current workspace.
-- Status: active, 2026-10-31.
-- Evidence: [review R14, F25](../changes/core-interface-review.md).
+- Assumes / revisit if: each host can perform/report; otherwise capability. macOS maximize/fullscreen remain in 0.1 scope; sticky unsupported until all-Spaces route proven. M4's macOS `maximize=false` / `maximized=null` is provisional fail-closed, not a scope cut. First prove a native zoom read+write route; native zoom versus emulated maximize semantics remain an OPEN user product decision for later macOS work. Sticky-off preserves prior float/tile status; float-on sticky always tiles; both land current workspace.
+- Status: active, 2026-10-31; M4 amendment approved, 2026-11-02.
+- Evidence: [review R14, F25](../changes/core-interface-review.md); User 2026-11-02; [M4](../changes/v4-migration.md#m1-m9-technical-resolution-pending-0c-approval).
 
 ### Scripting command surface (R18)
 - Decision: 0.1 has one experimental, non-stable scripting surface on KDE/Windows/macOS, using core `WorldCommand` wire names and core path only. KDE Planner queue, Windows command files renamed to shared verbs, macOS new same-user channel. Probes/native inspection remain platform-specific developer tools.

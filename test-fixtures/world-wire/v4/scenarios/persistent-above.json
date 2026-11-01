@@ -1854,8 +1854,12 @@
           "obs": "11",
           "reqSeq": "11",
           "req": "request-11",
-          "cmdSeq": null,
-          "command": null,
+          "cmdSeq": "1",
+          "command": {
+            "op": "toggle-float",
+            "win": "win-a",
+            "rect": null
+          },
           "screens": [
             {
               "out": "out-a",
@@ -1908,7 +1912,7 @@
               "activationInhibited": false,
               "toolWindow": false,
               "owned": false,
-              "transient": true,
+              "transient": false,
               "modal": false,
               "resizable": true,
               "above": false,
@@ -1920,7 +1924,7 @@
               "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
-              "type": "dialog",
+              "type": "normal",
               "activationPolicy": "regular",
               "layer": 0,
               "fullscreenOwner": null,
@@ -1998,7 +2002,8 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          "all(.output.message.windows[].state[]; .property != \"above\" or .auth != \"controlled\")"
+          "all(.output.message.windows[].state[]; .property != \"above\" or .auth != \"controlled\")",
+          ".output.message.windows | any(.win == \"win-a\" and .floating == true)"
         ]
       },
       "rules": [
@@ -2948,8 +2953,12 @@
           "obs": "18",
           "reqSeq": "18",
           "req": "request-18",
-          "cmdSeq": null,
-          "command": null,
+          "cmdSeq": "2",
+          "command": {
+            "op": "toggle-float",
+            "win": "win-new",
+            "rect": null
+          },
           "screens": [
             {
               "out": "out-a",
@@ -3002,7 +3011,7 @@
               "activationInhibited": false,
               "toolWindow": false,
               "owned": false,
-              "transient": true,
+              "transient": false,
               "modal": false,
               "resizable": true,
               "above": false,
@@ -3014,7 +3023,7 @@
               "executable": "c:\\synthetic\\example.exe",
               "class": "Example",
               "title": "Window",
-              "type": "dialog",
+              "type": "normal",
               "activationPolicy": "regular",
               "layer": 0,
               "fullscreenOwner": null,
@@ -3092,7 +3101,343 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.windows | any(.win == \"win-new\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))"
+          ".output.message.windows | any(.win == \"win-new\" and .floating == true and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))"
+        ]
+      },
+      "rules": [
+        "persistent-stacking"
+      ]
+    },
+    {
+      "id": "capacity-float-acquire",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "19",
+          "reqSeq": "19",
+          "req": "request-19",
+          "cmdSeq": null,
+          "command": null,
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-capacity",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": false,
+              "minimized": false,
+              "hints": {
+                "minW": 2000,
+                "minH": 1200,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "win-new"
+          ],
+          "native": [],
+          "focused": "win-capacity",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-capacity",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-capacity"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-capacity",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-capacity",
+              "obs": "19",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-capacity"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.windows | any(.win == \"win-capacity\" and .floating == true and .float_origin == \"capacity\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))"
+        ]
+      },
+      "rules": [
+        "persistent-stacking"
+      ]
+    },
+    {
+      "id": "workspace-mode-float-acquire",
+      "input": {
+        "kind": "wire",
+        "to": "core",
+        "message": {
+          "v": 4,
+          "adapter": "adapter-a",
+          "gen": "generation-a",
+          "obs": "20",
+          "reqSeq": "20",
+          "req": "request-20",
+          "cmdSeq": "3",
+          "command": {
+            "op": "set-workspace-tiling",
+            "out": "out-a",
+            "ws": "ws-1",
+            "tiled": false
+          },
+          "screens": [
+            {
+              "out": "out-a",
+              "full": [
+                0,
+                0,
+                1920,
+                1080
+              ],
+              "work": [
+                0,
+                0,
+                1920,
+                1040
+              ],
+              "complete": true,
+              "scale": 1,
+              "identity": {
+                "manufacturer": "Example",
+                "model": "Panel",
+                "serial": "serial-a",
+                "connector": "connector-a"
+              }
+            }
+          ],
+          "windows": [
+            {
+              "win": "win-mode",
+              "out": "out-a",
+              "rect": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "fullscreen": false,
+              "maximized": false,
+              "sticky": false,
+              "minimized": false,
+              "hints": {
+                "minW": 1,
+                "minH": 1,
+                "maxW": null,
+                "maxH": null
+              },
+              "hostHidden": false,
+              "privileged": false,
+              "managed": true,
+              "acceptsInput": true,
+              "activationInhibited": false,
+              "toolWindow": false,
+              "owned": false,
+              "transient": false,
+              "modal": false,
+              "resizable": true,
+              "above": false,
+              "below": false,
+              "owner": null,
+              "parent": null,
+              "role": "normal",
+              "appId": "example.app",
+              "executable": "c:\\synthetic\\example.exe",
+              "class": "Example",
+              "title": "Window",
+              "type": "normal",
+              "activationPolicy": "regular",
+              "layer": 0,
+              "fullscreenOwner": null,
+              "fullscreenExitable": null,
+              "suppressionAvailable": true,
+              "visibility": {
+                "visible": true,
+                "suppressionOwned": false
+              },
+              "lastWrite": null
+            }
+          ],
+          "closed": [
+            "win-capacity"
+          ],
+          "native": [],
+          "focused": "win-mode",
+          "complete": true,
+          "gesture": false,
+          "cursor": [
+            20,
+            30
+          ],
+          "actionForeground": "out-a",
+          "actionCached": "out-a",
+          "actionOutputs": [
+            "out-a"
+          ],
+          "presentation": {
+            "foreground": "win-mode",
+            "minimized": false,
+            "maximized": false,
+            "fullscreen": false,
+            "hostHidden": false,
+            "hiddenWorkspace": false,
+            "frame": [
+              8,
+              8,
+              800,
+              600
+            ],
+            "chordHeld": false,
+            "moveWindow": "",
+            "pagerOrder": [
+              "win-mode"
+            ],
+            "pagerFrames": [
+              {
+                "win": "win-mode",
+                "live": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
+            ],
+            "witness": {
+              "win": "win-mode",
+              "obs": "20",
+              "frame": [
+                8,
+                8,
+                800,
+                600
+              ],
+              "foreground": "win-mode"
+            },
+            "foregroundOut": "out-a"
+          },
+          "intentRecords": [],
+          "stateAttempts": [],
+          "focusFeedback": [],
+          "rendererInput": null
+        }
+      },
+      "expect": {
+        "status": "settled",
+        "assertions": [
+          ".output.message.outputs | any(.out == \"out-a\" and .mode == \"floating\")",
+          ".output.message.windows | any(.win == \"win-mode\" and .floating == true and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))"
         ]
       },
       "rules": [

@@ -12864,7 +12864,7 @@
     {
       "id": "persistent-above",
       "file": "scenarios/persistent-above.json",
-      "steps": 28,
+      "steps": 30,
       "rules": [
         {
           "contract": "../../../docs/porting/world-contract.md#handshake-and-lifetime",
@@ -12903,6 +12903,8 @@
             "below-clear-still-latched",
             "native-lifetime-ends",
             "new-lifetime-no-old-latch",
+            "capacity-float-acquire",
+            "workspace-mode-float-acquire",
             "stacking-preimage-before-write",
             "stacking-reused-lifetime-no-restore",
             "stacking-owned-coupled-restore",

@@ -1102,6 +1102,7 @@
         "status": "settled",
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == true)",
+          ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")"
         ]
       },
@@ -1271,6 +1272,7 @@
         "status": "settled",
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == true and .visibility.shown == true)",
+          ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
           ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == true))"
         ]
@@ -1782,6 +1784,7 @@
         "status": "settled",
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == true and .ws == \"ws-1\")",
+          ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
           ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == null))"
         ]
@@ -2122,6 +2125,7 @@
         "status": "settled",
         "assertions": [
           ".output.message.windows | any(.win == \"win-a\" and .floating == true and .visibility.shown == true)",
+          ".output.message.windows | any(.win == \"win-a\" and any(.state[]; .property == \"above\" and .value == true and .auth == \"controlled\"))",
           "[.output.message.windows[].state[]] | all(.property != \"sticky\")",
           ".output.message.intentWrites | any(.win == \"win-a\" and (.data | fromjson | .stickyPrior == false))"
         ]
