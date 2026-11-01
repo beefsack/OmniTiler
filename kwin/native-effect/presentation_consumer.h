@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 #pragma once
 
 // Read-only presentation consumer (Stage 5): strict parse plus generation

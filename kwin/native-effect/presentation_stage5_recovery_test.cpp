@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 //
 // Stage 5 publication/recovery and cross-surface refresh regressions: the
 // exact production PresentationStage5 handlers (the same methods

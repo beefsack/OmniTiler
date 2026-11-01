@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 #pragma once
 
 // Shared native-effect logic (Stage 5): the versioned raw presentation

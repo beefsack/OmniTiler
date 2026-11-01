@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 #include "gesturefacts.h"
 
 #include "activeborderlogic.h"

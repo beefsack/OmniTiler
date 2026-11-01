@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 //
 // Offline Stage 5 handler tests: the exact production PresentationStage5
 // handlers (the same methods activewindowborder.cpp calls) driven with the

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 //
 // Offline transport test for the versioned script facts waiter: the exact
 // production PresentationFactsSource class (no test fake) driven over a

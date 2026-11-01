@@ -2,8 +2,8 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Source: https://github.com/beefsack/OmniTiler
 
 Comment: Project default is MIT (root LICENSE, copyright Michael Alexander).
- The native active-border effect plugin sources below are GPL-2.0-or-later
- (each carries an SPDX header; full text in LICENSES/GPL-2.0-or-later.txt).
+ The active-border effect plugin is GPL-2.0-or-later; its KWin-dependent source
+ files carry SPDX headers (full text in LICENSES/GPL-2.0-or-later.txt).
  The effect KCM and script KCM declarations (KPlugin License fields) are MIT.
  Vendored Rust crates in vendor/ keep their own upstream licenses.
 
@@ -14,8 +14,6 @@ License: MIT
 Files:
  kwin/native-effect/activewindowborder.cpp
  kwin/native-effect/activewindowborder.h
- kwin/native-effect/activeborderlogic.h
- kwin/native-effect/oraclepress.h
  kwin/native-effect/metadata.json
 Copyright: 2026 Michael Alexander
 License: GPL-2.0-or-later

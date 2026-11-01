@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 //
 // Authoritative native gesture lifecycle offline tests (Qt only, no KWin
 // scene, no session bus, no Rust staticlib): the effect-owned lifecycle

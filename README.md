@@ -21,13 +21,12 @@ Project default is MIT (copyright Michael Alexander): root `LICENSE` and
 bundle and its `KPlugin` metadata, both native settings KCMs, the
 tray/planner binary, scripts, and packaging declare MIT.
 
-Exception: the ABI-bound native active-border effect plugin sources in
-`kwin/native-effect` (`activewindowborder.cpp`/`.h`, `activeborderlogic.h`,
-`oraclepress.h`, `metadata.json`) are `GPL-2.0-or-later` (full text in
-`LICENSES/GPL-2.0-or-later.txt`; each source file carries an SPDX header).
-The effect links KWin in-process, so its binary distributes under
-GPL-compatible terms; the MIT staticlib it links stays MIT, as do the
-POD FFI headers shared with tests.
+Exception: `activewindowborder.cpp`/`.h` include KWin headers and are
+`GPL-2.0-or-later`; the effect plugin metadata and combined binary also remain
+`GPL-2.0-or-later` (full text in `LICENSES/GPL-2.0-or-later.txt`). The 15
+audited KWin-free native-effect logic/test sources are MIT, including the
+independently implemented `borderStrokeFromPublished` behavior match. MIT
+sources linked into the GPL-covered effect binary retain their source license.
 
 ## Quickstart
 

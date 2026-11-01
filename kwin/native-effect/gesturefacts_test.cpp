@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-// SPDX-FileCopyrightText: 2026 Michael Alexander
 //
 // Offline transport test for the authoritative gesture lifecycle source:
 // the exact production GestureFactsSource class (no test fake) driven over
